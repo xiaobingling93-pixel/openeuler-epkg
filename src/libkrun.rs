@@ -10,6 +10,7 @@ use color_eyre::Result;
 use crate::run::RunOptions;
 use crate::qemu;
 use crate::vm_client;
+use crate::lfs;
 
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
 extern crate krun as krun_crate;
@@ -47,12 +48,41 @@ unsafe extern "C" {
         output_fd: libc::c_int,
         err_fd: libc::c_int,
     ) -> i32;
+    /// Set a file path to redirect the console output to.
+    /// Must be called before krun_start_enter.
+    fn krun_set_console_output(ctx_id: u32, filepath: *const std::ffi::c_char) -> i32;
+    /// Mount an additional directory via virtiofs into the guest.
+    /// tag: the filesystem tag (e.g., "self")
+    /// path: the host directory path to mount
+    unsafe fn krun_add_virtiofs(
+        ctx_id: u32,
+        c_tag: *const std::ffi::c_char,
+        c_path: *const std::ffi::c_char,
+    ) -> i32;
 }
 
 
 // Force the staticlib to be linked when we only reference it via extern "C".
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
 fn ensure_libkrun_linked() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        // Set LIBKRUNFW_DIR to point to the vendored libkrunfw library
+        // This is needed for libkrun to load the bundled kernel from libkrunfw
+        let libkrunfw_dir = std::path::PathBuf::from("/c/epkg/krun/libkrunfw/lib64");
+        let libkrunfw_path = libkrunfw_dir.join("libkrunfw.so.5");
+
+        // Verify the library exists before setting the env var
+        if libkrunfw_path.exists() {
+            if let Some(dir_str) = libkrunfw_dir.to_str() {
+                std::env::set_var("LIBKRUNFW_DIR", dir_str);
+                log::debug!("set LIBKRUNFW_DIR={} (library exists: {})", dir_str, libkrunfw_path.display());
+            }
+        } else {
+            log::warn!("libkrunfw library not found at {}", libkrunfw_path.display());
+        }
+    });
     krun_crate::ensure_linked();
 }
 
@@ -176,6 +206,17 @@ impl KrunContext {
         )
     }
 
+    unsafe fn add_virtiofs(&self, tag: &str, path: &str) -> Result<()> {
+        let tag_c = CString::new(tag)
+            .map_err(|e| eyre::eyre!("invalid tag: {}", e))?;
+        let path_c = CString::new(path)
+            .map_err(|e| eyre::eyre!("invalid path: {}", e))?;
+        check_status(
+            "krun_add_virtiofs",
+            unsafe { krun_add_virtiofs(self.ctx_id, tag_c.as_ptr(), path_c.as_ptr()) }
+        )
+    }
+
     /// kernel_format: 0 = Raw (e.g. aarch64/riscv64 Image), 1 = Elf (e.g. x86_64 vmlinux)
     /// kernel_cmdline: optional extra kernel command line (e.g. from --kernel-args)
     unsafe fn set_kernel(
@@ -227,16 +268,25 @@ impl Drop for KrunContext {
     }
 }
 
-/// Detect kernel image format: 0 = Raw (Image), 1 = Elf (vmlinux).
+/// Detect kernel image format for libkrun.
+///
+/// For x86_64, libkrun supports:
+/// - ELF format (1) - loaded via linux_loader::Elf::load()
+/// - Raw format (0) - loaded via map_kernel() which treats it as a bundled kernel
+///
+/// The bundled kernel from libkrunfw (KERNEL_BUNDLE) is a raw binary image.
 fn detect_kernel_format(path: &str) -> Result<u32> {
     let mut f = std::fs::File::open(path).map_err(|e| eyre::eyre!("open kernel {}: {}", path, e))?;
     let mut magic = [0u8; 4];
     use std::io::Read;
     f.read_exact(&mut magic).map_err(|e| eyre::eyre!("read kernel {}: {}", path, e))?;
     if magic == [0x7f, b'E', b'L', b'F'] {
-        Ok(1) // Elf
+        Ok(1) // Elf (vmlinux)
     } else {
-        Ok(0) // Raw (e.g. aarch64/riscv64 Image)
+        // Raw format - includes bundled kernel from libkrunfw
+        // On x86_64, libkrun's map_kernel() handles this by treating it as a bundled kernel
+        log::debug!("detected raw/bundled kernel format (magic: {:02x?})", magic);
+        Ok(0) // Raw
     }
 }
 
@@ -261,6 +311,7 @@ pub fn run_command_in_krun(
     let use_cmdline_mode = std::env::var("EPKG_VM_NO_DAEMON").is_ok();
     let use_vsock = !use_cmdline_mode;
     log::debug!("libkrun: mode: cmdline={}, vsock={}", use_cmdline_mode, use_vsock);
+    log::debug!("libkrun: EPKG_VM_NO_DAEMON={}", std::env::var("EPKG_VM_NO_DAEMON").unwrap_or_else(|_| "not set".to_string()));
 
     let rootfs = env_root
         .to_str()
@@ -306,8 +357,8 @@ pub fn run_command_in_krun(
     kernel_args.push_str("epkg.debug=1");
 
 
-    // Add command to kernel cmdline only in cmdline mode
-    if use_cmdline_mode {
+    // Add command to kernel cmdline for both cmdline and vsock modes
+    if use_cmdline_mode || use_vsock {
         kernel_args.push(' ');
         kernel_args.push_str(&format!("epkg.init_cmd={}", init_cmd));
     }
@@ -321,30 +372,82 @@ pub fn run_command_in_krun(
     }
 
     // Build environment variables for guest
-    let env_vec: Vec<(String, String)> = env::vars().collect();
+    let mut env_vec: Vec<(String, String)> = env::vars().collect();
 
+    // In vsock mode, add EPKG_INIT_CMD to tell the guest what command to run
+    if use_vsock && !init_cmd.is_empty() {
+        log::debug!("libkrun: setting EPKG_INIT_CMD={}", init_cmd);
+        env_vec.push(("EPKG_INIT_CMD".to_string(), init_cmd.clone()));
+    }
+
+    // Resolve kernel path for potential use (e.g., memory sizing), but libkrun uses its
+    // bundled kernel from libkrunfw (KERNEL_BUNDLE symbol) which has the correct entry point.
+    // We do NOT call set_kernel() because:
+    // 1. The extracted kernel from libkrunfw is a raw binary without ELF headers
+    // 2. map_kernel() uses fixed entry point 0x2000_0000 which is incorrect
+    // 3. libkrunfw's bundled kernel has the correct entry point via get_kernel() callback
     let kernel_path = crate::run::resolve_vm_kernel_path(run_options)?;
-    let kernel_format = detect_kernel_format(&kernel_path)?;
+    let _kernel_format = detect_kernel_format(&kernel_path)?; // Keep for potential future use
     ensure_libkrun_linked();
+
+    // Create console output log file for debugging
+    let console_log_path = {
+        let base_log_dir = crate::models::dirs().epkg_cache.join("vmm-logs");
+        lfs::create_dir_all(&base_log_dir)
+            .map_err(|e| eyre::eyre!("Failed to create VMM log directory: {}", e))?;
+        let pid = std::process::id();
+        base_log_dir.join(format!("libkrun-console-{}.log", pid))
+    };
+    log::debug!("libkrun: console output log: {}", console_log_path.display());
 
     // Create libkrun context and configure VM (will be moved to thread)
     let ctx = unsafe { KrunContext::create()? };
     let cpus = crate::run::resolve_vm_cpus(run_options);
     let requested_mib = crate::run::resolve_vm_memory_mib(run_options);
+    log::debug!("libkrun: run_options.vm_memory_mib = {:?}", run_options.vm_memory_mib);
     let memory_mib = crate::run::round_up_vm_memory_for_libkrun(requested_mib, &kernel_path);
-
+    log::debug!("libkrun: requested_mib = {}", requested_mib);
+    log::debug!("libkrun: round_up_vm_memory_for_libkrun = {}", memory_mib);
     log::debug!("libkrun: kernel cmdline: {}", kernel_args);
     unsafe {
         ctx.set_vm_config(cpus, memory_mib)?;
-        ctx.set_kernel(
-            &kernel_path,
-            kernel_format,
-            Some(kernel_args.as_str()),
+
+        // Set console output to log file for debugging
+        let console_log_c = CString::new(console_log_path.to_string_lossy().to_string())
+            .map_err(|e| eyre::eyre!("invalid console log path: {}", e))?;
+        check_status("krun_set_console_output",
+            krun_set_console_output(ctx.ctx_id, console_log_c.as_ptr())
         )?;
+        log::debug!("libkrun: console output redirected to {}", console_log_path.display());
+
+        // NOTE: We do NOT call ctx.set_kernel() here. Libkrun will use its bundled
+        // kernel from libkrunfw (KERNEL_BUNDLE symbol) which has the correct entry point.
+        // The kernel command line is set by libkrun with defaults; epkg.init_cmd is passed
+        // via environment variable EPKG_INIT_CMD for the guest init to pick up.
+
         ctx.set_root(rootfs)?;
         ctx.set_env(&env_vec)?;
         ctx.set_workdir("/")?;
-        ctx.set_exec(exec, &args, &env_vec)?;
+
+        // Mount self env at /self for epkg symlinks (../../../self/usr/bin/epkg)
+        if let Some(self_env) = crate::dirs::find_env_root("self") {
+            if let Some(self_env_str) = self_env.to_str() {
+                log::debug!("libkrun: mounting self env at /self: {}", self_env_str);
+                match ctx.add_virtiofs("self", self_env_str) {
+                    Ok(()) => log::debug!("libkrun: successfully mounted self env at /self"),
+                    Err(e) => {
+                        log::warn!("libkrun: failed to mount self env at /self: {}", e);
+                        log::warn!("libkrun: symlinks to self may not work");
+                    }
+                }
+            }
+        } else {
+            log::debug!("libkrun: self env not found, symlinks to self may not work");
+        }
+
+        // In vsock mode, let init handle command execution via EPKG_INIT_CMD
+        // set_exec would override init, so skip it entirely
+        // ctx.set_exec(exec, &args, &env_vec)?;
 
         // Configure vsock device for vsock mode
         if use_vsock {
@@ -369,6 +472,8 @@ pub fn run_command_in_krun(
             )
         )?;
         log::debug!("libkrun: virtio-console configured successfully");
+        log::debug!("libkrun: virtio-console is connected to host stdin/stdout/stderr");
+        log::debug!("libkrun: guest console output should appear on stdout/stderr and log file");
     }
 
     // Start VM in a separate thread (krun_start_enter blocks until VM exits)

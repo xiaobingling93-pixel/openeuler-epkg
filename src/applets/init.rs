@@ -80,21 +80,37 @@ pub fn early_init_rust_log_from_cmdline() {
             std::env::set_var("RUST_LOG", &decoded);
         }
     }
+    // Also parse krun_env for EPKG_INIT_CMD and other environment variables
+    parse_krun_env_from_cmdline();
 }
 
 fn run_init(opt_cwd: Option<&str>, opt_cmd: &[String]) -> Result<()> {
     let (cwd, cmd_str) = read_init_config(opt_cwd, opt_cmd);
-    log::debug!("init: config cwd={:?} cmd={:?}", cwd, cmd_str.as_deref());
+    eprintln!("init: config cwd={:?} cmd={:?}", cwd, cmd_str.as_deref());
 
-    setup_init_environment(cwd.as_deref())?;
+    if let Err(e) = setup_mounts() {
+        eprintln!("init: setup_mounts failed: {}", e);
+        return Err(e).wrap_err("init: setup_mounts failed");
+    }
+    if let Some(ref r) = cwd {
+        if let Err(e) = std::env::set_current_dir(r) {
+            eprintln!("init: chdir {} failed: {}", r, e);
+        } else {
+            eprintln!("init: chdir {} ok", r);
+        }
+    }
+    raise_system_file_limit();
 
     // Fork and run command in child process
     match unsafe { nix::unistd::fork() } {
         Ok(nix::unistd::ForkResult::Parent { child }) => {
-            log::debug!("init: forked child pid={}, parent entering idle loop", child);
-            pid1_idle_loop()
+            eprintln!("init: forked child pid={}, parent entering idle loop", child);
+            let status = pid1_idle_loop();
+            eprintln!("init: parent idle_loop returned with status: {:?}", status);
+            Ok(())
         }
         Ok(nix::unistd::ForkResult::Child) => {
+            eprintln!("init: child process running exec_init_command");
             match exec_init_command(cmd_str) {
                 Ok(_) => unreachable!(),
                 Err(e) => {
@@ -109,6 +125,7 @@ fn run_init(opt_cwd: Option<&str>, opt_cmd: &[String]) -> Result<()> {
             }
         }
         Err(e) => {
+            eprintln!("init: fork failed: {}", e);
             Err(eyre!("init: fork failed: {}", e))
         }
     }
@@ -364,6 +381,36 @@ fn read_cmdline_param(key: &str) -> Option<String> {
     None
 }
 
+
+/// Parse and set environment variables from krun_env format in cmdline.
+/// The krun_env format is: "KEY=VALUE" "KEY2=VALUE2" ... (with quotes)
+#[cfg(target_os = "linux")]
+fn parse_krun_env_from_cmdline() {
+    let cmdline = match std::fs::read_to_string("/proc/cmdline") {
+        Ok(s) => s,
+        Err(e) => {
+            log::debug!("init: read /proc/cmdline for krun_env failed: {}", e);
+            return;
+        }
+    };
+
+    // Look for tokens that match "KEY=VALUE" format (with surrounding quotes)
+    for token in cmdline.split_whitespace() {
+        // krun_env tokens are quoted like "KEY=VALUE"
+        if token.len() >= 2 && token.starts_with('"') && token.ends_with('"') {
+            let inner = &token[1..token.len() - 1];
+            if let Some(eq_pos) = inner.find('=') {
+                let key = &inner[..eq_pos];
+                let value = &inner[eq_pos + 1..];
+                // Skip KRUN_* internal variables, set user-visible environment variables
+                if !key.starts_with("KRUN_") {
+                    log::debug!("init: setting environment variable {}={}", key, value);
+                    std::env::set_var(key, value);
+                }
+            }
+        }
+    }
+}
 #[cfg(target_os = "linux")]
 fn try_load_module(name: &str) -> bool {
     let r = crate::applets::modprobe::run(crate::applets::modprobe::ModprobeOptions {

@@ -77,7 +77,7 @@ fn create_pid_log_with_symlink(log_name: &str) -> Result<std::path::PathBuf> {
 /// - PID-based filenames for uniqueness (qemu-{pid}.log, virtiofsd-{pid}.log)
 /// - Symlinks "latest-qemu.log" and "latest-virtiofsd.log" point to most recent logs
 /// This ensures logs survive program exit and are human-friendly for debugging.
-fn setup_vmm_logs() -> Result<(std::path::PathBuf, std::path::PathBuf)> {
+pub fn setup_vmm_logs() -> Result<(std::path::PathBuf, std::path::PathBuf)> {
     let qemu_log_path = create_pid_log_with_symlink("qemu")?;
     let virtiofsd_log_path = create_pid_log_with_symlink("virtiofsd")?;
 
