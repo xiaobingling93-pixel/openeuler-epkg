@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby
+# gem wrapper that injects mirror environment variables
+
+require 'fileutils'
+
+def load_mirror_env_vars(tool)
+  config_file = File.expand_path("~/.config/epkg/tool/my_region/#{tool}.yaml")
+  return unless File.exist?(config_file)
+
+  File.readlines(config_file).each do |line|
+    line = line.strip
+    next if line.empty? || line.start_with?('#')
+
+    if line.include?(':')
+      key, val = line.split(':', 2)
+      key = key.strip
+      val = val.strip
+      if key && !ENV.key?(key)
+        ENV[key] = val
+      end
+    end
+  end
+end
+
+def main
+  tool = File.basename($0)
+  tool = 'gem' unless %w[gem].include?(tool)
+  load_mirror_env_vars('gem')
+
+  exec '/usr/bin/gem', *ARGV
+end
+
+main

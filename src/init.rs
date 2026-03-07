@@ -166,7 +166,13 @@ pub fn install_epkg() -> Result<()> {
     let init_plan = check_for_updates()?;
     download_setup_files(&init_plan)?;
 
-    create_environment(SELF_ENV)?;
+create_environment(SELF_ENV)?;
+
+    // Setup tool config symlinks for mirror acceleration
+    crate::tool_wrapper::setup_tool_config_symlinks()
+        .unwrap_or_else(|e| {
+            log::warn!("Failed to setup tool config symlinks: {}", e);
+        });
 
     Ok(())
 }

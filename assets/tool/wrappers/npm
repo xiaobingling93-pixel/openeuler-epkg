@@ -1,0 +1,34 @@
+#!/usr/bin/env node
+// npm wrapper that injects mirror environment variables
+
+const fs = require('fs');
+const path = require('path');
+
+function loadMirrorEnvVars(tool) {
+    const configFile = path.join(process.env.HOME, '.config/epkg/tool/my_region', `${tool}.yaml`);
+    if (!fs.existsSync(configFile)) return;
+
+    const content = fs.readFileSync(configFile, 'utf8');
+    content.split('\n').forEach(line => {
+        line = line.trim();
+        if (!line || line.startsWith('#')) return;
+        const colonIdx = line.indexOf(':');
+        if (colonIdx > 0) {
+            const key = line.slice(0, colonIdx).trim();
+            const val = line.slice(colonIdx + 1).trim();
+            if (key && !process.env[key]) {
+                process.env[key] = val;
+            }
+        }
+    });
+}
+
+function main() {
+    const tool = path.basename(process.argv[1]);
+    loadMirrorEnvVars(tool === 'npm' ? 'npm' : tool);
+
+    // Execute original npm
+    require('/usr/bin/npm');
+}
+
+main();

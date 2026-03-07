@@ -308,6 +308,10 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
     // Step 2b: Link all packages (after risk checks pass)
     link_packages(plan)?;
 
+    // Step 2c: Setup tool wrappers for mirror acceleration
+    #[cfg(unix)]
+    crate::tool_wrapper::setup_tool_wrappers(plan)?;
+
     // Build trigger indices used by hooks/trigger mapping.
     #[cfg(unix)]
     {

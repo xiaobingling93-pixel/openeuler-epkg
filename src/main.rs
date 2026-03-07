@@ -112,6 +112,8 @@ mod search;
 mod gc;
 #[cfg(unix)]
 mod service;
+#[cfg(unix)]
+mod tool_wrapper;
 
 #[cfg(debug_assertions)]
 mod rpm_verify;

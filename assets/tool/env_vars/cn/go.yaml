@@ -1,0 +1,3 @@
+# Go module proxy env vars for China
+GOPROXY: https://goproxy.cn,https://goproxy.io,direct
+# config_file: (check $GOPROXY env var)

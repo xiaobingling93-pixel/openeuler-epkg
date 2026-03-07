@@ -1,0 +1,345 @@
+//! Tool mirror acceleration module
+//!
+//! This module handles automatic injection of mirror environment variables
+//! for common package managers (pip, npm, gem, go, cargo).
+
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+
+use color_eyre::eyre::{self, Context, Result};
+use log;
+
+use crate::lfs;
+use crate::dirs;
+use crate::plan::InstallationPlan;
+
+/// Supported tools that can have mirror acceleration
+const SUPPORTED_TOOLS: &[&str] = &["pip", "pip3", "npm", "gem", "go", "cargo"];
+
+/// Tools that should symlink to another tool's config
+const TOOL_SYMLINKS: &[(&str, &str)] = &[("pip3", "pip")];
+
+/// User config file paths for each tool (on host OS)
+const TOOL_CONFIG_FILES: &[(&str, &[&str])] = &[
+    ("pip", &["~/.pip/pip.conf", "~/.config/pip/pip.conf"]),
+    ("npm", &["~/.npmrc"]),
+    ("gem", &["~/.gemrc"]),
+    ("go",  &[]), // Go uses env vars, not config files
+    ("cargo", &["~/.cargo/config.toml", "~/.cargo/config"]),
+];
+
+/// Environment variables to check for each tool
+const TOOL_ENV_VARS: &[(&str, &[&str])] = &[
+    ("pip", &["PIP_INDEX_URL", "PIP_INDEX_HOST"]),
+    ("npm", &["npm_config_registry", "NPM_CONFIG_REGISTRY"]),
+    ("gem", &["BUNDLE_MIRROR__HTTPS://RUBYGEMS__ORG/"]),
+    ("go",  &["GOPROXY"]),
+    ("cargo", &["RUSTUP_DIST_SERVER", "CARGO_REGISTRIES_CRATES_INDEX"]),
+];
+
+/// Country to region mapping for mirror selection
+/// EU covers many European countries
+static COUNTRY_TO_REGION: LazyLock<std::collections::HashMap<&'static str, &'static str>> = LazyLock::new(|| {
+    let mut map = std::collections::HashMap::new();
+
+    // China
+    map.insert("CN", "cn");
+
+    // EU countries
+    let eu_countries = [
+        "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR",
+        "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
+        "PL", "PT", "RO", "SK", "SI", "ES", "SE",
+    ];
+    for cc in eu_countries {
+        map.insert(cc, "eu");
+    }
+
+    // US
+    map.insert("US", "us");
+
+    // UK (not in EU but close)
+    map.insert("GB", "eu");
+
+    // Other major regions
+    map.insert("JP", "us"); // Japan uses US mirrors typically
+    map.insert("KR", "us"); // Korea
+    map.insert("AU", "us"); // Australia
+    map.insert("CA", "us"); // Canada
+    map.insert("NZ", "us"); // New Zealand
+
+    map
+});
+
+/// Map country code to region code for mirror selection
+pub fn country_to_region(country_code: &str) -> Option<&'static str> {
+    COUNTRY_TO_REGION.get(country_code).copied()
+}
+
+/// Get the region code for current location
+pub fn get_region_code() -> Option<String> {
+    crate::location::get_country_code()
+        .ok()
+        .and_then(|cc| country_to_region(&cc).map(|s| s.to_string()))
+}
+
+/// Get the tool config directory path (~/.config/epkg/tool)
+fn get_tool_config_dir() -> Result<PathBuf> {
+    let home = dirs::get_home()?;
+    Ok(PathBuf::from(home).join(".config/epkg/tool"))
+}
+
+/// Get the env_vars directory path
+fn get_env_vars_dir() -> Result<PathBuf> {
+    let epkg_src = dirs::get_epkg_src_path();
+    Ok(epkg_src.join("assets/tool/env_vars"))
+}
+
+/// Setup tool config symlinks on `epkg self install`
+/// Creates:
+/// - ~/.config/epkg/tool/env_vars -> $EPKG_SRC/assets/tool/env_vars
+/// - ~/.config/epkg/tool/my_region -> cn/eu/us/etc.
+pub fn setup_tool_config_symlinks() -> Result<()> {
+    let config_dir = get_tool_config_dir()?;
+    lfs::create_dir_all(&config_dir)?;
+
+    // Create env_vars symlink
+    let env_vars_link = config_dir.join("env_vars");
+    let env_vars_target = get_env_vars_dir()?;
+
+    if env_vars_target.exists() {
+        if env_vars_link.exists() || env_vars_link.symlink_metadata().is_ok() {
+            lfs::remove_file(&env_vars_link)?;
+        }
+        lfs::symlink(&env_vars_target, &env_vars_link)?;
+        log::info!("Created symlink: {} -> {}", env_vars_link.display(), env_vars_target.display());
+    }
+
+    // Create my_region symlink based on region
+    let iploc_link = config_dir.join("my_region");
+
+    // Remove existing link
+    if iploc_link.exists() || iploc_link.symlink_metadata().is_ok() {
+        lfs::remove_file(&iploc_link)?;
+    }
+
+    // Get region and create symlink
+    if let Some(region) = get_region_code() {
+        let iploc_target = config_dir.join("env_vars").join(&region);
+        if iploc_target.exists() {
+            lfs::symlink(&iploc_target, &iploc_link)?;
+            log::info!("Created my_region symlink: {} -> {} (region: {})",
+                      iploc_link.display(), iploc_target.display(), region);
+        } else {
+            log::debug!("Region config dir {} does not exist, skipping my_region symlink", iploc_target.display());
+        }
+    } else {
+        log::debug!("Could not determine region, skipping my_region symlink");
+    }
+
+    Ok(())
+}
+
+/// Check if any env var for the tool is already set
+fn check_env_var_set(tool: &str) -> bool {
+    for (t, vars) in TOOL_ENV_VARS {
+        if *t == tool {
+            for var in *vars {
+                if std::env::var(var).is_ok() {
+                    log::debug!("Env var {} is already set for tool {}", var, tool);
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Expand ~ in path
+fn expand_tilde(path: &str) -> PathBuf {
+    if path.starts_with("~/") {
+        if let Ok(home) = dirs::get_home() {
+            return PathBuf::from(home).join(&path[2..]);
+        }
+    }
+    PathBuf::from(path)
+}
+
+/// Check if user config file exists on host OS
+fn check_user_config_exists(tool: &str) -> bool {
+    for (t, paths) in TOOL_CONFIG_FILES {
+        if *t == tool {
+            for path in *paths {
+                let expanded = expand_tilde(path);
+                if expanded.exists() {
+                    log::debug!("User config file exists for tool {}: {}", tool, expanded.display());
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Check if wrapper should be created for tool
+fn should_create_wrapper(tool: &str, env_root: &Path) -> bool {
+    // Check if tool is supported
+    if !SUPPORTED_TOOLS.contains(&tool) {
+        return false;
+    }
+
+    // Get the actual tool name (handle pip3 -> pip)
+    let config_tool = TOOL_SYMLINKS.iter()
+        .find(|(alias, _)| alias == &tool)
+        .map(|(_, target)| *target)
+        .unwrap_or(tool);
+
+    // Check if env var is already set
+    if check_env_var_set(config_tool) {
+        log::debug!("Skipping wrapper for {}: env var already set", tool);
+        return false;
+    }
+
+    // Check if user config exists
+    if check_user_config_exists(config_tool) {
+        log::debug!("Skipping wrapper for {}: user config exists", tool);
+        return false;
+    }
+
+    // Check if wrapper already exists
+    let wrapper_path = env_root.join("usr/local/bin").join(tool);
+    if wrapper_path.exists() {
+        log::debug!("Wrapper already exists for {}: {}", tool, wrapper_path.display());
+        return false;
+    }
+
+    true
+}
+
+/// Detect installed tools from plan's new files
+fn detect_installed_tools(plan: &InstallationPlan) -> Vec<String> {
+    let mut tools = Vec::new();
+
+    for file in &plan.batch.new_files {
+        let file_str = file.to_string_lossy();
+        // Check for tool binaries
+        for tool in SUPPORTED_TOOLS {
+            if file_str == format!("usr/bin/{}", tool) ||
+               file_str == format!("bin/{}", tool) {
+                if !tools.contains(&tool.to_string()) {
+                    tools.push(tool.to_string());
+                }
+            }
+        }
+    }
+
+    tools
+}
+
+/// Get wrapper script content for a tool
+fn get_wrapper_content(tool: &str) -> Result<String> {
+    let epkg_src = dirs::get_epkg_src_path();
+    let wrapper_path = epkg_src.join("assets/tool/wrappers").join(tool);
+
+    if wrapper_path.exists() {
+        let content = std::fs::read_to_string(&wrapper_path)
+            .with_context(|| format!("Failed to read wrapper script: {}", wrapper_path.display()))?;
+        return Ok(content);
+    }
+
+    // Check if it's a symlink target (like pip3 -> pip)
+    for (alias, target) in TOOL_SYMLINKS {
+        if alias == &tool {
+            let target_path = epkg_src.join("assets/tool/wrappers").join(target);
+            if target_path.exists() {
+                let content = std::fs::read_to_string(&target_path)
+                    .with_context(|| format!("Failed to read wrapper script: {}", target_path.display()))?;
+                return Ok(content);
+            }
+        }
+    }
+
+    Err(eyre::eyre!("No wrapper script found for tool: {}", tool))
+}
+
+/// Create wrapper script for a tool
+fn create_tool_wrapper(tool: &str, env_root: &Path) -> Result<()> {
+    let wrapper_dir = env_root.join("usr/local/bin");
+    lfs::create_dir_all(&wrapper_dir)?;
+
+    let wrapper_path = wrapper_dir.join(tool);
+    let content = get_wrapper_content(tool)?;
+
+    // Write wrapper script
+    lfs::write(&wrapper_path, &content)?;
+
+    // Set executable permissions
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("Failed to set permissions for {}", wrapper_path.display()))?;
+    }
+
+    log::info!("Created tool wrapper: {}", wrapper_path.display());
+    Ok(())
+}
+
+/// Remove wrapper script for a tool
+#[allow(dead_code)]
+fn remove_tool_wrapper(tool: &str, env_root: &Path) -> Result<()> {
+    let wrapper_path = env_root.join("usr/local/bin").join(tool);
+
+    if wrapper_path.exists() {
+        lfs::remove_file(&wrapper_path)?;
+        log::info!("Removed tool wrapper: {}", wrapper_path.display());
+    }
+
+    Ok(())
+}
+
+/// Setup tool wrappers for newly installed tools
+/// Called from execute_installations() after link_packages()
+pub fn setup_tool_wrappers(plan: &InstallationPlan) -> Result<()> {
+    let env_root = PathBuf::from(&plan.env_root);
+
+    // Detect newly installed tools
+    let tools = detect_installed_tools(plan);
+
+    if tools.is_empty() {
+        return Ok(());
+    }
+
+    log::debug!("Detected installed tools: {:?}", tools);
+
+    for tool in &tools {
+        if should_create_wrapper(tool, &env_root) {
+            create_tool_wrapper(tool, &env_root)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Remove tool wrappers when tools are removed
+#[allow(dead_code)]
+pub fn remove_tool_wrappers(_plan: &InstallationPlan) -> Result<()> {
+    // TODO: Implement when removal tracking is available
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_country_to_region() {
+        assert_eq!(country_to_region("CN"), Some("cn"));
+        assert_eq!(country_to_region("US"), Some("us"));
+        assert_eq!(country_to_region("DE"), Some("eu"));
+        assert_eq!(country_to_region("FR"), Some("eu"));
+        assert_eq!(country_to_region("GB"), Some("eu"));
+        assert_eq!(country_to_region("JP"), Some("us"));
+        assert_eq!(country_to_region("XX"), None);
+    }
+}

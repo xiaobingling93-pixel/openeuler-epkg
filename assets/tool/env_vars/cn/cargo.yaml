@@ -1,0 +1,5 @@
+# Cargo/Rust mirror env vars for China
+RUSTUP_DIST_SERVER: https://rsproxy.cn
+RUSTUP_UPDATE_ROOT: https://rsproxy.cn/rustup
+CARGO_REGISTRIES_CRATES_INDEX: sparse+https://rsproxy.cn/crates.io-index/
+# config_file: ~/.cargo/config.toml

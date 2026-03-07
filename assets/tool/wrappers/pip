@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""pip wrapper that injects mirror environment variables."""
+import os
+import sys
+
+def load_mirror_env_vars(tool):
+    """Load mirror env vars from ~/.config/epkg/tool/my_region/{tool}.yaml"""
+    config_path = os.path.expanduser(f"~/.config/epkg/tool/my_region/{tool}.yaml")
+    if not os.path.exists(config_path):
+        return
+
+    with open(config_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if ':' not in line:
+                continue
+            key, val = line.split(':', 1)
+            key = key.strip()
+            val = val.strip()
+            if key and key not in os.environ:
+                os.environ[key] = val
+
+def main():
+    tool = os.path.basename(sys.argv[0])
+    if tool not in ('pip', 'pip3'):
+        tool = 'pip'
+
+    load_mirror_env_vars('pip')
+
+    # Import and run pip's main function directly
+    import re
+    from pip._internal.cli.main import main as pip_main
+
+    sys.argv[0] = re.sub(r"(-script\.pyw|\.exe)?$", "", sys.argv[0])
+    sys.exit(pip_main())
+
+if __name__ == "__main__":
+    main()
