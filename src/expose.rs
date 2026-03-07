@@ -271,7 +271,7 @@ fn create_shebang_line(env_root: &Path, first_line: &str, script_path: &Path) ->
     {
         Ok(path) => {
             if path == "" {
-                return Ok(first_line.to_string());
+                return Ok(format!("{}\n", first_line));
             }
             path
         },
