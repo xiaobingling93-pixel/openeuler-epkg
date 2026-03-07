@@ -7,7 +7,7 @@ use color_eyre::eyre::WrapErr;
 use color_eyre::Result;
 use rpm::{DependencyFlags, FileMode, IndexTag, Package};
 use std::collections::HashMap;
-use std::fs;
+use crate::lfs;
 use std::path::Path;
 
 /// Unpacks an RPM package to the specified directory
@@ -16,12 +16,9 @@ pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P, pkgkey: Opt
     let store_tmp_dir = store_tmp_dir.as_ref();
 
     // Create the required directory structure
-    fs::create_dir_all(store_tmp_dir.join("fs"))
-        .wrap_err_with(|| format!("Failed to create info/rpm directory at {}", store_tmp_dir.join("info/rpm").display()))?;
-    fs::create_dir_all(store_tmp_dir.join("info/rpm"))
-        .wrap_err_with(|| format!("Failed to create info/rpm directory at {}", store_tmp_dir.join("info/rpm").display()))?;
-    fs::create_dir_all(store_tmp_dir.join("info/install"))
-        .wrap_err_with(|| format!("Failed to create info/install directory at {}", store_tmp_dir.join("info/install").display()))?;
+    lfs::create_dir_all(store_tmp_dir.join("fs"))?;
+    lfs::create_dir_all(store_tmp_dir.join("info/rpm"))?;
+    lfs::create_dir_all(store_tmp_dir.join("info/install"))?;
 
     // Open and parse the RPM package
     let package = Package::open(rpm_file)
@@ -91,15 +88,13 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
 
                 // Create parent directories if they don't exist
                 if let Some(parent) = file_path.parent() {
-                    fs::create_dir_all(parent)
-                        .wrap_err_with(|| format!("Failed to create parent directory at {}", parent.display()))?;
+                    lfs::create_dir_all(parent)?;
                 }
 
                 match file.metadata.mode {
                     FileMode::Regular { permissions } => {
                         // Write the actual file content
-                        fs::write(&file_path, &file.content)
-                            .wrap_err_with(|| format!("Failed to write file content to {}", file_path.display()))?;
+                        lfs::write(&file_path, &file.content)?;
 
                         // Set file permissions - preserve original permissions from RPM
                         #[cfg(unix)]
@@ -111,8 +106,7 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
                     }
                     FileMode::Dir { permissions } => {
                         // Create directory
-                        fs::create_dir_all(&file_path)
-                            .wrap_err_with(|| format!("Failed to create directory at {}", file_path.display()))?;
+                        lfs::create_dir_all(&file_path)?;
 
                         #[cfg(unix)]
                         {
@@ -128,8 +122,7 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
                         if !file.metadata.linkto.is_empty() {
                             #[cfg(unix)]
                             {
-                                use std::os::unix::fs;
-                                if let Err(e) = fs::symlink(&file.metadata.linkto, &file_path) {
+                                if let Err(e) = lfs::symlink(&file.metadata.linkto, &file_path) {
                                     log::warn!("Failed to create symlink {:?} -> {:?}: {}", file_path, file.metadata.linkto, e);
                                 }
                             }

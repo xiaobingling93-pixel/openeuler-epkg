@@ -1,5 +1,6 @@
 #![cfg(unix)]
 use std::path::Path;
+use crate::lfs;
 
 use crate::run::RunOptions;
 use crate::vm_client;
@@ -42,7 +43,7 @@ fn parse_vmm_config(run_options: &RunOptions) -> Result<(String, Option<String>,
 /// can be used after at least one QEMU run. Call this when entering the VM path.
 pub(crate) fn ensure_vmm_log_dir() -> Result<()> {
     let base_log_dir = dirs().epkg_cache.join("vmm-logs");
-    std::fs::create_dir_all(&base_log_dir)
+    lfs::create_dir_all(&base_log_dir)
         .map_err(|e| eyre::eyre!("Failed to create VMM log directory: {}", e))?;
     Ok(())
 }
@@ -53,7 +54,7 @@ pub(crate) fn ensure_vmm_log_dir() -> Result<()> {
 /// and a symlink latest-{log_name}.log will point to it.
 fn create_pid_log_with_symlink(log_name: &str) -> Result<std::path::PathBuf> {
     let base_log_dir = dirs().epkg_cache.join("vmm-logs");
-    std::fs::create_dir_all(&base_log_dir)
+    lfs::create_dir_all(&base_log_dir)
         .map_err(|e| eyre::eyre!("Failed to create VMM log directory: {}", e))?;
 
     let pid = std::process::id();
@@ -61,8 +62,8 @@ fn create_pid_log_with_symlink(log_name: &str) -> Result<std::path::PathBuf> {
 
     // Create symlink to latest log
     let latest_log = base_log_dir.join(format!("latest-{}.log", log_name));
-    let _ = std::fs::remove_file(&latest_log);
-    if let Err(e) = std::os::unix::fs::symlink(&log_path, &latest_log) {
+    let _ = lfs::remove_file(&latest_log);
+    if let Err(e) = lfs::symlink(&log_path, &latest_log) {
         log::warn!("Failed to create symlink {} -> {}: {}", latest_log.display(), log_path.display(), e);
     }
 

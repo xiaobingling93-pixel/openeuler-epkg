@@ -30,6 +30,7 @@ use nix::unistd::{pivot_root, Uid};
 use libc;
 use serde_json;
 use std::fs;
+use crate::lfs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -145,7 +146,7 @@ pub(crate) fn mount_spec_strings(
 /// Create /dev/shm and standard I/O symlinks (shared by setup_sandbox_dev_tree and VMM init).
 pub(crate) fn ensure_dev_symlinks(dev_root: &Path) -> Result<()> {
     let dev_shm = dev_root.join("shm");
-    if let Err(e) = fs::create_dir_all(&dev_shm) {
+    if let Err(e) = lfs::create_dir_all(&dev_shm) {
         warn!("Failed to create {}/shm: {}. Continuing.", dev_root.display(), e);
     }
 
@@ -162,7 +163,7 @@ pub(crate) fn ensure_dev_symlinks(dev_root: &Path) -> Result<()> {
         if link_path.exists() {
             continue;
         }
-        if let Err(e) = std::os::unix::fs::symlink(target, &link_path) {
+        if let Err(e) = lfs::symlink(target, &link_path) {
             warn!("Failed to create symlink {}/{} -> {}: {}. Continuing.", dev_root.display(), name, target, e);
         }
     }
@@ -345,15 +346,11 @@ fn ensure_bind_target_exists(source: &PathBuf, target: &Path, sandbox_mode: Sand
     if source == target {
         if let Some(parent) = target.parent() {
             if !parent.exists() {
-                fs::create_dir_all(parent).map_err(|e| {
-                    eyre::eyre!("Failed to create parent for bind mount target {}: {}", target.display(), e)
-                })?;
+                lfs::create_dir_all(parent)?;
             }
         }
         trace!("Creating directory for self-bind mount: {}", target.display());
-        fs::create_dir_all(target).map_err(|e| {
-            eyre::eyre!("Failed to create bind mount target {}: {}", target.display(), e)
-        })?;
+        lfs::create_dir_all(target)?;
         return Ok(());
     }
 
@@ -377,23 +374,23 @@ fn ensure_bind_target_exists(source: &PathBuf, target: &Path, sandbox_mode: Sand
     // Ensure parent directory exists
     if let Some(parent) = target.parent() {
         if !parent.exists() {
-            let _ = fs::create_dir_all(parent);
+            let _ = lfs::create_dir_all(parent);
         }
     }
 
     // Create appropriate placeholder
     if metadata.is_file() {
         trace!("Creating file placeholder for bind mount: {}", target.display());
-        let _ = fs::File::create(target);
+        let _ = lfs::file_create(target);
     } else if metadata.is_dir() {
         trace!("Creating directory placeholder for bind mount: {}", target.display());
-        let _ = fs::create_dir_all(target);
+        let _ = lfs::create_dir_all(target);
     }
     // Other types (symlinks, device nodes, etc.) - create empty file as fallback
     // Device nodes cannot be created without mknod capability; empty file works as bind mount target
     else {
         trace!("Creating empty file placeholder for special file bind mount: {}", target.display());
-        let _ = fs::File::create(target);
+        let _ = lfs::file_create(target);
     }
 
     Ok(())
@@ -402,8 +399,6 @@ fn ensure_bind_target_exists(source: &PathBuf, target: &Path, sandbox_mode: Sand
 /// Ensure target path exists for a filesystem mount, creating directory if needed.
 /// Only creates directories for Tmpfs and Vmm mount modes (sandbox environments).
 fn ensure_mount_target_exists(target: &Path, sandbox_mode: SandboxMode) -> Result<()> {
-    use std::fs;
-
     // Only create directories in sandbox environments
     match sandbox_mode {
         SandboxMode::Fs | SandboxMode::Vm => (),
@@ -418,13 +413,13 @@ fn ensure_mount_target_exists(target: &Path, sandbox_mode: SandboxMode) -> Resul
     // Ensure parent directory exists
     if let Some(parent) = target.parent() {
         if !parent.exists() {
-            let _ = fs::create_dir_all(parent);
+            let _ = lfs::create_dir_all(parent);
         }
     }
 
     // Create target directory
     trace!("Creating directory for filesystem mount: {}", target.display());
-    let _ = fs::create_dir_all(target);
+    let _ = lfs::create_dir_all(target);
 
     Ok(())
 }

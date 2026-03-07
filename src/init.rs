@@ -924,12 +924,11 @@ fn extract_kernel_from_libkrunfw_so(so_path: &Path, self_env_root: &Path) -> Res
     } else {
         (kernel_dir.join("kernel"), None)
     };
-    fs::write(&named_path, &kernel_data).context("Failed to write default kernel image")?;
+    lfs::write(&named_path, &kernel_data)?;
     if let Some(link) = link_path {
-        let _ = fs::remove_file(&link);
+        let _ = lfs::remove_file(&link);
         #[cfg(unix)]
-        std::os::unix::fs::symlink(named_path.file_name().unwrap(), &link)
-            .context("Failed to create kernel symlink")?;
+        lfs::symlink(named_path.file_name().unwrap(), &link)?;
         log::debug!("Extracted kernel to {} ({} bytes), kernel -> {}", named_path.display(), kernel_data.len(), link.display());
     } else {
         log::debug!("Extracted kernel to {} ({} bytes)", named_path.display(), kernel_data.len());

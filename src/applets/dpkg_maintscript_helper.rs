@@ -10,6 +10,7 @@ use color_eyre::Result;
 use std::cmp::Ordering;
 use std::env;
 use std::fs;
+use crate::lfs;
 use std::path::{Path, PathBuf};
 
 use crate::models::PackageFormat;
@@ -196,7 +197,7 @@ fn do_rm_conffile(helper_args: &[String], script_args: &[String], script_name: &
     let exit_ok = match script_name {
         "preinst" => {
             if path.exists() {
-                if let Err(e) = fs::rename(&path, &remove_marker) {
+                if let Err(e) = lfs::rename(&path, &remove_marker) {
                     log::warn!("dpkg-maintscript-helper rm_conffile preinst rename: {}", e);
                     return Ok(1);
                 }
@@ -204,24 +205,24 @@ fn do_rm_conffile(helper_args: &[String], script_args: &[String], script_name: &
             0
         }
         "postinst" => {
-            let _ = fs::remove_file(&remove_marker);
+            let _ = lfs::remove_file(&remove_marker);
             if backup_marker.exists() {
-                let _ = fs::rename(&backup_marker, &bak_path);
+                let _ = lfs::rename(&backup_marker, &bak_path);
             }
             0
         }
         "postrm" => {
             let first = script_args.first().map(String::as_str);
             if first == Some("purge") {
-                let _ = fs::remove_file(&bak_path);
-                let _ = fs::remove_file(&remove_marker);
-                let _ = fs::remove_file(&backup_marker);
+                let _ = lfs::remove_file(&bak_path);
+                let _ = lfs::remove_file(&remove_marker);
+                let _ = lfs::remove_file(&backup_marker);
             } else if should_run_abort(script_args, prior_version) {
                 if remove_marker.exists() {
-                    let _ = fs::rename(&remove_marker, &path);
+                    let _ = lfs::rename(&remove_marker, &path);
                 }
                 if backup_marker.exists() {
-                    let _ = fs::rename(&backup_marker, &path);
+                    let _ = lfs::rename(&backup_marker, &path);
                 }
             }
             0
@@ -276,19 +277,19 @@ fn do_mv_conffile(helper_args: &[String], script_args: &[String], script_name: &
     match script_name {
         "preinst" => {
             if old_path.exists() {
-                if let Err(e) = fs::rename(&old_path, &remove_marker) {
+                if let Err(e) = lfs::rename(&old_path, &remove_marker) {
                     log::warn!("dpkg-maintscript-helper mv_conffile preinst: {}", e);
                     return Ok(1);
                 }
             }
         }
         "postinst" => {
-            let _ = fs::remove_file(&remove_marker);
+            let _ = lfs::remove_file(&remove_marker);
             if old_path.exists() {
                 if new_path.exists() {
-                    let _ = fs::rename(&new_path, &new_backup);
+                    let _ = lfs::rename(&new_path, &new_backup);
                 }
-                if let Err(e) = fs::rename(&old_path, &new_path) {
+                if let Err(e) = lfs::rename(&old_path, &new_path) {
                     log::warn!("dpkg-maintscript-helper mv_conffile postinst: {}", e);
                     return Ok(1);
                 }
@@ -296,7 +297,7 @@ fn do_mv_conffile(helper_args: &[String], script_args: &[String], script_name: &
         }
         "postrm" => {
             if should_run_abort(script_args, prior_version) && remove_marker.exists() {
-                let _ = fs::rename(&remove_marker, &old_path);
+                let _ = lfs::rename(&remove_marker, &old_path);
             }
         }
         _ => {}
@@ -346,7 +347,7 @@ fn do_symlink_to_dir(helper_args: &[String], script_args: &[String], script_name
                 if let Ok(target) = fs::read_link(&path) {
                     let target_str = target.to_string_lossy();
                     if target_str == old_target || target_str.ends_with(old_target.trim_start_matches('/')) {
-                        if let Err(e) = fs::rename(&path, &backup_path) {
+                        if let Err(e) = lfs::rename(&path, &backup_path) {
                             log::warn!("dpkg-maintscript-helper symlink_to_dir preinst: {}", e);
                             return Ok(1);
                         }
@@ -358,16 +359,16 @@ fn do_symlink_to_dir(helper_args: &[String], script_args: &[String], script_name
             if backup_path.exists() {
                 let meta = fs::metadata(&backup_path).ok();
                 if meta.map(|m| m.is_symlink()).unwrap_or(false) {
-                    let _ = fs::remove_file(&backup_path);
+                    let _ = lfs::remove_file(&backup_path);
                 }
             }
         }
         "postrm" => {
             let first = script_args.first().map(String::as_str);
             if first == Some("purge") && backup_path.is_symlink() {
-                let _ = fs::remove_file(&backup_path);
+                let _ = lfs::remove_file(&backup_path);
             } else if should_run_abort(script_args, prior_version) && backup_path.exists() {
-                let _ = fs::rename(&backup_path, &path);
+                let _ = lfs::rename(&backup_path, &path);
             }
         }
         _ => {}
@@ -423,19 +424,19 @@ fn do_dir_to_symlink(helper_args: &[String], script_args: &[String], script_name
     match script_name {
         "preinst" => {
             if path.is_dir() && !path.is_symlink() {
-                if let Err(e) = fs::rename(&path, &backup_path) {
+                if let Err(e) = lfs::rename(&path, &backup_path) {
                     log::warn!("dpkg-maintscript-helper dir_to_symlink preinst rename: {}", e);
                     return Ok(1);
                 }
-                if let Err(e) = fs::create_dir_all(&path) {
+                if let Err(e) = lfs::create_dir_all(&path) {
                     log::warn!("dpkg-maintscript-helper dir_to_symlink preinst mkdir: {}", e);
-                    let _ = fs::rename(&backup_path, &path);
+                    let _ = lfs::rename(&backup_path, &path);
                     return Ok(1);
                 }
-                if let Err(e) = fs::File::create(&staging_marker_path) {
+                if let Err(e) = lfs::file_create(&staging_marker_path) {
                     log::warn!("dpkg-maintscript-helper dir_to_symlink preinst marker: {}", e);
-                    let _ = fs::remove_dir(&path);
-                    let _ = fs::rename(&backup_path, &path);
+                    let _ = lfs::remove_dir(&path);
+                    let _ = lfs::rename(&backup_path, &path);
                     return Ok(1);
                 }
             }
@@ -444,28 +445,28 @@ fn do_dir_to_symlink(helper_args: &[String], script_args: &[String], script_name
             if backup_path.is_dir()
                 && staging_marker_path.exists()
             {
-                let _ = fs::remove_file(&staging_marker_path);
+                let _ = lfs::remove_file(&staging_marker_path);
                 let new_target_path = if new_target.starts_with('/') {
                     resolve_root(new_target)
                 } else {
                     path.parent().map_or_else(|| PathBuf::from(new_target), |parent| parent.join(new_target))
                 };
-                let _ = fs::create_dir_all(&new_target_path);
+                let _ = lfs::create_dir_all(&new_target_path);
                 if let Ok(entries) = fs::read_dir(&path) {
                     for entry in entries.flatten() {
                         let name = entry.file_name();
                         let dest = new_target_path.join(&name);
-                        if let Err(e) = fs::rename(entry.path(), &dest) {
+                        if let Err(e) = lfs::rename(entry.path(), &dest) {
                             log::warn!("dpkg-maintscript-helper dir_to_symlink postinst move {:?}: {}", name, e);
                         }
                     }
                 }
-                if let Err(e) = fs::remove_dir(&path) {
+                if let Err(e) = lfs::remove_dir(&path) {
                     log::warn!("dpkg-maintscript-helper dir_to_symlink postinst rmdir: {}", e);
                 } else {
                     if let Err(e) = crate::utils::force_symlink(new_target, &path) {
                         log::warn!("dpkg-maintscript-helper dir_to_symlink postinst symlink: {}", e);
-                    } else if let Err(e) = fs::remove_dir_all(&backup_path) {
+                    } else if let Err(e) = lfs::remove_dir_all(&backup_path) {
                         log::warn!("dpkg-maintscript-helper dir_to_symlink postinst remove backup: {}", e);
                     }
                 }
@@ -474,15 +475,15 @@ fn do_dir_to_symlink(helper_args: &[String], script_args: &[String], script_name
         "postrm" => {
             let first = script_args.first().map(String::as_str);
             if first == Some("purge") && backup_path.is_dir() {
-                let _ = fs::remove_dir_all(&backup_path);
+                let _ = lfs::remove_dir_all(&backup_path);
             } else if should_run_abort(script_args, prior_version) && backup_path.exists() {
                 if path.is_symlink() {
-                    let _ = fs::remove_file(&path);
+                    let _ = lfs::remove_file(&path);
                 } else if staging_marker_path.exists() {
-                    let _ = fs::remove_file(&staging_marker_path);
-                    let _ = fs::remove_dir(&path);
+                    let _ = lfs::remove_file(&staging_marker_path);
+                    let _ = lfs::remove_dir(&path);
                 }
-                let _ = fs::rename(&backup_path, &path);
+                let _ = lfs::rename(&backup_path, &path);
             }
         }
         _ => {}

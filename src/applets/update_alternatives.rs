@@ -11,6 +11,7 @@ use pathdiff;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use crate::lfs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -173,9 +174,9 @@ fn read_current(_admdir: &Path, name: &str, root: &Path) -> Result<Option<String
 fn write_admin_file(admdir: &Path, a: &Alternative) -> Result<()> {
     let fpath = admdir.join(&a.master_name);
     if let Some(parent) = fpath.parent() {
-        fs::create_dir_all(parent).wrap_err("create admindir")?;
+        lfs::create_dir_all(parent)?;
     }
-    let mut f = fs::File::create(&fpath).wrap_err_with(|| format!("create {}", fpath.display()))?;
+    let mut f = lfs::file_create(&fpath)?;
     writeln!(f, "{}", a.status)?;
     writeln!(f, "{}", a.master_link)?;
     for sl in &a.slaves {
@@ -218,32 +219,30 @@ fn apply_alternative(
         .ok_or_else(|| eyre!("choice not found: {}", choice_path))?;
 
     if let Some(parent) = alt_name_path.parent() {
-        fs::create_dir_all(parent).wrap_err("create altdir")?;
+        lfs::create_dir_all(parent)?;
     }
     if alt_name_path.exists() {
-        fs::remove_file(&alt_name_path).wrap_err("remove old alt link")?;
+        lfs::remove_file(&alt_name_path)?;
     }
     // Compute target path relative to root, then make it relative to symlink location
     let relative_target = make_relative_target(root, choice_path, &alt_name_path);
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&relative_target, &alt_name_path)
-        .wrap_err_with(|| format!("symlink {} -> {}", alt_name_path.display(), relative_target.display()))?;
+    lfs::symlink(&relative_target, &alt_name_path)?;
 
     let master_link_full = root_join(root, &a.master_link);
     if master_link_full.exists() {
         if !force && !master_link_full.is_symlink() {
             return Err(eyre!("not replacing {} with a link (use --force)", a.master_link));
         }
-        fs::remove_file(&master_link_full).ok();
+        lfs::remove_file(&master_link_full).ok();
     }
     if let Some(parent) = master_link_full.parent() {
-        fs::create_dir_all(parent).wrap_err("create link parent")?;
+        lfs::create_dir_all(parent)?;
     }
     #[cfg(unix)]
     {
         let alt_name_relative = make_relative_existing(&alt_name_path, &master_link_full);
-        std::os::unix::fs::symlink(&alt_name_relative, &master_link_full)
-            .wrap_err_with(|| format!("symlink {} -> {}", a.master_link, alt_name_relative.display()))?;
+        lfs::symlink(&alt_name_relative, &master_link_full)?;
     }
 
     for sl in &a.slaves {
@@ -254,26 +253,26 @@ fn apply_alternative(
             let slave_alt = root_join(root, &format!("{}/{}", altdir, sl.name));
             let slave_link_full = root_join(root, &sl.link);
             if slave_alt.exists() {
-                fs::remove_file(&slave_alt).ok();
+                lfs::remove_file(&slave_alt).ok();
             }
             #[cfg(unix)]
             {
                 let slave_relative = make_relative_target(root, spath, &slave_alt);
-                std::os::unix::fs::symlink(&slave_relative, &slave_alt).ok();
+                lfs::symlink(&slave_relative, &slave_alt).ok();
             }
             if slave_link_full.exists() {
                 if !force && !slave_link_full.is_symlink() {
                     continue;
                 }
-                fs::remove_file(&slave_link_full).ok();
+                lfs::remove_file(&slave_link_full).ok();
             }
             if let Some(p) = slave_link_full.parent() {
-                fs::create_dir_all(p).ok();
+                lfs::create_dir_all(p).ok();
             }
             #[cfg(unix)]
             {
                 let slave_alt_relative = make_relative_existing(&slave_alt, &slave_link_full);
-                std::os::unix::fs::symlink(&slave_alt_relative, &slave_link_full).ok();
+                lfs::symlink(&slave_alt_relative, &slave_link_full).ok();
             }
         }
     }
@@ -282,19 +281,19 @@ fn apply_alternative(
 
 fn remove_links(root: &Path, altdir: &str, a: &Alternative) -> Result<()> {
     let alt_path = root_join(root, &format!("{}/{}", altdir, a.master_name));
-    fs::remove_file(&alt_path).ok();
+    lfs::remove_file(&alt_path).ok();
     if a.master_link.starts_with('/') {
         let link_full = root_join(root, &a.master_link);
         if link_full.is_symlink() {
-            fs::remove_file(&link_full).ok();
+            lfs::remove_file(&link_full).ok();
         }
     }
     for sl in &a.slaves {
         let slave_alt = root_join(root, &format!("{}/{}", altdir, sl.name));
-        fs::remove_file(&slave_alt).ok();
+        lfs::remove_file(&slave_alt).ok();
         let link_full = root_join(root, &sl.link);
         if link_full.is_symlink() {
-            fs::remove_file(&link_full).ok();
+            lfs::remove_file(&link_full).ok();
         }
     }
     Ok(())
@@ -484,7 +483,7 @@ pub fn run(options: UpdateAlternativesOptions) -> Result<()> {
             };
             if a.choices.is_empty() {
                 remove_links(&root, altdir, &a)?;
-                fs::remove_file(adm.join(name)).ok();
+                lfs::remove_file(adm.join(name)).ok();
             } else if let Some(ref cur) = new_current {
                 apply_alternative(&root, altdir, &a, cur, options.force)?;
                 a.current = new_current;
@@ -496,7 +495,7 @@ pub fn run(options: UpdateAlternativesOptions) -> Result<()> {
             if let Some(a) = read_admin_file(&adm, name, &root)? {
                 remove_links(&root, altdir, &a)?;
             }
-            fs::remove_file(adm.join(name)).ok();
+            lfs::remove_file(adm.join(name)).ok();
         }
         "auto" => {
             let name = options.name.as_ref().ok_or_else(|| eyre!("--auto needs <name>"))?;

@@ -9,6 +9,7 @@ use color_eyre::eyre::{eyre, WrapErr};
 use std::collections::HashSet;
 use std::env;
 use std::fs;
+use crate::lfs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
@@ -239,7 +240,7 @@ fn record_in_statefile(state_path: &Path, service_link: &str) -> Result<()> {
         return Ok(());
     }
     if let Some(parent) = state_path.parent() {
-        fs::create_dir_all(parent).wrap_err("create state dir")?;
+        lfs::create_dir_all(parent)?;
     }
     let mut f = fs::OpenOptions::new()
         .create(true)
@@ -305,13 +306,12 @@ pub fn run(options: DebSystemdHelperOptions) -> Result<()> {
                         continue;
                     }
                     if let Some(parent) = link_full.parent() {
-                        fs::create_dir_all(parent).wrap_err("create link parent")?;
+                        lfs::create_dir_all(parent)?;
                     }
                     let target = Path::new(&link.dest);
                     #[cfg(unix)]
                     {
-                        std::os::unix::fs::symlink(target, &link_full)
-                            .wrap_err_with(|| format!("symlink {} -> {}", link_full.display(), link.dest))?;
+                        lfs::symlink(target, &link_full)?;
                     }
                     #[cfg(not(unix))]
                     {
@@ -321,7 +321,7 @@ pub fn run(options: DebSystemdHelperOptions) -> Result<()> {
                 for link in &links {
                     let statefile = link_state_path(&link.src, options.user, &root);
                     if let Some(p) = statefile.parent() {
-                        fs::create_dir_all(p).ok();
+                        lfs::create_dir_all(p).ok();
                     }
                     fs::OpenOptions::new()
                         .create(true)
@@ -334,16 +334,16 @@ pub fn run(options: DebSystemdHelperOptions) -> Result<()> {
                 let dsh_state = dsh_state_path(unit_name, options.user, &root);
                 let entries = state_file_entries(&dsh_state);
                 if purge && dsh_state.exists() {
-                    fs::remove_file(&dsh_state).ok();
+                    lfs::remove_file(&dsh_state).ok();
                 }
                 for link_src in &entries {
                     let link_state = link_state_path(link_src, options.user, &root);
                     if purge || link_state.exists() {
-                        fs::remove_file(&link_state).ok();
+                        lfs::remove_file(&link_state).ok();
                     }
                     let link_full = root_join(&root, link_src);
                     if link_full.is_symlink() {
-                        let _ = fs::remove_file(&link_full);
+                        let _ = lfs::remove_file(&link_full);
                     }
                 }
             }
@@ -370,8 +370,8 @@ pub fn run(options: DebSystemdHelperOptions) -> Result<()> {
                 let statefile = masked_state_dir(options.user, &root)
                     .join(basename);
                 if statefile.exists() {
-                    fs::remove_file(&mask_link).ok();
-                    fs::remove_file(&statefile).ok();
+                    lfs::remove_file(&mask_link).ok();
+                    lfs::remove_file(&statefile).ok();
                 }
             }
             "update-state" => {
@@ -384,9 +384,9 @@ pub fn run(options: DebSystemdHelperOptions) -> Result<()> {
                 )?;
                 let dsh_state = dsh_state_path(unit_name, options.user, &root);
                 if let Some(parent) = dsh_state.parent() {
-                    fs::create_dir_all(parent).wrap_err("create state dir")?;
+                    lfs::create_dir_all(parent)?;
                 }
-                let mut f = fs::File::create(&dsh_state).wrap_err("create state file")?;
+                let mut f = lfs::file_create(&dsh_state)?;
                 for link in &links {
                     writeln!(f, "{}", link.src).wrap_err("write state")?;
                 }
