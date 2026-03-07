@@ -21,6 +21,7 @@ use crate::models::dirs;
 use crate::utils;
 use crate::environment::{create_environment, register_environment_for};
 use crate::lfs;
+use crate::apparmor;
 
 const GITEE_API_BASE:   &str = &"https://gitee.com/api/v5";
 const GITEE_OWNER:      &str = &"wu_fengguang";
@@ -166,7 +167,15 @@ pub fn install_epkg() -> Result<()> {
     let init_plan = check_for_updates()?;
     download_setup_files(&init_plan)?;
 
-create_environment(SELF_ENV)?;
+    create_environment(SELF_ENV)?;
+
+    // Install AppArmor profile to allow epkg to use namespaces and mounts
+    // This is required on Ubuntu and other systems with strict AppArmor policies
+    if let Err(e) = apparmor::install_apparmor_profile() {
+        log::warn!("Failed to install AppArmor profile: {}", e);
+        log::warn!("epkg may not function correctly on systems with strict AppArmor policies");
+        // Continue anyway - don't fail the installation
+    }
 
     // Setup tool config symlinks for mirror acceleration
     crate::tool_wrapper::setup_tool_config_symlinks()

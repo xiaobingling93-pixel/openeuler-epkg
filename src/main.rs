@@ -35,6 +35,8 @@ mod posix;
 #[cfg(unix)]
 mod environment;
 #[cfg(unix)]
+mod apparmor;
+#[cfg(unix)]
 mod deinit;
 #[cfg(unix)]
 mod init;

@@ -1,0 +1,44 @@
+# AppArmor profile for epkg
+# Allows epkg to create namespaces and perform mounts for container functionality
+
+profile epkg {
+  # Include basic abstractions
+  include <abstractions/base>
+  include <abstractions/nameservice>
+
+  # Allow all file access (needed for package management)
+  file,
+
+  # Allow execution of binaries
+  /** ix,
+
+  # Required capabilities for namespace and mount operations
+  capability sys_admin,
+  capability chown,
+  capability setuid,
+  capability setgid,
+  capability setpcap,
+  capability dac_override,
+  capability dac_read_search,
+  capability fowner,
+  capability fsetid,
+
+  # Allow user namespace creation
+  userns,
+
+  # Allow mount operations (required for container root filesystem)
+  mount,
+  remount,
+  umount,
+  pivot_root,
+
+  # Allow network operations
+  network,
+
+  # Allow signal handling
+  signal,
+
+  # Allow process management
+  ptrace,
+  unix,
+}

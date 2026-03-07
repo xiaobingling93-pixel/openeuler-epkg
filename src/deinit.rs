@@ -36,6 +36,8 @@ impl DeinitPlan {
 }
 
 pub fn deinit_epkg(scope: &str) -> Result<()> {
+    crate::apparmor::remove_apparmor_profile()?;
+
     let plan = match scope {
         "personal" => collect_user_personal_plan()?,
         "global" => collect_global_deinit_plan()?,
