@@ -2,18 +2,21 @@ use std::env;
 use std::ffi::CString;
 use std::path::Path;
 use std::ptr;
+use std::thread;
 
 use color_eyre::eyre;
 use color_eyre::Result;
 
 use crate::run::RunOptions;
+use crate::qemu;
+use crate::vm_client;
 
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
 extern crate krun as krun_crate;
 
 // FFI for statically linked libkrun (C API from libkrun crate built as staticlib).
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
-extern "C" {
+unsafe extern "C" {
     fn krun_create_ctx() -> i32;
     fn krun_free_ctx(ctx_id: u32) -> i32;
     #[allow(dead_code)]
@@ -36,6 +39,14 @@ extern "C" {
         c_cmdline: *const std::ffi::c_char,
     ) -> i32;
     fn krun_start_enter(ctx_id: u32) -> i32;
+    fn krun_disable_implicit_vsock(ctx_id: u32) -> i32;
+    fn krun_add_vsock(ctx_id: u32, tsi_features: u32) -> i32;
+    unsafe fn krun_add_virtio_console_default(
+        ctx_id: u32,
+        input_fd: libc::c_int,
+        output_fd: libc::c_int,
+        err_fd: libc::c_int,
+    ) -> i32;
 }
 
 
@@ -59,6 +70,9 @@ fn check_status(op: &str, status: i32) -> Result<()> {
 struct KrunContext {
     ctx_id: u32,
 }
+
+#[cfg(all(feature = "libkrun", target_os = "linux"))]
+unsafe impl Send for KrunContext {}
 
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
 impl KrunContext {
@@ -241,52 +255,164 @@ pub fn run_command_in_krun(
     run_options: &RunOptions,
     guest_cmd_path: &Path,
 ) -> Result<()> {
+    // Determine control plane mode for libkrun
+    // Default is vsock mode (vm-daemon over vsock) because libkrun has no virtual network.
+    // EPKG_VM_NO_DAEMON=1 forces cmdline mode (kernel command line).
+    let use_cmdline_mode = std::env::var("EPKG_VM_NO_DAEMON").is_ok();
+    let use_vsock = !use_cmdline_mode;
+    log::debug!("libkrun: mode: cmdline={}, vsock={}", use_cmdline_mode, use_vsock);
+
     let rootfs = env_root
         .to_str()
         .ok_or_else(|| eyre::eyre!("env_root path is not valid UTF-8"))?;
-    let exec = guest_cmd_path
-        .to_str()
-        .ok_or_else(|| eyre::eyre!("guest command path is not valid UTF-8"))?;
+    // Convert host absolute path to guest path relative to environment root
+    let guest_exec_path = guest_cmd_path
+        .strip_prefix(env_root)
+        .map(|rel| {
+            let rel_str = rel.to_string_lossy().to_string();
+            if rel_str.starts_with('/') {
+                rel_str
+            } else {
+                format!("/{}", rel_str)
+            }
+        })
+        .unwrap_or_else(|_| guest_cmd_path.to_string_lossy().to_string());
+    let exec = guest_exec_path.as_str();
 
     let mut args: Vec<String> = Vec::new();
     args.push(exec.to_string());
     args.extend(run_options.args.clone());
 
+    // Build command for kernel cmdline (epkg.init_cmd=)
+    let (cmd_parts, init_cmd) = qemu::build_guest_command(Path::new(&guest_exec_path), &run_options.args)
+        .map_err(|e| eyre::eyre!("Failed to build guest command: {}", e))?;
+
+    // Start with default kernel cmdline (console=hvc0, root=/dev/root rootfstype=virtiofs, etc.)
+    let mut kernel_args = String::from("reboot=k panic=0 panic_print=0 nomodule console=hvc0 console=ttyS0 root=/dev/root rootfstype=virtiofs rw loglevel=8 ignore_loglevel debug no-kvmapf init=/usr/bin/init");
+
+    // Append user-provided kernel args
+    if let Some(user_args) = &run_options.kernel_args {
+        if !user_args.trim().is_empty() {
+            kernel_args.push(' ');
+            kernel_args.push_str(user_args.trim());
+        }
+    }
+
+    // Add earlyprintk for debugging
+    kernel_args.push(' ');
+    kernel_args.push_str("earlyprintk=virtio earlyprintk=ttyS0");
+    // Add debug flag for init
+    kernel_args.push(' ');
+    kernel_args.push_str("epkg.debug=1");
+
+
+    // Add command to kernel cmdline only in cmdline mode
+    if use_cmdline_mode {
+        kernel_args.push(' ');
+        kernel_args.push_str(&format!("epkg.init_cmd={}", init_cmd));
+    }
+
+    // Pass host RUST_LOG into guest
+    if let Ok(rust_log) = std::env::var("RUST_LOG") {
+        if !rust_log.is_empty() {
+            kernel_args.push(' ');
+            kernel_args.push_str(&format!("epkg.rust_log={}", qemu::percent_encode(&rust_log)));
+        }
+    }
+
+    // Build environment variables for guest
     let env_vec: Vec<(String, String)> = env::vars().collect();
 
     let kernel_path = crate::run::resolve_vm_kernel_path(run_options)?;
     let kernel_format = detect_kernel_format(&kernel_path)?;
     ensure_libkrun_linked();
 
-    unsafe {
-        // Skip libkrun-internal logger initialization because epkg already
-        // installed a global env_logger in main(); attempting to initialize a
-        // second global logger would panic. Libkrun will still function without
-        // its own logger configured here.
-        let ctx = KrunContext::create()?;
-        let cpus = crate::run::resolve_vm_cpus(run_options);
-        let requested_mib = crate::run::resolve_vm_memory_mib(run_options);
-        let memory_mib = crate::run::round_up_vm_memory_for_libkrun(requested_mib, &kernel_path);
+    // Create libkrun context and configure VM (will be moved to thread)
+    let ctx = unsafe { KrunContext::create()? };
+    let cpus = crate::run::resolve_vm_cpus(run_options);
+    let requested_mib = crate::run::resolve_vm_memory_mib(run_options);
+    let memory_mib = crate::run::round_up_vm_memory_for_libkrun(requested_mib, &kernel_path);
 
+    log::debug!("libkrun: kernel cmdline: {}", kernel_args);
+    unsafe {
         ctx.set_vm_config(cpus, memory_mib)?;
         ctx.set_kernel(
             &kernel_path,
             kernel_format,
-            run_options.kernel_args.as_deref(),
+            Some(kernel_args.as_str()),
         )?;
         ctx.set_root(rootfs)?;
         ctx.set_env(&env_vec)?;
         ctx.set_workdir("/")?;
         ctx.set_exec(exec, &args, &env_vec)?;
 
-        let status = ctx.start_enter();
-        if status < 0 {
-            return Err(eyre::eyre!(
-                "krun_start_enter failed with status {}",
-                status
-            ));
+        // Configure vsock device for vsock mode
+        if use_vsock {
+            // Disable implicit vsock (created by libkrun by default)
+            check_status("krun_disable_implicit_vsock",
+                krun_disable_implicit_vsock(ctx.ctx_id)
+            )?;
+            // Add explicit vsock with TSI feature HIJACK_INET (value 1)
+            check_status("krun_add_vsock",
+                krun_add_vsock(ctx.ctx_id, 1)
+            )?;
+            log::debug!("libkrun: vsock configured successfully");
         }
-        std::process::exit(status);
+
+        // Enable virtio-console for guest output (connect to host stdio)
+        check_status("krun_add_virtio_console_default",
+            krun_add_virtio_console_default(
+                ctx.ctx_id,
+                libc::STDIN_FILENO,
+                libc::STDOUT_FILENO,
+                libc::STDERR_FILENO,
+            )
+        )?;
+        log::debug!("libkrun: virtio-console configured successfully");
+    }
+
+    // Start VM in a separate thread (krun_start_enter blocks until VM exits)
+    log::debug!("libkrun: starting VM thread...");
+    let vm_thread = thread::spawn(move || {
+        unsafe {
+            let status = ctx.start_enter();
+            if status < 0 {
+                log::error!("krun_start_enter failed with status {}", status);
+                status
+            } else {
+                log::debug!("libkrun: krun_start_enter returned status {}", status);
+                status
+            }
+        }
+    });
+
+    // For vsock mode, connect to guest vsock server and send command
+    if use_vsock {
+        log::debug!("libkrun: connecting to guest via vsock...");
+        log::debug!("libkrun: attempting vsock connection...");
+        // cmd_parts was computed earlier
+        let exit_code = vm_client::send_command_via_vsock(&cmd_parts, run_options.use_pty, 10000)
+            .map_err(|e| eyre::eyre!("Failed to send command via vsock: {}", e))?;
+        log::debug!("libkrun: vsock command completed with exit code {}", exit_code);
+        // VM will power off after command execution
+    }
+
+    // Wait for VM thread to finish (VM will run command and exit)
+    log::debug!("libkrun: waiting for VM thread to finish...");
+    match vm_thread.join() {
+        Ok(exit_status) => {
+            if exit_status < 0 {
+                log::error!("libkrun: VM failed with status {}", exit_status);
+                std::process::exit(1);
+            } else {
+                log::debug!("libkrun: VM exited with status {}", exit_status);
+                std::process::exit(exit_status);
+            }
+        }
+        Err(e) => {
+            log::error!("libkrun: VM thread join failed: {:?}", e);
+            std::process::exit(1);
+        }
     }
 }
 

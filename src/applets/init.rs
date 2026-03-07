@@ -56,6 +56,7 @@ pub fn run(options: InitOptions) -> Result<()> {
 /// epkg.rust_log from kernel cmdline (percent-encoded), sets RUST_LOG so env_logger sees it.
 #[cfg(target_os = "linux")]
 pub fn early_init_rust_log_from_cmdline() {
+    eprintln!("init: early_init_rust_log_from_cmdline started");
     let proc_path = Path::new("/proc");
     if !proc_path.exists() {
         if let Err(e) = std::fs::create_dir_all(proc_path) {
@@ -98,11 +99,9 @@ fn run_init(opt_cwd: Option<&str>, opt_cmd: &[String]) -> Result<()> {
                 Ok(_) => unreachable!(),
                 Err(e) => {
                     eprintln!("init: exec_init_command failed: {}", e);
-                    log::debug!("init: exec_init_command failed: {}, trying /bin/sh fallback", e);
                     // Fallback to shell if command execution fails
                     if let Err(e2) = exec_command("/bin/sh -i") {
                         eprintln!("init: /bin/sh fallback failed: {}", e2);
-                        log::debug!("init: /bin/sh fallback failed: {}, powering off", e2);
                         poweroff_guest();
                     }
                     unreachable!()
@@ -154,10 +153,11 @@ fn exec_init_command(cmd_str: Option<String>) -> Result<()> {
         log::debug!("init: exec user command: {:?}", cmd);
         exec_command(&cmd)
     } else {
-        log::debug!("init: no command, need network for vm-daemon");
-        // Network is only needed for vm-daemon TCP mode
+        log::debug!("init: no command, starting vm-daemon");
+        // Setup network (virtio_net) if available
+        // Note: network is separate from control plane (vsock)
         setup_network_for_vm_daemon()
-            .map_err(|e| eyre!("Failed to configure network for vm-daemon: {}", e))?;
+            .map_err(|e| eyre!("Failed to configure network: {}", e))?;
         log::debug!("init: exec vm-daemon");
         exec_vm_daemon()
     }
@@ -232,7 +232,6 @@ fn setup_mounts() -> Result<()> {
     // Virtiofs mounts root readonly; remount rw so we can create /dev, etc.
     if let Err(e) = crate::mount::remount_root_rw() {
         log::debug!("init: remount / rw failed: {} (continuing; /dev creation may fail)", e);
-        eprintln!("Warning: remount / rw: {}", e);
     }
 
     let init_specs = crate::mount::vmm_init_mount_spec_strings();
@@ -277,7 +276,6 @@ fn exec_vm_daemon() -> Result<()> {
     use nix::unistd::execvp;
     use std::ffi::CString;
 
-    eprintln!("Starting vm-daemon TCP server on port 10000");
     let vm_daemon_path = "/usr/bin/vm-daemon";
     log::debug!("init: exec {} (argv[0]=vm-daemon)", vm_daemon_path);
     let args_c: Vec<CString> = vec![CString::new("vm-daemon").map_err(|e| eyre!("init: vm-daemon argv: {}", e))?];
@@ -294,7 +292,6 @@ fn exec_command(cmd_str: &str) -> Result<()> {
     let decoded_cmd = percent_decode(cmd_str);
     if decoded_cmd != cmd_str {
         log::debug!("init: decoded percent-encoded cmd: {:?}", decoded_cmd);
-        eprintln!("Decoded percent-encoded command: {}", decoded_cmd);
     }
 
     let parts: Vec<String> = shlex::split(&decoded_cmd)
@@ -536,11 +533,9 @@ fn configure_network() -> Result<(), String> {
     const GUEST_NETMASK: (u8, u8, u8, u8) = (255, 255, 255, 0); // /24 subnet
     const GATEWAY_IP:    (u8, u8, u8, u8) = (10, 0, 2, 2);      // QEMU gateway/host
 
-    eprintln!("Configuring network...");
     let iface = discover_primary_interface().map_err(|last_seen| {
         format!("no non-loopback network interface found (saw: {:?})", last_seen)
     })?;
-    eprintln!("Using interface {}", iface);
     log::debug!("init: configuring interface {} (up, then {}.{}.{}.{}/{}.{}.{}.{}, then default route)",
                 iface, GUEST_IP.0, GUEST_IP.1, GUEST_IP.2, GUEST_IP.3,
                 GUEST_NETMASK.0, GUEST_NETMASK.1, GUEST_NETMASK.2, GUEST_NETMASK.3);

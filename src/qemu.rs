@@ -1,7 +1,5 @@
 #![cfg(unix)]
 use std::path::Path;
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
 
 use crate::run::RunOptions;
 use crate::vm_client;
@@ -87,7 +85,7 @@ fn setup_vmm_logs() -> Result<(std::path::PathBuf, std::path::PathBuf)> {
 }
 
 /// Build guest command string and percent-encode it for kernel command line
-fn build_guest_command(cmd_path: &Path, args: &[String]) -> Result<(Vec<String>, String)> {
+pub fn build_guest_command(cmd_path: &Path, args: &[String]) -> Result<(Vec<String>, String)> {
     let mut cmd_parts: Vec<String> = Vec::new();
     cmd_parts.push(cmd_path.to_string_lossy().to_string());
     cmd_parts.extend(args.iter().cloned());
@@ -257,11 +255,11 @@ fn build_qemu_command(
 
 
     // Add user networking for guest-host communication (for normal guest networking).
-    // Control-plane uses either TCP hostfwd (legacy) or vsock depending on env vars.
+    // TCP hostfwd is no longer used; control-plane uses vsock.
     // romfile="" disables the virtio-net option ROM (iPXE) so SeaBIOS boots the -kernel directly.
     qemu_cmd
         .arg("-netdev")
-        .arg("user,id=net0,hostfwd=tcp::10000-:10000")
+        .arg("user,id=net0")
         .arg("-device")
         .arg("virtio-net-pci,netdev=net0,romfile=");
 
@@ -467,19 +465,11 @@ pub fn run_command_in_qemu(
 ) -> Result<()> {
     let (kernel, initrd, qemu_bin, virtiofsd_bin, extra_qemu_args) = parse_vmm_config(run_options)?;
 
-    if let Err(e) = ensure_guest_init_binary(env_root) {
-        log::warn!(
-            "Failed to prepare guest init binary in {}: {}",
-            env_root.display(),
-            e
-        );
-    }
-
     let (cmd_parts, init_cmd) = build_guest_command(&guest_cmd_path, &run_options.args)?;
     // Cmdline mode: init runs command from kernel cmdline; no vm-daemon. Set EPKG_VM_NO_DAEMON=1.
     let use_cmdline_mode = std::env::var("EPKG_VM_NO_DAEMON").is_ok();
-    let use_vsock = !use_cmdline_mode && std::env::var("EPKG_VM_VSOCK").is_ok();
-    let use_control_channel = !use_cmdline_mode && !use_vsock;
+    let use_vsock = !use_cmdline_mode; // default vsock mode (TCP mode removed)
+    let use_control_channel = false; // TCP mode no longer supported
     let vm_cpus = crate::run::resolve_vm_cpus(run_options);
     let vm_memory_mb = crate::run::resolve_vm_memory_mib(run_options);
     let (qemu_log_path, virtiofsd_log_path) = setup_vmm_logs()?;
@@ -524,87 +514,11 @@ pub fn run_command_in_qemu(
     std::process::exit(exit_code);
 }
 
-/// Ensure the guest environment root has an epkg binary and an /usr/bin/init
-/// entry that can start the epkg init applet.
-///
-/// May be removed in future.
-///
-/// Strategy:
-/// - When epkg is inside env_root: copy to usr/bin/epkg if missing, init and vm-daemon -> epkg.
-/// - When epkg is outside env_root: create init and vm-daemon as symlinks to the absolute
-///   epkg path. The epkg binary dir is bind-mounted into the env (vm_mount_spec_strings).
-fn ensure_guest_init_binary(env_root: &Path) -> Result<()> {
-    let epkg_exe = std::env::current_exe()
-        .map_err(|e| eyre::eyre!("Failed to get current executable path: {}", e))?;
-
-    let usr_bin = env_root.join("usr/bin");
-    fs::create_dir_all(&usr_bin)
-        .map_err(|e| eyre::eyre!("Failed to create usr/bin in guest env: {}", e))?;
-
-    let epkg_in_env = epkg_exe.starts_with(env_root);
-    let epkg_guest_path = if epkg_in_env {
-        // Path inside env: /usr/bin/epkg (guest sees env_root as /)
-        Path::new("/").join(epkg_exe.strip_prefix(env_root).unwrap())
-    } else {
-        // Path outside env: absolute host path, same in guest after bind-mount
-        epkg_exe.clone()
-    };
-
-    if epkg_in_env {
-        // Copy epkg to usr/bin/epkg if missing
-        let guest_epkg = usr_bin.join("epkg");
-        if !guest_epkg.exists() {
-            fs::copy(&epkg_exe, &guest_epkg)
-                .map_err(|e| eyre::eyre!("Failed to copy epkg binary into guest env: {}", e))?;
-            let mut perms = fs::metadata(&guest_epkg)
-                .map_err(|e| eyre::eyre!("Failed to read permissions of guest epkg: {}", e))?
-                .permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&guest_epkg, perms)
-                .map_err(|e| eyre::eyre!("Failed to set executable bit on guest epkg: {}", e))?;
-        }
-    }
-
-    let guest_init = usr_bin.join("init");
-    if guest_init.exists() {
-        fs::remove_file(&guest_init)
-            .map_err(|e| eyre::eyre!("Failed to remove old init: {}", e))?;
-    }
-    if epkg_in_env {
-        fs::copy(usr_bin.join("epkg"), &guest_init)
-            .map_err(|e| eyre::eyre!("Failed to create /usr/bin/init in guest env: {}", e))?;
-        let mut perms = fs::metadata(&guest_init)
-            .map_err(|e| eyre::eyre!("Failed to read permissions of guest init: {}", e))?
-            .permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&guest_init, perms)
-            .map_err(|e| eyre::eyre!("Failed to set executable bit on guest init: {}", e))?;
-    } else {
-        std::os::unix::fs::symlink(&epkg_guest_path, &guest_init)
-            .map_err(|e| eyre::eyre!("Failed to create init symlink: {}", e))?;
-    }
-
-    let guest_vm_daemon = usr_bin.join("vm-daemon");
-    if guest_vm_daemon.exists() {
-        fs::remove_file(&guest_vm_daemon)
-            .map_err(|e| eyre::eyre!("Failed to remove old vm-daemon: {}", e))?;
-    }
-    let vm_daemon_target = if epkg_in_env {
-        "epkg".to_string()
-    } else {
-        epkg_guest_path.display().to_string()
-    };
-    std::os::unix::fs::symlink(&vm_daemon_target, &guest_vm_daemon)
-        .map_err(|e| eyre::eyre!("Failed to create vm-daemon symlink: {}", e))?;
-
-    Ok(())
-}
-
 /// Percent-encode a string for kernel command line transmission
 /// Encodes special characters to avoid kernel cmdline parsing issues
 /// Spaces -> %20, = -> %3D, " -> %22, ' -> %27, \ -> %5C, % -> %25
 /// Keeps slashes and most other characters readable
-fn percent_encode(s: &str) -> String {
+pub fn percent_encode(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     for ch in s.chars() {
         match ch {

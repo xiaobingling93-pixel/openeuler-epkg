@@ -264,6 +264,7 @@ struct TerminalConfig {
 }
 
 #[derive(Debug, Default)]
+#[allow(dead_code)]
 pub struct VmDaemonOptions {
     pub port: u16,
     pub host: String,
@@ -977,52 +978,14 @@ fn run_vsock_server() -> Result<()> {
     }
 }
 
-pub fn run(options: VmDaemonOptions) -> Result<()> {
-    // When EPKG_VM_VSOCK is set, prefer vsock-based control plane.
-    let use_vsock = std::env::var("EPKG_VM_VSOCK").is_ok();
-
-    if use_vsock {
-        #[cfg(target_os = "linux")]
-        {
-            return run_vsock_server();
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            return Err(eyre!("vm-daemon vsock mode not supported on this platform"));
-        }
+pub fn run(_options: VmDaemonOptions) -> Result<()> {
+    // vm-daemon always uses vsock for control plane
+    #[cfg(target_os = "linux")]
+    {
+        return run_vsock_server();
     }
-
-    // Default: TCP listener as before.
-    use std::net::TcpListener;
-
-    let listener = TcpListener::bind(format!("{}:{}", options.host, options.port))
-        .map_err(|e| eyre!("Failed to bind TCP listener: {}", e))?;
-
-    eprintln!("vm-daemon starting");
-    eprintln!("TCP server listening on {}:{}", options.host, options.port);
-
-    // Accept exactly one connection, handle it, then power off
-    match listener.accept() {
-        Ok((stream, addr)) => {
-            log::debug!("New connection from {:?}", addr);
-            match handle_connection(stream) {
-                Ok(_) => {
-                    log::debug!("Command processed, powering off guest");
-                    // Power off guest gracefully
-                    let _ = reboot::reboot(reboot::RebootMode::RB_POWER_OFF);
-                    // reboot only returns on error
-                    log::debug!("reboot(RB_POWER_OFF) failed (should not return)");
-                    Ok(())
-                }
-                Err(e) => {
-                    log::debug!("Error handling connection: {}", e);
-                    Err(e)
-                }
-            }
-        }
-        Err(e) => {
-            log::debug!("Connection failed: {}", e);
-            Err(eyre!("Connection failed: {}", e))
-        }
+    #[cfg(not(target_os = "linux"))]
+    {
+        return Err(eyre!("vm-daemon vsock mode not supported on this platform"));
     }
 }
