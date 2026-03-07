@@ -540,6 +540,11 @@ pub fn run_scriptlet(
                 // Set up environment variables required by package scripts
                 let mut env_vars = std::collections::HashMap::new();
 
+                // Set PATH to ensure applets like rpm, rpmlua, etc. are accessible
+                // Inside the environment, /usr/bin and /usr/sbin contain epkg applet symlinks
+                env_vars.entry("PATH".to_string())
+                    .or_insert("/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string());
+
                 // Add environment variables for package scripts based on format
                 if package_format == PackageFormat::Deb {
                     setup_deb_env_vars(&mut env_vars, pkgkey, package_info, scriptlet_type, env_root);
