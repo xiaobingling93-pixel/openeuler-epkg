@@ -34,7 +34,7 @@ fn get_config_file_action(
     fs_file: &Path,
 ) -> EtcFileAction {
     // Check if existing file exists
-    if !target_path.exists() {
+    if !lfs::exists_in_env(target_path) {
         return EtcFileAction::Create;
     }
 
@@ -119,7 +119,7 @@ fn mirror_config_file(
     }
 
     // Remove existing target file if present (already backed up if needed)
-    if target_path.exists() {
+    if lfs::exists_in_env(target_path) {
         lfs::remove_file(target_path)?;
     }
 
@@ -150,7 +150,7 @@ pub fn link_package_generic(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> 
     // For link=move, remove the 'fs' dir after moving all files
     if plan.link == LinkType::Move {
         // Remove the fs directory after all files have been moved
-        if store_fs_dir.exists() {
+        if lfs::exists_in_env(store_fs_dir) {
             // Try to remove the directory (should be empty or nearly empty after moves)
             if let Err(e) = lfs::remove_dir_all(store_fs_dir) {
                 log::warn!("Failed to remove fs directory {} after move: {}", store_fs_dir.display(), e);
@@ -207,8 +207,8 @@ pub fn unlink_package_diff(
     for rel_path in &files_to_remove {
         let env_file_path = env_root.join(rel_path);
 
-        if env_file_path.exists() {
-            if env_file_path.is_dir() {
+        if lfs::exists_in_env(&env_file_path) {
+            if lfs::symlink_metadata(&env_file_path).map(|m| m.file_type().is_dir()).unwrap_or(false) {
                 // Only remove directory if it's empty
                 match std::fs::read_dir(&env_file_path) {
                     Ok(mut entries) => {
@@ -369,7 +369,7 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::mtree::Mt
 
         if fs_file_info.is_dir() {
             // Check if target path exists and is not a directory
-            if target_path.exists() && !target_path.is_dir() {
+            if lfs::exists_in_env(&target_path) && !lfs::symlink_metadata(&target_path).map(|m| m.file_type().is_dir()).unwrap_or(false) {
                 // Remove the non-directory file first
                 lfs::remove_file(&target_path)?;
             }
@@ -520,7 +520,7 @@ fn cleanup_existing_target(
         // On upgrade, it's normal to overwrite old files from previous version
         log::trace!("File already exists, overwriting {} with {}", target_path.display(), fs_file.display());
         // Check if target path is a directory and handle accordingly
-        if target_path.is_dir() {
+        if lfs::symlink_metadata(target_path).map(|m| m.file_type().is_dir()).unwrap_or(false) {
             lfs::remove_dir_all(target_path)?;
         } else {
             lfs::remove_file(target_path)?;
