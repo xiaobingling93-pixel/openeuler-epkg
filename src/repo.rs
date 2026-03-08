@@ -375,11 +375,11 @@ fn has_recent_download(path: &PathBuf, max_age: Duration) -> Result<bool> {
 }
 
 fn is_file_recent(path: &PathBuf, max_age: &Duration) -> Result<bool> {
-    if !path.exists() {
+    if !lfs::exists_on_host(path) {
         log::debug!("is_file_recent: file does not exist, returning false, path={}, max_age={}s", path.display(), max_age.as_secs());
         return Ok(false);
     }
-    let metadata = fs::metadata(path)
+    let metadata = lfs::symlink_metadata(path)
         .with_context(|| format!("Failed to get metadata for file: {}", path.display()))?;
     let modified = metadata.modified()
         .with_context(|| format!("Failed to get modification time for file: {}", path.display()))?;
@@ -401,7 +401,7 @@ pub fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<
         return Ok(ReleaseStatus::FineRecent);
     }
 
-    if !path.exists() {
+    if !lfs::exists_on_host(path) {
         log::debug!("should_refresh_release_file: path does not exist: {}, returning NeedDownload", path.display());
         return Ok(ReleaseStatus::NeedDownload);
     }
@@ -513,9 +513,9 @@ fn sync_from_package_database(repo: &RepoRevise, packages_path: &mut PathBuf) ->
         // .files.tar.gz archives contain both desc and files, but processing may fail
         // or be interrupted, leaving packages.txt empty. Force conversion in such cases.
         let output_path = repo_dir.join("packages.txt");
-        let output_exists = output_path.exists();
+        let output_exists = lfs::exists_on_host(&output_path);
         let output_size = if output_exists {
-            std::fs::metadata(&output_path).ok().map(|m| m.len()).unwrap_or(0)
+            lfs::symlink_metadata(&output_path).ok().map(|m| m.len()).unwrap_or(0)
         } else {
             0
         };
@@ -790,7 +790,7 @@ pub fn create_load_repoindex(
     release_items: Vec<RepoReleaseItem>,
 ) -> Result<()> {
     let mut repo_index: RepoIndex =
-        if no_revises && repo_dir.join("RepoIndex.json").exists() {
+        if no_revises && lfs::exists_on_host(&repo_dir.join("RepoIndex.json")) {
             read_json_file(&repo_dir.join("RepoIndex.json"))
                 .with_context(|| format!("Failed to deserialize RepoIndex.json for repository: {}", repo.repo_name))?
         } else {
@@ -895,7 +895,7 @@ fn update_repoindex_from_metadata(repo: &RepoRevise, repo_dir: &PathBuf, repo_in
         let filelists_metafile = packages_metafile.to_str()
             .ok_or_else(|| eyre::eyre!("Invalid packages metafile path: {}", packages_metafile.display()))?
             .replace(".packages", ".filelists");
-        if Path::new(&filelists_metafile).exists() {
+        if lfs::exists_on_host(Path::new(&filelists_metafile)) {
             log::debug!("Found filelists metafile: {}", filelists_metafile);
             let filelists: FilelistsFileInfo = read_json_file(Path::new(&filelists_metafile))?;
             filelists_info = Some(filelists);
@@ -972,7 +972,7 @@ fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> 
         log::debug!("Processing packages_metafile: {}", packages_metafile.display());
 
         // Check if the packages metafile exists
-        if !packages_metafile.exists() {
+        if !lfs::exists_on_host(&packages_metafile) {
             log::warn!("Packages metafile does not exist: {}. This may indicate that packages haven't been processed yet, or processing failed. Check earlier error logs.", packages_metafile.display());
             return Err(eyre::eyre!("Packages metafile does not exist: {}. This may indicate that packages haven't been processed yet, or processing failed. Check earlier error logs.", packages_metafile.display()));
         }
@@ -985,7 +985,7 @@ fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> 
         let filelists_metafile = packages_metafile.to_str()
             .ok_or_else(|| eyre::eyre!("Invalid packages metafile path: {}", packages_metafile.display()))?
             .replace(".packages", ".filelists");
-        if Path::new(&filelists_metafile).exists() {
+        if lfs::exists_on_host(Path::new(&filelists_metafile)) {
             log::debug!("Found filelists metafile: {}", filelists_metafile);
             let filelists: FilelistsFileInfo = read_json_file(Path::new(&filelists_metafile))?;
             filelists_info = Some(filelists);
@@ -1150,7 +1150,7 @@ fn verify_filelists_hash(data_rx: Receiver<Vec<u8>>, revise: &RepoReleaseItem) -
 fn prepare_filelists_output_path(revise: &RepoReleaseItem) -> Result<PathBuf> {
     let output_path = revise.output_path.clone();
 
-    if output_path.exists() {
+    if lfs::exists_on_host(&output_path) {
         log::debug!("Removing existing filelists at {}", output_path.display());
         lfs::remove_file(&output_path)?;
     } else {
@@ -1190,7 +1190,7 @@ fn create_filelists_symlink(revise: &RepoReleaseItem, output_path: &PathBuf) -> 
 
 /// Generate file metadata and write it to a JSON file
 pub fn generate_and_write_filelists_metadata(output_path: &PathBuf, calculated_hash: String) -> Result<FilelistsFileInfo> {
-    let metadata = fs::metadata(output_path)
+    let metadata = lfs::symlink_metadata(output_path)
         .with_context(|| format!("Failed to get metadata for {}", output_path.display()))?;
 
     let file_info = FilelistsFileInfo {
@@ -1231,7 +1231,7 @@ pub fn list_repos() -> Result<()> {
     let self_env_root = dirs::find_env_root(SELF_ENV)
                 .ok_or_else(|| eyre::eyre!("Self environment not found"))?;
     let manager_channel_dir = self_env_root.join("usr/src/epkg/sources");
-    if !manager_channel_dir.exists() {
+    if !lfs::exists_on_host(&manager_channel_dir) {
         return Ok(());
     }
 
