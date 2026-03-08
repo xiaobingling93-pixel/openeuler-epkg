@@ -24,7 +24,11 @@ use crate::dirs;
 use crate::plan::InstallationPlan;
 
 /// Supported tools that can have mirror acceleration
-const SUPPORTED_TOOLS: &[&str] = &["pip", "pip3", "npm", "gem", "go", "cargo"];
+const SUPPORTED_TOOLS: &[&str] = &[
+    "pip", "pip3", "npm", "node", "npx", "gem", "bundle",
+    "go", "gofmt", "cargo", "rustc",
+    "java", "javac", "mvn",
+];
 
 /// Tools that should symlink to another tool's config
 const TOOL_SYMLINKS: &[(&str, &str)] = &[("pip3", "pip")];
@@ -33,18 +37,34 @@ const TOOL_SYMLINKS: &[(&str, &str)] = &[("pip3", "pip")];
 const TOOL_CONFIG_FILES: &[(&str, &[&str])] = &[
     ("pip", &["~/.pip/pip.conf", "~/.config/pip/pip.conf"]),
     ("npm", &["~/.npmrc"]),
+    ("node", &[]), // Node uses env vars, not config files
+    ("npx", &[]),  // Inherits from npm
     ("gem", &["~/.gemrc"]),
+    ("bundle", &["~/.bundle/config"]),
     ("go",  &[]), // Go uses env vars, not config files
+    ("gofmt", &[]), // gofmt doesn't use config files
     ("cargo", &["~/.cargo/config.toml", "~/.cargo/config"]),
+    ("rustc", &[]), // rustc doesn't use config files
+    ("java", &[]), // Java uses env vars
+    ("javac", &[]), // javac doesn't use config files
+    ("mvn", &["~/.m2/settings.xml"]),
 ];
 
 /// Environment variables to check for each tool
 const TOOL_ENV_VARS: &[(&str, &[&str])] = &[
     ("pip", &["PIP_INDEX_URL", "PIP_INDEX_HOST"]),
     ("npm", &["npm_config_registry", "NPM_CONFIG_REGISTRY"]),
+    ("node", &["npm_config_registry", "NODEJS_ORG_MIRROR"]),
+    ("npx", &["npm_config_registry"]),
     ("gem", &["BUNDLE_MIRROR__HTTPS://RUBYGEMS__ORG/"]),
+    ("bundle", &["BUNDLE_MIRROR__HTTPS://RUBYGEMS__ORG/", "BUNDLE_RUBYGEMS__ORG_MIRROR"]),
     ("go",  &["GOPROXY"]),
+    ("gofmt", &[]), // gofmt doesn't use env vars
     ("cargo", &["RUSTUP_DIST_SERVER", "CARGO_REGISTRIES_CRATES_INDEX"]),
+    ("rustc", &[]), // rustc doesn't use env vars
+    ("java", &["MAVEN_CENTRAL_MIRROR"]),
+    ("javac", &[]), // javac doesn't use env vars
+    ("mvn", &["MAVEN_CENTRAL_MIRROR", "MAVEN_REPO_LOCAL"]),
 ];
 
 /// Country to region mapping for mirror selection
@@ -235,19 +255,68 @@ fn should_create_wrapper(tool: &str, env_root: &Path) -> bool {
 fn detect_installed_tools(plan: &InstallationPlan) -> Vec<String> {
     let mut tools = Vec::new();
 
+    // Default paths checked for all tools (usr/bin and bin are standard)
+    const DEFAULT_PATHS: &[&str] = &["usr/bin/{}", "bin/{}"];
+
+    // Alternative (non-standard) paths for specific tools
+    // Format: tool_name -> &[alternative_paths]
+    const TOOL_ALT_PATHS: &[(&str, &[&str])] = &[
+        // Go language (Alpine: usr/bin/go, some distros: usr/lib/go/bin/go or usr/lib/golang/bin/go)
+        ("go",    &["usr/lib/go/bin/go", "usr/lib/golang/bin/go"]),
+        ("gofmt", &["usr/lib/go/bin/gofmt", "usr/lib/golang/bin/gofmt"]),
+        // Rust language
+        ("cargo", &["usr/lib/rust/bin/cargo"]),
+        ("rustc", &["usr/lib/rust/bin/rustc"]),
+        // Python
+        ("pip",   &["usr/lib/python3/bin/pip"]),
+        ("pip3",  &["usr/lib/python3/bin/pip3"]),
+        // Node.js
+        ("npm",   &["usr/share/nodejs/bin/npm"]),
+        ("node",  &["usr/lib/nodejs/bin/node"]),
+        ("npx",   &["usr/share/nodejs/bin/npx"]),
+        // Ruby
+        ("gem",   &["usr/lib/ruby/bin/gem"]),
+        ("bundle", &["usr/lib/ruby/bin/bundle"]),
+        // Java
+        ("java",  &["usr/lib/jvm/bin/java"]),
+        ("javac", &["usr/lib/jvm/bin/javac"]),
+        // Maven
+        ("mvn",   &["usr/share/maven/bin/mvn"]),
+    ];
+
     for file in &plan.batch.new_files {
         let file_str = file.to_string_lossy();
-        // Check for tool binaries
+        log::debug!("Checking new_file: {}", file_str);
+
+        // Check if file matches any tool's alternative paths
+        for (tool, alt_paths) in TOOL_ALT_PATHS {
+            for path in *alt_paths {
+                if file_str == *path {
+                    log::debug!("Detected tool: {} from path: {}", tool, path);
+                    if !tools.contains(&tool.to_string()) {
+                        tools.push(tool.to_string());
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Check if file matches default paths (usr/bin/, bin/) for any supported tool
         for tool in SUPPORTED_TOOLS {
-            if file_str == format!("usr/bin/{}", tool) ||
-               file_str == format!("bin/{}", tool) {
-                if !tools.contains(&tool.to_string()) {
-                    tools.push(tool.to_string());
+            for path_template in DEFAULT_PATHS {
+                let expected_path = path_template.replace("{}", tool);
+                if file_str == expected_path {
+                    log::debug!("Detected tool: {} from default path: {}", tool, expected_path);
+                    if !tools.contains(&tool.to_string()) {
+                        tools.push(tool.to_string());
+                    }
+                    break;
                 }
             }
         }
     }
 
+    log::debug!("Detected tools: {:?}", tools);
     tools
 }
 
@@ -318,16 +387,22 @@ fn remove_tool_wrapper(tool: &str, env_root: &Path) -> Result<()> {
 /// Setup tool wrappers for newly installed tools
 /// Called from execute_installations() after link_packages()
 pub fn setup_tool_wrappers(plan: &InstallationPlan) -> Result<()> {
+    log::debug!("setup_tool_wrappers: checking for newly installed tools");
+    log::debug!("setup_tool_wrappers: new_files count = {}", plan.batch.new_files.len());
+    for f in &plan.batch.new_files {
+        log::debug!("setup_tool_wrappers: new_file = {}", f.display());
+    }
     let env_root = PathBuf::from(&plan.env_root);
 
     // Detect newly installed tools
     let tools = detect_installed_tools(plan);
 
     if tools.is_empty() {
+        log::debug!("setup_tool_wrappers: no supported tools detected in new files");
         return Ok(());
     }
 
-    log::debug!("Detected installed tools: {:?}", tools);
+    log::debug!("Detected newly installed tools: {:?}", tools);
 
     for tool in &tools {
         if should_create_wrapper(tool, &env_root) {
