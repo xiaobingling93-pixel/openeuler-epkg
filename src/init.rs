@@ -876,8 +876,12 @@ fn install_libkrunfw_runtime(tarball_path: &Path) -> Result<()> {
                     lfs::copy(&path, &dest)?;
                     println!("  Installed: {}", name_str);
                     if !kernel_extracted {
-                        if let Ok(()) = extract_kernel_from_libkrunfw_so(&path, &self_env_root) {
-                            kernel_extracted = true;
+                        match extract_kernel_from_libkrunfw_so(&path, &self_env_root) {
+                            Ok(()) => kernel_extracted = true,
+                            Err(e) => {
+                                log::debug!("Failed to extract kernel from {}: {}", path.display(), e);
+                                eprintln!("Warning: Failed to extract default kernel from {}: {}", path.display(), e);
+                            }
                         }
                     }
                 }
@@ -902,6 +906,8 @@ fn extract_kernel_from_libkrunfw_so(so_path: &Path, self_env_root: &Path) -> Res
     use object::ObjectSymbol;
     use object::read::ObjectSection;
 
+    log::debug!("Extracting kernel from {}", so_path.display());
+
     let data = fs::read(so_path).context("Failed to read libkrunfw .so")?;
     let file = object::File::parse(&*data).context("Failed to parse libkrunfw .so as ELF")?;
 
@@ -921,12 +927,16 @@ fn extract_kernel_from_libkrunfw_so(so_path: &Path, self_env_root: &Path) -> Res
         _ => return Err(eyre::eyre!("KERNEL_BUNDLE symbol not found in {}", so_path.display())),
     };
 
+    log::debug!("Found KERNEL_BUNDLE at addr={:#x}, size={}", addr, size);
+
     // Find section containing this address and get the bytes (segments may not expose data_range in this object version)
     let kernel_data: Vec<u8> = file
         .sections()
         .find_map(|sec| sec.data_range(addr, size).ok().flatten())
         .map(|s| s.to_vec())
         .ok_or_else(|| eyre::eyre!("Could not read KERNEL_BUNDLE data from {}", so_path.display()))?;
+
+    log::debug!("Extracted {} bytes of kernel data", kernel_data.len());
 
     let kernel_dir = self_env_root.join("boot");
     lfs::create_dir_all(&kernel_dir)?;
