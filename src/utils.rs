@@ -77,7 +77,7 @@ pub fn get_package_files(
     pkgline: &str,
 ) -> Result<Vec<String>> {
     let store_fs_dir = store_root.join(pkgline).join("fs");
-    if !store_fs_dir.exists() {
+    if !lfs::exists_on_host(&store_fs_dir) {
         return Ok(Vec::new());
     }
 
@@ -99,7 +99,7 @@ pub fn list_package_files_with_info(package_fs_dir: &str) -> Result<Vec<MtreeFil
     let package_fs_path = Path::new(package_fs_dir);
 
     // Check if the package_fs_dir itself exists first
-    if !package_fs_path.exists() {
+    if !lfs::exists_on_host(package_fs_path) {
         return Err(eyre::eyre!("Package filesystem directory does not exist: {}", package_fs_dir));
     }
 
@@ -113,7 +113,7 @@ pub fn list_package_files_with_info(package_fs_dir: &str) -> Result<Vec<MtreeFil
     let filelist_path = store_dir.join("info/filelist.txt");
 
     // If filelist.txt doesn't exist, return an error
-    if !filelist_path.exists() {
+    if !lfs::exists_on_host(&filelist_path) {
         return Err(eyre::eyre!("filelist.txt not found at {}", filelist_path.display()));
     }
 
@@ -283,11 +283,11 @@ pub fn normalize_sha1(base64_or_hex: &str) -> Result<String> {
 pub fn verify_sha256sum(checksum_file: &Path) -> Result<()> {
     let file_path = checksum_file.with_extension("");
 
-    if !checksum_file.exists() {
+    if !lfs::exists_on_host(checksum_file) {
         return Err(eyre::eyre!("Checksum file not found: {}", checksum_file.display()));
     }
 
-    if !file_path.exists() {
+    if !lfs::exists_on_host(&file_path) {
         return Err(eyre::eyre!("File not found: {}", file_path.display()));
     }
 
@@ -328,7 +328,7 @@ pub fn verify_sha256sum(checksum_file: &Path) -> Result<()> {
 /// * `Err` if there are any I/O errors or the archive is invalid
 pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
     // Verify tar file exists and is readable
-    if !tar_path.exists() {
+    if !lfs::exists_on_host(tar_path) {
         return Err(eyre::eyre!("Tar file not found: {}", tar_path.display()));
     }
 
@@ -430,7 +430,7 @@ pub fn determine_shared_store() -> Result<bool> {
 
     // Rule 2: If running as root and /opt/epkg/envs/ exists, set to public
     let opt_envs = Path::new("/opt/epkg/envs");
-    let has_opt_envs = opt_envs.exists();
+    let has_opt_envs = lfs::exists_on_host(opt_envs);
     if is_root && has_opt_envs {
         log::trace!("determine_shared_store: rule 2 -> public (root and /opt/epkg/envs exists)");
         return Ok(true);
@@ -439,7 +439,7 @@ pub fn determine_shared_store() -> Result<bool> {
     // Rule 3: If $HOME/.epkg/envs/ exists, set to private
     let home = get_home()?;
     let home_envs = Path::new(&home).join(".epkg/envs");
-    let home_envs_exists = home_envs.exists();
+    let home_envs_exists = lfs::exists_on_host(&home_envs);
     if home_envs_exists {
         log::trace!("determine_shared_store: rule 3 -> private ({} exists)", home_envs.display());
         return Ok(false);
@@ -508,7 +508,7 @@ pub fn find_command_in_paths(command_name: &str) -> Option<PathBuf> {
     // If command contains a slash, treat it as a direct path
     if command_name.contains('/') {
         let path = Path::new(command_name);
-        if path.exists() {
+        if lfs::exists_on_host(path) {
             if let Ok(metadata) = fs::metadata(path) {
                 if metadata.is_file() && (metadata.permissions().mode() & 0o111 != 0) {
                     return Some(path.to_path_buf());
@@ -532,7 +532,7 @@ pub fn find_command_in_paths(command_name: &str) -> Option<PathBuf> {
     for path_dir in common_paths.iter() {
         let mut full_path = PathBuf::from(path_dir);
         full_path.push(command_name);
-        if full_path.exists() {
+        if lfs::exists_on_host(&full_path) {
             if let Ok(metadata) = fs::metadata(&full_path) {
                 if metadata.is_file() && (metadata.permissions().mode() & 0o111 != 0) {
                     return Some(full_path);
@@ -602,14 +602,14 @@ pub fn mark_file_bad<P: AsRef<Path>>(file_path: P) -> Result<PathBuf> {
     let part_path = append_suffix(file_path, "part");
 
     // Remove existing .part file
-    if part_path.exists() {
+    if lfs::exists_on_host(&part_path) {
         lfs::remove_file(&part_path)?;
     }
 
     // If the original file no longer exists, treat this as a no-op.
     // This can happen if another component (or an earlier attempt) has
     // already renamed the file to .bad or otherwise removed it.
-    if !file_path.exists() {
+    if !lfs::exists_on_host(file_path) {
         log::warn!(
             "mark_file_bad: file already missing, skipping rename: {}",
             file_path.display()
@@ -623,7 +623,7 @@ pub fn mark_file_bad<P: AsRef<Path>>(file_path: P) -> Result<PathBuf> {
     }
 
     // Remove existing .bad file
-    if bad_path.exists() {
+    if lfs::exists_on_host(&bad_path) {
         lfs::remove_file(&bad_path)?;
     }
 
@@ -713,14 +713,14 @@ pub fn to_absolute_path(dir: &str) -> String {
 /// 5. Create the directory with all parent directories
 pub fn safe_mkdir_p(path: &Path) -> Result<()> {
     // Check if path already exists and handle it appropriately
-    if path.exists() {
-        let metadata = fs::metadata(path)
+    if lfs::exists_or_any_symlink(path) {
+        let metadata = lfs::symlink_metadata(path)
             .map_err(|e| eyre::eyre!("Failed to get metadata for existing path '{}': {}", path.display(), e))?;
 
-        if metadata.is_file() {
+        if metadata.file_type().is_file() {
             log::debug!("Path exists as a file, removing it: {}", path.display());
             remove_any_existing_file(path, false)?;
-        } else if metadata.is_dir() {
+        } else if metadata.file_type().is_dir() {
             log::trace!("Path exists as a directory: {}", path.display());
             // Directory already exists, we can proceed
             return Ok(());
@@ -884,7 +884,7 @@ fn replace_symlinks_with_content(env_root: &Path) -> Result<()> {
             .unwrap_or(symlink_path)  // Fallback to original if no prefix
         );
 
-        if full_symlink_path.exists() && full_symlink_path.is_symlink() {
+        if lfs::exists_in_env(&full_symlink_path) && full_symlink_path.is_symlink() {
             // Resolve the symlink to get the actual target file path
             let target_path = std::fs::canonicalize(&full_symlink_path)
                 .map_err(|e| {
@@ -937,11 +937,7 @@ fn create_common_symlinks(env_root: &Path) -> Result<()> {
         let link_path = env_root.join(link_name);
 
         // Skip if symlink already exists
-        if link_path.is_symlink() {
-            log::debug!("Skipping {}: symlink already exists", link_path.display());
-            continue;
-        }
-        if link_path.exists() {
+        if lfs::exists_or_any_symlink(&link_path) {
             log::debug!("Skipping {}: file already exists", link_path.display());
             continue;
         }
@@ -960,7 +956,7 @@ fn create_common_symlinks(env_root: &Path) -> Result<()> {
             };
             log::trace!("  Target check path: {}", target_check_path.display());
 
-            if target_check_path.exists() {
+            if lfs::exists_or_any_symlink(&target_check_path) {
                 log::trace!("  Target found at {}", target_check_path.display());
                 found = true;
                 if let Some(parent) = link_path.parent() {
@@ -987,7 +983,7 @@ fn create_makepkg_download_conf(env_root: &Path) -> Result<()> {
     }
 
     let conf_dir = env_root.join("etc/makepkg.conf.d");
-    if !conf_dir.exists() {
+    if !lfs::exists_in_env(&conf_dir) {
         return Ok(());
     }
 
@@ -1024,7 +1020,7 @@ fn remove_files_by_patterns(env_root: &Path) -> Result<()> {
                 for path_result in paths {
                     match path_result {
                         Ok(path) => {
-                            if path.exists() {
+                            if lfs::exists_in_env(&path) {
                                 if let Err(e) = lfs::remove_file(&path) {
                                     log::warn!("Failed to remove file {}: {}", path.display(), e);
                                 }
