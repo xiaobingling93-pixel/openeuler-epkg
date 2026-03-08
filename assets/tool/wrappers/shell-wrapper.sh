@@ -30,7 +30,6 @@ _load_mirror_env_vars() {
 
 _main() {
     _tool=$(basename "$0")
-    case "$_tool" in pip3) _tool=pip ;; esac
     _load_mirror_env_vars "$_tool"
     exec "/usr/bin/$(basename "$0")" "$@"
 }
