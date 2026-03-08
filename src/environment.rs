@@ -480,14 +480,15 @@ fn setup_environment_paths(env_base: &PathBuf) -> Result<PathBuf> {
     };
 
     let env_channel_yaml = env_root.join("etc/epkg/channel.yaml");
-    if env_channel_yaml.exists() {
+    if lfs::exists_on_host(&env_channel_yaml) {
         return Err(eyre::eyre!("Environment already exists at path: '{}'", env_root.display()));
     }
 
     // If env_root is specified, we need to create a symlink from env_base to env_root
     if !config().common.env_root.is_empty() {
         // Check if env_base already exists as a directory (not a symlink)
-        if env_base.exists() && !env_base.is_symlink() {
+        // Use exists_no_follow to check if path exists, then check if it's NOT a symlink
+        if lfs::exists_no_follow(&env_base) && !lfs::is_symlink(&env_base) {
             return Err(eyre::eyre!("Environment base path '{}' already exists as a directory. Cannot create symlink.", env_base.display()));
         }
         // Ensure parent directory of env_base exists
@@ -647,7 +648,7 @@ pub fn remove_environment(name: &str) -> Result<()> {
 
     // Resolve env path without loading config (config may be missing for non-existent env)
     let env_path = get_env_base_path(name);
-    if !env_path.exists() {
+    if !lfs::exists_on_host(&env_path) {
         return Err(eyre::eyre!("Environment does not exist: '{}'", name));
     }
 
@@ -690,7 +691,7 @@ pub fn activate_environment(name: &str) -> Result<()> {
     }
 
     // Check if environment exists
-    if !get_env_root(name.to_string())?.exists() {
+    if !lfs::exists_on_host(&get_env_root(name.to_string())?) {
         return Err(eyre::eyre!("Environment not exist: '{}'", name));
     }
 

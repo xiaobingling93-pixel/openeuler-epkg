@@ -1,4 +1,63 @@
-/// fs wrappers with trace logging
+//! lfs.rs - File system operations wrapper with trace logging
+//!
+//! ═══════════════════════════════════════════════════════════════════════════
+//! ★★★ IMPORTANT: About using .exists() ★★★
+//! ═══════════════════════════════════════════════════════════════════════════
+//!
+//! In epkg, we handle paths in two contexts:
+//!   • Host context: ~/.epkg/envs/alpine/... are real paths on the host
+//!   • Guest context: Files inside env may symlink to guest paths like /usr/bin
+//!
+//! Problem: When checking symlinks inside env from host context, the target may
+//!          not exist on host (broken symlink), but is valid in guest namespace!
+//!
+//! Rules:
+//!   ✗ NEVER use path.exists() directly - unclear intent, error-prone
+//!   ✓ Use explicit functions from this module, function names express intent:
+//!
+//! ═══════════════════════════════════════════════════════════════════════════
+//! Function Classification
+//! ═══════════════════════════════════════════════════════════════════════════
+//!
+//! [Class 1: Env-Aware Functions] - For checking paths inside env_root
+//!   These functions handle env internal files, correctly handling broken symlinks
+//!   • exists_in_env()              - ★Check env file: regular file OR symlink★
+//!   • exists_or_any_symlink()      - Check: exists OR is symlink (broken or valid)
+//!   • resolve_symlink_in_env()     - Resolve symlink target path within env
+//!
+//! [Class 2: Host-Only Functions] - For pure host paths only
+//!   These functions assume paths are entirely on host, no broken symlinks
+//!   • exists_on_host()          - Check if host path exists (follow symlinks)
+//!   • is_regular_file_on_host() - Check if regular file on host
+//!
+//! [Class 3: Utility Functions] - Neutral, no context assumptions
+//!   These functions check file attributes only, no path context involved
+//!   • is_symlink()              - Check if path is a symlink
+//!   • exists_no_follow()        - Check path itself exists (incl. broken symlink)
+//!   • symlink_metadata()        - Get metadata (no symlink follow)
+//!
+//! Exception: Internal lfs.rs functions (like resolve_symlink_in_env_recursive)
+//!            may use .exists() directly as they already handle symlink logic.
+//!
+//!  ┌───────────────┬────────────────────────────┬───────────────────────────────────────┐
+//!  │     类别      │            函数            │                 用途                  │
+//!  ├───────────────┼────────────────────────────┼───────────────────────────────────────┤
+//!  │ Env 感知函数  │ exists_in_env()            │ 检查 env 内文件（普通文件或 symlink） │
+//!  ├───────────────┼────────────────────────────┼───────────────────────────────────────┤
+//!  │               │ exists_or_any_symlink()    │ 检查：存在 或 是 symlink              │
+//!  ├───────────────┼────────────────────────────┼───────────────────────────────────────┤
+//!  │               │ resolve_symlink_in_env()   │ 在 env 内解析 symlink                 │
+//!  ├───────────────┼────────────────────────────┼───────────────────────────────────────┤
+//!  │ Host 专用函数 │ exists_on_host()           │ 检查 host 路径（follow symlinks）     │
+//!  ├───────────────┼────────────────────────────┼───────────────────────────────────────┤
+//!  │               │ is_regular_file_on_host()  │ 检查 host 上的普通文件                │
+//!  ├───────────────┼────────────────────────────┼───────────────────────────────────────┤
+//!  │ 工具性函数    │ is_symlink()               │ 检查是否为 symlink                    │
+//!  ├───────────────┼────────────────────────────┼───────────────────────────────────────┤
+//!  │               │ exists_no_follow()         │ 检查路径本身（包括 broken symlink）   │
+//!  ├───────────────┼────────────────────────────┼───────────────────────────────────────┤
+//!  │               │ symlink_metadata()         │ 获取 metadata（不 follow）            │
+//!  └───────────────┴────────────────────────────┴───────────────────────────────────────┘
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -220,7 +279,12 @@ pub fn reflink_or_copy<P: AsRef<Path>, Q: AsRef<Path>>(source: P, target: Q, can
 // Read-only operations //
 //////////////////////////
 
-/// Get metadata of a file without following symlinks.
+// ═══════════════════════════════════════════════════════════════════════════
+// 【第三类：工具性函数】(Utility Functions) - 中性，无上下文假设
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// 获取文件 metadata，不 follow symlink
+/// 用于检查 symlink 本身（而非 target）的属性
 pub fn symlink_metadata<P: AsRef<Path>>(path: P) -> Result<fs::Metadata> {
     let path = path.as_ref();
     log::trace!("getting metadata (no follow): {}", path.display());
@@ -228,10 +292,59 @@ pub fn symlink_metadata<P: AsRef<Path>>(path: P) -> Result<fs::Metadata> {
         .wrap_err_with(|| format!("Failed to get metadata for {}", path.display()))
 }
 
-/// Determine if a file is a symlink
+/// Check if path is a symlink
+/// ★ NOTE: Only checks file type, does NOT check if target exists
 pub fn is_symlink(path: &Path) -> bool {
     match symlink_metadata(path) {
         Ok(metadata) => metadata.file_type().is_symlink(),
+        Err(_) => false,
+    }
+}
+
+/// Check if path itself exists (does NOT follow symlinks)
+/// Returns true for regular files, directories, AND symlinks (even broken ones)
+/// Use case: Check if symlink file itself exists before removing
+pub fn exists_no_follow<P: AsRef<Path>>(path: P) -> bool {
+    symlink_metadata(path.as_ref()).is_ok()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// [Class 1: Env-Aware Functions] - For checking paths inside env_root
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// ★ Check if file exists in environment ★
+/// Use case: Check files in env_root from host context
+/// Returns true: file is regular file OR is symlink (regardless of target existence)
+/// Example: Check env_root/usr/local/bin/tool (may be broken symlink)
+pub fn exists_in_env<P: AsRef<Path>>(path: P) -> bool {
+    let path = path.as_ref();
+    is_regular_file_on_host(path) || is_symlink(path)
+}
+
+/// Check if path exists OR is any symlink (broken or valid)
+/// Use case: Check env paths where symlinks may point to guest paths
+/// Returns true if: target exists OR path is a symlink (any target)
+pub fn exists_or_any_symlink<P: AsRef<Path>>(path: P) -> bool {
+    path.as_ref().exists() || is_symlink(path.as_ref())
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// [Class 2: Host-Only Functions] - For pure host paths only
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Check if host path exists (follows symlinks to target)
+/// Use case: Regular file/directory checks on host, NOT for env_root internal paths
+/// Example: Check ~/.config/epkg/tool/env_vars directory
+/// WARNING: Do NOT use for paths inside env_root!
+pub fn exists_on_host<P: AsRef<Path>>(path: P) -> bool {
+    path.as_ref().exists()
+}
+
+/// Check if path is a regular file on host (excludes symlinks and directories)
+/// Use case: Confirm it's a real file, not a symlink
+pub fn is_regular_file_on_host<P: AsRef<Path>>(path: P) -> bool {
+    match symlink_metadata(path.as_ref()) {
+        Ok(metadata) => metadata.file_type().is_file(),
         Err(_) => false,
     }
 }
@@ -290,10 +403,10 @@ pub fn resolve_symlink_in_env(symlink_path: &std::path::Path, env_root: &std::pa
 /// Returns Some(resolved_path) if target exists or is a symlink (recursively resolved).
 /// Returns None if target doesn't exist.
 fn resolve_target_in_env(target_in_env: &Path, env_root: &Path, depth: usize) -> Option<PathBuf> {
-    // Check exists() or is_symlink() - symlinks may be "broken" in host context
+    // Use exists_or_any_symlink - symlinks may be "broken" in host context
     // but valid inside namespace where all paths are mounted
-    if target_in_env.exists() || target_in_env.is_symlink() {
-        if target_in_env.is_symlink() {
+    if exists_or_any_symlink(target_in_env) {
+        if is_symlink(target_in_env) {
             // Recursively resolve symlinks
             return resolve_symlink_in_env_recursive(target_in_env, env_root, depth + 1);
         }
@@ -310,8 +423,8 @@ fn resolve_symlink_in_env_recursive(symlink_path: &std::path::Path, env_root: &s
         return None;
     }
 
-    // First check if the symlink file itself exists (as a regular file or symlink)
-    if symlink_path.exists() && !symlink_path.is_symlink() {
+    // First check if the path exists and is a regular file (not a symlink)
+    if is_regular_file_on_host(symlink_path) {
         // It's a regular file, not a symlink
         // Example: ~/.epkg/envs/alpine/usr/bin/bash is a regular executable file
         // Return: Some(~/.epkg/envs/alpine/usr/bin/bash) - the resolved target path (same as input)
@@ -373,7 +486,7 @@ fn resolve_symlink_in_env_recursive(symlink_path: &std::path::Path, env_root: &s
                 None => {}
             }
             // Check if exists on host (for paths that are truly on host)
-            if link_target.exists() {
+            if exists_on_host(&link_target) {
                 log::debug!("resolve_symlink_in_env_recursive: absolute path exists on host, returning {:?}", link_target);
                 return Some(link_target);
             } else {
@@ -384,8 +497,8 @@ fn resolve_symlink_in_env_recursive(symlink_path: &std::path::Path, env_root: &s
             // Example: ~/.epkg/envs/alpine/usr/bin/sh -> bash -> Some(~/.epkg/envs/alpine/usr/bin/bash)
             let symlink_dir = symlink_path.parent()?;
             let resolved_path = symlink_dir.join(&link_target);
-            if resolved_path.exists() {
-                if resolved_path.is_symlink() {
+            if exists_on_host(&resolved_path) {
+                if is_symlink(&resolved_path) {
                     // Recursively resolve within environment
                     return resolve_symlink_in_env_recursive(&resolved_path, env_root, depth + 1);
                 }

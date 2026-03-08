@@ -2,6 +2,16 @@
 //!
 //! This module handles automatic injection of mirror environment variables
 //! for common package managers (pip, npm, gem, go, cargo).
+//!
+//! ★ 注意：文件存在性检查 ★
+//! ═══════════════════════════════════════════════════════════════════════════
+//!
+//! 本模块涉及两类路径检查：
+//!   1. Host 配置路径（如 ~/.pip/pip.conf）→ 使用 lfs::exists_on_host()
+//!   2. Env 内部路径（如 env_root/usr/local/bin/）→ 使用 lfs::exists_in_env()
+//!
+//! 禁止直接使用 .exists()！使用 lfs 模块的显式函数。
+//! ═══════════════════════════════════════════════════════════════════════════
 
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -107,8 +117,9 @@ pub fn setup_tool_config_symlinks() -> Result<()> {
     let env_vars_link = config_dir.join("env_vars");
     let env_vars_target = get_env_vars_dir()?;
 
-    if env_vars_target.exists() {
-        if env_vars_link.exists() || env_vars_link.symlink_metadata().is_ok() {
+    if lfs::exists_on_host(&env_vars_target) {
+        // Use exists_no_follow to check if link file itself exists (including broken symlinks)
+        if lfs::exists_no_follow(&env_vars_link) {
             lfs::remove_file(&env_vars_link)?;
         }
         lfs::symlink(&env_vars_target, &env_vars_link)?;
@@ -118,15 +129,15 @@ pub fn setup_tool_config_symlinks() -> Result<()> {
     // Create my_region symlink based on region
     let iploc_link = config_dir.join("my_region");
 
-    // Remove existing link
-    if iploc_link.exists() || iploc_link.symlink_metadata().is_ok() {
+    // Remove existing link - use exists_no_follow to catch broken symlinks too
+    if lfs::exists_no_follow(&iploc_link) {
         lfs::remove_file(&iploc_link)?;
     }
 
     // Get region and create symlink
     if let Some(region) = get_region_code() {
         let iploc_target = config_dir.join("env_vars").join(&region);
-        if iploc_target.exists() {
+        if lfs::exists_on_host(&iploc_target) {
             lfs::symlink(&iploc_target, &iploc_link)?;
             log::info!("Created my_region symlink: {} -> {} (region: {})",
                       iploc_link.display(), iploc_target.display(), region);
@@ -166,12 +177,13 @@ fn expand_tilde(path: &str) -> PathBuf {
 }
 
 /// Check if user config file exists on host OS
+/// Uses exists_on_host since we're checking regular config files on host
 fn check_user_config_exists(tool: &str) -> bool {
     for (t, paths) in TOOL_CONFIG_FILES {
         if *t == tool {
             for path in *paths {
                 let expanded = expand_tilde(path);
-                if expanded.exists() {
+                if lfs::exists_on_host(&expanded) {
                     log::debug!("User config file exists for tool {}: {}", tool, expanded.display());
                     return true;
                 }
@@ -182,6 +194,7 @@ fn check_user_config_exists(tool: &str) -> bool {
 }
 
 /// Check if wrapper should be created for tool
+/// Note: wrapper_path is in env_root, checked from host context
 fn should_create_wrapper(tool: &str, env_root: &Path) -> bool {
     // Check if tool is supported
     if !SUPPORTED_TOOLS.contains(&tool) {
@@ -207,8 +220,10 @@ fn should_create_wrapper(tool: &str, env_root: &Path) -> bool {
     }
 
     // Check if wrapper already exists
+    // Use exists_in_env because wrapper_path is in env_root and may be a broken symlink
+    // (symlink target exists in guest namespace but not on host)
     let wrapper_path = env_root.join("usr/local/bin").join(tool);
-    if wrapper_path.exists() {
+    if lfs::exists_in_env(&wrapper_path) {
         log::debug!("Wrapper already exists for {}: {}", tool, wrapper_path.display());
         return false;
     }
@@ -236,12 +251,13 @@ fn detect_installed_tools(plan: &InstallationPlan) -> Vec<String> {
     tools
 }
 
-/// Get wrapper script content for a tool
+/// Get wrapper 脚本 content for a tool
 fn get_wrapper_content(tool: &str) -> Result<String> {
     let epkg_src = dirs::get_epkg_src_path();
     let wrapper_path = epkg_src.join("assets/tool/wrappers").join(tool);
 
-    if wrapper_path.exists() {
+    // Use exists_on_host for regular host file check
+    if lfs::exists_on_host(&wrapper_path) {
         let content = std::fs::read_to_string(&wrapper_path)
             .with_context(|| format!("Failed to read wrapper script: {}", wrapper_path.display()))?;
         return Ok(content);
@@ -251,7 +267,7 @@ fn get_wrapper_content(tool: &str) -> Result<String> {
     for (alias, target) in TOOL_SYMLINKS {
         if alias == &tool {
             let target_path = epkg_src.join("assets/tool/wrappers").join(target);
-            if target_path.exists() {
+            if lfs::exists_on_host(&target_path) {
                 let content = std::fs::read_to_string(&target_path)
                     .with_context(|| format!("Failed to read wrapper script: {}", target_path.display()))?;
                 return Ok(content);
@@ -290,7 +306,8 @@ fn create_tool_wrapper(tool: &str, env_root: &Path) -> Result<()> {
 fn remove_tool_wrapper(tool: &str, env_root: &Path) -> Result<()> {
     let wrapper_path = env_root.join("usr/local/bin").join(tool);
 
-    if wrapper_path.exists() {
+    // Use exists_in_env because wrapper_path is in env_root and may be a broken symlink
+    if lfs::exists_in_env(&wrapper_path) {
         lfs::remove_file(&wrapper_path)?;
         log::info!("Removed tool wrapper: {}", wrapper_path.display());
     }
