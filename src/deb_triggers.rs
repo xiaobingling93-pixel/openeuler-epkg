@@ -330,8 +330,10 @@ pub fn setup_deb_env_vars(
     // Set DPKG_ROOT - root filesystem directory
     // Reference: dpkg src/main/main.c:807 setenv("DPKG_ROOT", dpkg_fsys_get_dir(), 1)
     // Reference: dpkg src/main/script.c:118 setenv("DPKG_ROOT", "", 1)
-    // When running scripts, dpkg sets this to "" (empty), but we use "/" since env_root is mounted as "/"
-    env_vars.insert("DPKG_ROOT".to_string(), "/".to_string());
+    // When running scripts, dpkg sets this to "" (empty)
+    // Do not set "/", to avoid warnings like
+    // /usr/bin/deb-systemd-helper: error: starts with dpkg_root: /lib/systemd/system/fstrim.timer get_link_closure
+    // env_vars.insert("DPKG_ROOT".to_string(), "/".to_string());
 
     // Set DPKG_RUNNING_VERSION - version of dpkg running the script
     // Reference: dpkg src/main/script.c:200 setenv("DPKG_RUNNING_VERSION", PACKAGE_VERSION, 1)
