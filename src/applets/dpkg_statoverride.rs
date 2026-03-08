@@ -13,6 +13,7 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
+use crate::lfs;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::PermissionsExt;
@@ -55,7 +56,7 @@ fn path_cleanup(path: &str) -> String {
 
 fn load_overrides() -> Vec<StatOverrideRecord> {
     let path = db_path();
-    if !path.exists() {
+    if !lfs::exists_or_any_symlink(&path) {
         return Vec::new();
     }
     let file = match fs::File::open(&path) {
@@ -137,7 +138,7 @@ fn chown_if_possible(owner: &str, group: &str, path: &Path) {
 }
 
 fn chmod_if_possible(mode: u32, path: &Path) {
-    if let Ok(metadata) = fs::metadata(path) {
+    if let Ok(metadata) = lfs::symlink_metadata(path) {
         let mut perms = metadata.permissions();
         perms.set_mode(mode);
         let _ = fs::set_permissions(path, perms);
@@ -207,7 +208,7 @@ fn add_override(opts: &DpkgStatOverrideOptions) -> Result<i32> {
 
     if opts.update {
         let p = Path::new(&path);
-        if p.exists() {
+        if lfs::exists_or_any_symlink(p) {
             chown_if_possible(&owner, &group, p);
             chmod_if_possible(mode, p);
         }
