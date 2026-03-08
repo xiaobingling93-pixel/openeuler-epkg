@@ -480,7 +480,7 @@ fn fork_and_execute_raw(env_root: &Path, run_options: &RunOptions) -> Result<Opt
 /// Check if a file is executable
 pub fn is_executable(path: &Path) -> Result<bool> {
     trace!("is_executable checking: {}", path.display());
-    let metadata = fs::metadata(path)
+    let metadata = lfs::symlink_metadata(path)
         .map_err(|e| {
             trace!("is_executable metadata error for {}: {}", path.display(), e);
             eyre::eyre!("Failed to get metadata for {}: {}", path.display(), e)
