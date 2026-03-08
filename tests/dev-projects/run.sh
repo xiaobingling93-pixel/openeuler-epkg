@@ -84,9 +84,9 @@ done
 
 if [ $FAILED -eq 1 ]; then
     if [ -n "$FAILED_OS" ] && [ -n "$FAILED_LANG" ]; then
-        error "Lang test failed; reproduce with: $0 -o $FAILED_OS -t $FAILED_LANG"
+        error "Lang test failed; reproduce with: $SCRIPT_DIR/run.sh -o $FAILED_OS -t $FAILED_LANG"
     else
-        error "Lang test failed; reproduce with: $ORIG_CMD"
+        error "Lang test failed; reproduce with: $SCRIPT_DIR/run.sh $*"
     fi
 fi
 log "All dev-projects tests passed"
