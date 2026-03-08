@@ -39,7 +39,8 @@ fn get_config_file_action(
     }
 
     // Check if files are identical (simplified - just check if they exist and are same size)
-    if let (Ok(meta1), Ok(meta2)) = (fs::metadata(target_path), fs::metadata(fs_file)) {
+    // Use symlink_metadata to avoid following symlinks in env context
+    if let (Ok(meta1), Ok(meta2)) = (lfs::symlink_metadata(target_path), fs::metadata(fs_file)) {
         if meta1.len() == meta2.len() && meta1.mode() == meta2.mode() {
             return EtcFileAction::Identical;
         }
