@@ -900,6 +900,13 @@ fn install_libkrunfw_runtime(tarball_path: &Path) -> Result<()> {
 }
 
 /// Extract the KERNEL_BUNDLE symbol from a libkrunfw .so and write to envs/self/boot/kernel.
+///
+/// The libkrunfw.so is built from /c/rust/libkrunfw/ and contains a bundled kernel image
+/// exported as the KERNEL_BUNDLE symbol. This function extracts it for use by libkrun.
+///
+/// Uses two methods:
+/// 1. Try data_range() from the object crate
+/// 2. Fall back to manual file offset calculation (like readelf does)
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
 fn extract_kernel_from_libkrunfw_so(so_path: &Path, self_env_root: &Path) -> Result<()> {
     use object::Object;
@@ -911,32 +918,90 @@ fn extract_kernel_from_libkrunfw_so(so_path: &Path, self_env_root: &Path) -> Res
     let data = fs::read(so_path).context("Failed to read libkrunfw .so")?;
     let file = object::File::parse(&*data).context("Failed to parse libkrunfw .so as ELF")?;
 
-    let mut sym_addr = None;
-    let mut sym_size = None;
+    // Search both static and dynamic symbol tables
+    // KERNEL_BUNDLE may only be in .dynsym (dynamic symbol table)
+    let mut sym_addr: Option<u64> = None;
+    let mut sym_size: Option<u64> = None;
+    let mut sym_shndx: Option<object::SectionIndex> = None;
+
+    // First try static symbol table
     for symbol in file.symbols() {
         if let Ok(name) = symbol.name() {
             if name == "KERNEL_BUNDLE" {
                 sym_addr = Some(symbol.address());
                 sym_size = Some(symbol.size());
+                sym_shndx = symbol.section_index();
                 break;
             }
         }
     }
-    let (addr, size) = match (sym_addr, sym_size) {
-        (Some(a), Some(s)) if s > 0 => (a, s),
+
+    // If not found, try dynamic symbol table
+    if sym_addr.is_none() {
+        for symbol in file.dynamic_symbols() {
+            if let Ok(name) = symbol.name() {
+                if name == "KERNEL_BUNDLE" {
+                    sym_addr = Some(symbol.address());
+                    sym_size = Some(symbol.size());
+                    sym_shndx = symbol.section_index();
+                    break;
+                }
+            }
+        }
+    }
+
+    let (addr, size, shndx) = match (sym_addr, sym_size, sym_shndx) {
+        (Some(a), Some(s), Some(i)) if s > 0 => (a, s, i),
         _ => return Err(eyre::eyre!("KERNEL_BUNDLE symbol not found in {}", so_path.display())),
     };
 
-    log::debug!("Found KERNEL_BUNDLE at addr={:#x}, size={}", addr, size);
+    log::debug!("Found KERNEL_BUNDLE at addr={:#x}, size={}, section={:?}", addr, size, shndx);
 
-    // Find section containing this address and get the bytes (segments may not expose data_range in this object version)
-    let kernel_data: Vec<u8> = file
-        .sections()
-        .find_map(|sec| sec.data_range(addr, size).ok().flatten())
-        .map(|s| s.to_vec())
-        .ok_or_else(|| eyre::eyre!("Could not read KERNEL_BUNDLE data from {}", so_path.display()))?;
+    // Try method 1: use data_range() from object crate
+    let kernel_data: Vec<u8> = match file.sections().find_map(|sec| sec.data_range(addr, size).ok().flatten()) {
+        Some(slice) => {
+            log::debug!("Extracted kernel via data_range(): {} bytes", slice.len());
+            slice.to_vec()
+        }
+        None => {
+            // Method 2: manually calculate file offset using section info (like readelf does)
+            log::debug!("data_range() failed, trying manual offset calculation...");
 
-    log::debug!("Extracted {} bytes of kernel data", kernel_data.len());
+            // Find the section by index using section_by_index
+            let section = file.section_by_index(shndx)
+                .map_err(|e| eyre::eyre!("Section {:?} not found: {}", shndx, e))?;
+
+            let sec_addr = section.address();
+            let sec_size = section.size();
+            let (sec_offset, _sec_file_size) = section.file_range()
+                .ok_or_else(|| eyre::eyre!("Section {:?} has no file range", shndx))?;
+
+            log::debug!("Section: addr={:#x}, offset={:#x}, size={}", sec_addr, sec_offset, sec_size);
+
+            if addr < sec_addr || addr >= sec_addr + sec_size {
+                return Err(eyre::eyre!(
+                    "KERNEL_BUNDLE address {:#x} is outside section range [{:#x}, {:#x})",
+                    addr, sec_addr, sec_addr + sec_size
+                ));
+            }
+
+            let file_offset = sec_offset + (addr - sec_addr);
+            if file_offset + size > data.len() as u64 {
+                return Err(eyre::eyre!(
+                    "File offset {:#x} + size {:#x} exceeds file size {:#x}",
+                    file_offset, size, data.len()
+                ));
+            }
+
+            let kernel_data = data[file_offset as usize..(file_offset + size) as usize].to_vec();
+            log::debug!("Extracted kernel via manual offset: {} bytes from file offset {:#x}", kernel_data.len(), file_offset);
+            kernel_data
+        }
+    };
+
+    if kernel_data.is_empty() {
+        return Err(eyre::eyre!("Extracted kernel data is empty"));
+    }
 
     let kernel_dir = self_env_root.join("boot");
     lfs::create_dir_all(&kernel_dir)?;
