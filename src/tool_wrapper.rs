@@ -320,7 +320,7 @@ fn detect_installed_tools(plan: &InstallationPlan) -> Vec<String> {
     tools
 }
 
-/// Get wrapper 脚本 content for a tool
+/// Get wrapper script content for a tool
 fn get_wrapper_content(tool: &str) -> Result<String> {
     let epkg_src = dirs::get_epkg_src_path();
     let wrapper_path = epkg_src.join("assets/tool/wrappers").join(tool);
