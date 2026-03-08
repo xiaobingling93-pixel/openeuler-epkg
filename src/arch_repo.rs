@@ -18,6 +18,7 @@ use crate::models::*;
 use crate::repo::RepoReleaseItem;
 use crate::packages_stream;
 use crate::repo;
+use crate::lfs;
 use crate::utils;
 
 // wfg /c/os/archlinux/repodata/core.files% g -h '^%.*%$' */desc|sc
@@ -138,7 +139,7 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
     // Initialize files - only remove/create filelists file if needed
     let filelists_path = repo_dir.join("filelists.txt.zst");
     if need_filelists {
-        if filelists_path.exists() {
+        if lfs::exists_on_host(&filelists_path) {
             std::fs::remove_file(&filelists_path)
                 .map_err(|e| eyre::eyre!("Failed to remove existing filelists.txt.zst: {}", e))?;
         }
@@ -198,11 +199,11 @@ fn validate_download_path(revise: &RepoReleaseItem) -> Result<()> {
     // Check if the download path exists and is readable (for already downloaded files)
     if !revise.need_download && revise.need_convert {
         log::debug!("Processing already downloaded file: {}", revise.download_path.display());
-        if !revise.download_path.exists() {
+        if !lfs::exists_on_host(&revise.download_path) {
             return Err(eyre::eyre!("Downloaded file does not exist: {}", revise.download_path.display()));
         }
 
-        let metadata = std::fs::metadata(&revise.download_path)
+        let metadata = lfs::metadata_on_host(&revise.download_path)
             .map_err(|e| eyre::eyre!("Failed to get metadata for {}: {}", revise.download_path.display(), e))?;
 
         if metadata.len() == 0 {
