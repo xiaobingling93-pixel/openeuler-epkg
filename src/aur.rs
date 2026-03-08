@@ -8,6 +8,7 @@ use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 
 use crate::dirs;
+use crate::lfs;
 use crate::plan::InstallationPlan;
 use crate::models::*;
 use crate::packages_stream;
@@ -118,9 +119,9 @@ pub fn parse_aur_metadata(repo: &RepoRevise, _release_path: &PathBuf) -> Result<
 
     let release_status = should_refresh_release_file(&download_path, repo)?;
     let need_download = matches!(release_status, ReleaseStatus::NeedDownload | ReleaseStatus::NeedUpdate);
-    let need_convert = !output_path.exists() || {
+    let need_convert = !lfs::exists_on_host(&output_path) || {
         let repoindex_path = repo_dir.join("RepoIndex.json");
-        !repoindex_path.exists()
+        !lfs::exists_on_host(&repoindex_path)
     };
 
     release_items.push(RepoReleaseItem {
@@ -201,11 +202,11 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
 fn validate_download_path(revise: &RepoReleaseItem) -> Result<()> {
     if !revise.need_download && revise.need_convert {
         log::debug!("Processing already downloaded file: {}", revise.download_path.display());
-        if !revise.download_path.exists() {
+        if !lfs::exists_on_host(&revise.download_path) {
             return Err(eyre::eyre!("Downloaded file does not exist: {}", revise.download_path.display()));
         }
 
-        let metadata = std::fs::metadata(&revise.download_path)
+        let metadata = lfs::symlink_metadata(&revise.download_path)
             .map_err(|e| eyre::eyre!("Failed to get metadata for {}: {}", revise.download_path.display(), e))?;
 
         if metadata.len() == 0 {
@@ -392,7 +393,7 @@ fn extract_aur_source(
 
     // Extract tarball (tarball already contains a top-level pkgname/ directory)
     let pkg_root_dir = build_dir.join(pkgname);
-    if pkg_root_dir.exists() {
+    if lfs::exists_on_host(&pkg_root_dir) {
         std::fs::remove_dir_all(&pkg_root_dir)?;
     }
     std::fs::create_dir_all(build_dir)?;
@@ -499,7 +500,7 @@ fn prepare_aur_source_dir(
 ) -> Result<PathBuf> {
     // Check if git directory already exists in build directory (from git download)
     let git_dir_in_build = build_dir.join(pkgbase);
-    if git_dir_in_build.is_dir() && git_dir_in_build.join(".git").exists() {
+    if git_dir_in_build.is_dir() && lfs::exists_on_host(&git_dir_in_build.join(".git")) {
         // Git directory exists in build directory - use it directly
         log::info!("Using git directory directly from build dir: {}", git_dir_in_build.display());
         Ok(git_dir_in_build)
@@ -1342,7 +1343,7 @@ fn find_pkgbuild(dir: &Path) -> Result<PathBuf> {
 
     while let Some((current, depth)) = queue.pop_front() {
         let candidate = current.join("PKGBUILD");
-        if candidate.exists() {
+        if lfs::exists_on_host(&candidate) {
             return Ok(candidate);
         }
 
