@@ -217,7 +217,7 @@ fn read_paths_json(package_dir: &Path) -> Result<Vec<PathsEntry>> {
     let paths_path = package_dir.join("info/conda/paths.json");
 
     // Check if file exists first
-    if !paths_path.exists() {
+    if !lfs::exists_on_host(&paths_path) {
         log::info!("paths.json not found: {}", paths_path.display());
         return Ok(Vec::new());
     }
@@ -278,7 +278,7 @@ fn parse_entry_point(ep: &Value) -> Result<EntryPoint> {
 fn read_link_json(package_dir: &Path) -> Result<Option<Vec<EntryPoint>>> {
     let link_path = package_dir.join("info/conda/link.json");
 
-    if !link_path.exists() {
+    if !lfs::exists_on_host(&link_path) {
         return Ok(None);
     }
 
@@ -755,7 +755,7 @@ fn link_file_without_prefix_replacement(
     fhs_file: &Path,
 ) -> Result<()> {
     // Detect if source is a symlink
-    let is_link = fs::symlink_metadata(source_path)
+    let is_link = lfs::symlink_metadata(source_path)
         .map(|m| m.file_type().is_symlink())
         .unwrap_or(false);
 

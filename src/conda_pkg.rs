@@ -13,6 +13,7 @@ use zstd::stream::read::Decoder as ZstdDecoder;
 use zip::ZipArchive;
 use regex;
 use crate::utils;
+use crate::lfs;
 
 /// Separator used to combine version and build_string in pkgkey for virtual packages
 /// Format: version-build_string (e.g., "1-skylake_avx512")
@@ -147,7 +148,7 @@ fn unpack_conda_format<P: AsRef<Path>>(conda_file: P, store_tmp_dir: &Path) -> R
     let conda_file = conda_file.as_ref();
 
     // Validate file exists and is readable
-    let metadata = fs::metadata(conda_file)
+    let metadata = lfs::metadata_on_host(conda_file)
         .wrap_err_with(|| format!("Failed to read file metadata: {}", conda_file.display()))?;
 
     let file_size = metadata.len();
@@ -392,13 +393,13 @@ fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>) ->
     // Try to read additional metadata files if they exist
     // Following conda-package-streaming metadata completeness approach
     let files_path = conda_info_dir.join("files");
-    if files_path.exists() {
+    if lfs::exists_on_host(&files_path) {
         log::debug!("Found files metadata");
         // Could add file count or other file-related metadata here
     }
 
     let recipe_path = conda_info_dir.join("recipe");
-    if recipe_path.exists() {
+    if lfs::exists_on_host(&recipe_path) {
         log::debug!("Found recipe metadata");
         // Could extract additional recipe information here
     }

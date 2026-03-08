@@ -18,6 +18,7 @@ use crate::dirs;
 use crate::repo::*;
 use crate::packages_stream;
 use crate::mmio;
+use crate::lfs;
 
 /// Custom deserializer for noarch field which can be either a string or a boolean.
 /// If it's a boolean `true`, converts it to the string "generic".
@@ -232,9 +233,9 @@ pub fn parse_repodata_json(repo: &RepoRevise, _release_dir: &PathBuf) -> Result<
 
     let release_status = should_refresh_release_file(&download_path, repo)?;
     let need_download = matches!(release_status, ReleaseStatus::NeedDownload | ReleaseStatus::NeedUpdate);
-    let need_convert = !output_path.exists() || {
+    let need_convert = !lfs::exists_on_host(&output_path) || {
         let repoindex_path = repo_dir.join("RepoIndex.json");
-        !repoindex_path.exists()
+        !lfs::exists_on_host(&repoindex_path)
     };
 
     release_items.push(RepoReleaseItem {
@@ -689,7 +690,7 @@ fn save_packages_metadata(
     nr_provides: usize,
     nr_essentials: usize,
 ) -> Result<PackagesFileInfo> {
-    let metadata = std::fs::metadata(output_path)
+    let metadata = lfs::metadata_on_host(output_path)
         .map_err(|e| eyre::eyre!("Failed to get file metadata: {}", e))?;
 
     let datetime = {
