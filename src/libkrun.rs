@@ -189,22 +189,21 @@ fn load_kernel_bundle(kernel_path: &str) -> Result<(u64, u64, u64, usize)> {
     }
 
     // Parse entry point from bzImage header
-    let entry_addr = parse_bzimage_entry_point(&kernel_data)
+    let (guest_addr, entry_addr) = parse_bzimage_entry_point(&kernel_data)
+        .map(|entry| (0x1000000u64, entry))
         .unwrap_or_else(|| {
             // Check if this is a libkrunfw-style raw kernel bundle
             // libkrunfw's get_kernel returns: guest_addr=0x1000000, entry_addr=0x1000123, size=0x1230000
-            // The kernel is a raw binary with entry point at offset 0x123 from the 16MB load address
+            // However, libkrun's map_kernel() uses guest_addr=0x2000_0000, entry_addr=0x2000_0000
+            // for raw kernels in non-TEE mode. We follow the map_kernel convention.
             if kernel_data.len() >= 0x1230000 {
-                log::debug!("detected libkrunfw-style raw kernel bundle");
-                0x1000123
+                log::debug!("detected libkrunfw-style raw kernel bundle, using map_kernel convention");
+                (0x2000_0000u64, 0x2000_0000u64)
             } else {
-                log::debug!("using default entry point 0x1000000 for unknown kernel format");
-                0x1000000
+                log::debug!("using default entry point 0x2000_0000 for unknown kernel format");
+                (0x2000_0000u64, 0x2000_0000u64)
             }
         });
-
-    // Guest physical address where kernel will be loaded (standard 16MB for x86_64)
-    let guest_addr = 0x1000000;
 
     log::debug!(
         "kernel bundle: host_addr={:#x}, guest_addr={:#x}, entry_addr={:#x}, size={}",

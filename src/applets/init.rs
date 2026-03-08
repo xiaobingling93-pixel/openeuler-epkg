@@ -131,6 +131,7 @@ fn run_init(opt_cwd: Option<&str>, opt_cmd: &[String]) -> Result<()> {
     }
 }
 
+#[allow(dead_code)]
 fn setup_init_environment(cwd: Option<&str>) -> Result<()> {
     if let Err(e) = setup_mounts() {
         log::debug!("init: setup_mounts failed: {}", e);
