@@ -289,6 +289,10 @@ pub fn run_transaction_batch(
     // Build union of all files from new packages in batch for diff calculation during upgrades
     build_batch_file_union(plan)?;
 
+    // Setup tool wrappers for newly installed tools (after new_files is populated)
+    #[cfg(unix)]
+    crate::tool_wrapper::setup_tool_wrappers(plan)?;
+
     // Execute transaction scriptlets at transaction boundaries (RPM behavior)
     begin_transaction(&plan)?;
 

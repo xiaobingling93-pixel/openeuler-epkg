@@ -309,8 +309,8 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
     link_packages(plan)?;
 
     // Step 2c: Setup tool wrappers for mirror acceleration
-    #[cfg(unix)]
-    crate::tool_wrapper::setup_tool_wrappers(plan)?;
+    // Called after link_packages so new_files is populated by build_batch_file_union below
+    // Note: setup_tool_wrappers is now called in run_transaction_batch after build_batch_file_union
 
     // Build trigger indices used by hooks/trigger mapping.
     #[cfg(unix)]
