@@ -15,7 +15,7 @@ pub fn install_apparmor_profile() -> Result<()> {
     if profile_src.exists() {
         if let Err(e) = std::fs::copy(&profile_src, &profile_dst) {
             if e.to_string().contains("Permission denied") {
-                // Try with sudo
+                eprintln!("Installing AppArmor profile /etc/apparmor.d/epkg requires sudo privileges");
                 let output = Command::new("sudo")
                     .args(&["cp", &profile_src.to_string_lossy(), &profile_dst.to_string_lossy()])
                     .output()?;
@@ -48,6 +48,7 @@ pub fn remove_apparmor_profile() -> Result<()> {
         }
         Err(e) => {
             if e.to_string().contains("Permission denied") {
+                eprintln!("Removing AppArmor profile /etc/apparmor.d/epkg requires sudo privileges");
                 let output = Command::new("sudo")
                     .args(&["rm", &profile_path.to_string_lossy()])
                     .output()?;
