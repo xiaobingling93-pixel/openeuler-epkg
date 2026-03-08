@@ -109,7 +109,7 @@ pub fn gc_epkg(old_downloads_days: Option<u64>) -> Result<()> {
 
 fn collect_old_downloads(days: u64) -> Result<Vec<PathBuf>> {
     let downloads_dir = dirs().epkg_downloads_cache.clone();
-    if !downloads_dir.exists() {
+    if !lfs::exists_on_host(&downloads_dir) {
         return Ok(Vec::new());
     }
 
@@ -163,7 +163,7 @@ fn collect_env_configs(
 ) -> Result<()> {
     // Load channel config
     let channel_config_path = env_path.join("etc/epkg/channel.yaml");
-    if channel_config_path.exists() {
+    if lfs::exists_in_env(&channel_config_path) {
         if let Ok(mut channel_config) = io::read_yaml_file::<ChannelConfig>(&channel_config_path) {
             // Set defaults to populate channel field from distro:version
             if let Ok(()) = crate::io::set_channel_config_defaults(&mut channel_config, None) {
@@ -177,11 +177,11 @@ fn collect_env_configs(
 
     // Load env config
     let env_config_path = env_path.join("etc/epkg/env.yaml");
-    if env_config_path.exists() {
+    if lfs::exists_in_env(&env_config_path) {
         if io::read_yaml_file::<EnvConfig>(&env_config_path).is_ok() {
             // Load installed packages
             let packages_path = env_path.join("generations/current/installed-packages.json");
-            if packages_path.exists() {
+            if lfs::exists_in_env(&packages_path) {
                 if let Ok(packages_raw) = crate::io::read_json_file::<HashMap<String, InstalledPackageInfo>>(&packages_path) {
                     let packages: InstalledPackagesMap = packages_raw.into_iter().map(|(k, v)| (k, std::sync::Arc::new(v))).collect();
                     for (_pkgkey, pkg_info) in &packages {
