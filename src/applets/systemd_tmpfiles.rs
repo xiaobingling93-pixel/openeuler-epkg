@@ -560,7 +560,7 @@ fn dispatch_line(base_type: &str, line_type: &str, parts: &[String], modifiers: 
         "z" => execute_with_error_handling(modifiers, || process_attribute_line(parts, modifiers, root, false)),
         "Z" => execute_with_error_handling(modifiers, || process_attribute_line(parts, modifiers, root, true)),
         "t" | "T" | "h" | "H" | "a" | "A" => {
-            eprintln!("Warning: Attribute operations ({}) not implemented: {}", base_type, line_type);
+            eprintln!("Notice: Attribute operations ({}) not implemented: {}", base_type, line_type);
             Ok(())
         }
         _ => {
@@ -586,7 +586,7 @@ fn process_directory_line(parts: &[String], _modifiers: &Modifiers, do_create: b
     if do_remove {
         // For 'D' type during remove, we should remove directory contents
         // For now, just warn that this is not implemented
-        eprintln!("Warning: Directory removal operations not implemented: D {}", full_path.display());
+        eprintln!("Notice: Directory removal operations not implemented: D {}", full_path.display());
         return Ok(());
     }
 
