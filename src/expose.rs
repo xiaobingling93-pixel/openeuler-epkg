@@ -232,15 +232,14 @@ fn create_script_wrapper(
     first_line: &str,
 ) -> Result<()> {
     // Try to create shebang line, but handle errors gracefully
-    // For NodeScript, use shell shebang so the exec command works correctly
+    // For NodeScript and npm/npx scripts, use /bin/sh shebang
     let env_shell_bang_line = if file_type == FileType::NodeScript {
         // Use /bin/sh as the interpreter for Node.js wrappers
-        let shell_path = env_root.join("ebin/sh");
-        if lfs::exists_in_env(&shell_path) {
-            format!("#!{}\n", shell_path.display())
-        } else {
-            String::new() // No shebang if shell not found
-        }
+        // This allows the wrapper to work when called directly (e.g., from ebin/)
+        format!("#!/bin/sh\n")
+    } else if file_type == FileType::ShellScript && fs_file.file_name().map_or(false, |n| n == "npm" || n == "npx") {
+        // npm and npx are shell scripts but we handle them specially to call node directly
+        format!("#!/bin/sh\n")
     } else {
         match create_shebang_line(env_root, first_line, fs_file) {
             Ok(line) => line,
@@ -456,6 +455,18 @@ fn get_exec_command(file_type: &FileType, fs_file: &Path, env_root: Option<&Path
     } else {
         fs_file.to_path_buf()
     };
+
+    // Special handling for npm and npx shell scripts - call the -cli.js directly
+    // This avoids issues with the npm shell script's dynamic node detection
+    let path_str = path_to_use.to_string_lossy();
+    if path_str.ends_with("/bin/npm") {
+        let cli_path = path_str.trim_end_matches("/bin/npm").to_string() + "/bin/npm-cli.js";
+        return format!("exec node {:?} \"$@\"\n", cli_path);
+    }
+    if path_str.ends_with("/bin/npx") {
+        let cli_path = path_str.trim_end_matches("/bin/npx").to_string() + "/bin/npx-cli.js";
+        return format!("exec node {:?} \"$@\"\n", cli_path);
+    }
 
     match file_type {
         FileType::ShellScript => format!("exec {:?} \"$@\"\n", path_to_use),
