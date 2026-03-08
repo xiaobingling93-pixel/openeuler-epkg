@@ -265,7 +265,7 @@ fn create_script_wrapper(
         }
     };
 
-    let exec_cmd = get_exec_command(&file_type, fs_file);
+    let exec_cmd = get_exec_command(&file_type, fs_file, Some(env_root));
 
     let mut wrapper = fs::OpenOptions::new()
         .write(true)

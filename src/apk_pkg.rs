@@ -8,6 +8,7 @@ use lazy_static::lazy_static;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use crate::utils;
+use crate::lfs;
 
 lazy_static! {
     pub static ref PACKAGE_KEY_MAPPING: std::collections::HashMap<&'static str, &'static str> = {
@@ -367,7 +368,7 @@ pub fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>
     let store_tmp_dir = store_tmp_dir.as_ref();
     let pkginfo_path = store_tmp_dir.join("info/apk/.PKGINFO");
 
-    if !pkginfo_path.exists() {
+    if !lfs::exists_on_host(&pkginfo_path) {
         return Err(eyre::eyre!(".PKGINFO file not found: {}", pkginfo_path.display()));
     }
 
@@ -522,7 +523,7 @@ fn write_apk_hook_file<P: AsRef<Path>>(
     // Check if .trigger script exists in info/apk/.trigger
     let store_tmp_dir = store_tmp_dir.as_ref();
     let trigger_script_path = store_tmp_dir.join("info/apk/.trigger");
-    if !trigger_script_path.exists() {
+    if !lfs::exists_on_host(&trigger_script_path) {
         log::warn!("Package has triggers but no .trigger script, skipping trigger hook generation");
         return Ok(());
     }

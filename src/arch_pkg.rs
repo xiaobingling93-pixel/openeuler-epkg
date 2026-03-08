@@ -9,6 +9,7 @@ use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use zstd::stream::read::Decoder as ZstdDecoder;
 use crate::utils;
+use crate::lfs;
 
 /// PKGINFO field definitions based on Arch Linux specification
 pub struct PkgInfoField {
@@ -191,7 +192,7 @@ pub fn unpack_package<P: AsRef<Path>>(pkg_file: P, store_tmp_dir: P, pkgkey: Opt
 
     // Check if .INSTALL file exists and process it
     let install_path = store_tmp_dir.join("info/arch/.INSTALL");
-    if install_path.exists() {
+    if lfs::exists_on_host(&install_path) {
         log::debug!("Processing install script");
         let install_content = fs::read(&install_path)
             .wrap_err_with(|| format!("Failed to read .INSTALL file: {}", install_path.display()))?;
@@ -293,7 +294,7 @@ fn extract_package_contents<R: Read>(
         }
 
         // Create the hard link if the source file exists
-        if source_path.exists() {
+        if lfs::exists_on_host(&source_path) {
             if let Err(e) = fs::hard_link(&source_path, &target_path) {
                 log::warn!("Failed to create hard link from {} to {}: {}",
                     source_path.display(), target_path.display(), e);
