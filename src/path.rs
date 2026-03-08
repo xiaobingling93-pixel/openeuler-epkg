@@ -61,14 +61,14 @@ fn get_active_env_paths(active_env: &str, pure: bool) -> Result<Vec<String>> {
 
     let env_root = get_env_root(active_env.to_string())?;
 
-    // Validate environment exists
-    if !lfs::exists_in_env(&env_root) {
+    // Validate environment exists (use exists_or_any_symlink for directory check)
+    if !lfs::exists_or_any_symlink(&env_root) {
         return Err(eyre::eyre!("Active environment '{}' does not exist", active_env));
     }
 
     // Add ebin path
     let ebin_path = env_root.join("ebin");
-    if lfs::exists_in_env(&ebin_path) {
+    if lfs::exists_or_any_symlink(&ebin_path) {
         path_components.push(ebin_path.display().to_string());
     }
 
@@ -77,10 +77,10 @@ fn get_active_env_paths(active_env: &str, pure: bool) -> Result<Vec<String>> {
         let bin_path = env_root.join("usr/bin");
         let sbin_path = env_root.join("usr/sbin");
 
-        if lfs::exists_in_env(&bin_path) {
+        if lfs::exists_or_any_symlink(&bin_path) {
             path_components.push(bin_path.display().to_string());
         }
-        if lfs::exists_in_env(&sbin_path) {
+        if lfs::exists_or_any_symlink(&sbin_path) {
             path_components.push(sbin_path.display().to_string());
         }
     }
@@ -94,9 +94,11 @@ fn get_registered_env_paths() -> Result<Vec<String>> {
     let mut prepend: Vec<(i32, String, String)> = Vec::new();
     let mut append: Vec<(i32, String, String)> = Vec::new();
 
-    for config in registered_env_configs() {
+    let configs = registered_env_configs();
+    for config in configs {
         let ebin_path = Path::new(&config.env_root).join("ebin");
-        if !lfs::exists_in_env(&ebin_path) {
+        // Use exists_or_any_symlink which handles directories (unlike exists_in_env which is file-only)
+        if !lfs::exists_or_any_symlink(&ebin_path) {
             continue;
         }
 
