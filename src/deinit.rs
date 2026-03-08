@@ -77,7 +77,7 @@ fn collect_global_deinit_plan() -> Result<DeinitPlan> {
     let mut plan = DeinitPlan::new();
     let opt_epkg = dirs().opt_epkg.clone();
 
-    if !opt_epkg.exists() {
+    if !lfs::exists_on_host(&opt_epkg) {
         println!("Global epkg directory {} does not exist.", opt_epkg.display());
         exit(1);
     }
@@ -87,7 +87,7 @@ fn collect_global_deinit_plan() -> Result<DeinitPlan> {
 
     // Remove /usr/local/bin/epkg symlink
     let usr_local_bin_epkg = PathBuf::from("/usr/local/bin/epkg");
-    if usr_local_bin_epkg.exists() {
+    if lfs::exists_on_host(&usr_local_bin_epkg) {
         plan.symlinks_to_remove.push(usr_local_bin_epkg);
     }
 
@@ -104,25 +104,25 @@ fn collect_user_personal_plan() -> Result<DeinitPlan> {
     if config().init.shared_store {
         // Remove /opt/epkg/envs/$USER/
         let user_public_envs_path = dirs().user_envs.clone();
-        if user_public_envs_path.exists() {
+        if lfs::exists_on_host(&user_public_envs_path) {
             plan.dirs_to_remove.push(user_public_envs_path);
         }
 
         // Remove /opt/epkg/cache/aur_builds/$USER/
         let user_aur_builds_path = dirs().user_aur_builds.clone();
-        if user_aur_builds_path.exists() {
+        if lfs::exists_on_host(&user_aur_builds_path) {
             plan.dirs_to_remove.push(user_aur_builds_path);
         }
     } else {
         // Remove .epkg/
         let home_epkg = dirs().home_epkg.clone();
-        if home_epkg.exists() {
+        if lfs::exists_on_host(&home_epkg) {
             plan.dirs_to_remove.push(home_epkg);
         }
 
         // Remove .cache/epkg/channels/
         let channels_cache_dir = dirs().epkg_channels_cache.clone();
-        if channels_cache_dir.exists() {
+        if lfs::exists_on_host(&channels_cache_dir) {
             plan.dirs_to_remove.push(channels_cache_dir);
         }
 
@@ -131,7 +131,7 @@ fn collect_user_personal_plan() -> Result<DeinitPlan> {
         // Remove $HOME/bin/epkg symlink
         let home_dir = get_home()?;
         let home_bin_epkg = PathBuf::from(&home_dir).join("bin/epkg");
-        if home_bin_epkg.exists() {
+        if lfs::exists_on_host(&home_bin_epkg) {
             plan.symlinks_to_remove.push(home_bin_epkg);
         }
 
@@ -201,7 +201,7 @@ fn confirm_deinit() -> Result<bool> {
 fn execute_deinit_plan(plan: &DeinitPlan) -> Result<()> {
     // Remove symlinks
     for symlink in &plan.symlinks_to_remove {
-        if symlink.exists() {
+        if lfs::exists_on_host(symlink) {
             println!("Removing symlink: {}", symlink.display());
             lfs::remove_file(symlink)?;
         }
@@ -214,7 +214,7 @@ fn execute_deinit_plan(plan: &DeinitPlan) -> Result<()> {
 
     // Remove directories in the end
     for dir in &plan.dirs_to_remove {
-        if dir.exists() {
+        if lfs::exists_on_host(dir) {
             println!("Removing directory: {}", dir.display());
             force_remove_dir_all(dir)
                 .wrap_err_with(|| format!("Failed to remove directory: {}", dir.display()))?;
@@ -226,7 +226,7 @@ fn execute_deinit_plan(plan: &DeinitPlan) -> Result<()> {
 
 pub fn remove_epkg_from_rc_file(rc_file_path: &str) -> Result<String> {
     let path = Path::new(rc_file_path);
-    if !path.exists() {
+    if !lfs::exists_on_host(path) {
         return Ok(String::new());
     }
 
