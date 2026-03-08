@@ -1,6 +1,43 @@
 //! Package exposure module
 //!
 //! This module handles "exposing" packages to the environment by creating ebin wrappers.
+//!
+//! ## Ebin Wrapper Design
+//!
+//! Ebin wrappers are scripts in `$env_root/ebin/` that allow running tools from the host
+//! without entering the environment. They work by:
+//!
+//! 1. **Starting from env path**: For each file to expose, we start with the path that
+//!    will exist in the env (e.g., `$env_root/usr/bin/npm`)
+//!
+//! 2. **Following symlinks in env context**: Many distros use symlinks like:
+//!    - `/usr/bin/npm` -> `../lib/node_modules/npm/bin/npm-cli.js`
+//!    - `/usr/bin/node` -> `nodejs` (or similar)
+//!
+//!    We follow these symlinks INSIDE the env namespace to find the actual file location.
+//!    This is crucial because:
+//!    - The symlink target must be valid inside the env
+//!    - The same symlink on host might point to a different location
+//!
+//! 3. **Using resolved path in wrapper**: The wrapper script uses the resolved path
+//!    so that when run from the host, it correctly accesses the file in the env.
+//!
+//! ### Example: Alpine npm
+//! ```
+//! Env structure:
+//!   $env_root/usr/bin/npm -> ../share/nodejs/npm/bin/npm-cli.js
+//!   $env_root/usr/share/nodejs/npm/bin/npm-cli.js -> (real file)
+//!
+//! Generated ebin wrapper ($env_root/ebin/npm):
+//!   #!/bin/sh
+//!   exec node "$env_root/usr/share/nodejs/npm/bin/npm-cli.js" "$@"
+//! ```
+//!
+//! ### Why not use store paths directly?
+//! Store paths like `/home/wfg/.epkg/store/xxx__npm/fs/usr/bin/npm` don't work because:
+//! - Symlinks in the store point to other store locations
+//! - The relative structure may differ between distros
+//! - Module resolution (e.g., `require('../lib/cli.js')`) expects specific paths
 
 use std::path::{Path, PathBuf};
 use std::fs;
@@ -189,7 +226,89 @@ fn create_ebin_wrappers(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate:
     Ok(created_ebin_paths)
 }
 
+/// Resolve the target path for an ebin wrapper by following symlinks in the env.
+///
+/// This function follows symlinks starting from `env_path` until:
+/// 1. We hit a non-symlink file (regular file), OR
+/// 2. We hit a symlink that stays within the env
+///
+/// The returned path satisfies:
+/// - From host OS POV, it's a valid file path (not a broken symlink)
+/// - The path itself is inside the env directory
+/// - Its final realpath may be either in the env or in the epkg store
+///
+/// This is important because:
+/// - Many interpreters use $0 (script path) as library search path
+/// - We want to preserve the symlink chain that stays within the env
+///
+/// Example:
+/// - Input:  $env_root/usr/bin/npm -> ../share/nodejs/npm/bin/npm-cli.js
+/// - Output: $env_root/usr/share/nodejs/npm/bin/npm-cli.js
+fn resolve_ebin_target_path(env_root: &Path, env_path: &Path) -> PathBuf {
+    let mut current = env_path.to_path_buf();
+    let mut visited = std::collections::HashSet::new();
+
+    loop {
+        // Prevent infinite loops
+        if !visited.insert(current.clone()) {
+            log::warn!("Symlink loop detected at: {}", current.display());
+            break;
+        }
+
+        // Check if current path exists (from host POV)
+        if !lfs::exists_in_env(&current) {
+            log::debug!("Path does not exist: {}", current.display());
+            break;
+        }
+
+        // Try to read symlink
+        match fs::read_link(&current) {
+            Ok(target) => {
+                // It's a symlink - resolve the target
+                if target.is_absolute() {
+                    // Absolute symlink target
+                    // If it points inside env_root, follow it
+                    if target.starts_with(env_root) {
+                        current = target.clone();
+                    } else {
+                        // Points outside env (e.g., /etc/alternatives/go)
+                        // Use the target path but mapped back into env context
+                        // This handles cases like /etc/alternatives/go -> /usr/lib/go/bin/go
+                        log::debug!("Absolute symlink outside env: {} -> {}", current.display(), target.display());
+                        // For absolute symlinks pointing outside env, we use the target as-is
+                        // since it should be accessible from the host
+                        current = target.clone();
+                        break;
+                    }
+                } else {
+                    // Relative symlink - resolve relative to current's parent
+                    if let Some(parent) = current.parent() {
+                        current = parent.join(&target);
+                    } else {
+                        break;
+                    }
+                }
+            }
+            Err(_) => {
+                // Not a symlink (regular file/dir) - this is our final target
+                break;
+            }
+        }
+    }
+
+    current
+}
+
 fn create_ebin_wrapper(env_root: &Path, fs_file_absolute: &Path, fs_file_relative: &Path) -> Result<Option<PathBuf>> {
+    // First, determine the env path for this file
+    // The env_path is where the file will be accessible inside the environment
+    let env_path = env_root.join(fs_file_relative);
+
+    // Resolve symlinks in the env context to get the actual file location
+    // This is crucial for distros that use symlinks (e.g., alpine's npm -> npm-cli.js)
+    let resolved_env_path = resolve_ebin_target_path(env_root, &env_path);
+
+    // Determine file type from the store file
     let (file_type, first_line) = utils::get_file_type(fs_file_absolute)
         .with_context(|| format!("Failed to determine file type for {}", fs_file_absolute.display()))?;
     let basename = fs_file_relative.file_name()
@@ -197,16 +316,17 @@ fn create_ebin_wrapper(env_root: &Path, fs_file_absolute: &Path, fs_file_relativ
     let ebin_path = env_root.join("ebin").join(basename);
 
     log::debug!(
-        "Creating ebin wrapper: ebin_path={}, fs_file_absolute={}, fs_file_relative={}, file_type={:?}, first_line={:?}",
+        "Creating ebin wrapper: ebin_path={}, fs_file_absolute={}, fs_file_relative={}, resolved_env_path={}, file_type={:?}, first_line={:?}",
         ebin_path.display(),
         fs_file_absolute.display(),
         fs_file_relative.display(),
+        resolved_env_path.display(),
         file_type,
         first_line
     );
     match file_type {
         FileType::Elf => {
-            handle_elf(&ebin_path, env_root, fs_file_absolute)
+            handle_elf(&ebin_path, env_root, &resolved_env_path)
                 .with_context(|| format!("Failed to handle elf for {}", ebin_path.display()))?;
             return Ok(Some(ebin_path));
         }
@@ -216,8 +336,8 @@ fn create_ebin_wrapper(env_root: &Path, fs_file_absolute: &Path, fs_file_relativ
         | FileType::RubyScript
         | FileType::NodeScript
         | FileType::LuaScript => {
-            create_script_wrapper(env_root, fs_file_absolute, &ebin_path, file_type, &first_line)
-                .with_context(|| format!("Failed to create script wrapper for {}", fs_file_absolute.display()))?;
+            create_script_wrapper(env_root, &resolved_env_path, &ebin_path, file_type, &first_line)
+                .with_context(|| format!("Failed to create script wrapper for {}", resolved_env_path.display()))?;
             return Ok(Some(ebin_path));
         }
         _ => return Ok(None),
@@ -434,51 +554,36 @@ fn find_and_link_alternative_interpreter(interpreter_in_env: &Path, interpreter_
     Ok(())
 }
 
-fn get_exec_command(file_type: &FileType, fs_file: &Path, env_root: Option<&Path>) -> String {
-    // For scripts that need to run in env context, convert store path to env path
-    let path_to_use = if let Some(root) = env_root {
-        // Convert store path to env path by replacing store prefix with env prefix
-        let fs_str = fs_file.to_string_lossy();
-        if let Some(idx) = fs_str.find("/fs/") {
-            // Store path like /home/wfg/.epkg/store/xxx__pkg/fs/usr/share/nodejs/...
-            // Convert to env path like /home/wfg/.epkg/envs/envname/usr/share/nodejs/...
-            if let Some(env_path) = root.to_str() {
-                let path_in_store = &fs_str[idx + 3..]; // Skip "/fs/"
-                let new_path = format!("{}/{}", env_path, path_in_store);
-                PathBuf::from(new_path)
-            } else {
-                fs_file.to_path_buf()
-            }
-        } else {
-            fs_file.to_path_buf()
-        }
-    } else {
-        fs_file.to_path_buf()
-    };
+fn get_exec_command(file_type: &FileType, resolved_path: &Path, _env_root: Option<&Path>) -> String {
+    // The resolved_path is already the final path in the env (symlinks resolved)
+    // No need for store-to-env conversion
 
     // Special handling for npm and npx shell scripts - call the -cli.js directly
     // This avoids issues with the npm shell script's dynamic node detection
-    let path_str = path_to_use.to_string_lossy();
-    if path_str.ends_with("/bin/npm") {
-        let cli_path = path_str.trim_end_matches("/bin/npm").to_string() + "/bin/npm-cli.js";
-        return format!("exec node {:?} \"$@\"\n", cli_path);
-    }
-    if path_str.ends_with("/bin/npx") {
-        let cli_path = path_str.trim_end_matches("/bin/npx").to_string() + "/bin/npx-cli.js";
-        return format!("exec node {:?} \"$@\"\n", cli_path);
+    // Only apply this for shell scripts, not Node.js scripts (e.g., alpine uses Node.js scripts)
+    if *file_type == FileType::ShellScript {
+        let path_str = resolved_path.to_string_lossy();
+        if path_str.ends_with("/bin/npm") {
+            let cli_path = path_str.trim_end_matches("/bin/npm").to_string() + "/bin/npm-cli.js";
+            return format!("exec node {:?} \"$@\"\n", cli_path);
+        }
+        if path_str.ends_with("/bin/npx") {
+            let cli_path = path_str.trim_end_matches("/bin/npx").to_string() + "/bin/npx-cli.js";
+            return format!("exec node {:?} \"$@\"\n", cli_path);
+        }
     }
 
     match file_type {
-        FileType::ShellScript => format!("exec {:?} \"$@\"\n", path_to_use),
-        FileType::PythonScript => format!("exec(open({:?}).read())\n", path_to_use),
-        FileType::RubyScript => format!("load({:?})\n", path_to_use),
-        FileType::LuaScript => format!("dofile({:?})\n", path_to_use),
+        FileType::ShellScript => format!("exec {:?} \"$@\"\n", resolved_path),
+        FileType::PythonScript => format!("exec(open({:?}).read())\n", resolved_path),
+        FileType::RubyScript => format!("load({:?})\n", resolved_path),
+        FileType::LuaScript => format!("dofile({:?})\n", resolved_path),
         FileType::NodeScript => {
             // For Node.js scripts, use a shell wrapper that calls node explicitly
             // This ensures proper module resolution from the script's directory
-            format!("exec node {:?} \"$@\"\n", path_to_use)
+            format!("exec node {:?} \"$@\"\n", resolved_path)
         }
-        _ => format!("exec {:?} \"$@\"\n", path_to_use),
+        _ => format!("exec {:?} \"$@\"\n", resolved_path),
     }
 }
 
@@ -565,4 +670,96 @@ pub fn expose_package(plan: &mut InstallationPlan, store_fs_dir: &Path, pkgkey: 
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test resolve_ebin_target_path with real-world distro layouts
+    ///
+    /// Test cases cover:
+    /// 1. Alpine: npm -> ../share/nodejs/npm/bin/npm-cli.js (relative symlink to file)
+    /// 2. OpenEuler: npm -> ../share/nodejs/npm/bin/npm (relative symlink to shell script)
+    /// 3. Debian: npm -> ../share/nodejs/npm/bin/npm-cli.js, nodejs -> node
+    mod resolve_ebin_target_path_tests {
+        use super::*;
+
+        fn get_test_osroot() -> PathBuf {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/osroot")
+        }
+
+        #[test]
+        fn test_alpine_npm_symlink() {
+            // Alpine: /usr/bin/npm -> ../share/nodejs/npm/bin/npm-cli.js
+            let osroot = get_test_osroot().join("alpine");
+            let env_path = osroot.join("usr/bin/npm");
+
+            let resolved = resolve_ebin_target_path(&osroot, &env_path);
+
+            // Should resolve to: osroot/usr/share/nodejs/npm/bin/npm-cli.js
+            let expected = osroot.join("usr/share/nodejs/npm/bin/npm-cli.js");
+            assert_eq!(resolved.canonicalize().unwrap(), expected.canonicalize().unwrap(), "Alpine npm symlink should resolve to npm-cli.js");
+        }
+
+        #[test]
+        fn test_alpine_npx_symlink() {
+            // Alpine: /usr/bin/npx -> ../share/nodejs/npm/bin/npx-cli.js
+            let osroot = get_test_osroot().join("alpine");
+            let env_path = osroot.join("usr/bin/npx");
+
+            let resolved = resolve_ebin_target_path(&osroot, &env_path);
+
+            let expected = osroot.join("usr/share/nodejs/npm/bin/npx-cli.js");
+            assert_eq!(resolved.canonicalize().unwrap(), expected.canonicalize().unwrap(), "Alpine npx symlink should resolve to npx-cli.js");
+        }
+
+        #[test]
+        fn test_openeuler_npm_symlink() {
+            // OpenEuler: /usr/bin/npm -> ../share/nodejs/npm/bin/npm (symlink to shell script)
+            let osroot = get_test_osroot().join("openeuler");
+            let env_path = osroot.join("usr/bin/npm");
+
+            let resolved = resolve_ebin_target_path(&osroot, &env_path);
+
+            // Should resolve to: osroot/usr/share/nodejs/npm/bin/npm (the shell script)
+            let expected = osroot.join("usr/share/nodejs/npm/bin/npm");
+            assert_eq!(resolved.canonicalize().unwrap(), expected.canonicalize().unwrap(), "OpenEuler npm symlink should resolve to npm shell script");
+        }
+
+        #[test]
+        fn test_debian_npm_symlink() {
+            // Debian: /usr/bin/npm -> ../share/nodejs/npm/bin/npm-cli.js
+            let osroot = get_test_osroot().join("debian");
+            let env_path = osroot.join("usr/bin/npm");
+
+            let resolved = resolve_ebin_target_path(&osroot, &env_path);
+
+            let expected = osroot.join("usr/share/nodejs/npm/bin/npm-cli.js");
+            assert_eq!(resolved.canonicalize().unwrap(), expected.canonicalize().unwrap(), "Debian npm symlink should resolve to npm-cli.js");
+        }
+
+        #[test]
+        fn test_debian_nodejs_symlink() {
+            // Debian: /usr/bin/nodejs -> node (symlink to real file)
+            let osroot = get_test_osroot().join("debian");
+            let env_path = osroot.join("usr/bin/nodejs");
+
+            let resolved = resolve_ebin_target_path(&osroot, &env_path);
+
+            let expected = osroot.join("usr/bin/node");
+            assert_eq!(resolved.canonicalize().unwrap(), expected.canonicalize().unwrap(), "Debian nodejs symlink should resolve to node");
+        }
+
+        #[test]
+        fn test_regular_file_no_symlink() {
+            // Test with a regular file (no symlink) - should return the same path
+            let osroot = get_test_osroot().join("debian");
+            let env_path = osroot.join("usr/bin/node");
+
+            let resolved = resolve_ebin_target_path(&osroot, &env_path);
+
+            assert_eq!(resolved, env_path, "Regular file should return same path");
+        }
+    }
 }
