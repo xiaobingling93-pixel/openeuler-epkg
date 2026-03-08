@@ -379,7 +379,7 @@ fn is_file_recent(path: &PathBuf, max_age: &Duration) -> Result<bool> {
         log::debug!("is_file_recent: file does not exist, returning false, path={}, max_age={}s", path.display(), max_age.as_secs());
         return Ok(false);
     }
-    let metadata = lfs::symlink_metadata(path)
+    let metadata = lfs::metadata_on_host(path)
         .with_context(|| format!("Failed to get metadata for file: {}", path.display()))?;
     let modified = metadata.modified()
         .with_context(|| format!("Failed to get modification time for file: {}", path.display()))?;
@@ -515,7 +515,7 @@ fn sync_from_package_database(repo: &RepoRevise, packages_path: &mut PathBuf) ->
         let output_path = repo_dir.join("packages.txt");
         let output_exists = lfs::exists_on_host(&output_path);
         let output_size = if output_exists {
-            lfs::symlink_metadata(&output_path).ok().map(|m| m.len()).unwrap_or(0)
+            lfs::metadata_on_host(&output_path).ok().map(|m| m.len()).unwrap_or(0)
         } else {
             0
         };
@@ -1190,7 +1190,7 @@ fn create_filelists_symlink(revise: &RepoReleaseItem, output_path: &PathBuf) -> 
 
 /// Generate file metadata and write it to a JSON file
 pub fn generate_and_write_filelists_metadata(output_path: &PathBuf, calculated_hash: String) -> Result<FilelistsFileInfo> {
-    let metadata = lfs::symlink_metadata(output_path)
+    let metadata = lfs::metadata_on_host(output_path)
         .with_context(|| format!("Failed to get metadata for {}", output_path.display()))?;
 
     let file_info = FilelistsFileInfo {

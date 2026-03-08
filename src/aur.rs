@@ -206,7 +206,7 @@ fn validate_download_path(revise: &RepoReleaseItem) -> Result<()> {
             return Err(eyre::eyre!("Downloaded file does not exist: {}", revise.download_path.display()));
         }
 
-        let metadata = lfs::symlink_metadata(&revise.download_path)
+        let metadata = lfs::metadata_on_host(&revise.download_path)
             .map_err(|e| eyre::eyre!("Failed to get metadata for {}: {}", revise.download_path.display(), e))?;
 
         if metadata.len() == 0 {

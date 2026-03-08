@@ -35,6 +35,8 @@
 //!   • is_symlink()              - Check if path is a symlink
 //!   • exists_no_follow()        - Check path itself exists (incl. broken symlink)
 //!   • symlink_metadata()        - Get metadata (no symlink follow)
+//!   • metadata_on_host()        - Get metadata (follows symlinks) - for host paths
+//!   • metadata_in_env()         - Get metadata (resolves symlink in env) - for env paths
 //!
 //! Exception: Internal lfs.rs functions (like resolve_symlink_in_env_recursive)
 //!            may use .exists() directly as they already handle symlink logic.
@@ -48,7 +50,11 @@
 //!  ├───────────────┼────────────────────────────┼───────────────────────────────────────┤
 //!  │               │ resolve_symlink_in_env()   │ 在 env 内解析 symlink                 │
 //!  ├───────────────┼────────────────────────────┼───────────────────────────────────────┤
+//!  │               │ metadata_in_env()          │ 获取 metadata（在 env 内解析 symlink）│
+//!  ├───────────────┼────────────────────────────┼───────────────────────────────────────┤
 //!  │ Host 专用函数 │ exists_on_host()           │ 检查 host 路径（follow symlinks）     │
+//!  ├───────────────┼────────────────────────────┼───────────────────────────────────────┤
+//!  │               │ metadata_on_host()         │ 获取 metadata（follow symlinks）      │
 //!  ├───────────────┼────────────────────────────┼───────────────────────────────────────┤
 //!  │               │ is_regular_file_on_host()  │ 检查 host 上的普通文件                │
 //!  ├───────────────┼────────────────────────────┼───────────────────────────────────────┤
@@ -290,6 +296,35 @@ pub fn symlink_metadata<P: AsRef<Path>>(path: P) -> Result<fs::Metadata> {
     log::trace!("getting metadata (no follow): {}", path.display());
     fs::symlink_metadata(path)
         .wrap_err_with(|| format!("Failed to get metadata for {}", path.display()))
+}
+
+/// 获取文件 metadata，follow symlink 到 target
+/// 用于 host 路径，需要获取 symlink target 的实际属性
+pub fn metadata_on_host<P: AsRef<Path>>(path: P) -> Result<fs::Metadata> {
+    let path = path.as_ref();
+    log::trace!("getting metadata (follow symlinks, host path): {}", path.display());
+    fs::metadata(path)
+        .wrap_err_with(|| format!("Failed to get metadata for {}", path.display()))
+}
+
+/// 获取 env 内文件的 metadata，自动解析 symlink 到 target
+/// 用于 env 路径，当需要获取 symlink target 的实际属性时使用
+/// 注意：如果 symlink 指向 guest 路径（在 host 上不存在），此函数会失败
+/// 对于这种情况，应该使用 symlink_metadata() 检查 symlink 本身
+#[allow(dead_code)]
+pub fn metadata_in_env<P: AsRef<Path>>(path: P, env_root: &Path) -> Result<fs::Metadata> {
+    let path = path.as_ref();
+    log::trace!("getting metadata (resolve symlink in env): {}", path.display());
+
+    // If it's a symlink, resolve it first
+    if let Some(link_target) = resolve_symlink_in_env(path, env_root) {
+        fs::metadata(&link_target)
+            .wrap_err_with(|| format!("Failed to get metadata for symlink target {}", link_target.display()))
+    } else {
+        // Not a symlink, get metadata directly
+        fs::metadata(path)
+            .wrap_err_with(|| format!("Failed to get metadata for {}", path.display()))
+    }
 }
 
 /// Check if path is a symlink
