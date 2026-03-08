@@ -160,7 +160,7 @@ pub(crate) fn ensure_dev_symlinks(dev_root: &Path) -> Result<()> {
 
     for (name, target) in &symlinks {
         let link_path = dev_root.join(name);
-        if link_path.exists() {
+        if lfs::exists_on_host(&link_path) {
             continue;
         }
         if let Err(e) = lfs::symlink(target, &link_path) {
@@ -190,7 +190,7 @@ pub(crate) fn ensure_minimal_dev_nodes(dev_root: &Path) -> Result<()> {
     let kind = SFlag::from_bits_truncate(libc::S_IFCHR as nix::libc::mode_t);
     for (name, major, minor) in dev_nodes {
         let path = dev_root.join(name);
-        if path.exists() {
+        if lfs::exists_on_host(&path) {
             continue;
         }
         let dev = makedev(*major, *minor);
@@ -202,7 +202,7 @@ pub(crate) fn ensure_minimal_dev_nodes(dev_root: &Path) -> Result<()> {
     for minor in 0u64..=6 {
         let name = format!("tty{}", minor);
         let path = dev_root.join(&name);
-        if path.exists() {
+        if lfs::exists_on_host(&path) {
             continue;
         }
         let dev = makedev(4, minor);
@@ -336,8 +336,15 @@ fn ensure_bind_target_exists(source: &PathBuf, target: &Path, sandbox_mode: Sand
     use std::fs;
 
     // If target already exists, nothing to do
-    if target.exists() {
-        return Ok(());
+    // For Fs/Vm modes, target is in env_root; for Env mode, we return early
+    if sandbox_mode == SandboxMode::Fs || sandbox_mode == SandboxMode::Vm {
+        if lfs::exists_or_any_symlink(target) {
+            return Ok(());
+        }
+    } else {
+        if lfs::exists_on_host(target) {
+            return Ok(());
+        }
     }
 
     // Self-bind (source == target): e.g. @/run:/run resolves to env_root/run for both.
@@ -345,7 +352,7 @@ fn ensure_bind_target_exists(source: &PathBuf, target: &Path, sandbox_mode: Sand
     // we are creating the path we are about to mount, not arbitrary host directories.
     if source == target {
         if let Some(parent) = target.parent() {
-            if !parent.exists() {
+            if !lfs::exists_or_any_symlink(parent) {
                 lfs::create_dir_all(parent)?;
             }
         }
@@ -361,7 +368,7 @@ fn ensure_bind_target_exists(source: &PathBuf, target: &Path, sandbox_mode: Sand
     }
 
     // If source doesn't exist, cannot determine type (may be try_only mount)
-    if !source.exists() {
+    if !lfs::exists_on_host(source) {
         return Ok(());
     }
 
@@ -373,7 +380,7 @@ fn ensure_bind_target_exists(source: &PathBuf, target: &Path, sandbox_mode: Sand
 
     // Ensure parent directory exists
     if let Some(parent) = target.parent() {
-        if !parent.exists() {
+        if !lfs::exists_or_any_symlink(parent) {
             let _ = lfs::create_dir_all(parent);
         }
     }
@@ -406,13 +413,13 @@ fn ensure_mount_target_exists(target: &Path, sandbox_mode: SandboxMode) -> Resul
     }
 
     // If target already exists, nothing to do
-    if target.exists() {
+    if lfs::exists_or_any_symlink(target) {
         return Ok(());
     }
 
     // Ensure parent directory exists
     if let Some(parent) = target.parent() {
-        if !parent.exists() {
+        if !lfs::exists_or_any_symlink(parent) {
             let _ = lfs::create_dir_all(parent);
         }
     }
@@ -556,7 +563,7 @@ fn mount_filesystem(source: &str, target: &Path, fstype: &str, flags: MsFlags, o
 
 // Helper to check if a bind mount should be created (both paths exist and are directories)
 fn should_bind_mount(host_path: &Path, guest_path: &Path) -> bool {
-    if !host_path.exists() || !guest_path.exists() {
+    if !lfs::exists_on_host(host_path) || !lfs::exists_or_any_symlink(guest_path) {
         return false;
     }
     match (fs::symlink_metadata(host_path), fs::symlink_metadata(guest_path)) {
@@ -715,7 +722,7 @@ pub(crate) fn mount_opt_epkg_isolation(euid: Uid, uid: Uid, env_root: &Path) -> 
     let opt_epkg_path = Path::new("/opt/epkg");
     // Store whether /opt/epkg existed BEFORE mounting env_root/opt over /opt
     // This is critical because after mounting, /opt/epkg will be hidden
-    let opt_epkg_existed = opt_epkg_path.exists();
+    let opt_epkg_existed = lfs::exists_on_host(opt_epkg_path);
     trace!("mount_opt_epkg_isolation: /opt/epkg exists? {} (before mount)", opt_epkg_existed);
 
     let mut specs = Vec::new();
@@ -732,7 +739,7 @@ pub(crate) fn mount_opt_epkg_isolation(euid: Uid, uid: Uid, env_root: &Path) -> 
     // Mount environment /opt directory
     let src = env_root.join("opt");
     let _host_path = Path::new("/opt");
-    if src.exists() {
+    if lfs::exists_in_env(&src) {
         trace!(
             "Generating mount spec for @/opt -> /opt"
         );
@@ -742,7 +749,7 @@ pub(crate) fn mount_opt_epkg_isolation(euid: Uid, uid: Uid, env_root: &Path) -> 
     // If /opt/epkg existed BEFORE mounting, bind mount it back
     // Use the stored value, not a new check, because /opt/epkg is now hidden
     if opt_epkg_existed {
-        if opt_real_path.exists() {
+        if lfs::exists_in_env(&opt_real_path) {
             trace!(
                 "Generating mount spec for {} -> {}",
                 opt_real_path.display(),
