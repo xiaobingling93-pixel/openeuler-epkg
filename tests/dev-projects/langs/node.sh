@@ -15,8 +15,8 @@ run node -e "console.log('ok')"
 
 run /bin/sh -c 'mkdir -p /tmp/nodeproj && cd /tmp/nodeproj && echo "console.log(\"hello\");" > index.js'
 run /bin/sh -c 'cd /tmp/nodeproj && node index.js' | grep -q hello
-# npm install can fail (e.g. TLS cert in sandbox); only check lodash if install succeeded
-run /bin/sh -c 'cd /tmp/nodeproj && npm init -y && npm install lodash' && run node -e "require('lodash'); console.log('ok')" | grep -q ok || true
+# Run node from within /tmp/nodeproj so it can find the locally installed lodash module
+run /bin/sh -c "cd /tmp/nodeproj && npm init -y && npm install lodash && node -e \"require('lodash'); console.log('ok')\"" | grep -q ok
 # Exercise ebin for npm (install in a second dir)
 run /bin/sh -c 'mkdir -p /tmp/nodeproj2 && cd /tmp/nodeproj2 && npm init -y'
 if [ -n "${ENV_ROOT:-}" ] && [ -x "$ENV_ROOT/ebin/npm" ]; then

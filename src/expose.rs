@@ -70,6 +70,31 @@ fn unexpose_package_ebin(env_root: &Path, pkgkey: &str) -> Result<()> {
     Ok(())
 }
 
+/// Create symlink usr/bin/node_modules -> ../lib/node_modules for npm compatibility
+/// Some distros (e.g., openEuler) install npm modules in /usr/lib/node_modules,
+/// but npm expects to find them in /usr/bin/node_modules when resolving modules.
+fn create_node_modules_symlink(env_root: &Path) -> Result<()> {
+    let node_modules_in_lib = env_root.join("usr/lib/node_modules");
+    let node_modules_in_bin = env_root.join("usr/bin/node_modules");
+
+    // Only create symlink if source exists
+    if !node_modules_in_lib.exists() {
+        return Ok(());
+    }
+
+    // Remove existing symlink/file if any
+    if lfs::symlink_metadata(&node_modules_in_bin).is_ok() {
+        lfs::remove_file(&node_modules_in_bin)?;
+    }
+
+    // Create symlink: usr/bin/node_modules -> ../lib/node_modules
+    lfs::symlink("../lib/node_modules", &node_modules_in_bin)
+        .with_context(|| format!("Failed to create node_modules symlink at {}", node_modules_in_bin.display()))?;
+
+    log::debug!("Created symlink: {} -> ../lib/node_modules", node_modules_in_bin.display());
+    Ok(())
+}
+
 
 /// Handle ELF binary with elf-loader wrapper (non-conda environments)
 fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
@@ -418,6 +443,7 @@ fn get_exec_command(file_type: &FileType, fs_file: &Path) -> String {
         FileType::PythonScript => format!("exec(open({:?}).read())\n", fs_file),
         FileType::RubyScript => format!("load({:?})\n", fs_file),
         FileType::LuaScript => format!("dofile({:?})\n", fs_file),
+        FileType::NodeScript => format!("require({:?})\n", fs_file),
         _ => format!("exec {:?} \"$@\"\n", fs_file),
     }
 }
@@ -474,6 +500,16 @@ pub fn expose_package(plan: &mut InstallationPlan, store_fs_dir: &Path, pkgkey: 
     // Expose ebin wrappers
     let ebin_links = expose_package_ebin(&store_fs_dir.to_path_buf(), &plan.env_root)
         .with_context(|| format!("Failed to expose package {}", pkgkey))?;
+
+    // Create usr/bin/node_modules -> ../lib/node_modules symlink for npm/nodejs packages
+    // This is needed for distros (e.g., openEuler) where npm modules are in /usr/lib/node_modules
+    // but npm expects to find them in /usr/bin/node_modules when resolving modules
+    if let Ok(parsed) = crate::package::parse_pkgline(&installed_pkg_info.pkgline) {
+        if parsed.pkgname == "npm" || parsed.pkgname == "nodejs" {
+            create_node_modules_symlink(&plan.env_root)
+                .with_context(|| format!("Failed to create node_modules symlink for package {}", pkgkey))?;
+        }
+    }
 
     // Desktop integration
     #[cfg(unix)]
