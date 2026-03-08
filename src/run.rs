@@ -100,7 +100,7 @@ pub fn resolve_vm_kernel_path(run_options: &RunOptions) -> Result<String> {
                 "No kernel image for VM. Use '--kernel /path/to/kernel', run 'epkg self install', or ensure a kernel exists in /boot."
             )
         })?;
-    if !Path::new(&kernel).exists() {
+    if !lfs::exists_on_host(Path::new(&kernel)) {
         return Err(eyre::eyre!("Kernel image not found at {}", kernel));
     }
     Ok(kernel)
@@ -330,7 +330,7 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
         Ok(PathBuf::from(&run_options.command))
     } else if run_options.command.contains('/') {
         Ok(PathBuf::from(&run_options.command))
-    } else if Path::new(&run_options.command).exists() {
+    } else if lfs::exists_on_host(Path::new(&run_options.command)) {
         Ok(PathBuf::from(&run_options.command))
     } else {
         find_command_in_env_path(&run_options.command, env_root)
