@@ -748,7 +748,14 @@ fn build_exec_for_script<P: AsRef<Path>>(
     // Make script executable
     utils::set_executable_permissions(&script_path, 0o755)?;
 
-    Ok(format!("%PKGINFO_DIR/install/{}.{}", hook_name, extension))
+    // For Lua scripts, prepend 'rpmlua ' to avoid Exec format error
+    // The kernel may not recognize the shebang in isolated namespaces
+    let exec_path = format!("%PKGINFO_DIR/install/{}.{}", hook_name, extension);
+    if extension == "lua" {
+        Ok(format!("rpmlua {}", exec_path))
+    } else {
+        Ok(exec_path)
+    }
 }
 
 /// Extract RPM trigger scriptlets (package triggers, file triggers, transaction file triggers)
