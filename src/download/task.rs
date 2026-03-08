@@ -126,6 +126,7 @@ impl DownloadTask {
             repodata_name:     repodata_name,
             sha256sum,
             sha1sum,
+            skip_chunking:     AtomicBool::new(false),
         }
     }
 
@@ -255,6 +256,8 @@ impl DownloadTask {
             repodata_name:        self.repodata_name.clone(),
             sha256sum:            self.sha256sum.clone(),
             sha1sum:              self.sha1sum.clone(),
+            // Chunk tasks inherit skip_chunking from parent, though they won't use it
+            skip_chunking:        AtomicBool::new(self.skip_chunking.load(Ordering::Relaxed)),
         })
     }
 

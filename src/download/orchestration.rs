@@ -413,6 +413,33 @@ fn download_file_with_retries(
                             // Don't mark mirror as bad for disk errors - they're local issues
                             return Err(e);
                         },
+                        DownloadError::NoRangeSupport => {
+                            log::debug!(
+                                "download_file_with_retries got NoRangeSupport error for {} (saving to {})",
+                                resolved_url,
+                                task.chunk_path.display()
+                            );
+                            // Set skip_chunking if the URL is concrete single-site, so can't try another mirror.
+                            if !task.url.contains("$mirror") {
+                                log::debug!("URL {} is pinned to specific mirror, setting skip_chunking for retry without Range", task.url);
+                                task.skip_chunking.store(true, Ordering::Relaxed);
+                                // Also reset chunk state for clean retry
+                                if let Ok(mut guard) = task.chunk_tasks.lock() {
+                                    if !guard.is_empty() {
+                                        log::debug!("Clearing {} chunk tasks for NoRangeSupport retry", guard.len());
+                                        guard.clear();
+                                        let file_size = task.file_size.load(Ordering::Relaxed);
+                                        if file_size > 0 {
+                                            task.chunk_size.store(file_size, Ordering::Relaxed);
+                                        }
+                                    }
+                                }
+                                if let Err(e2) = task.set_chunk_status(ChunkStatus::NoChunk) {
+                                    log::warn!("Failed to reset chunk_status to NoChunk: {}", e2);
+                                }
+                            }
+                            // Otherwise, let normal mirror retry logic handle it
+                        },
                     }
                 } else {
                     log::debug!("download_file_with_retries got error for {}: {}", resolved_url, e);
@@ -470,13 +497,19 @@ fn download_file(
     let url = &task.url;
     log::debug!("download_file starting for {} (chunk_path={})", url, task.chunk_path.display());
 
-    // Try to create beforehand chunks
-    create_chunk_tasks(task)?;
+    // Try to create beforehand chunks only if skip_chunking is false
+    if !task.skip_chunking.load(Ordering::Relaxed) {
+        create_chunk_tasks(task)?;
+    } else {
+        log::debug!("download_file skipping chunking for {} (server doesn't support Range requests)", url);
+    }
 
     download_chunk_task(task)?;
 
-    // Wait for all chunks to complete and merge them
-    wait_for_chunks_and_merge(task)?;
+    // Wait for all chunks to complete and merge them (only if we have chunks)
+    if !task.skip_chunking.load(Ordering::Relaxed) {
+        wait_for_chunks_and_merge(task)?;
+    }
 
     log::debug!("download_file calling finalize_file for {} (chunk_path={})", url, task.chunk_path.display());
     finalize_file(task)?;

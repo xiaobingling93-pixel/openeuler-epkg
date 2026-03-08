@@ -349,6 +349,12 @@ pub(crate) fn create_chunk_tasks(task: &DownloadTask) -> Result<()> {
         return Ok(());
     }
 
+    // Skip chunking if flag is set (e.g., server doesn't support Range requests)
+    if task.skip_chunking.load(Ordering::Relaxed) {
+        log::debug!("Skipping chunking for {}: skip_chunking flag is set (server doesn't support Range requests)", task.chunk_path.display());
+        return Ok(());
+    }
+
     // Don't chunk if we don't know the file size
     let file_size_val = task.file_size.load(Ordering::Relaxed);
     if file_size_val == 0 {
@@ -1226,6 +1232,7 @@ pub(crate) fn check_ondemand_chunking(
 ///
 /// 1. If the chunk status is NoChunk or NeedOndemandChunk
 /// 2. If the remaining size is at least 2 * ONDEMAND_CHUNK_SIZE (512KB)
+/// 3. If skip_chunking is not set (server supports Range requests)
 ///
 /// The actual chunking decision and creation is handled by the global scheduler in
 /// collect_pending_chunks() for global optimized decision and executed in individual task threads
@@ -1235,6 +1242,11 @@ pub(crate) fn may_ondemand_chunking(task: &DownloadTask) -> bool {
     let file_size = task.file_size.load(Ordering::Relaxed);
     if file_size == 0 {
         return false; // Unknown file size = no clue at all
+    }
+
+    // Skip ondemand chunking if skip_chunking flag is set (server doesn't support Range requests)
+    if task.skip_chunking.load(Ordering::Relaxed) {
+        return false;
     }
 
     let chunk_status = task.get_chunk_status();
@@ -1442,6 +1454,27 @@ fn handle_failed_chunk(
     error: &str
 ) -> bool {
     let current_attempt = chunk_task.attempt_number.load(Ordering::SeqCst);
+
+    // Check if this is a NoRangeSupport error - server doesn't support Range requests
+    // Only set skip_chunking if URL is pinned to specific mirror (can't try another mirror)
+    if error.contains("Server does not support Range requests") {
+        // Only set skip_chunking if the URL is concrete single-site, so can't try another mirror.
+        if !parent_task.url.contains("$mirror") {
+            log::debug!(
+                "handle_failed_chunk: detected NoRangeSupport error for pinned URL {}, setting skip_chunking",
+                parent_task.url
+            );
+            // Set skip_chunking on the master task - top-level retry will handle single-threaded retry
+            parent_task.skip_chunking.store(true, Ordering::Relaxed);
+        } else {
+            log::debug!(
+                "handle_failed_chunk: detected NoRangeSupport error but URL {} contains $mirror, letting mirror retry handle it",
+                parent_task.url
+            );
+        }
+        // Return false to stop retrying this chunk - let top-level retry handle it
+        return false;
+    }
 
     if current_attempt < parent_task.max_retries {
         // Only remove .part when the error indicates corrupt/inconsistent state (e.g. byte count

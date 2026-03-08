@@ -155,6 +155,9 @@ pub struct DownloadTask {
 
     // Range request type for this download task
     pub range_request:        Mutex<RangeRequest>,
+
+    // Skip chunking flag - set when server doesn't support Range requests
+    pub skip_chunking:        AtomicBool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -294,6 +297,8 @@ pub enum DownloadError {
     AlreadyComplete,
     /// Disk/IO errors that should not mark the mirror as bad
     DiskError { details: String },
+    /// Server doesn't support Range requests - should retry without Range header
+    NoRangeSupport,
 }
 
 impl std::fmt::Display for DownloadError {
@@ -316,6 +321,9 @@ impl std::fmt::Display for DownloadError {
             },
             DownloadError::DiskError { details } => {
                 write!(f, "Disk/IO error: {}", details)
+            },
+            DownloadError::NoRangeSupport => {
+                write!(f, "Server does not support Range requests")
             },
         }
     }

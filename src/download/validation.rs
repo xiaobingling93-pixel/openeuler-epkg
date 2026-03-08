@@ -49,7 +49,7 @@ pub fn validate_range_request_response(
             if let Err(e) = mirror::append_http_log(resolved_url, mirror::HttpEvent::NoRange) {
                 log::warn!("Failed to log chunk range error: {}", e);
             }
-            return Err(eyre!("Server returned 200 instead of 206 for range request - would corrupt chunk"));
+            return Err(DownloadError::NoRangeSupport.into());
         }
 
         if response.status() != 206 {
