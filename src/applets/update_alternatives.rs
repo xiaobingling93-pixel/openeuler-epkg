@@ -197,7 +197,7 @@ fn write_admin_file(admdir: &Path, a: &Alternative) -> Result<()> {
 }
 
 fn path_exists(root: &Path, p: &str) -> bool {
-    root_join(root, p).exists()
+    lfs::exists_or_any_symlink(&root_join(root, p))
 }
 
 fn best_choice(a: &Alternative) -> Option<&Choice> {
@@ -221,7 +221,7 @@ fn apply_alternative(
     if let Some(parent) = alt_name_path.parent() {
         lfs::create_dir_all(parent)?;
     }
-    if alt_name_path.exists() {
+    if lfs::exists_or_any_symlink(&alt_name_path) {
         lfs::remove_file(&alt_name_path)?;
     }
     // Compute target path relative to root, then make it relative to symlink location
@@ -230,7 +230,7 @@ fn apply_alternative(
     lfs::symlink(&relative_target, &alt_name_path)?;
 
     let master_link_full = root_join(root, &a.master_link);
-    if master_link_full.exists() {
+    if lfs::exists_or_any_symlink(&master_link_full) {
         if !force && !master_link_full.is_symlink() {
             return Err(eyre!("not replacing {} with a link (use --force)", a.master_link));
         }
@@ -252,7 +252,7 @@ fn apply_alternative(
             }
             let slave_alt = root_join(root, &format!("{}/{}", altdir, sl.name));
             let slave_link_full = root_join(root, &sl.link);
-            if slave_alt.exists() {
+            if lfs::exists_or_any_symlink(&slave_alt) {
                 lfs::remove_file(&slave_alt).ok();
             }
             #[cfg(unix)]
@@ -260,7 +260,7 @@ fn apply_alternative(
                 let slave_relative = make_relative_target(root, spath, &slave_alt);
                 lfs::symlink(&slave_relative, &slave_alt).ok();
             }
-            if slave_link_full.exists() {
+            if lfs::exists_or_any_symlink(&slave_link_full) {
                 if !force && !slave_link_full.is_symlink() {
                     continue;
                 }
