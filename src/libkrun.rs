@@ -61,161 +61,44 @@ unsafe extern "C" {
         c_tag: *const std::ffi::c_char,
         c_path: *const std::ffi::c_char,
     ) -> i32;
-    /// Set kernel bundle directly without using libkrunfw dlopen.
-    /// This allows statically-linked binaries to mmap the kernel themselves
-    /// and pass the bundle parameters (host_addr, guest_addr, entry_addr, size) directly.
-    fn krun_set_kernel_bundle(
-        ctx_id: u32,
-        host_addr: u64,
-        guest_addr: u64,
-        entry_addr: u64,
-        size: usize,
-    ) -> i32;
 }
 
 
 // Force the staticlib to be linked when we only reference it via extern "C".
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
 fn ensure_libkrun_linked() {
-    // Note: We do NOT use libkrunfw's dlopen-based kernel loading.
-    // Instead, we mmap the pre-extracted kernel directly via krun_set_kernel_bundle().
-    // This allows statically-linked epkg binaries (which cannot use dlopen) to work.
-    //
-    // Architecture rationale: We load the kernel ourselves to allow end users to
-    // flexibly change the kernel by replacing the extracted kernel file, without
-    // being tied to libkrunfw's bundled kernel.
+    // We use libkrun's krun_set_kernel() with format=0 (Raw) which calls map_kernel().
+    // This treats the kernel as a bundled raw binary and loads it at guest_addr=0x2000_0000.
     krun_crate::ensure_linked();
 }
 
-/// Parse the entry point from an x86_64 bzImage header.
-///
-/// The bzImage header format:
-/// - Header starts at offset 0x1F1
-/// - Field 'code32_start' (32-bit entry point) is at offset 0x214 from header start
-///   which is 0x1F1 + 0x214 = 0x405 from file start
-///
-/// Returns None if the image doesn't have a valid bzImage header.
+/// Check if kernel is ELF format by reading magic bytes.
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
-fn parse_bzimage_entry_point(data: &[u8]) -> Option<u64> {
-    // Check for bzImage signature "HdrS" at offset 0x202 (0x1F1 + 0x11)
-    const HDR_SIG_OFFSET: usize = 0x202;
-    const HDR_SIG: &[u8] = b"HdrS";
-
-    if data.len() < HDR_SIG_OFFSET + HDR_SIG.len() {
-        return None;
-    }
-
-    if &data[HDR_SIG_OFFSET..HDR_SIG_OFFSET + HDR_SIG.len()] != HDR_SIG {
-        return None;
-    }
-
-    // Check header version (must be >= 2.03 for bzImage)
-    const VERSION_OFFSET: usize = 0x206;
-    if data.len() < VERSION_OFFSET + 2 {
-        return None;
-    }
-    let version = u16::from_le_bytes([data[VERSION_OFFSET], data[VERSION_OFFSET + 1]]);
-    if version < 0x0203 {
-        return None;
-    }
-
-    // Read code32_start (32-bit entry point) at offset 0x405
-    const CODE32_START_OFFSET: usize = 0x405;
-    if data.len() < CODE32_START_OFFSET + 4 {
-        return None;
-    }
-    let entry = u32::from_le_bytes([
-        data[CODE32_START_OFFSET],
-        data[CODE32_START_OFFSET + 1],
-        data[CODE32_START_OFFSET + 2],
-        data[CODE32_START_OFFSET + 3],
-    ]);
-
-    // If code32_start is 0, use the default load address
-    if entry == 0 {
-        Some(0x1000000)
-    } else {
-        Some(entry as u64)
-    }
-}
-
-/// Load kernel via mmap and set kernel bundle directly, bypassing libkrunfw dlopen.
-///
-/// This is required for statically-linked epkg binaries which cannot use dlopen().
-/// The kernel should be pre-extracted by `epkg self install` to envs/self/boot/kernel.
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
-fn load_kernel_bundle(kernel_path: &str) -> Result<(u64, u64, u64, usize)> {
+fn is_elf_kernel(kernel_path: &str) -> Result<bool> {
     use std::fs::File;
     use std::io::Read;
 
-    // Read kernel file
     let mut file = File::open(kernel_path)
         .map_err(|e| eyre::eyre!("Failed to open kernel {}: {}", kernel_path, e))?;
-    let mut kernel_data = Vec::new();
-    file.read_to_end(&mut kernel_data)
-        .map_err(|e| eyre::eyre!("Failed to read kernel {}: {}", kernel_path, e))?;
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic)
+        .map_err(|e| eyre::eyre!("Failed to read kernel magic: {}", e))?;
 
-    let kernel_size = kernel_data.len();
-    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
-    let rounded_size = (kernel_size + page_size - 1) & !(page_size - 1);
+    // ELF magic: 0x7f 'E' 'L' 'F'
+    Ok(magic == [0x7f, b'E', b'L', b'F'])
+}
 
-    // Allocate anonymous memory with read/write permissions
-    let kernel_host_addr = unsafe {
-        libc::mmap(
-            std::ptr::null_mut(),
-            rounded_size,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-            -1,
-            0_i64,
-        )
-    };
-    if std::ptr::eq(kernel_host_addr, libc::MAP_FAILED) {
-        return Err(eyre::eyre!("Failed to mmap memory for kernel"));
+/// Detect kernel format for libkrun's krun_set_kernel().
+/// Returns: 0=Raw (for x86_64 non-ELF), 1=ELF (vmlinux)
+#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[allow(dead_code)]
+fn detect_kernel_format_for_libkrun(kernel_path: &str) -> Result<u32> {
+    if is_elf_kernel(kernel_path)? {
+        Ok(1) // ELF (vmlinux)
+    } else {
+        // On x86_64, all non-ELF kernels use Raw format (handled by map_kernel)
+        Ok(0) // Raw
     }
-
-    // Copy kernel data to mapped memory
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            kernel_data.as_ptr(),
-            kernel_host_addr as *mut u8,
-            kernel_data.len(),
-        );
-    }
-
-    // Zero-fill remaining bytes (already zero due to anonymous mapping)
-    // Change protection to read-only
-    if unsafe { libc::mprotect(kernel_host_addr, rounded_size, libc::PROT_READ) } != 0 {
-        unsafe { libc::munmap(kernel_host_addr, rounded_size) };
-        return Err(eyre::eyre!("Failed to set kernel memory read-only"));
-    }
-
-    // Parse entry point from bzImage header
-    let (guest_addr, entry_addr) = parse_bzimage_entry_point(&kernel_data)
-        .map(|entry| (0x1000000u64, entry))
-        .unwrap_or_else(|| {
-            // Check if this is a libkrunfw-style raw kernel bundle
-            // libkrunfw's get_kernel returns: guest_addr=0x1000000, entry_addr=0x1000123, size=0x1230000
-            // However, libkrun's map_kernel() uses guest_addr=0x2000_0000, entry_addr=0x2000_0000
-            // for raw kernels in non-TEE mode. We follow the map_kernel convention.
-            if kernel_data.len() >= 0x1230000 {
-                log::debug!("detected libkrunfw-style raw kernel bundle, using map_kernel convention");
-                (0x2000_0000u64, 0x2000_0000u64)
-            } else {
-                log::debug!("using default entry point 0x2000_0000 for unknown kernel format");
-                (0x2000_0000u64, 0x2000_0000u64)
-            }
-        });
-
-    log::debug!(
-        "kernel bundle: host_addr={:#x}, guest_addr={:#x}, entry_addr={:#x}, size={}",
-        kernel_host_addr as u64,
-        guest_addr,
-        entry_addr,
-        rounded_size
-    );
-
-    Ok((kernel_host_addr as u64, guest_addr, entry_addr, rounded_size))
 }
 
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
@@ -521,10 +404,14 @@ pub fn run_command_in_krun(
     let kernel_path = crate::run::resolve_vm_kernel_path(run_options)?;
     log::debug!("libkrun: resolving kernel path: {}", kernel_path);
 
-    // Load kernel via mmap and get bundle parameters (host_addr, guest_addr, entry_addr, size)
-    let (kernel_host_addr, kernel_guest_addr, kernel_entry_addr, kernel_size) =
-        load_kernel_bundle(&kernel_path)?;
-    log::info!("libkrun: kernel loaded: {} bytes, entry at {:#x}", kernel_size, kernel_entry_addr);
+    // Detect kernel format: ELF (vmlinux) or Raw (everything else on x86_64)
+    let kernel_format = detect_kernel_format_for_libkrun(&kernel_path)?;
+    let format_str = match kernel_format {
+        0 => "Raw",
+        1 => "ELF (vmlinux)",
+        _ => "Unknown",
+    };
+    log::debug!("libkrun: kernel format: {}", format_str);
 
     ensure_libkrun_linked();
 
@@ -558,22 +445,12 @@ pub fn run_command_in_krun(
         )?;
         log::debug!("libkrun: console output redirected to {}", console_log_path.display());
 
-        // Set kernel bundle directly via mmap'd kernel, bypassing libkrunfw dlopen.
-        // This is required for statically-linked epkg binaries which cannot use dlopen().
-        check_status("krun_set_kernel_bundle",
-            krun_set_kernel_bundle(
-                ctx.ctx_id,
-                kernel_host_addr,
-                kernel_guest_addr,
-                kernel_entry_addr,
-                kernel_size,
-            )
-        )?;
-        log::debug!("libkrun: kernel bundle set via krun_set_kernel_bundle()");
-
-        // NOTE: We do NOT call ctx.set_kernel() here. The kernel is already set
-        // via krun_set_kernel_bundle() with the correct entry point parsed from
-        // the bzImage header.
+        // Use krun_set_kernel() with format=0 (Raw) to let libkrun's map_kernel()
+        // handle the kernel loading. This is the standard path for x86_64 raw kernels.
+        // Note: map_kernel() treats the kernel as a bundled raw binary and loads it
+        // at guest_addr=0x2000_0000 with entry_addr=0x2000_0000.
+        ctx.set_kernel(&kernel_path, 0, Some(&kernel_args))?;
+        log::debug!("libkrun: kernel set via krun_set_kernel() -> map_kernel()");
 
         ctx.set_root(rootfs)?;
         ctx.set_env(&env_vec)?;
