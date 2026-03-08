@@ -2111,11 +2111,11 @@ fn command_self(sub_matches: &clap::ArgMatches) -> Result<()> {
                 install_epkg()?;
             }
 
-            if find_env_base(MAIN_ENV).is_none() {
+            if let Some(path) = find_env_base(MAIN_ENV) {
+                eprintln!("epkg was already initialized for current user: {:?}", path);
+            } else {
                 #[cfg(unix)]
                 light_init()?;
-            } else {
-                eprintln!("epkg was already initialized for current user");
             }
         }
         Some(("upgrade", _sub_matches)) => {
