@@ -757,9 +757,8 @@ fn resolve_symlink_in_env_recursive(symlink_path: &std::path::Path, env_root: &s
                                  link_target.starts_with("/lib64") ||
                                  link_target.starts_with("/lib32") ||
                                  link_target.starts_with("/libx32");
-            let is_mounted_path = link_target.starts_with("/etc");
-            log::trace!("resolve_symlink_in_env_recursive: is_system_path={}, is_mounted_path={}", is_system_path, is_mounted_path);
-            if is_system_path || is_mounted_path {
+            log::trace!("resolve_symlink_in_env_recursive: is_system_path={}", is_system_path);
+            if is_system_path {
                 let target_in_env = env_root.join(link_target.strip_prefix("/").unwrap_or(&link_target));
                 log::trace!("resolve_symlink_in_env_recursive: mapped to target_in_env={:?}", target_in_env);
                 if target_in_env.exists() {
@@ -769,7 +768,7 @@ fn resolve_symlink_in_env_recursive(symlink_path: &std::path::Path, env_root: &s
                         // Recursively resolve within environment
                         return resolve_symlink_in_env_recursive(&target_in_env, env_root, depth + 1);
                     }
-                    log::trace!("resolve_symlink_in_env_recursive: system/mounted path resolved to regular file, returning {:?}", target_in_env);
+                    log::trace!("resolve_symlink_in_env_recursive: system path resolved to regular file, returning {:?}", target_in_env);
                     return Some(target_in_env);
                 } else {
                     log::trace!("resolve_symlink_in_env_recursive: target_in_env does not exist");

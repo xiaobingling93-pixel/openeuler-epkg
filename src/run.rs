@@ -508,7 +508,32 @@ fn is_executable_within_env(path: &Path, env_root: &Path) -> Result<bool> {
     }
 }
 
-/// Find command in environment PATH
+/// Find command in environment PATH and return the guest path (path inside namespace).
+///
+/// This function performs PATH lookup for a command name within the environment root.
+/// It searches each PATH directory, checks if the command exists and is executable
+/// within the environment, and returns the **guest path** (e.g., `/usr/bin/go`)
+/// rather than the host path (e.g., `$env_root/usr/bin/go`).
+///
+/// # Why guest path?
+/// The environment uses namespace isolation where `$env_root/usr` is bind-mounted to `/usr`.
+/// When the child process executes, it sees `/usr/bin/go`, not the full host path.
+/// Returning the guest path ensures the command can be found inside the namespace.
+///
+/// # Arguments
+/// * `cmd_name` - The command name to search for (e.g., "go", "python")
+/// * `env_root` - The root directory of the environment
+///
+/// # Returns
+/// * `Ok(PathBuf)` - The guest path to the command (e.g., `/usr/bin/go`)
+/// * `Err` - Command not found in environment PATH
+///
+/// # Example
+/// ```
+/// // Host path: /home/user/.epkg/envs/myenv/usr/bin/go
+/// // Guest path: /usr/bin/go (returned)
+/// let guest_path = find_command_in_env_path("go", env_root)?;
+/// ```
 pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathBuf> {
     // Collect non-empty PATH directories; if none, use default system paths
     let path_str = env::var("PATH").unwrap_or_default();
@@ -533,7 +558,10 @@ pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathB
         if is_executable_within_env(&cmd_path, env_root)? {
             // Check if this command is under the env_root prefix
             if cmd_path.starts_with(env_root) {
-                return Ok(cmd_path);
+                // Strip env_root prefix to get the guest path (e.g., /usr/bin/go)
+                // The env_root/usr is bind-mounted to /usr in the namespace
+                let guest_path = PathBuf::from("/").join(rel_path).join(cmd_name);
+                return Ok(guest_path);
             }
         }
     }
