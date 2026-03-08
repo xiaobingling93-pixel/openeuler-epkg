@@ -376,11 +376,9 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
         // only files
         match entry.unpack(&full_path) {
             Ok(_) => {
-                // Verify file was created and is readable
-                if !full_path.exists() {
-                    return Err(eyre::eyre!("File was not extracted: {}", full_path.display()));
-                }
-                if let Err(e) = fs::metadata(&full_path) {
+                // Verify file was created - use symlink_metadata to handle symlinks
+                // (exists() returns false for broken symlinks whose targets don't exist yet)
+                if let Err(e) = fs::symlink_metadata(&full_path) {
                     return Err(eyre::eyre!("Cannot access extracted file {}: {}", full_path.display(), e));
                 }
             },
