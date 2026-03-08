@@ -14,7 +14,6 @@ use serde_json;
 use serde_yaml;
 use nix::unistd::chown;
 use glob;
-use pathdiff;
 use crate::models::*;
 use crate::dirs::*;
 use crate::repo::sync_channel_metadata;
@@ -276,47 +275,40 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Ensure \$env_root/usr/bin/epkg symlink exists and points to self environment's epkg binary using a relative path.
+/// Ensure \$env_root/usr/bin/epkg symlink exists and points to self environment's epkg binary using an absolute path.
 ///
 /// This function performs the following:
 /// 1. Locates the self environment (SELF_ENV) using find_env_root()
 /// 2. Checks if self environment's usr/bin/epkg binary exists
-/// 3. Computes a relative path from \$env_root/usr/bin to the self environment's epkg binary
-/// 4. Creates or updates the symlink at \$env_root/usr/bin/epkg to point to the relative target
+/// 3. Uses the absolute path to self environment's epkg binary
+/// 4. Creates or updates the symlink at \$env_root/usr/bin/epkg to point to the absolute target
 ///
 /// Key behaviors:
-/// - Uses pathdiff::diff_paths() to compute portable relative paths
+/// - Uses absolute path for the symlink target to work correctly when accessed from host
 /// - Always creates or overwrites the symlink (force_symlink) without checking existing target
 /// - Returns Ok(()) even if self environment not found (no-op)
 /// - Logs debug messages for symlink creation
 ///
 /// Purpose:
 /// - Provides a stable epkg binary reference for applet symlinks within the environment
-/// - Enables relative symlinks that remain valid in sandbox environments with different mount points
+/// - Absolute symlinks remain valid when accessed from host (e.g., in env with `docker -v`)
 /// - Ensures applet symlinks (init, vm-daemon, etc.) can target the local epkg symlink
 ///
 /// Examples:
 /// - Self environment at `/home/user/.epkg/envs/self`, env_root at `/home/user/.epkg/envs/main`:
-///   - Computed relative target: `../../../self/usr/bin/epkg`
-///   - Symlink created: `/home/user/.epkg/envs/main/usr/bin/epkg -> ../../../self/usr/bin/epkg`
+///   - Absolute target: `/home/user/.epkg/envs/self/usr/bin/epkg`
+///   - Symlink created: `/home/user/.epkg/envs/main/usr/bin/epkg -> /home/user/.epkg/envs/self/usr/bin/epkg`
 /// - Self environment not found (e.g., fresh system without `epkg self install`):
 ///   - No symlink created, function returns Ok(()) (no-op)
-/// - Cross‑filesystem paths where pathdiff::diff_paths() returns None:
-///   - Falls back to absolute path (e.g., `/home/user/.epkg/envs/self/usr/bin/epkg`)
-///   - Symlink created with absolute target (less portable but still functional)
 pub fn create_epkg_symlink(env_root: &Path) -> Result<()> {
     // Try to find epkg binary in self environment
     if let Some(self_env_root) = find_env_root(SELF_ENV) {
         let self_epkg = self_env_root.join("usr/bin/epkg");
         if self_epkg.exists() {
-            // Create relative symlink from env_root/usr/bin/epkg to self_epkg
-            // Compute relative path from env_root/usr/bin to self_epkg
-            let desired_target = pathdiff::diff_paths(&self_epkg, env_root.join("usr/bin"))
-                .unwrap_or(self_epkg.clone());
-
+            // Create absolute symlink from env_root/usr/bin/epkg to self_epkg
             let epkg_symlink = env_root.join("usr/bin/epkg");
-            log::debug!("Creating/updating epkg symlink {} -> {}", epkg_symlink.display(), desired_target.display());
-            force_symlink(&desired_target, &epkg_symlink)
+            log::debug!("Creating/updating epkg symlink {} -> {}", epkg_symlink.display(), self_epkg.display());
+            force_symlink(&self_epkg, &epkg_symlink)
                 .with_context(|| format!("Failed to create epkg symlink in {}", epkg_symlink.display()))?;
         }
     }
