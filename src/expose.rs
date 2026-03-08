@@ -78,7 +78,7 @@ fn create_node_modules_symlink(env_root: &Path) -> Result<()> {
     let node_modules_in_bin = env_root.join("usr/bin/node_modules");
 
     // Only create symlink if source exists
-    if !node_modules_in_lib.exists() {
+    if !lfs::exists_in_env(&node_modules_in_lib) {
         return Ok(());
     }
 
@@ -107,7 +107,7 @@ fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()>
     log::info!("  elf_loader_path={}", elf_loader_path.display());
 
     // Create hardlink from elf-loader to target path (replace copy&replace)
-    if target_path.exists() {
+    if lfs::exists_in_env(target_path) {
         log::info!("  Target exists, removing...");
         if let Err(e) = lfs::remove_file(target_path) {
             log::error!("  Failed to remove file: {}", e);
@@ -325,7 +325,7 @@ fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpret
     let env_interpreter_path = format!("{}/ebin/{}", env_root.display(), interpreter_basename);
     let env_interpreter = Path::new(&env_interpreter_path);
 
-    if !env_interpreter.exists() {
+    if !lfs::exists_in_env(env_interpreter) {
         // Example: interpreter_in_env = "/home/wfg/.epkg/envs/main/bin/sh"
         // Which is a symlink to: "/home/wfg/.epkg/store/twktsyye3ksj068w2fx9pz5fefwy70mw__bash__5.2.15__9.oe2403/fs/usr/bin/bash"
         // use format!() instead of Path::join() to enforce simple string operation
