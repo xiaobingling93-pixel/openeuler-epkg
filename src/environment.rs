@@ -121,7 +121,8 @@ pub fn get_all_env_names() -> Result<Vec<(String, bool)>> {
                 false
             } else {
                 // Environments from shared store (owner=Some) may be public or private
-                let mode = fs::metadata(env_path)?
+                // Use symlink_metadata to avoid following symlinks in env context
+                let mode = lfs::symlink_metadata(env_path)?
                     .permissions()
                     .mode() & 0o777;
                 let is_private = mode == 0o700;
@@ -1051,7 +1052,7 @@ pub fn registered_env_configs() -> Vec<EnvConfig> {
             false
         } else {
             // Environments from shared store (owner=Some) may be public or private
-            match fs::metadata(env_path) {
+            match lfs::symlink_metadata(env_path) {
                 Ok(metadata) => {
                     let mode = metadata.permissions().mode() & 0o777;
                     let is_private = mode == 0o700;
@@ -1119,8 +1120,6 @@ pub fn registered_env_configs() -> Vec<EnvConfig> {
 /// Returns the environment name and root path if found, None otherwise
 /// Searches environments in order of registration path-order (lower number first: earlier in PATH)
 pub fn find_command_in_registered_envs(cmd_name: &str) -> Result<Option<(String, PathBuf)>> {
-    use std::fs;
-
     // Get registered environment configs with PATH orders
     let mut configs = registered_env_configs();
 
@@ -1143,7 +1142,7 @@ pub fn find_command_in_registered_envs(cmd_name: &str) -> Result<Option<(String,
                         // Check if executable (Unix only)
                         #[cfg(unix)]
                         {
-                            if let Ok(metadata) = fs::metadata(&cmd_path) {
+                            if let Ok(metadata) = lfs::symlink_metadata(&cmd_path) {
                                 let permissions = metadata.permissions();
                                 if permissions.mode() & 0o111 != 0 {
                                     log::debug!("found command '{}' at path '{}'", cmd_name, cmd_path.display());

@@ -792,7 +792,7 @@ pub fn format_size(bytes: u64) -> String {
 pub fn preserve_file_permissions<P: AsRef<Path>>(source: P, target: P) -> Result<()> {
     let source = source.as_ref();
     let target = target.as_ref();
-    if let Ok(metadata) = fs::metadata(source) {
+    if let Ok(metadata) = lfs::symlink_metadata(source) {
         lfs::set_permissions(target, metadata.permissions())?;
     }
     Ok(())
@@ -801,8 +801,8 @@ pub fn preserve_file_permissions<P: AsRef<Path>>(source: P, target: P) -> Result
 /// Fix up file permissions to ensure files are readable for hash calculation
 #[cfg(unix)]
 pub fn fixup_file_permissions(target_path: &Path) {
-    if let Ok(metadata) = fs::metadata(target_path) {
-        if metadata.is_dir() {
+    if let Ok(metadata) = lfs::symlink_metadata(target_path) {
+        if metadata.file_type().is_dir() {
             // Ensure directories are writable by owner so they can be removed later
             // This prevents issues with read-only directories like /usr/lib (dr-xr-xr-x)
             ensure_owner_permissions(target_path, 0o700, "directory");
@@ -816,7 +816,7 @@ pub fn fixup_file_permissions(target_path: &Path) {
 /// Ensure the file/directory has the specified owner permissions
 #[cfg(unix)]
 fn ensure_owner_permissions(target_path: &Path, required_mask: u32, file_type: &str) {
-    if let Ok(metadata) = fs::metadata(target_path) {
+    if let Ok(metadata) = lfs::symlink_metadata(target_path) {
         let mut perms = metadata.permissions();
         let current_mode = perms.mode();
 
@@ -1048,7 +1048,7 @@ fn remove_files_by_patterns(env_root: &Path) -> Result<()> {
 pub fn set_executable_permissions<P: AsRef<Path>>(path: P, mode: u32) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let path = path.as_ref();
-    let mut perms = fs::metadata(path)
+    let mut perms = lfs::symlink_metadata(path)
         .wrap_err_with(|| format!("Failed to get metadata for {}", path.display()))?.permissions();
     perms.set_mode(mode);
     lfs::set_permissions(path, perms)?;

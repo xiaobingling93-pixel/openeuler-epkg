@@ -766,17 +766,17 @@ pub(crate) fn mount_opt_epkg_isolation(euid: Uid, uid: Uid, env_root: &Path) -> 
 /// Returns true if the path is a mount point (different device or root of filesystem).
 /// Used to satisfy pivot_root(2) requirement that new_root be a mount point.
 fn path_is_mount_point(path: &Path) -> bool {
-    let meta = match fs::symlink_metadata(path) {
+    let meta = match lfs::symlink_metadata(path) {
         Ok(m) => m,
         Err(_) => return false,
     };
-    if !meta.is_dir() {
+    if !meta.file_type().is_dir() {
         return false;
     }
     let dev = meta.dev();
     let ino = meta.ino();
     let parent = path.join("..");
-    let parent_meta = match fs::metadata(&parent) {
+    let parent_meta = match lfs::symlink_metadata(&parent) {
         Ok(m) => m,
         Err(_) => return false,
     };
