@@ -25,6 +25,7 @@ unsafe extern "C" {
     fn krun_set_vm_config(ctx_id: u32, num_vcpus: u8, ram_mib: u32) -> i32;
     fn krun_set_root(ctx_id: u32, root_path: *const std::ffi::c_char) -> i32;
     fn krun_set_workdir(ctx_id: u32, workdir_path: *const std::ffi::c_char) -> i32;
+    #[allow(dead_code)]
     fn krun_set_exec(
         ctx_id: u32,
         exec_path: *const std::ffi::c_char,
@@ -32,6 +33,7 @@ unsafe extern "C" {
         envp: *const *const std::ffi::c_char,
     ) -> i32;
     fn krun_set_env(ctx_id: u32, envp: *const *const std::ffi::c_char) -> i32;
+    #[allow(dead_code)]
     fn krun_set_kernel(
         ctx_id: u32,
         c_kernel_path: *const std::ffi::c_char,
@@ -262,6 +264,7 @@ impl KrunContext {
         check_status("krun_set_root", unsafe { krun_set_root(self.ctx_id, rootfs_c.as_ptr()) })
     }
 
+    #[allow(dead_code)]
     unsafe fn set_exec(
         &self,
         exec: &str,
@@ -347,6 +350,7 @@ impl KrunContext {
         )
     }
 
+    #[allow(dead_code)]
     /// kernel_format: 0 = Raw (e.g. aarch64/riscv64 Image), 1 = Elf (e.g. x86_64 vmlinux)
     /// kernel_cmdline: optional extra kernel command line (e.g. from --kernel-args)
     unsafe fn set_kernel(
@@ -405,6 +409,7 @@ impl Drop for KrunContext {
 /// - Raw format (0) - loaded via map_kernel() which treats it as a bundled kernel
 ///
 /// The bundled kernel from libkrunfw (KERNEL_BUNDLE) is a raw binary image.
+#[allow(dead_code)]
 fn detect_kernel_format(path: &str) -> Result<u32> {
     let mut f = std::fs::File::open(path).map_err(|e| eyre::eyre!("open kernel {}: {}", path, e))?;
     let mut magic = [0u8; 4];
