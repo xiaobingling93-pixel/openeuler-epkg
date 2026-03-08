@@ -44,7 +44,7 @@ impl GcPlan {
 
         if let Some(ref downloads) = self.old_downloads {
             for path in downloads {
-                if let Ok(metadata) = fs::metadata(path) {
+                if let Ok(metadata) = lfs::metadata_on_host(path) {
                     total += metadata.len();
                 }
             }
@@ -125,7 +125,7 @@ fn collect_old_downloads(days: u64) -> Result<Vec<PathBuf>> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_file() {
-                if let Ok(metadata) = fs::metadata(&path) {
+                if let Ok(metadata) = lfs::metadata_on_host(&path) {
                     if let Ok(modified_time) = metadata.modified() {
                         if modified_time < cutoff_time {
                             old_files.push(path);
@@ -266,7 +266,7 @@ fn collect_old_items_in_dir(dir: &Path, min_age_seconds: u64) -> Result<Vec<Path
         for entry in entries.flatten() {
             let item_path = entry.path();
             // Check both files and directories
-            if let Ok(metadata) = fs::metadata(&item_path) {
+            if let Ok(metadata) = lfs::metadata_on_host(&item_path) {
                 if let Ok(modified_time) = metadata.modified() {
                     if modified_time < cutoff_time {
                         old_items.push(item_path);
@@ -299,7 +299,7 @@ fn display_gc_plan(plan: &GcPlan, is_old_downloads: bool) -> Result<()> {
             if !downloads.is_empty() {
                 println!("\nOld download files to remove:");
                 let total_size = downloads.iter()
-                    .map(|p| fs::metadata(p).map(|m| m.len()).unwrap_or(0))
+                    .map(|p| lfs::metadata_on_host(p).map(|m| m.len()).unwrap_or(0))
                     .sum::<u64>();
                 println!("  Directory: {}", dirs().epkg_downloads_cache.display());
                 println!("  Files: {}", downloads.len());

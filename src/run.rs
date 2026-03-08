@@ -157,7 +157,7 @@ const LIBKRUN_MEMORY_SLACK_MIB: u32 = 64;
 /// is a host address-space layout issue, not lack of RAM).
 #[allow(dead_code)]
 pub fn round_up_vm_memory_for_libkrun(requested_mib: u32, kernel_path: &str) -> u32 {
-    let kernel_size_mib = fs::metadata(kernel_path)
+    let kernel_size_mib = lfs::metadata_on_host(kernel_path)
         .ok()
         .map(|m| (m.len() as u32 + (1024 * 1024) - 1) / (1024 * 1024))
         .unwrap_or(128);
@@ -185,7 +185,7 @@ fn find_kernel_image() -> Result<String> {
         "/boot/vmlinux".to_string(),
     ];
     for candidate in &candidates {
-        if fs::metadata(candidate).is_ok() {
+        if lfs::metadata_on_host(candidate).is_ok() {
             return Ok(candidate.clone());
         }
     }

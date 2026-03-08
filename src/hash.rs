@@ -8,6 +8,7 @@ use walkdir::WalkDir;
 use sha2;
 use sha2::Digest;
 use color_eyre::{Result, eyre::eyre, eyre::WrapErr};
+use crate::lfs;
 
 // Step 1: Compute SHA256 hash  Output: 32-byte bytes object.
 // Step 2: Compress(XOR) hash   Output: 20-byte bytearray.
@@ -82,7 +83,7 @@ pub fn epkg_store_hash(epkg_path: &str) -> Result<String> {
 }
 
 fn get_path_info(path: &Path) -> Result<(&str, String)> {
-    let metadata = fs::symlink_metadata(path)
+    let metadata = lfs::symlink_metadata(path)
         .wrap_err_with(|| format!("Failed to get metadata for: {}", path.display()))?;
 
     let (ftype, fdata) = match metadata.file_type() {

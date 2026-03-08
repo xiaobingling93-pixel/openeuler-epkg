@@ -232,37 +232,35 @@ fn create_script_wrapper(
     first_line: &str,
 ) -> Result<()> {
     // Try to create shebang line, but handle errors gracefully
-    let env_shell_bang_line = match create_shebang_line(env_root, first_line, fs_file) {
-        Ok(line) => line,
-        Err(e) => {
-            let root_cause = e.root_cause().to_string();
-            let path_str = fs_file.to_string_lossy();
-            let error_msg = format!(
-                "Cannot create script wrapper for {} at {}: failed to create shebang line for '{}': {}",
-                fs_file.display(),
-                ebin_path.display(),
-                first_line,
-                root_cause
-            );
+    // For NodeScript, use shell shebang so the exec command works correctly
+    let env_shell_bang_line = if file_type == FileType::NodeScript {
+        // Use /bin/sh as the interpreter for Node.js wrappers
+        let shell_path = env_root.join("ebin/sh");
+        if lfs::exists_in_env(&shell_path) {
+            format!("#!{}\n", shell_path.display())
+        } else {
+            String::new() // No shebang if shell not found
+        }
+    } else {
+        match create_shebang_line(env_root, first_line, fs_file) {
+            Ok(line) => line,
+            Err(e) => {
+                let root_cause = e.root_cause().to_string();
+                let path_str = fs_file.to_string_lossy();
+                let error_msg = format!(
+                    "Cannot create script wrapper for {} at {}: failed to create shebang line for '{}': {}",
+                    fs_file.display(),
+                    ebin_path.display(),
+                    first_line,
+                    root_cause
+                );
 
-            if path_str.contains("/usr/bin") {
-                return Err(eyre::eyre!("{}", error_msg));
-            } else {
-                /* Handle missing interpreters as warnings rather than errors for
-                 * fs_file = ".../fs/usr/share/rustc-1.74/bin/wasi-node" case.
-                 *
-                 * Some packages (like rustc) may include scripts that require interpreters
-                 * not listed in their dependencies (e.g., node for wasi-node). Since these
-                 * interpreters aren't in the package's dependency list, we shouldn't fail
-                 * the entire package installation just because we can't create wrappers
-                 * for these optional scripts.
-                 *
-                 * By logging a note and continuing, we ensure the package installation
-                 * completes successfully while still informing the user about the missing
-                 * interpreter.
-                 */
-                log::info!("{}", error_msg);
-                return Ok(());
+                if path_str.contains("/usr/bin") {
+                    return Err(eyre::eyre!("{}", error_msg));
+                } else {
+                    log::info!("{}", error_msg);
+                    return Ok(());
+                }
             }
         }
     };
@@ -437,14 +435,39 @@ fn find_and_link_alternative_interpreter(interpreter_in_env: &Path, interpreter_
     Ok(())
 }
 
-fn get_exec_command(file_type: &FileType, fs_file: &Path) -> String {
+fn get_exec_command(file_type: &FileType, fs_file: &Path, env_root: Option<&Path>) -> String {
+    // For scripts that need to run in env context, convert store path to env path
+    let path_to_use = if let Some(root) = env_root {
+        // Convert store path to env path by replacing store prefix with env prefix
+        let fs_str = fs_file.to_string_lossy();
+        if let Some(idx) = fs_str.find("/fs/") {
+            // Store path like /home/wfg/.epkg/store/xxx__pkg/fs/usr/share/nodejs/...
+            // Convert to env path like /home/wfg/.epkg/envs/envname/usr/share/nodejs/...
+            if let Some(env_path) = root.to_str() {
+                let path_in_store = &fs_str[idx + 3..]; // Skip "/fs/"
+                let new_path = format!("{}/{}", env_path, path_in_store);
+                PathBuf::from(new_path)
+            } else {
+                fs_file.to_path_buf()
+            }
+        } else {
+            fs_file.to_path_buf()
+        }
+    } else {
+        fs_file.to_path_buf()
+    };
+
     match file_type {
-        FileType::ShellScript => format!("exec {:?} \"$@\"\n", fs_file),
-        FileType::PythonScript => format!("exec(open({:?}).read())\n", fs_file),
-        FileType::RubyScript => format!("load({:?})\n", fs_file),
-        FileType::LuaScript => format!("dofile({:?})\n", fs_file),
-        FileType::NodeScript => format!("require({:?})\n", fs_file),
-        _ => format!("exec {:?} \"$@\"\n", fs_file),
+        FileType::ShellScript => format!("exec {:?} \"$@\"\n", path_to_use),
+        FileType::PythonScript => format!("exec(open({:?}).read())\n", path_to_use),
+        FileType::RubyScript => format!("load({:?})\n", path_to_use),
+        FileType::LuaScript => format!("dofile({:?})\n", path_to_use),
+        FileType::NodeScript => {
+            // For Node.js scripts, use a shell wrapper that calls node explicitly
+            // This ensures proper module resolution from the script's directory
+            format!("exec node {:?} \"$@\"\n", path_to_use)
+        }
+        _ => format!("exec {:?} \"$@\"\n", path_to_use),
     }
 }
 

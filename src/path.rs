@@ -2,6 +2,7 @@ use std::env;
 use std::path::Path;
 use color_eyre::Result;
 use color_eyre::eyre;
+use crate::lfs;
 use crate::models::*;
 use crate::dirs::get_env_root;
 use crate::environment::registered_env_configs;
@@ -61,13 +62,13 @@ fn get_active_env_paths(active_env: &str, pure: bool) -> Result<Vec<String>> {
     let env_root = get_env_root(active_env.to_string())?;
 
     // Validate environment exists
-    if !env_root.exists() {
+    if !lfs::exists_in_env(&env_root) {
         return Err(eyre::eyre!("Active environment '{}' does not exist", active_env));
     }
 
     // Add ebin path
     let ebin_path = env_root.join("ebin");
-    if ebin_path.exists() {
+    if lfs::exists_in_env(&ebin_path) {
         path_components.push(ebin_path.display().to_string());
     }
 
@@ -76,10 +77,10 @@ fn get_active_env_paths(active_env: &str, pure: bool) -> Result<Vec<String>> {
         let bin_path = env_root.join("usr/bin");
         let sbin_path = env_root.join("usr/sbin");
 
-        if bin_path.exists() {
+        if lfs::exists_in_env(&bin_path) {
             path_components.push(bin_path.display().to_string());
         }
-        if sbin_path.exists() {
+        if lfs::exists_in_env(&sbin_path) {
             path_components.push(sbin_path.display().to_string());
         }
     }
@@ -95,7 +96,7 @@ fn get_registered_env_paths() -> Result<Vec<String>> {
 
     for config in registered_env_configs() {
         let ebin_path = Path::new(&config.env_root).join("ebin");
-        if !ebin_path.exists() {
+        if !lfs::exists_in_env(&ebin_path) {
             continue;
         }
 

@@ -89,7 +89,7 @@ pub fn deserialize_env_config_for(env_name: String) -> Result<EnvConfig> {
     // minimal default EnvConfig instead of failing hard when env.yaml is missing.
     #[cfg(test)]
     {
-        if !config_path.exists() {
+        if !lfs::exists_on_host(&config_path) {
             let mut cfg = EnvConfig::default();
             cfg.name = env_name;
             // env_root/env_base can be left empty for solver tests, since they don't touch disk.
@@ -98,7 +98,7 @@ pub fn deserialize_env_config_for(env_name: String) -> Result<EnvConfig> {
     }
 
     // Check if environment exists
-    if !config_path.exists() {
+    if !lfs::exists_on_host(&config_path) {
         return Err(eyre::eyre!("Environment config file not found: '{}'", config_path.display()));
     }
 
@@ -393,7 +393,7 @@ pub fn deserialize_channel_config_from_root(env_root: &PathBuf) -> Result<Vec<Ch
     // Ideally the latter should all use the same cc.distro and cc.version as main config,
     // for now we allow users to mix for flexibility, and just emit warning on mismatch.
     let repos_dir = env_root.join("etc/epkg/repos.d");
-    if repos_dir.exists() {
+    if lfs::exists_on_host(&repos_dir) {
         // First collect all repo config paths
         let mut repo_paths = Vec::new();
         for entry in fs::read_dir(repos_dir)? {
@@ -550,7 +550,7 @@ pub fn serialize_env_config(env_config: EnvConfig) -> Result<()> {
 
 /// Read installed packages from an arbitrary path (supports both object and array JSON formats).
 pub fn read_installed_packages_from_path(file_path: &Path) -> Result<InstalledPackagesMap> {
-    if !file_path.exists() {
+    if !lfs::exists_on_host(file_path) {
         return Ok(HashMap::new());
     }
     let contents = fs::read_to_string(file_path)
@@ -621,7 +621,7 @@ pub fn read_world(env: &str, generation_id: u32) -> Result<HashMap<String, Strin
     let file_path = generations_root.join(generation_id.to_string()).join("world.json");
 
     // If file doesn't exist, return empty map
-    if !file_path.exists() {
+    if !lfs::exists_on_host(&file_path) {
         return Ok(HashMap::new());
     }
 

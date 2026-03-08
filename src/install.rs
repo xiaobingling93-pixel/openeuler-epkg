@@ -91,7 +91,7 @@ pub(crate) fn process_url_package_specs(package_specs: Vec<String>) -> Result<Ve
             Ok((UrlProtocol::Local, local_path)) => {
                 // It's a local path - verify it's a valid package file
                 let path = std::path::Path::new(&local_path);
-                if path.exists() && path.is_file() {
+                if lfs::exists_on_host(&local_path) && path.is_file() {
                     // Use detect_package_format to check if it's a supported package file
                     if detect_package_format(path).is_ok() {
                         local_files.push(local_path.to_string_lossy().to_string());
@@ -143,7 +143,7 @@ fn process_local_package_files(local_files: Vec<String>) -> Result<Vec<String>> 
     for package_file in local_files {
         // Verify the file exists and is a package file
         let path = std::path::Path::new(&package_file);
-        if !path.exists() {
+        if !lfs::exists_on_host(&package_file) {
             return Err(eyre::eyre!("Package file not found: {}", package_file));
         }
         if !path.is_file() {
@@ -164,7 +164,7 @@ fn process_local_package_files(local_files: Vec<String>) -> Result<Vec<String>> 
 
         // Read package.txt from the unpacked package
         let package_txt_path = final_dir.join("info/package.txt");
-        if !package_txt_path.exists() {
+        if !lfs::exists_on_host(&package_txt_path) {
             return Err(eyre::eyre!("Package metadata not found: {}", package_txt_path.display()));
         }
 

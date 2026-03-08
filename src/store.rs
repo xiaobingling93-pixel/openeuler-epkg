@@ -120,7 +120,7 @@ fn build_sha256_mapping_from_other_packages(
             let fs_dir = package_dir.join("fs");
 
             // Only process if fs directory exists
-            if !fs_dir.exists() {
+            if !lfs::exists_on_host(&fs_dir) {
                 continue;
             }
 
@@ -142,7 +142,7 @@ fn deduplicate_files_by_hardlink(
     other_packages_mapping: &HashMap<String, (String, String)>,
 ) -> Result<()> {
     let fs_dir = store_tmp_dir.join("fs");
-    if !fs_dir.exists() {
+    if !lfs::exists_on_host(&fs_dir) {
         return Ok(());
     }
 
@@ -162,9 +162,9 @@ fn deduplicate_files_by_hardlink(
             let existing_file_path = existing_package_dir.join("fs").join(existing_filename);
 
             // Check if both files exist
-            if current_file_path.exists() && existing_file_path.exists() {
+            if lfs::exists_on_host(&current_file_path) && lfs::exists_on_host(&existing_file_path) {
                 // Double check their file sizes match before creating hardlink
-                let current_metadata = match fs::metadata(&current_file_path) {
+                let current_metadata = match lfs::metadata_on_host(&current_file_path) {
                     Ok(m) => m,
                     Err(e) => {
                         log::debug!("Failed to get metadata for {}: {}", current_file_path.display(), e);
@@ -172,7 +172,7 @@ fn deduplicate_files_by_hardlink(
                     }
                 };
 
-                let existing_metadata = match fs::metadata(&existing_file_path) {
+                let existing_metadata = match lfs::metadata_on_host(&existing_file_path) {
                     Ok(m) => m,
                     Err(e) => {
                         log::debug!("Failed to get metadata for {}: {}", existing_file_path.display(), e);
@@ -311,7 +311,7 @@ pub fn unpack_mv_package(
     }
 
     // Move to final location
-    if final_dir.exists() {
+    if lfs::exists_on_host(&final_dir) {
         log::info!("Target store directory already exists: {}", final_dir.display());
         lfs::remove_dir_all(&final_dir)?;
     } else {
@@ -384,7 +384,7 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     let fs_dir = store_tmp_dir.join("fs");
     let filelist_path = store_tmp_dir.join("info/filelist.txt");
 
-    if !fs_dir.exists() {
+    if !lfs::exists_on_host(&fs_dir) {
         return Ok(()); // No filesystem files to list
     }
 
@@ -611,7 +611,7 @@ pub fn save_package_txt<P: AsRef<Path>>(mut package_fields: HashMap<String, Stri
 /// Legacy functions for existing .epkg format support
 
 pub fn untar_zst(file_path: &str, output_dir: &str, package_flag: bool) -> Result<()> {
-    if package_flag && Path::new(output_dir).exists() {
+    if package_flag && lfs::exists_on_host(Path::new(output_dir)) {
         return Ok(());
     }
 
@@ -649,7 +649,7 @@ fn collect_store_pkglines() -> Result<(std::collections::HashMap<String, Vec<Str
     let mut store_pkglines_by_pkgkey: HashMap<String, Vec<String>> = HashMap::new();
     let mut store_pkglines_by_pkgname: HashMap<String, Vec<String>> = HashMap::new();
 
-    if !store_dir.exists() {
+    if !lfs::exists_on_host(&store_dir) {
         log::debug!("collect_store_pkglines: store directory does not exist: {:?}", store_dir);
         return Ok((store_pkglines_by_pkgkey, store_pkglines_by_pkgname));
     }
@@ -664,7 +664,7 @@ fn collect_store_pkglines() -> Result<(std::collections::HashMap<String, Vec<Str
             let package_path = entry.path();
             if package_path.is_dir() {
                 let fs_dir = package_path.join("fs");
-                if !fs_dir.exists() {
+                if !lfs::exists_on_host(&fs_dir) {
                     // on LinkType::Move, files were moved into env
                     log::debug!("Skipping package {} - 'fs' directory does not exist", package_path.display());
                     skipped_missing_fs += 1;
@@ -1099,7 +1099,7 @@ fn try_match_and_fill_pkgline(
     if !package_info.pkgline.is_empty() {
         let store_dir = crate::models::dirs().epkg_store.clone();
         let fs_dir = store_dir.join(&package_info.pkgline).join("fs");
-        if fs_dir.exists() {
+        if lfs::exists_on_host(&fs_dir) {
             log::trace!("try_match_and_fill_pkgline: pkgkey {} already has pkgline {} with existing fs dir, skipping", pkgkey, package_info.pkgline);
             return Ok(false);
         } else {

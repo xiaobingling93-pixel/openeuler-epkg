@@ -14,7 +14,7 @@ pub fn get_current_generation_id() -> Result<u32> {
     let generations_root = crate::dirs::get_default_generations_root()?;
     let current_link = generations_root.join("current");
     // If the "current" symlink doesn't exist yet, default to generation 1.
-    if !current_link.exists() {
+    if !lfs::exists_on_host(&current_link) {
         return Ok(1);
     }
 
@@ -31,7 +31,7 @@ pub fn get_current_generation_id() -> Result<u32> {
 pub fn create_new_generation_with_root(generations_root: &Path) -> Result<PathBuf> {
     // Get current generation info
     let current_link = generations_root.join("current");
-    let current_id = if current_link.exists() {
+    let current_id = if lfs::exists_on_host(&current_link) {
         let target = fs::read_link(&current_link).with_context(|| format!("Failed to read symlink: {}", current_link.display()))?;
         target.to_str().unwrap().parse::<u32>().with_context(||
             format!("Failed to parse generation id from '{}'", target.to_str().unwrap()))?
@@ -43,7 +43,7 @@ pub fn create_new_generation_with_root(generations_root: &Path) -> Result<PathBu
 
     // Check if we need to create a new generation
     let command_json = current_generation.join("command.json");
-    if !command_json.exists() {
+    if !lfs::exists_on_host(&command_json) {
         // Current generation has no command history, just return it
         return Ok(current_generation);
     }
@@ -67,7 +67,7 @@ pub fn create_new_generation_with_root(generations_root: &Path) -> Result<PathBu
 pub fn update_current_generation_symlink_with_root(generations_root: &Path, new_generation: PathBuf) -> Result<()> {
     let current_link = generations_root.join("current");
 
-    if current_link.exists() {
+    if lfs::exists_on_host(&current_link) {
         lfs::remove_file(&current_link)?;
     }
 
@@ -121,7 +121,7 @@ pub fn print_history() -> Result<()> {
             // Process only directories with numeric names (generations)
             if let Ok(id) = gen_name.parse::<u32>() {
                 let command_json = path.join("command.json");
-                if command_json.exists() {
+                if lfs::exists_on_host(&command_json) {
                     if let Ok(command) = crate::io::read_json_file(&command_json) {
                         history_entries.push((id, command));
                     }
@@ -191,7 +191,7 @@ pub fn rollback_history(rollback_id: i32) -> Result<()> {
 
     // Check if target_id exists
     let rollback_generation = generations_root.join(target_id.to_string());
-    if !rollback_generation.exists() {
+    if !lfs::exists_on_host(&rollback_generation) {
         return Err(eyre::eyre!("No such history record: Generation {} does not exist", target_id));
     }
 

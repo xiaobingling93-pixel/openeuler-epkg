@@ -4,6 +4,7 @@ use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use crate::models::dirs;
 use crate::store::untar_zst;
+use crate::lfs;
 use std::fs::{File, OpenOptions};
 use tar::Builder;
 use zstd::stream::write::Encoder;
@@ -104,7 +105,7 @@ pub fn compress_folder_to_epkg(
             header.set_mtime(0);
             tar_builder.append_link(&mut header, rel_path, &target)?;
         } else if entry.file_type().is_file() {
-            let metadata = fs::metadata(path)?;
+            let metadata = lfs::metadata_on_host(path)?;
             let mut header = tar::Header::new_gnu();
             header.set_entry_type(tar::EntryType::Regular);
             header.set_size(metadata.len());
@@ -114,7 +115,7 @@ pub fn compress_folder_to_epkg(
             header.set_gid(0);
             tar_builder.append_data(&mut header, rel_path, &mut File::open(path)?)?;
         } else if entry.file_type().is_dir() {
-            let metadata = fs::metadata(path)?;
+            let metadata = lfs::metadata_on_host(path)?;
             let mut header = tar::Header::new_gnu();
             header.set_entry_type(tar::EntryType::Directory);
             header.set_size(0);
@@ -125,7 +126,7 @@ pub fn compress_folder_to_epkg(
             tar_builder.append_data(&mut header, rel_path, std::io::empty())?;
         } else {
             // Handle special file types (character devices, block devices, fifos, sockets)
-            let metadata = fs::metadata(path)?;
+            let metadata = lfs::metadata_on_host(path)?;
             let mut header = tar::Header::new_gnu();
 
             if metadata.file_type().is_char_device() {

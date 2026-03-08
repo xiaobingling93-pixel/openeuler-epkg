@@ -333,7 +333,7 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
     }
 
     // Check if file is empty
-    let metadata = fs::metadata(tar_path)?;
+    let metadata = lfs::metadata_on_host(tar_path)?;
     if metadata.len() == 0 {
         return Err(eyre::eyre!("Tar file is empty: {}", tar_path.display()));
     }
@@ -509,7 +509,7 @@ pub fn find_command_in_paths(command_name: &str) -> Option<PathBuf> {
     if command_name.contains('/') {
         let path = Path::new(command_name);
         if lfs::exists_on_host(path) {
-            if let Ok(metadata) = fs::metadata(path) {
+            if let Ok(metadata) = lfs::metadata_on_host(path) {
                 if metadata.is_file() && (metadata.permissions().mode() & 0o111 != 0) {
                     return Some(path.to_path_buf());
                 }
@@ -533,7 +533,7 @@ pub fn find_command_in_paths(command_name: &str) -> Option<PathBuf> {
         let mut full_path = PathBuf::from(path_dir);
         full_path.push(command_name);
         if lfs::exists_on_host(&full_path) {
-            if let Ok(metadata) = fs::metadata(&full_path) {
+            if let Ok(metadata) = lfs::metadata_on_host(&full_path) {
                 if metadata.is_file() && (metadata.permissions().mode() & 0o111 != 0) {
                     return Some(full_path);
                 }

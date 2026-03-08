@@ -17,6 +17,7 @@ use log::warn;
 use regex::bytes::RegexBuilder;
 
 use crate::models::*;
+use crate::lfs;
 
 // Helper functions for case-insensitive pattern matching
 fn find_all_matches(haystack: &[u8], pattern: &[u8], ignore_case: bool) -> Vec<usize> {
@@ -138,7 +139,7 @@ pub fn search_repo_cache(options: &mut SearchOptions) -> Result<()> {
             if options.files || options.paths {
                 if let Some(filelists) = &shard.filelists {
                     let filelists_path = repo_dir.join(&filelists.filename);
-                    if filelists_path.exists() {
+                    if lfs::exists_on_host(&filelists_path) {
                         // Start processing filelists in a new thread and collect the handles
                         let (consumer_handle, producer_handle) = search_filelists(filelists_path, options)
                             .with_context(|| format!("Failed to search filelists in {}", repo_index.repodata_name))?;

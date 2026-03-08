@@ -323,7 +323,7 @@ pub fn find_readonly_dirs<P: AsRef<Path>>(root: P) -> Result<Vec<PathBuf>> {
 
     while let Some(dir) = dir_stack.pop() {
         // Check if current directory is read-only
-        if let Ok(metadata) = fs::metadata(&dir) {
+        if let Ok(metadata) = lfs::metadata_on_host(&dir) {
             if metadata.permissions().readonly() {
                 readonly_dirs.push(dir.clone());
             }
