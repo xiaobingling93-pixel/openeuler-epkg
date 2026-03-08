@@ -10,6 +10,7 @@ use crate::models::*;
 use crate::dirs;
 use crate::repo::*;
 use crate::packages_stream;
+use crate::lfs;
 
 use lazy_static::lazy_static;
 lazy_static! {
@@ -339,9 +340,9 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
 
                     // Check if we need to revise by checking if the file exists
                     let download_path = &release_dir.join(&download_location);
-                    let need_download = !download_path.exists();
+                    let need_download = !lfs::exists_on_host(&download_path);
                     // Check if we need to convert by checking both the output file and its JSON metadata
-                    let need_convert = if !output_path.exists() {
+                    let need_convert = if !lfs::exists_on_host(&output_path) {
                         true // Output file doesn't exist, definitely need to convert
                     } else {
                         // Output file exists, check if metadata JSON file exists
@@ -353,7 +354,7 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                                 .map(|s| s.replace("filelists", ".filelists"))
                         };
                         // If we can't determine metadata path or it doesn't exist, need to convert
-                        metadata_path.map(|p| !std::path::Path::new(&p).exists()).unwrap_or(true)
+                        metadata_path.map(|p| !lfs::exists_on_host(std::path::Path::new(&p))).unwrap_or(true)
                     };
 
                     let mut package_baseurl = repo.index_url.clone();

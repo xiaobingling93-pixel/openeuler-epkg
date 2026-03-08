@@ -8,6 +8,7 @@ use crate::models::{InstalledPackageInfo, PACKAGE_CACHE, PackageFormat};
 use std::sync::Arc;
 use crate::plan::InstallationPlan;
 use crate::hooks::{Hook, HookWhen};
+use crate::lfs;
 
 // Constants matching dpkg's structure
 pub const TRIGGERSDIR: &str = "var/lib/dpkg/triggers";
@@ -186,7 +187,7 @@ fn add_activate_triggers_to_maps(
 fn read_unincorp_file(unincorp_path: &Path) -> Result<HashMap<String, Vec<String>>> {
     let mut activations: HashMap<String, Vec<String>> = HashMap::new();
 
-    if !unincorp_path.exists() {
+    if !lfs::exists_on_host(&unincorp_path) {
         return Ok(activations);
     }
 
@@ -358,7 +359,7 @@ pub fn read_package_triggers<P: AsRef<Path>>(
     package_dir: P,
 ) -> Result<(Vec<TriggerEntry>, Vec<TriggerEntry>)> {
     let triggers_path = package_dir.as_ref().join("info/deb/triggers");
-    if !triggers_path.exists() {
+    if !lfs::exists_on_host(&triggers_path) {
         return Ok((Vec::new(), Vec::new()));
     }
 

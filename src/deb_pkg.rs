@@ -163,7 +163,7 @@ fn create_package_txt<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P, pkgkey: Opt
     let store_tmp_dir = store_tmp_dir.as_ref();
     let control_path = store_tmp_dir.join("info/deb/control");
 
-    if !control_path.exists() {
+    if !lfs::exists_on_host(&control_path) {
         return Err(eyre::eyre!("Control file not found: {}", control_path.display()));
     }
 

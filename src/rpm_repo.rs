@@ -13,6 +13,7 @@ use crate::dirs;
 use crate::packages_stream;
 use lazy_static::lazy_static;
 use flate2::read::GzDecoder;
+use crate::lfs;
 use zstd;
 use std::error::Error;
 
@@ -173,7 +174,7 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                             let url = format!("{}/{}", baseurl, current_location);
                             let download_path = crate::mirror::Mirrors::url_to_cache_path(&url, &repo.repodata_name)
                                 .with_context(|| format!("Failed to convert URL to cache path: {}", url))?;
-                            let need_download = !download_path.exists();
+                            let need_download = !lfs::exists_on_host(&download_path);
 
                             let is_packages = current_data_type == "primary";
                             let repo_dir = dirs::get_repo_dir(&repo);
@@ -187,7 +188,7 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                                 }
                             };
                             // Check if we need to convert by checking both the output file and its JSON metadata
-                            let need_convert = if !output_path.exists() {
+                            let need_convert = if !lfs::exists_on_host(&output_path) {
                                 true // Output file doesn't exist, definitely need to convert
                             } else {
                                 // Output file exists, check if metadata JSON file exists
@@ -199,7 +200,7 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                                         .map(|s| s.replace("filelists", ".filelists"))
                                 };
                                 // If we can't determine metadata path or it doesn't exist, need to convert
-                                metadata_path.map(|p| !Path::new(&p).exists()).unwrap_or(true)
+                                metadata_path.map(|p| !lfs::exists_on_host(Path::new(&p))).unwrap_or(true)
                             };
 
                             info.push(RepoReleaseItem {

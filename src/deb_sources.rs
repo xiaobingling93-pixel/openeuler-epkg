@@ -8,6 +8,7 @@ use std::path::Path;
 use color_eyre::eyre::{Result, eyre};
 use crate::models::{RepoConfig, ChannelConfig, PackageFormat};
 use glob;
+use crate::lfs;
 
 /// Substitute variables in a string (similar to APT's SubstVar)
 /// Currently supports $(ARCH) substitution
@@ -366,7 +367,7 @@ fn load_apt_sources_with_glob(env_root: &Path, glob_pattern: &str, parser: fn(&P
     let sources_dir = env_root.join("etc/apt/sources.list.d");
     let full_pattern = sources_dir.join(glob_pattern);
 
-    if !sources_dir.exists() {
+    if !lfs::exists_on_host(&sources_dir) {
         return Ok(channel_configs);
     }
 

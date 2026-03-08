@@ -9,6 +9,7 @@ use std::path::Path;
 use color_eyre::eyre::{Result, WrapErr};
 use crate::models::{RepoConfig, ChannelConfig, PackageFormat};
 use glob;
+use crate::lfs;
 
 /// Parse a single RPM repository configuration section
 /// Format:
@@ -119,7 +120,7 @@ pub fn load_rpm_system_repos(env_root: &Path) -> Result<Vec<ChannelConfig>> {
     let repos_dir = env_root.join("etc/yum.repos.d");
     let pattern = repos_dir.join("*.repo");
 
-    if !repos_dir.exists() {
+    if !lfs::exists_on_host(&repos_dir) {
         return Ok(all_channel_configs);
     }
 
