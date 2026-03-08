@@ -29,9 +29,6 @@ const SUPPORTED_TOOLS: &[&str] = &[
     "go", "cargo", "mvn",
 ];
 
-/// Tools that should symlink to another tool's config
-const TOOL_SYMLINKS: &[(&str, &str)] = &[("pip3", "pip"), ("node", "npm"), ("npx", "npm")];
-
 /// User config file paths for each tool (on host OS)
 const TOOL_CONFIG_FILES: &[(&str, &[&str])] = &[
     ("pip", &["~/.pip/pip.conf", "~/.config/pip/pip.conf"]),
@@ -212,20 +209,14 @@ fn should_create_wrapper(tool: &str, env_root: &Path) -> bool {
         return false;
     }
 
-    // Get the actual tool name (handle pip3 -> pip)
-    let config_tool = TOOL_SYMLINKS.iter()
-        .find(|(alias, _)| alias == &tool)
-        .map(|(_, target)| *target)
-        .unwrap_or(tool);
-
     // Check if env var is already set
-    if check_env_var_set(config_tool) {
+    if check_env_var_set(tool) {
         log::debug!("Skipping wrapper for {}: env var already set", tool);
         return false;
     }
 
     // Check if user config exists
-    if check_user_config_exists(config_tool) {
+    if check_user_config_exists(tool) {
         log::debug!("Skipping wrapper for {}: user config exists", tool);
         return false;
     }
@@ -307,6 +298,7 @@ fn detect_installed_tools(plan: &InstallationPlan) -> Vec<String> {
 }
 
 /// Get wrapper script content for a tool
+/// Note: Filesystem symlinks (e.g., node->npm) are auto-followed by read_to_string()
 fn get_wrapper_content(tool: &str) -> Result<String> {
     let epkg_src = dirs::get_epkg_src_path();
     let wrapper_path = epkg_src.join("assets/tool/wrappers").join(tool);
@@ -316,18 +308,6 @@ fn get_wrapper_content(tool: &str) -> Result<String> {
         let content = std::fs::read_to_string(&wrapper_path)
             .with_context(|| format!("Failed to read wrapper script: {}", wrapper_path.display()))?;
         return Ok(content);
-    }
-
-    // Check if it's a symlink target (like pip3 -> pip)
-    for (alias, target) in TOOL_SYMLINKS {
-        if alias == &tool {
-            let target_path = epkg_src.join("assets/tool/wrappers").join(target);
-            if lfs::exists_on_host(&target_path) {
-                let content = std::fs::read_to_string(&target_path)
-                    .with_context(|| format!("Failed to read wrapper script: {}", target_path.display()))?;
-                return Ok(content);
-            }
-        }
     }
 
     Err(eyre::eyre!("No wrapper script found for tool: {}", tool))
