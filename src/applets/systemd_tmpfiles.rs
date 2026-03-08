@@ -601,8 +601,8 @@ fn process_directory_line(parts: &[String], _modifiers: &Modifiers, do_create: b
     log::info!("Parsed mode: {}", mode);
 
     // Create directory if it doesn't exist
-    log::info!("Directory exists? {}", full_path.exists());
-    if !full_path.exists() {
+    log::info!("Directory exists? {}", lfs::exists_or_any_symlink(&full_path));
+    if !lfs::exists_or_any_symlink(&full_path) {
         lfs::create_dir_all(&full_path)?;
     }
 
@@ -632,7 +632,7 @@ fn process_symlink_line(parts: &[String], modifiers: &Modifiers, root: Option<&P
     }
 
     // Remove existing file if + modifier is present
-    if modifiers.append_or_force && full_path.exists() {
+    if modifiers.append_or_force && lfs::exists_or_any_symlink(&full_path) {
         if full_path.is_symlink() {
             lfs::remove_file(&full_path)?;
         } else {
@@ -642,7 +642,7 @@ fn process_symlink_line(parts: &[String], modifiers: &Modifiers, root: Option<&P
     }
 
     // Create symlink if it doesn't exist
-    if !full_path.exists() {
+    if !lfs::exists_or_any_symlink(&full_path) {
         lfs::symlink(target, &full_path)?;
     }
 
@@ -667,7 +667,7 @@ fn process_file_line(parts: &[String], modifiers: &Modifiers, root: Option<&Path
     ensure_parent_directory(&full_path)?;
 
     // For 'f' type: create file if it doesn't exist, or truncate if '+' modifier is present
-    let file_exists = full_path.exists();
+    let file_exists = lfs::exists_or_any_symlink(&full_path);
     let should_write = !file_exists || modifiers.append_or_force;
 
     if should_write {
@@ -699,7 +699,7 @@ fn process_pipe_line(parts: &[String], _modifiers: &Modifiers, root: Option<&Pat
     ensure_parent_directory(&full_path)?;
 
     // Create named pipe if it doesn't exist
-    if !full_path.exists() {
+    if !lfs::exists_or_any_symlink(&full_path) {
         let path_str = full_path.to_str()
             .ok_or_else(|| eyre!("Path contains invalid UTF-8: {}", full_path.display()))?;
         posix_mkfifo(path_str)
@@ -724,14 +724,14 @@ fn process_remove_line(parts: &[String], remove_type: &str, _modifiers: &Modifie
     let path = &parts[1];
     let full_path = apply_root(path, root);
 
-    if !full_path.exists() {
+    if !lfs::exists_or_any_symlink(&full_path) {
         return Ok(()); // Nothing to remove
     }
 
     match remove_type {
         "r" => {
             // Remove file
-            if full_path.is_file() {
+            if lfs::symlink_metadata(&full_path).map(|m| m.file_type().is_file()).unwrap_or(false) {
                 lfs::remove_file(&full_path)?;
             } else {
                 return Err(eyre!("Path {} is not a file (use R for directories)", full_path.display()));
@@ -762,7 +762,7 @@ fn process_write_line(parts: &[String], _modifiers: &Modifiers, root: Option<&Pa
     };
 
     // For 'w' type, write to existing file only
-    if !full_path.exists() {
+    if !lfs::exists_or_any_symlink(&full_path) {
         return Err(eyre!("File {} does not exist (use f to create)", full_path.display()));
     }
 
@@ -780,11 +780,11 @@ fn process_empty_directory_line(parts: &[String], _modifiers: &Modifiers, root: 
     let full_path = apply_root(path, root);
 
     // For 'e' type, clean contents of existing directory
-    if !full_path.exists() {
+    if !lfs::exists_or_any_symlink(&full_path) {
         return Ok(()); // Directory doesn't exist, nothing to clean
     }
 
-    if !full_path.is_dir() {
+    if !lfs::symlink_metadata(&full_path).map(|m| m.file_type().is_dir()).unwrap_or(false) {
         return Err(eyre!("Path {} is not a directory", full_path.display()));
     }
 
@@ -798,7 +798,7 @@ fn process_empty_directory_line(parts: &[String], _modifiers: &Modifiers, root: 
             .map_err(|e| eyre!("Failed to read directory entry in {}: {}", full_path.display(), e))?;
         let entry_path = entry.path();
 
-        if entry_path.is_dir() {
+        if lfs::symlink_metadata(&entry_path).map(|m| m.file_type().is_dir()).unwrap_or(false) {
             lfs::remove_dir_all(&entry_path)?;
         } else {
             lfs::remove_file(&entry_path)?;
@@ -830,7 +830,7 @@ fn process_copy_line(parts: &[String], modifiers: &Modifiers, root: Option<&Path
     let full_source = apply_root(&source, root);
 
     // Check if destination exists and is a non-empty directory
-    if full_path.exists() && full_path.is_dir() {
+    if lfs::exists_or_any_symlink(&full_path) && lfs::symlink_metadata(&full_path).map(|m| m.file_type().is_dir()).unwrap_or(false) {
         let is_empty = fs::read_dir(&full_path)
             .map(|mut entries| entries.next().is_none())
             .unwrap_or(false);
@@ -903,7 +903,7 @@ fn process_attribute_line(parts: &[String], modifiers: &Modifiers, root: Option<
                     continue;
                 }
 
-                if recursive && path.is_dir() {
+                if recursive && lfs::symlink_metadata(&path).map(|m| m.file_type().is_dir()).unwrap_or(false) {
                     // Recursively process directory contents (excluding the directory itself)
                     for entry in WalkDir::new(&path).follow_links(false).min_depth(1).into_iter().filter_map(|e| e.ok()) {
                         let entry_path = entry.path();
@@ -941,7 +941,7 @@ fn extract_common_fields(parts: &[String]) -> (&str, &str, &str, &str) {
 /// Create parent directory for a path if it doesn't exist
 fn ensure_parent_directory(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
-        if !parent.exists() {
+        if !lfs::exists_or_any_symlink(parent) {
             lfs::create_dir_all(parent)?;
         }
     }
