@@ -224,12 +224,12 @@ fn setup_resolv_conf(env_root: &Path) -> Result<()> {
     let host_resolv_conf = Path::new("/etc/resolv.conf");
 
     // Skip on 'docker -v /etc/resolv.conf:/etc/resolv.conf:ro' and installing to /
-    if resolv_conf_path.exists() {
+    if lfs::exists_in_env(&resolv_conf_path) {
         return Ok(());
     }
 
     // Check if /etc/resolv.conf exists on host before trying to copy
-    if host_resolv_conf.exists() {
+    if lfs::exists_on_host(host_resolv_conf) {
         lfs::copy(host_resolv_conf, &resolv_conf_path)?;
     } else {
         // If /etc/resolv.conf doesn't exist on host, create a default one
@@ -304,7 +304,7 @@ pub fn create_epkg_symlink(env_root: &Path) -> Result<()> {
     // Try to find epkg binary in self environment
     if let Some(self_env_root) = find_env_root(SELF_ENV) {
         let self_epkg = self_env_root.join("usr/bin/epkg");
-        if self_epkg.exists() {
+        if lfs::exists_in_env(&self_epkg) {
             // Create absolute symlink from env_root/usr/bin/epkg to self_epkg
             let epkg_symlink = env_root.join("usr/bin/epkg");
             log::debug!("Creating/updating epkg symlink {} -> {}", epkg_symlink.display(), self_epkg.display());
@@ -331,7 +331,7 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
             lfs::create_dir_all(env_root.join("usr/lib64"))?;
             force_symlink("usr/lib64", env_root.join("lib64"))?;
 
-            if Path::new("/usr/lib32").exists() {
+            if lfs::exists_on_host("/usr/lib32") {
                 lfs::create_dir_all(env_root.join("usr/lib32"))?;
                 force_symlink("usr/lib32", env_root.join("lib32"))?;
             }
@@ -376,7 +376,7 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
 fn create_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -> Result<()> {
     // Create a symlink from systemctl to /usr/bin/true to prevent blocking on systemctl daemon-reload
     let systemctl_path = env_root.join("usr/bin/systemctl");
-    if !systemctl_path.exists() {
+    if !lfs::exists_in_env(&systemctl_path) {
         force_symlink("/usr/bin/true", &systemctl_path)
             .with_context(|| format!("Failed to create systemctl symlink in {}", systemctl_path.display()))?;
     }
@@ -1071,7 +1071,7 @@ pub fn registered_env_configs() -> Vec<EnvConfig> {
 
         // Check if environment has a config file
         let config_path = env_path.join("etc/epkg/env.yaml");
-        if !config_path.exists() {
+        if !lfs::exists_in_env(&config_path) {
             return Ok(());
         }
 
@@ -1139,7 +1139,7 @@ pub fn find_command_in_registered_envs(cmd_name: &str) -> Result<Option<(String,
             Ok(env_root) => {
                 for bin_dir in &bin_dirs {
                     let cmd_path = env_root.join(bin_dir).join(cmd_name);
-                    if cmd_path.exists() {
+                    if lfs::exists_in_env(&cmd_path) {
                         // Check if executable (Unix only)
                         #[cfg(unix)]
                         {
