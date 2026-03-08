@@ -725,6 +725,22 @@ pub fn resolve_symlink_in_env(symlink_path: &std::path::Path, env_root: &std::pa
     resolve_symlink_in_env_recursive(symlink_path, env_root, 0)
 }
 
+/// Helper to check if a target exists (including broken symlinks) and resolve it.
+/// Returns Some(resolved_path) if target exists or is a symlink (recursively resolved).
+/// Returns None if target doesn't exist.
+fn resolve_target_in_env(target_in_env: &Path, env_root: &Path, depth: usize) -> Option<PathBuf> {
+    // Check exists() or is_symlink() - symlinks may be "broken" in host context
+    // but valid inside namespace where all paths are mounted
+    if target_in_env.exists() || target_in_env.is_symlink() {
+        if target_in_env.is_symlink() {
+            // Recursively resolve symlinks
+            return resolve_symlink_in_env_recursive(target_in_env, env_root, depth + 1);
+        }
+        return Some(target_in_env.to_path_buf());
+    }
+    None
+}
+
 fn resolve_symlink_in_env_recursive(symlink_path: &std::path::Path, env_root: &std::path::Path, depth: usize) -> Option<std::path::PathBuf> {
     log::trace!("resolve_symlink_in_env_recursive: symlink_path={:?}, env_root={:?}, depth={}", symlink_path, env_root, depth);
     // Prevent infinite recursion
@@ -761,17 +777,9 @@ fn resolve_symlink_in_env_recursive(symlink_path: &std::path::Path, env_root: &s
             if is_system_path {
                 let target_in_env = env_root.join(link_target.strip_prefix("/").unwrap_or(&link_target));
                 log::trace!("resolve_symlink_in_env_recursive: mapped to target_in_env={:?}", target_in_env);
-                if target_in_env.exists() {
-                    log::trace!("resolve_symlink_in_env_recursive: target_in_env exists");
-                    if target_in_env.is_symlink() {
-                        log::trace!("resolve_symlink_in_env_recursive: target_in_env is symlink, recursing");
-                        // Recursively resolve within environment
-                        return resolve_symlink_in_env_recursive(&target_in_env, env_root, depth + 1);
-                    }
-                    log::trace!("resolve_symlink_in_env_recursive: system path resolved to regular file, returning {:?}", target_in_env);
-                    return Some(target_in_env);
-                } else {
-                    log::trace!("resolve_symlink_in_env_recursive: target_in_env does not exist");
+                match resolve_target_in_env(&target_in_env, env_root, depth) {
+                    Some(result) => return Some(result),
+                    None => log::trace!("resolve_symlink_in_env_recursive: target_in_env does not exist"),
                 }
             }
 
@@ -792,12 +800,23 @@ fn resolve_symlink_in_env_recursive(symlink_path: &std::path::Path, env_root: &s
             //     }
             // }
 
-            // For other absolute paths, assume env fs is the same with host, so detect in host
+            // For other absolute paths (e.g., /etc), first check if target exists within env_root,
+            // then fall back to host path check.
+            let target_in_env = env_root.join(link_target.strip_prefix("/").unwrap_or(&link_target));
+            log::debug!("resolve_symlink_in_env_recursive: checking other path {:?}, target_in_env={:?}", link_target, target_in_env);
+            match resolve_target_in_env(&target_in_env, env_root, depth) {
+                Some(result) => {
+                    log::debug!("resolve_symlink_in_env_recursive: target exists in env_root, returning {:?}", target_in_env);
+                    return Some(result);
+                }
+                None => {}
+            }
+            // Check if exists on host (for paths that are truly on host)
             if link_target.exists() {
-                log::trace!("resolve_symlink_in_env_recursive: other absolute path exists on host, returning {:?}", link_target);
+                log::debug!("resolve_symlink_in_env_recursive: absolute path exists on host, returning {:?}", link_target);
                 return Some(link_target);
             } else {
-                log::trace!("resolve_symlink_in_env_recursive: other absolute path does not exist on host");
+                log::debug!("resolve_symlink_in_env_recursive: other absolute path does not exist on host: {:?}", link_target);
             }
         } else {
             // Relative symlink: resolve relative to the symlink's directory
