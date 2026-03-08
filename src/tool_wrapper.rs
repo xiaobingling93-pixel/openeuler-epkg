@@ -26,12 +26,11 @@ use crate::plan::InstallationPlan;
 /// Supported tools that can have mirror acceleration
 const SUPPORTED_TOOLS: &[&str] = &[
     "pip", "pip3", "npm", "node", "npx", "gem", "bundle",
-    "go", "gofmt", "cargo", "rustc",
-    "java", "javac", "mvn",
+    "go", "cargo", "mvn",
 ];
 
 /// Tools that should symlink to another tool's config
-const TOOL_SYMLINKS: &[(&str, &str)] = &[("pip3", "pip")];
+const TOOL_SYMLINKS: &[(&str, &str)] = &[("pip3", "pip"), ("node", "npm"), ("npx", "npm")];
 
 /// User config file paths for each tool (on host OS)
 const TOOL_CONFIG_FILES: &[(&str, &[&str])] = &[
@@ -42,11 +41,7 @@ const TOOL_CONFIG_FILES: &[(&str, &[&str])] = &[
     ("gem", &["~/.gemrc"]),
     ("bundle", &["~/.bundle/config"]),
     ("go",  &[]), // Go uses env vars, not config files
-    ("gofmt", &[]), // gofmt doesn't use config files
     ("cargo", &["~/.cargo/config.toml", "~/.cargo/config"]),
-    ("rustc", &[]), // rustc doesn't use config files
-    ("java", &[]), // Java uses env vars
-    ("javac", &[]), // javac doesn't use config files
     ("mvn", &["~/.m2/settings.xml"]),
 ];
 
@@ -59,11 +54,7 @@ const TOOL_ENV_VARS: &[(&str, &[&str])] = &[
     ("gem", &["BUNDLE_MIRROR__HTTPS://RUBYGEMS__ORG/"]),
     ("bundle", &["BUNDLE_MIRROR__HTTPS://RUBYGEMS__ORG/", "BUNDLE_RUBYGEMS__ORG_MIRROR"]),
     ("go",  &["GOPROXY"]),
-    ("gofmt", &[]), // gofmt doesn't use env vars
     ("cargo", &["RUSTUP_DIST_SERVER", "CARGO_REGISTRIES_CRATES_INDEX"]),
-    ("rustc", &[]), // rustc doesn't use env vars
-    ("java", &["MAVEN_CENTRAL_MIRROR"]),
-    ("javac", &[]), // javac doesn't use env vars
     ("mvn", &["MAVEN_CENTRAL_MIRROR", "MAVEN_REPO_LOCAL"]),
 ];
 
@@ -263,10 +254,8 @@ fn detect_installed_tools(plan: &InstallationPlan) -> Vec<String> {
     const TOOL_ALT_PATHS: &[(&str, &[&str])] = &[
         // Go language (Alpine: usr/bin/go, some distros: usr/lib/go/bin/go or usr/lib/golang/bin/go)
         ("go",    &["usr/lib/go/bin/go", "usr/lib/golang/bin/go"]),
-        ("gofmt", &["usr/lib/go/bin/gofmt", "usr/lib/golang/bin/gofmt"]),
         // Rust language
         ("cargo", &["usr/lib/rust/bin/cargo"]),
-        ("rustc", &["usr/lib/rust/bin/rustc"]),
         // Python
         ("pip",   &["usr/lib/python3/bin/pip"]),
         ("pip3",  &["usr/lib/python3/bin/pip3"]),
@@ -277,9 +266,6 @@ fn detect_installed_tools(plan: &InstallationPlan) -> Vec<String> {
         // Ruby
         ("gem",   &["usr/lib/ruby/bin/gem"]),
         ("bundle", &["usr/lib/ruby/bin/bundle"]),
-        // Java
-        ("java",  &["usr/lib/jvm/bin/java"]),
-        ("javac", &["usr/lib/jvm/bin/javac"]),
         // Maven
         ("mvn",   &["usr/share/maven/bin/mvn"]),
     ];
