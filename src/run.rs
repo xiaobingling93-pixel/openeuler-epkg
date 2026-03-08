@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use crate::models::*;
 #[cfg(target_os = "linux")]
 use crate::namespace::{determine_process_config, build_unified_context, create_process_with_namespaces};
-use crate::utils;
+use crate::lfs;
 use crate::utils::is_suid;
 use color_eyre::eyre;
 use color_eyre::Result;
@@ -496,7 +496,7 @@ pub fn is_executable(path: &Path) -> Result<bool> {
 fn is_executable_within_env(path: &Path, env_root: &Path) -> Result<bool> {
     trace!("is_executable_within_env checking: {}", path.display());
 
-    match utils::resolve_symlink_in_env(path, env_root) {
+    match lfs::resolve_symlink_in_env(path, env_root) {
         Some(resolved) => {
             trace!("Resolved {} -> {}", path.display(), resolved.display());
             is_executable(&resolved)

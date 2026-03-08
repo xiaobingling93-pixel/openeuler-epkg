@@ -350,7 +350,7 @@ fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpret
         // Resolve to a path within the env first (e.g. env_root/usr/bin/yash), then canonicalize.
         // Using canonicalize(interpreter_in_env) would follow bin/sh -> /usr/bin/yash and fail with
         // ENOENT in containers where only env_root/usr/bin/yash exists.
-        let path_to_canonicalize = utils::resolve_symlink_in_env(interpreter_in_env, env_root)
+        let path_to_canonicalize = lfs::resolve_symlink_in_env(interpreter_in_env, env_root)
             .unwrap_or_else(|| interpreter_in_env.to_path_buf());
         let store_interpreter = fs::canonicalize(&path_to_canonicalize)
             .with_context(|| format!("Failed to resolve interpreter path: {}", path_to_canonicalize.display()))?;
@@ -372,7 +372,7 @@ fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpret
 /// Find and link the appropriate interpreter if it doesn't exist
 fn find_link_interpreter(interpreter_in_env: &Path, interpreter_basename: &str, env_root: &Path) -> Result<()> {
     // Use the environment‑aware resolver to determine if the path is valid
-    if utils::resolve_symlink_in_env(interpreter_in_env, env_root).is_some() {
+    if lfs::resolve_symlink_in_env(interpreter_in_env, env_root).is_some() {
         return Ok(());
     }
 

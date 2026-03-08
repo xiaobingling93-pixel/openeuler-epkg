@@ -3,7 +3,7 @@ use crate::models::{InstalledPackageInfo, PackageFormat};
 use crate::package;
 use crate::plan::InstallationPlan;
 use crate::rpm_triggers::setup_rpm_env_vars;
-use crate::utils;
+use crate::lfs;
 use color_eyre::eyre::{eyre, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -519,7 +519,7 @@ pub fn run_scriptlet(
                 // System paths (/usr/bin/*) are not available since we're in a chroot environment.
                 // We validate symlinks properly to handle cases where environment symlinks point to valid targets.
                 let interpreter_path = env_root.join("usr/bin").join(interpreter);
-                if utils::resolve_symlink_in_env(&interpreter_path, env_root).is_none() {
+                if lfs::resolve_symlink_in_env(&interpreter_path, env_root).is_none() {
                     log::debug!(
                         "Interpreter {} not found in environment, trying next interpreter",
                         interpreter
