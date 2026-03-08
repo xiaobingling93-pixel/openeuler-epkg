@@ -49,11 +49,11 @@
 
 use std::path::Path;
 use std::path::PathBuf;
-use std::fs;
 use std::time::SystemTime;
 use color_eyre::Result;
 use std::sync::Arc;
 use color_eyre::eyre::WrapErr;
+use crate::lfs;
 use crate::models::{PackageFormat, InstalledPackageInfo};
 use crate::models::PACKAGE_CACHE;
 use crate::plan::{InstallationPlan, PackageOperation, OperationType, remove_package_from_cache};
@@ -468,8 +468,8 @@ fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
     ];
 
     // Get mtime of ld.so.cache if it exists
-    let cache_mtime = if ld_so_cache.exists() {
-        fs::metadata(&ld_so_cache)
+    let cache_mtime = if lfs::exists_or_any_symlink(&ld_so_cache) {
+        lfs::symlink_metadata(&ld_so_cache)
             .with_context(|| format!("Failed to get metadata for {}", ld_so_cache.display()))?
             .modified()
             .with_context(|| format!("Failed to get modification time for {}", ld_so_cache.display()))?
@@ -480,10 +480,10 @@ fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
 
     // Check if any lib directory has been modified more recently than the cache
     let needs_update = lib_dirs.iter().any(|dir| {
-        if !dir.exists() {
+        if !lfs::exists_or_any_symlink(dir) {
             return false;
         }
-        match fs::metadata(dir) {
+        match lfs::symlink_metadata(dir) {
             Ok(metadata) => {
                 match metadata.modified() {
                     Ok(dir_mtime) => dir_mtime > cache_mtime,
