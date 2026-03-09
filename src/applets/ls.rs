@@ -982,8 +982,14 @@ fn list_directory(dir: &Path, options: &LsOptions, prefix: &str) -> Result<()> {
 }
 
 fn print_path_header_if_needed(path: &Path, options: &LsOptions) {
+    // Only print header for directories when multiple paths are given
+    // (matches busybox ls behavior: headers only for dirs, not files)
     if options.paths.len() > 1 {
-        println!("{}:", path.display());
+        if let Ok(metadata) = fs::metadata(path) {
+            if metadata.is_dir() {
+                println!("{}:", path.display());
+            }
+        }
     }
 }
 
@@ -1072,8 +1078,14 @@ fn list_path(path: &Path, options: &LsOptions) -> Result<()> {
 }
 
 fn print_trailing_blank_line_between_paths(path: &Path, options: &LsOptions) {
+    // Only print blank line between directories (not files) when multiple paths are given
+    // This matches busybox ls behavior
     if options.paths.len() > 1 && path != options.paths.last().unwrap() {
-        println!();
+        if let Ok(metadata) = fs::metadata(path) {
+            if metadata.is_dir() {
+                println!();
+            }
+        }
     }
 }
 
