@@ -124,7 +124,6 @@ use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use nix::pty::{openpty, Winsize, OpenptyResult};
 use nix::sys::wait::{waitpid, WaitPidFlag};
 use nix::unistd::{fork, ForkResult, dup2, setsid, close, Pid};
-use nix::sys::reboot;
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use std::os::fd::{OwnedFd, AsRawFd, BorrowedFd, FromRawFd};
 use nix::sys::socket::{self, AddressFamily, SockType, SockFlag, VsockAddr, Backlog};
@@ -961,9 +960,8 @@ fn run_vsock_server() -> Result<()> {
             match handle_connection(stream) {
                 Ok(_) => {
                     log::debug!("Command processed, powering off guest (vsock)");
-                    let _ = reboot::reboot(reboot::RebootMode::RB_POWER_OFF);
-                    log::debug!("reboot(RB_POWER_OFF) failed (should not return)");
-                    Ok(())
+                    // Directly exit to shut down VM; reboot() syscall may hang in some environments
+                    std::process::exit(0);
                 }
                 Err(e) => {
                     log::debug!("Error handling vsock connection: {}", e);
