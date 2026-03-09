@@ -106,17 +106,25 @@ fn run_init() -> Result<()> {
 }
 
 fn pid1_idle_loop() -> Result<()> {
+    let mut child_exited = false;
     loop {
         match nix::sys::wait::waitpid(None, Some(nix::sys::wait::WaitPidFlag::WNOHANG)) {
             Ok(nix::sys::wait::WaitStatus::Exited(pid, status)) => {
                 log::debug!("init: reaped child pid={} status={}", pid, status);
+                child_exited = true;
             }
             Ok(nix::sys::wait::WaitStatus::Signaled(pid, sig, _)) => {
                 log::debug!("init: reaped child pid={} signal={:?}", pid, sig);
+                child_exited = true;
             }
             Ok(nix::sys::wait::WaitStatus::StillAlive) => {}
             Ok(_) => {}
-            Err(nix::errno::Errno::ECHILD) => {}
+            Err(nix::errno::Errno::ECHILD) => {
+                if child_exited {
+                    log::debug!("init: ECHILD received (child_exited=true), powering off guest");
+                    poweroff_guest();
+                }
+            }
             Err(e) => {
                 log::debug!("init: waitpid error: {}", e);
             }
@@ -517,13 +525,10 @@ fn configure_network() -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 fn poweroff_guest() -> ! {
-    use nix::sys::reboot::{reboot, RebootMode};
-    log::debug!("init: powering off guest");
-    #[allow(irrefutable_let_patterns)] // reboot() returns Err when it doesn't power off
-    if let Err(e) = reboot(RebootMode::RB_POWER_OFF) {
-        log::debug!("init: reboot(RB_POWER_OFF) failed: {}; exiting", e);
-    }
-    std::process::exit(1);
+    // Directly exit init process; kernel will panic and VM should shut down.
+    // Note: reboot() syscall hangs in libkrun, so we use process::exit() instead.
+    log::debug!("poweroff_guest: calling process::exit(0)");
+    std::process::exit(0);
 }
 
 /// Percent-decode a string from kernel command line
