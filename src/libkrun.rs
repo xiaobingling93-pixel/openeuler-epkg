@@ -1,4 +1,3 @@
-use std::env;
 use std::ffi::CString;
 use std::path::Path;
 use std::ptr;
@@ -191,6 +190,7 @@ impl KrunContext {
         )
     }
 
+    #[allow(dead_code)]
     unsafe fn set_env(&self, env: &[(String, String)]) -> Result<()> {
         if env.is_empty() {
             let empty: [*const std::ffi::c_char; 1] = [ptr::null()];
@@ -217,6 +217,7 @@ impl KrunContext {
             .collect()
     }
 
+    #[allow(dead_code)]
     unsafe fn set_workdir(&self, workdir: &str) -> Result<()> {
         let workdir_c = CString::new(workdir)
             .map_err(|e| eyre::eyre!("invalid workdir path: {}", e))?;
@@ -398,7 +399,7 @@ pub fn run_command_in_krun(
         kernel_args.push_str(user_args);
     };
 
-    // In cmdline mode (EPKG_VM_NO_DAEMON=1), set EPKG_INIT_CMD to tell init what to execute
+    // In cmdline mode (EPKG_VM_NO_DAEMON=1), set epkg.init_cmd to tell init what to execute
     if use_cmdline_mode {
         kernel_args.push(' ');
         kernel_args.push_str(&format!("epkg.init_cmd={}", init_cmd));
@@ -474,7 +475,7 @@ pub fn run_command_in_krun(
         // Set workdir to root
         // ctx.set_workdir("/")?;
 
-        // In vsock mode, let init handle command execution via EPKG_INIT_CMD
+        // In vsock mode, let init handle command execution via epkg.init_cmd
         // set_exec would override init, so skip it entirely
 
         // Configure split IRQ chip (required for x86_64 KVM)

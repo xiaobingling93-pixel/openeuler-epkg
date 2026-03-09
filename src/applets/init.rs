@@ -13,43 +13,19 @@ use color_eyre::eyre::{eyre, WrapErr};
 use std::net::Ipv4Addr;
 use std::path::Path;
 
-
-/// Configuration for the init process.
-/// Parameters are determined from multiple sources with priority: CLI args > env vars > kernel cmdline.
-#[derive(Debug, Default)]
-pub struct InitOptions {
-    /// Working directory to chdir into before exec (cwd semantics, not sysroot).
-    /// Sources (priority order):
-    ///   1. CLI: --cwd <DIR>
-    ///   2. Env: EPKG_INIT_CWD
-    ///   3. Kernel cmdline: epkg.init_cwd=<path>
-    pub cwd: Option<String>,
-
-    /// Command to execute after init setup. If empty, vm-daemon is started.
-    /// Sources (priority order):
-    ///   1. CLI: [command] ... (joined with spaces)
-    ///   2. Env: EPKG_INIT_CMD
-    ///   3. Kernel cmdline: epkg.init_cmd=<cmd> (percent-encoded)
-    pub command: Vec<String>,
-}
-
-pub fn parse_options(matches: &clap::ArgMatches) -> Result<InitOptions> {
-    let cwd = matches.get_one::<String>("cwd").cloned();
-    let command: Vec<String> = matches.get_many::<String>("command")
-        .map(|v| v.cloned().collect())
-        .unwrap_or_default();
-    Ok(InitOptions { cwd, command })
-}
-
 pub fn command() -> ClapCommand {
     ClapCommand::new("init")
-        .about("Minimal init for VMM guest: mount proc/sys/dev, read cwd and command from env or cmdline, exec")
-        .arg(clap::arg!(-c --cwd <DIR> "Working directory to chdir into (virtiofs mount path)"))
-        .arg(clap::arg!([command] ... "Command to exec (default: from EPKG_INIT_CMD or kernel cmdline)"))
+        .about("Minimal init for VMM guest: mount proc/sys/dev, read epkg.init_cmd/epkg.init_pwd from cmdline, exec")
+        .arg(clap::arg!([command] ... "Command to exec"))  // It's here to accept and ignore kernel passed arguments
 }
 
-pub fn run(options: InitOptions) -> Result<()> {
-    run_init(options.cwd.as_deref(), &options.command)
+pub fn run(_options: ()) -> Result<()> {
+    run_init()
+}
+
+pub fn parse_options(_matches: &clap::ArgMatches) -> Result<()> {
+    // init doesn't use CLI args, it reads directly from kernel cmdline
+    Ok(())
 }
 
 /// Called from main() before setup_logging when argv[0] is init. Mounts /proc, reads
@@ -80,19 +56,17 @@ pub fn early_init_rust_log_from_cmdline() {
             std::env::set_var("RUST_LOG", &decoded);
         }
     }
-    // Also parse krun_env for EPKG_INIT_CMD and other environment variables
-    parse_krun_env_from_cmdline();
 }
 
-fn run_init(opt_cwd: Option<&str>, opt_cmd: &[String]) -> Result<()> {
-    let (cwd, cmd_str) = read_init_config(opt_cwd, opt_cmd);
-    eprintln!("init: config cwd={:?} cmd={:?}", cwd, cmd_str.as_deref());
+fn run_init() -> Result<()> {
+    let (pwd, cmd_str) = (read_cmdline_param("epkg.init_pwd"), read_cmdline_param("epkg.init_cmd"));
+    eprintln!("init: config pwd={:?} cmd={:?}", pwd, cmd_str.as_deref());
 
     if let Err(e) = setup_mounts() {
         eprintln!("init: setup_mounts failed: {}", e);
         return Err(e).wrap_err("init: setup_mounts failed");
     }
-    if let Some(ref r) = cwd {
+    if let Some(ref r) = pwd {
         if let Err(e) = std::env::set_current_dir(r) {
             eprintln!("init: chdir {} failed: {}", r, e);
         } else {
@@ -131,21 +105,6 @@ fn run_init(opt_cwd: Option<&str>, opt_cmd: &[String]) -> Result<()> {
     }
 }
 
-#[allow(dead_code)]
-fn setup_init_environment(cwd: Option<&str>) -> Result<()> {
-    if let Err(e) = setup_mounts() {
-        log::debug!("init: setup_mounts failed: {}", e);
-        return Err(e).wrap_err("init: setup_mounts failed");
-    }
-    if let Some(r) = cwd {
-        std::env::set_current_dir(r)
-            .map_err(|e| eyre!("chdir {}: {}", r, e))?;
-        log::debug!("init: chdir {} ok", r);
-    }
-    raise_system_file_limit();
-    Ok(())
-}
-
 fn pid1_idle_loop() -> Result<()> {
     loop {
         match nix::sys::wait::waitpid(None, Some(nix::sys::wait::WaitPidFlag::WNOHANG)) {
@@ -179,51 +138,6 @@ fn exec_init_command(cmd_str: Option<String>) -> Result<()> {
         log::debug!("init: exec vm-daemon");
         exec_vm_daemon()
     }
-}
-
-/// Read init configuration from multiple sources with priority: CLI args > env vars > kernel cmdline.
-///
-/// Parameters:
-/// - opt_cwd: CLI --cwd argument (highest priority)
-/// - opt_cmd: CLI [command] arguments (highest priority)
-///
-/// Returns: (cwd, command_string)
-///
-/// cwd sources (first match wins):
-///   1. opt_cwd (CLI --cwd)
-///   2. EPKG_INIT_CWD env var
-///   3. epkg.init_cwd=<path> from /proc/cmdline
-///
-/// command sources (first match wins):
-///   1. EPKG_INIT_CMD env var (highest priority - explicit override)
-///   2. opt_cmd (CLI [command] ..., joined with spaces)
-///   3. epkg.init_cmd=<cmd> from /proc/cmdline (percent-encoded)
-///
-/// If both cwd and command are None, logs a warning about /proc/cmdline availability.
-#[cfg(target_os = "linux")]
-fn read_init_config(opt_cwd: Option<&str>, opt_cmd: &[String]) -> (Option<String>, Option<String>) {
-    let cwd = opt_cwd
-        .map(String::from)
-        .or_else(|| std::env::var("EPKG_INIT_CWD").ok())
-        .or_else(|| read_cmdline_param("epkg.init_cwd"));
-
-    // Check env vars first (they are explicit overrides), then CLI args, then kernel cmdline
-    let cmd_str = std::env::var("EPKG_INIT_CMD").ok()
-        .or_else(|| {
-            if !opt_cmd.is_empty() {
-                Some(opt_cmd.join(" "))
-            } else {
-                None
-            }
-        })
-        .or_else(|| read_cmdline_param("epkg.init_cmd"));
-
-    if cwd.is_none() && cmd_str.is_none() {
-        if let Err(e) = std::fs::read_to_string("/proc/cmdline") {
-            log::debug!("init: /proc/cmdline unreadable: {} (epkg.init_cwd/epkg.init_cmd from cmdline unavailable)", e);
-        }
-    }
-    (cwd, cmd_str)
 }
 
 /// Setup essential filesystem mounts for VMM guest init.
@@ -389,36 +303,6 @@ fn read_cmdline_param(key: &str) -> Option<String> {
     None
 }
 
-
-/// Parse and set environment variables from krun_env format in cmdline.
-/// The krun_env format is: "KEY=VALUE" "KEY2=VALUE2" ... (with quotes)
-#[cfg(target_os = "linux")]
-fn parse_krun_env_from_cmdline() {
-    let cmdline = match std::fs::read_to_string("/proc/cmdline") {
-        Ok(s) => s,
-        Err(e) => {
-            log::debug!("init: read /proc/cmdline for krun_env failed: {}", e);
-            return;
-        }
-    };
-
-    // Look for tokens that match "KEY=VALUE" format (with surrounding quotes)
-    for token in cmdline.split_whitespace() {
-        // krun_env tokens are quoted like "KEY=VALUE"
-        if token.len() >= 2 && token.starts_with('"') && token.ends_with('"') {
-            let inner = &token[1..token.len() - 1];
-            if let Some(eq_pos) = inner.find('=') {
-                let key = &inner[..eq_pos];
-                let value = &inner[eq_pos + 1..];
-                // Skip KRUN_* internal variables, set user-visible environment variables
-                if !key.starts_with("KRUN_") {
-                    log::debug!("init: setting environment variable {}={}", key, value);
-                    std::env::set_var(key, value);
-                }
-            }
-        }
-    }
-}
 #[cfg(target_os = "linux")]
 fn try_load_module(name: &str) -> bool {
     let r = crate::applets::modprobe::run(crate::applets::modprobe::ModprobeOptions {

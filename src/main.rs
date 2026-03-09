@@ -216,20 +216,12 @@ fn main() -> Result<()> {
     }
 
     // If invoked as init (guest VMM mode), run the init process which reads
-    // epkg.init_cmd from cmdline and executes the command
+    // epkg.init_cmd and epkg.init_pwd from cmdline and executes the command
     #[cfg(target_os = "linux")]
     if invoked_as_init {
         log::debug!("init: invoked as init, running init process");
-        use crate::applets::init::{InitOptions, run};
-        // Read options from environment (set by early_init_rust_log_from_cmdline)
-        let init_opts = InitOptions {
-            cwd: std::env::var("EPKG_INIT_CWD").ok(),
-            command: std::env::var("EPKG_INIT_CMD")
-                .ok()
-                .map(|s| s.split_whitespace().map(String::from).collect::<Vec<_>>())
-                .unwrap_or_default(),
-        };
-        run(init_opts).wrap_err("init: init::run failed")?;
+        use crate::applets::init::run;
+        run(()).wrap_err("init: init::run failed")?;
         return Ok(());
     }
 
