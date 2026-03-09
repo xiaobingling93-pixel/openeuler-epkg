@@ -389,13 +389,6 @@ pub fn run_command_in_krun(
         log::debug!("libkrun: setting EPKG_INIT_CMD={}", init_cmd);
         env_vec.push(("EPKG_INIT_CMD".to_string(), init_cmd.clone()));
     }
-    let mut env_vec: Vec<(String, String)> = env::vars().collect();
-
-    // In vsock mode, add EPKG_INIT_CMD to tell the guest what command to run
-    if use_vsock && !init_cmd.is_empty() {
-        log::debug!("libkrun: setting EPKG_INIT_CMD={}", init_cmd);
-        env_vec.push(("EPKG_INIT_CMD".to_string(), init_cmd.clone()));
-    }
 
     // Resolve kernel path and set it via krun_set_kernel() if explicitly specified.
     // If no --kernel option is provided, libkrun will auto-load the bundled kernel
