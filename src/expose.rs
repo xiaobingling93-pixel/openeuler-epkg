@@ -396,30 +396,37 @@ fn create_script_wrapper(
 
     let exec_cmd = get_exec_command(&file_type, fs_file, Some(env_root));
 
-    // Remove existing file first to avoid overwriting hard links (e.g., elf-loader)
-    // If ebin_path is a hard link to elf-loader, truncating it would corrupt all
-    // files sharing that inode. Removing first ensures we create a fresh inode.
-    if lfs::exists_in_env(ebin_path) {
-        lfs::remove_file(ebin_path)
-            .with_context(|| format!("Failed to remove existing file before overwrite: {}", ebin_path.display()))?;
-    }
+    // Create script wrapper atomically: write to temp file first, then rename.
+    // This avoids corrupting hard links (e.g., elf-loader) and prevents partial
+    // writes if the process is interrupted.
+    let ebin_dir = ebin_path.parent()
+        .ok_or_else(|| eyre::eyre!("Failed to get parent directory for {}", ebin_path.display()))?;
+    let temp_path = ebin_dir.join(format!(".tmp-{}", ebin_path.file_name().unwrap().to_string_lossy()));
 
+    // Write to temporary file
     let mut wrapper = fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
-        .open(ebin_path)
-        .with_context(|| format!("Failed to open {} for create_script_wrapper", ebin_path.display()))?;
+        .open(&temp_path)
+        .with_context(|| format!("Failed to open temp file {} for create_script_wrapper", temp_path.display()))?;
 
     if !env_shell_bang_line.is_empty() {
         wrapper.write_all(env_shell_bang_line.as_bytes())
-            .with_context(|| format!("Failed to write shebang line to {}", ebin_path.display()))?;
+            .with_context(|| format!("Failed to write shebang line to {}", temp_path.display()))?;
     }
 
     wrapper.write_all(exec_cmd.as_bytes())
-        .with_context(|| format!("Failed to write exec command to {}", ebin_path.display()))?;
+        .with_context(|| format!("Failed to write exec command to {}", temp_path.display()))?;
 
-    set_wrapper_permissions(ebin_path)?;
+    drop(wrapper); // Close file before rename
+
+    // Set permissions on temp file before rename
+    set_wrapper_permissions(&temp_path)?;
+
+    // Atomic rename: this replaces any existing file at ebin_path
+    fs::rename(&temp_path, ebin_path)
+        .with_context(|| format!("Failed to rename temp file {} to {}", temp_path.display(), ebin_path.display()))?;
 
     log::debug!(
         "Created script wrapper: ebin_path={}, fs_file={}, file_type={:?}, first_line={:?}",
