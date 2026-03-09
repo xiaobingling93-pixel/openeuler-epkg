@@ -226,6 +226,7 @@ impl KrunContext {
         )
     }
 
+    #[allow(dead_code)]
     unsafe fn add_virtiofs(&self, tag: &str, path: &str) -> Result<()> {
         let tag_c = CString::new(tag)
             .map_err(|e| eyre::eyre!("invalid tag: {}", e))?;
@@ -376,18 +377,43 @@ pub fn run_command_in_krun(
     let (cmd_parts, init_cmd) = qemu::build_guest_command(Path::new(&guest_exec_path), &run_options.args)
         .map_err(|e| eyre::eyre!("Failed to build guest command: {}", e))?;
 
-    // For external kernel boot, we pass a minimal cmdline.
-    // The kernel will use its built-in defaults and discover devices automatically.
-    // Console output goes to hvc0 (virtio-console) which is configured below.
-    let kernel_args = String::new();
+    // Build kernel cmdline based on working example from libkrun/examples/run_external_kernel.sh.
+    // Key parameters:
+    // - console=hvc0 earlyprintk=hvc0: console output via virtio-console
+    // - loglevel=8 debug: enable debug logging for troubleshooting
+    // - rootfstype=virtiofs rw: use virtiofs for root filesystem, read-write
+    // - init=/usr/bin/init: use epkg (via symlink) as init process
+    // - reboot=k panic=-1 panic_print=0 nomodule no-kvmapf: kernel behavior settings
+    //
+    // Environment variables are passed as part of cmdline (EPKG_* format).
+    // The virtio_mmio.device parameters and tsi_hijack are added automatically by libkrun.
+    //
+    // We also append any extra args from --kernel-args option.
+    let base_cmdline = "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 earlyprintk=hvc0 \
+                        loglevel=8 debug rootfstype=virtiofs rw no-kvmapf init=/usr/bin/init";
+    let kernel_args = if let Some(ref extra_args) = run_options.kernel_args {
+        format!("{} {}", base_cmdline, extra_args)
+    } else {
+        base_cmdline.to_string()
+    };
 
-    // Build environment variables for guest
-    let mut env_vec: Vec<(String, String)> = env::vars().collect();
+    // Build environment variables for guest - only include essential ones for cmdline mode
+    let mut env_vec: Vec<(String, String)> = Vec::new();
 
-    // In vsock mode, add EPKG_INIT_CMD to tell the guest what command to run
-    if use_vsock && !init_cmd.is_empty() {
-        log::debug!("libkrun: setting EPKG_INIT_CMD={}", init_cmd);
-        env_vec.push(("EPKG_INIT_CMD".to_string(), init_cmd.clone()));
+    // In cmdline mode (EPKG_VM_NO_DAEMON=1), set EPKG_INIT_CMD to tell init what to execute
+    if !use_vsock {
+        let guest_cmd = format!("/{}", guest_exec_path.trim_start_matches('/'));
+        env_vec.push(("EPKG_INIT_CMD".to_string(), guest_cmd.clone()));
+        log::debug!("libkrun: cmdline mode, setting EPKG_INIT_CMD={}", guest_cmd);
+        // Also add minimal PATH for init to find commands
+        env_vec.push(("PATH".to_string(), "/usr/bin:/bin:/usr/sbin:/sbin".to_string()));
+    } else {
+        // In vsock mode, include all env vars
+        env_vec = env::vars().collect();
+        if !init_cmd.is_empty() {
+            log::debug!("libkrun: setting EPKG_INIT_CMD={}", init_cmd);
+            env_vec.push(("EPKG_INIT_CMD".to_string(), init_cmd.clone()));
+        }
     }
 
     // Resolve kernel path and set it via krun_set_kernel() if explicitly specified.
@@ -449,30 +475,19 @@ pub fn run_command_in_krun(
             }
         }
 
-        // TODO: Configure rootfs/env/workdir after kernel boot is verified
-        // ctx.set_root(rootfs)?;
-        // ctx.set_env(&env_vec)?;
-        // ctx.set_workdir("/")?;
+        // Configure rootfs via virtiofs - this mounts env_root as the root filesystem
+        // The kernel cmdline has rootfstype=virtiofs which tells the kernel to mount it
+        ctx.set_root(env_root.to_str().unwrap())?;
+        log::debug!("libkrun: rootfs configured via virtiofs: {:?}", env_root);
 
-        // TODO: Mount self env at /self for epkg symlinks
-        // if let Some(self_env) = crate::dirs::find_env_root("self") {
-        //     if let Some(self_env_str) = self_env.to_str() {
-        //         log::debug!("libkrun: mounting self env at /self: {}", self_env_str);
-        //         match ctx.add_virtiofs("self", self_env_str) {
-        //             Ok(()) => log::debug!("libkrun: successfully mounted self env at /self"),
-        //             Err(e) => {
-        //                 log::warn!("libkrun: failed to mount self env at /self: {}", e);
-        //                 log::warn!("libkrun: symlinks to self may not work");
-        //             }
-        //         }
-        //     }
-        // } else {
-        //     log::debug!("libkrun: self env not found, symlinks to self may not work");
-        // }
+        // Set environment variables for the guest
+        ctx.set_env(&env_vec)?;
+
+        // Set workdir to root
+        ctx.set_workdir("/")?;
 
         // In vsock mode, let init handle command execution via EPKG_INIT_CMD
         // set_exec would override init, so skip it entirely
-        // ctx.set_exec(exec, &args, &env_vec)?;
 
         // Configure split IRQ chip (required for x86_64 KVM)
         check_status("krun_split_irqchip",

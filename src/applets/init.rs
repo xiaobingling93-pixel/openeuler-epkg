@@ -195,8 +195,8 @@ fn exec_init_command(cmd_str: Option<String>) -> Result<()> {
 ///   3. epkg.init_cwd=<path> from /proc/cmdline
 ///
 /// command sources (first match wins):
-///   1. opt_cmd (CLI [command] ..., joined with spaces)
-///   2. EPKG_INIT_CMD env var
+///   1. EPKG_INIT_CMD env var (highest priority - explicit override)
+///   2. opt_cmd (CLI [command] ..., joined with spaces)
 ///   3. epkg.init_cmd=<cmd> from /proc/cmdline (percent-encoded)
 ///
 /// If both cwd and command are None, logs a warning about /proc/cmdline availability.
@@ -206,11 +206,18 @@ fn read_init_config(opt_cwd: Option<&str>, opt_cmd: &[String]) -> (Option<String
         .map(String::from)
         .or_else(|| std::env::var("EPKG_INIT_CWD").ok())
         .or_else(|| read_cmdline_param("epkg.init_cwd"));
-    let cmd_str = if opt_cmd.is_empty() {
-        std::env::var("EPKG_INIT_CMD").ok().or_else(|| read_cmdline_param("epkg.init_cmd"))
-    } else {
-        Some(opt_cmd.join(" "))
-    };
+
+    // Check env vars first (they are explicit overrides), then CLI args, then kernel cmdline
+    let cmd_str = std::env::var("EPKG_INIT_CMD").ok()
+        .or_else(|| {
+            if !opt_cmd.is_empty() {
+                Some(opt_cmd.join(" "))
+            } else {
+                None
+            }
+        })
+        .or_else(|| read_cmdline_param("epkg.init_cmd"));
+
     if cwd.is_none() && cmd_str.is_none() {
         if let Err(e) = std::fs::read_to_string("/proc/cmdline") {
             log::debug!("init: /proc/cmdline unreadable: {} (epkg.init_cwd/epkg.init_cmd from cmdline unavailable)", e);
