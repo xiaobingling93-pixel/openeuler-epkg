@@ -219,7 +219,18 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
 
     // --- USER PROMPT AND PRE-EXECUTION CHECKS ---
     let go_on = prompt_and_confirm_install_plan(&plan)?;
+
+    // Even if user didn't confirm (or no changes planned), still need to expose
+    // skipped reinstalls that have ebin_exposure=true
     if !go_on {
+        let has_reinstalls_to_expose = plan.skipped_reinstalls.iter()
+            .any(|(_, info)| info.ebin_exposure);
+
+        if has_reinstalls_to_expose {
+            log::info!("No operations planned, but {} skipped reinstalls need exposure",
+                plan.skipped_reinstalls.iter().filter(|(_, info)| info.ebin_exposure).count());
+            expose_packages(&mut plan)?;
+        }
         return Ok(plan);
     }
 
@@ -292,6 +303,13 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
         // Check if any skipped reinstalls need exposure
         let has_reinstalls_to_expose = plan.skipped_reinstalls.iter()
             .any(|(_, info)| info.ebin_exposure);
+
+        log::debug!("No ordered operations, checking skipped_reinstalls: has_reinstalls_to_expose={}, skipped_count={}",
+            has_reinstalls_to_expose, plan.skipped_reinstalls.len());
+
+        for (pkgkey, info) in plan.skipped_reinstalls.iter() {
+            log::debug!("  skipped_reinstall: {} ebin_exposure={}", pkgkey, info.ebin_exposure);
+        }
 
         if has_reinstalls_to_expose {
             expose_packages(plan)?;

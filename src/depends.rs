@@ -75,6 +75,34 @@ const CIRCULAR_DEPENDENCY_FILTER_PAIRS: &[(&str, &str)] = &[];
  * - https://www.debian.org/doc/debian-policy/ch-relationships.html#architecture-restrictions
  */
 
+/// Update ebin_exposure to true for user-requested packages that are already installed
+/// This ensures that when a user explicitly requests a package (e.g., `epkg install g++`),
+/// it gets ebin_exposure=true even if it was previously installed as a dependency
+fn update_ebin_exposure_for_user_requested(
+    packages: &mut InstalledPackagesMap,
+    user_request_world: Option<&HashMap<String, String>>,
+) -> Result<()> {
+    let Some(user_request_world) = user_request_world else {
+        return Ok(());
+    };
+
+    // For each user-requested package name, find matching packages and set ebin_exposure=true
+    for requested_name in user_request_world.keys() {
+        // Find packages that match this request (handles provides via get_candidates)
+        // We need to match by package name since user_request_world uses names
+        for (pkgkey, info_arc) in packages.iter_mut() {
+            // Check if this package matches the requested name
+            if let Ok(pkgname) = crate::package::pkgkey2pkgname(pkgkey) {
+                if &pkgname == requested_name {
+                    Arc::make_mut(info_arc).ebin_exposure = true;
+                    log::debug!("Setting ebin_exposure=true for user-requested package: {} ({})", pkgkey, requested_name);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Extends ebin_exposure to packages that share the same source package as user-requested packages.
 ///
 /// This function identifies all source package names from packages that already have
@@ -91,6 +119,8 @@ const CIRCULAR_DEPENDENCY_FILTER_PAIRS: &[(&str, &str)] = &[];
 /// Returns a `Result` containing a HashMap of packages that had their `ebin_exposure` set to
 /// `true` by this function (excluding those that were already exposed). Returns an error if
 /// package information cannot be loaded.
+
+/// Determine packages to expose based on source matching
 fn extend_ebin_by_source(packages: &mut InstalledPackagesMap) -> Result<InstalledPackagesMap> {
     log::debug!("Setting ebin_exposure for {} packages based on source matching.", packages.len());
 
@@ -407,6 +437,11 @@ pub fn resolve_and_install_packages(
     // Resolve dependencies (pass user_request_world to extract correct candidate pkgkeys)
     let mut all_packages_for_session =
         resolve_dependencies_adding_makepkg_deps(delta_world, user_request_world)?;
+
+    // Update ebin_exposure for user-requested packages (handles skipped reinstall case)
+    // This ensures packages explicitly requested by user get ebin_exposure=true even if
+    // they were previously installed as dependencies
+    update_ebin_exposure_for_user_requested(&mut all_packages_for_session, user_request_world)?;
 
     // Determine packages to expose based on source matching
     let packages_to_expose = extend_ebin_by_source(&mut all_packages_for_session)?;

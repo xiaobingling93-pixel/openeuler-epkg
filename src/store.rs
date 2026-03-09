@@ -1183,6 +1183,17 @@ pub fn fill_pkglines_in_plan(
         }
     }
 
+    // Also process skipped reinstalls - they need pkgline for exposure
+    for (pkgkey, info_arc) in plan.skipped_reinstalls.iter_mut() {
+        log::trace!("fill_pkglines_in_plan: processing skipped reinstall {}", pkgkey);
+        if try_match_and_fill_pkgline(pkgkey, Arc::make_mut(info_arc), &store_pkglines_by_pkgkey)? {
+            matched_count += 1;
+            log::trace!("fill_pkglines_in_plan: matched skipped reinstall {} -> pkgline {}", pkgkey, info_arc.pkgline);
+        } else {
+            log::warn!("fill_pkglines_in_plan: no match found for skipped reinstall {}", pkgkey);
+        }
+    }
+
     log::trace!("fill_pkglines_in_plan: processed {} packages, matched {}", processed_count, matched_count);
     Ok(matched_count)
 }
