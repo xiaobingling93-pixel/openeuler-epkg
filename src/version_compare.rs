@@ -306,7 +306,7 @@ impl PackageVersion {
     }
 
     /// Debian-style version comparison implementation
-    fn debian_version_compare(a: &str, b: &str) -> Ordering {
+    pub fn debian_version_compare(a: &str, b: &str) -> Ordering {
         let mut chars_a = a.chars().peekable();
         let mut chars_b = b.chars().peekable();
 
@@ -827,6 +827,15 @@ pub fn normalize_version_for_equality(version: &str, format: PackageFormat) -> &
     } else {
         version
     }
+}
+
+/// Natural version comparison for sort -V (--version-sort)
+/// Compares version numbers embedded in text strings.
+/// Numbers are compared numerically, non-numbers lexicographically.
+/// The ~ character has lowest precedence (pre-release indicator).
+/// This is a simplified version comparison suitable for text sorting.
+pub fn version_compare_strings(a: &str, b: &str) -> Ordering {
+    PackageVersion::debian_version_compare(a, b)
 }
 
 #[cfg(test)]

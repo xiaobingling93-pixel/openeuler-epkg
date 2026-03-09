@@ -3,6 +3,9 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use std::io::{self, BufRead};
 
+// Reuse version comparison from version_compare module
+use crate::version_compare::version_compare_strings;
+
 #[derive(Debug)]
 pub struct KeySpec {
     pub field: usize, // 1-based field number
@@ -61,6 +64,7 @@ pub struct SortOptions {
     pub files: Vec<String>,
     pub reverse: bool,
     pub numeric: bool,
+    pub version_sort: bool,
     pub key: Option<KeySpec>,
     pub separator: Option<String>,
     pub stable: bool,
@@ -74,6 +78,7 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<SortOptions> {
 
     let reverse = matches.get_flag("reverse");
     let numeric = matches.get_flag("numeric");
+    let version_sort = matches.get_flag("version_sort");
     let key = if let Some(key_str) = matches.get_one::<String>("key") {
         Some(parse_key_spec(key_str)?)
     } else {
@@ -83,7 +88,7 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<SortOptions> {
     let stable = matches.get_flag("stable");
     let unique = matches.get_flag("unique");
 
-    Ok(SortOptions { files, reverse, numeric, key, separator, stable, unique })
+    Ok(SortOptions { files, reverse, numeric, version_sort, key, separator, stable, unique })
 }
 
 pub fn command() -> Command {
@@ -98,6 +103,11 @@ pub fn command() -> Command {
             .short('n')
             .long("numeric")
             .help("Compare according to string numerical value")
+            .action(clap::ArgAction::SetTrue))
+        .arg(Arg::new("version_sort")
+            .short('V')
+            .long("version-sort")
+            .help("Natural sort of (version) numbers within text")
             .action(clap::ArgAction::SetTrue))
         .arg(Arg::new("key")
             .short('k')
@@ -165,9 +175,21 @@ fn sort_lines(lines: &mut Vec<String>, options: &SortOptions) {
 
         // Use stable sort when --stable flag is set, unstable otherwise
         if options.stable {
-            keyed_lines.sort_by(|a, b| a.0.cmp(&b.0));
+            if options.version_sort {
+                keyed_lines.sort_by(|a, b| version_compare_strings(&a.0, &b.0));
+            } else if options.numeric {
+                keyed_lines.sort_by(|a, b| numeric_cmp(&a.0, &b.0));
+            } else {
+                keyed_lines.sort_by(|a, b| a.0.cmp(&b.0));
+            }
         } else {
-            keyed_lines.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            if options.version_sort {
+                keyed_lines.sort_unstable_by(|a, b| version_compare_strings(&a.0, &b.0));
+            } else if options.numeric {
+                keyed_lines.sort_unstable_by(|a, b| numeric_cmp(&a.0, &b.0));
+            } else {
+                keyed_lines.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            }
         }
 
         if options.reverse {
@@ -182,8 +204,14 @@ fn sort_lines(lines: &mut Vec<String>, options: &SortOptions) {
         // Extract the sorted lines
         *lines = keyed_lines.into_iter().map(|(_, line)| line).collect();
     } else {
-        // Regular sort: numeric or string, stable when --stable
-        if options.numeric {
+        // Regular sort: numeric, version, or string, stable when --stable
+        if options.version_sort {
+            if options.stable {
+                lines.sort_by(|a, b| version_compare_strings(a, b));
+            } else {
+                lines.sort_unstable_by(|a, b| version_compare_strings(a, b));
+            }
+        } else if options.numeric {
             if options.stable {
                 lines.sort_by(|a, b| numeric_cmp(a, b));
             } else {
