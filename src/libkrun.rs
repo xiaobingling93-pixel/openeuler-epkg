@@ -499,6 +499,15 @@ pub fn run_command_in_krun(
         )?;
         log::debug!("libkrun: virtio-console configured");
 
+        // Configure console output to file for debugging kernel boot
+        let console_log_path = "/tmp/epkg-vm-console.log";
+        let console_log = std::ffi::CString::new(console_log_path)
+            .map_err(|e| eyre::eyre!("invalid console log path: {}", e))?;
+        check_status("krun_set_console_output",
+            krun_set_console_output(ctx.ctx_id, console_log.as_ptr())
+        )?;
+        log::debug!("libkrun: console output -> {}", console_log_path);
+
         // Configure vsock device for vsock mode
         if use_vsock {
             // Disable implicit vsock (created by libkrun by default)
