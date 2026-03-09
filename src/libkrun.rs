@@ -64,6 +64,15 @@ unsafe extern "C" {
         c_tag: *const std::ffi::c_char,
         c_path: *const std::ffi::c_char,
     ) -> i32;
+    /// Add a vsock port mapping to a Unix socket on the host.
+    /// This allows host processes to connect to guest vsock via Unix socket.
+    /// listen=true means host initiates connections to guest.
+    fn krun_add_vsock_port2(
+        ctx_id: u32,
+        port: u32,
+        c_filepath: *const std::ffi::c_char,
+        listen: bool,
+    ) -> i32;
 }
 
 
@@ -354,6 +363,9 @@ pub fn run_command_in_krun(
     log::debug!("libkrun: mode: cmdline={}, vsock={}", use_cmdline_mode, use_vsock);
     log::debug!("libkrun: EPKG_VM_NO_DAEMON={}", std::env::var("EPKG_VM_NO_DAEMON").unwrap_or_else(|_| "not set".to_string()));
 
+    // Unix socket path for vsock communication (used by libkrun)
+    let mut vsock_sock_path: Option<std::path::PathBuf> = None;
+
     let _rootfs = env_root
         .to_str()
         .ok_or_else(|| eyre::eyre!("env_root path is not valid UTF-8"))?;
@@ -403,6 +415,13 @@ pub fn run_command_in_krun(
     if use_cmdline_mode {
         kernel_args.push(' ');
         kernel_args.push_str(&format!("epkg.init_cmd={}", init_cmd));
+    }
+
+    // Pass host RUST_LOG into guest so init can enable debug logging
+    if let Ok(rust_log) = std::env::var("RUST_LOG") {
+        if !rust_log.is_empty() {
+            kernel_args.push_str(&format!(" epkg.rust_log={}", qemu::percent_encode(&rust_log)));
+        }
     }
 
     // Resolve kernel path and set it via krun_set_kernel() if explicitly specified.
@@ -469,6 +488,24 @@ pub fn run_command_in_krun(
         ctx.set_root(env_root.to_str().unwrap())?;
         log::debug!("libkrun: rootfs configured via virtiofs: {:?}", env_root);
 
+        // Add self env as additional virtiofs mount so epkg symlink works in guest.
+        // The main env's epkg binary is a symlink pointing to self env, which is not
+        // visible in guest without this mount. Guest init will mount it at /self.
+        let self_env_path = crate::models::dirs().home_epkg.join("envs/self");
+        log::debug!("libkrun: checking self_env_path={:?}, env_root={:?}", self_env_path, env_root);
+        if self_env_path.exists() && self_env_path != env_root {
+            let tag = CString::new("self").map_err(|e| eyre::eyre!("invalid tag: {}", e))?;
+            let path_c = CString::new(self_env_path.to_string_lossy().as_bytes())
+                .map_err(|e| eyre::eyre!("invalid self env path: {}", e))?;
+            check_status("krun_add_virtiofs",
+                unsafe { krun_add_virtiofs(ctx.ctx_id, tag.as_ptr(), path_c.as_ptr()) }
+            )?;
+            log::debug!("libkrun: added virtiofs mount 'self' -> {:?}", self_env_path);
+        } else {
+            log::debug!("libkrun: skipping self virtiofs mount (exists={}, same_as_root={})",
+                self_env_path.exists(), self_env_path == env_root);
+        }
+
         // Set environment variables for the guest
         // ctx.set_env(&env_vec)?;
 
@@ -484,13 +521,12 @@ pub fn run_command_in_krun(
         )?;
         log::debug!("libkrun: split IRQ chip configured");
 
-        // Disable implicit virtio-console to prevent kernel output from polluting host console.
-        // Console output is redirected to a log file via krun_set_console_output() below.
-        check_status("krun_disable_implicit_console",
-            krun_disable_implicit_console(ctx.ctx_id)
-        )?;
-        log::debug!("libkrun: implicit console disabled");
-
+        // Setup console output to a log file.
+        // Note: We intentionally do NOT call krun_disable_implicit_console() because:
+        // 1. libkrun only writes to console_output file when implicit console is enabled
+        // 2. When implicit console is disabled, output goes to Rust log framework instead
+        // By keeping implicit console enabled with a file output, we get console output
+        // in the log file without polluting host stderr.
         setup_console_output(ctx.ctx_id)?;
 
         // Configure vsock device for vsock mode
@@ -499,18 +535,37 @@ pub fn run_command_in_krun(
             check_status("krun_disable_implicit_vsock",
                 krun_disable_implicit_vsock(ctx.ctx_id)
             )?;
-            // Add explicit vsock with TSI feature HIJACK_INET (value 1)
+            // Add explicit vsock without TSI features (we handle command execution ourselves)
             check_status("krun_add_vsock",
-                krun_add_vsock(ctx.ctx_id, 1)
+                krun_add_vsock(ctx.ctx_id, 0)  // 0 = no TSI hijacking
             )?;
-            log::debug!("libkrun: vsock configured successfully");
+
+            // Create Unix socket path for host-guest vsock communication
+            let sock_path = crate::models::dirs().epkg_cache
+                .join("vmm-logs")
+                .join(format!("vsock-{}.sock", std::process::id()));
+            lfs::create_dir_all(sock_path.parent().unwrap())?;
+
+            // Remove stale socket file if exists
+            let _ = std::fs::remove_file(&sock_path);
+
+            // Map guest vsock port 10000 to Unix socket on host
+            // listen=true means host initiates connections to guest
+            let sock_path_c = CString::new(sock_path.to_string_lossy().as_bytes())
+                .map_err(|e| eyre::eyre!("invalid socket path: {}", e))?;
+            check_status("krun_add_vsock_port2",
+                unsafe { krun_add_vsock_port2(ctx.ctx_id, 10000, sock_path_c.as_ptr(), true) }
+            )?;
+            log::debug!("libkrun: vsock port 10000 mapped to Unix socket {}", sock_path.display());
+
+            // Store socket path for vm_client to use
+            vsock_sock_path = Some(sock_path);
         }
 
-        // Note: We don't add explicit virtio-console - libkrun creates an implicit
-        // console by default (hvc0) that connects to host stderr. The kernel cmdline
-        // has console=hvc0 which routes output to this implicit virtio-console.
-        // Since CONFIG_SERIAL_8250 is not set in the kernel, virtio-console (hvc0)
-        // is the primary debug console for kernel boot messages.
+        // Note: libkrun creates an implicit virtio-console (hvc0) by default.
+        // With krun_set_console_output() configured, the console output goes to
+        // the specified log file instead of host stderr. The kernel cmdline has
+        // console=hvc0 which routes kernel boot messages to this virtio-console.
     }
 
     // Start VM in a separate thread (krun_start_enter blocks until VM exits)
@@ -533,8 +588,13 @@ pub fn run_command_in_krun(
         log::debug!("libkrun: connecting to guest via vsock...");
         log::debug!("libkrun: attempting vsock connection...");
         // cmd_parts was computed earlier
-        let exit_code = vm_client::send_command_via_vsock(&cmd_parts, run_options.use_pty, 10000)
-            .map_err(|e| eyre::eyre!("Failed to send command via vsock: {}", e))?;
+        let exit_code = vm_client::send_command_via_vsock(
+            &cmd_parts,
+            run_options.use_pty,
+            10000,
+            vsock_sock_path.as_deref(),
+        )
+        .map_err(|e| eyre::eyre!("Failed to send command via vsock: {}", e))?;
         log::debug!("libkrun: vsock command completed with exit code {}", exit_code);
         // VM will power off after command execution
     }

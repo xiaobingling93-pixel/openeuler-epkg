@@ -135,27 +135,33 @@ fn pid1_idle_loop() -> Result<()> {
 
 fn exec_init_command(cmd_str: Option<String>) -> Result<()> {
     if let Some(cmd) = cmd_str {
-        eprintln!("init: exec user command: {:?}", cmd);
+        log::debug!("init: exec user command: {:?}", cmd);
         exec_command(&cmd)
     } else {
-        eprintln!("init: no command, starting vm-daemon");
-        // Load vsock module first (required for vm-daemon in qemu/libkrun vsock mode)
-        // The vmw_vsock_virtio_transport module may not be auto-loaded by the kernel
-        eprintln!("init: attempting to load vsock module");
-        let modprobe_result = crate::applets::modprobe::run(crate::applets::modprobe::ModprobeOptions {
-            remove: false,
-            quiet: false,
-            module: "vmw_vsock_virtio_transport".to_string(),
-            params: vec![],
-        });
-        eprintln!("init: vsock modprobe result: {:?}", modprobe_result);
-        // Setup network (virtio_net) if available
-        // Note: network is separate from control plane (vsock)
-        if let Err(e) = setup_network_for_vm_daemon() {
-            eprintln!("init: network setup failed: {}", e);
-            eprintln!("init: continuing without network (vsock mode should still work)");
+        log::debug!("init: no command, starting vm-daemon");
+
+        // Check if vsock is already available (kernel built-in)
+        // If /dev/vsock exists, vsock is ready and we can skip module loading
+        let vsock_ready = std::path::Path::new("/dev/vsock").exists();
+
+        if !vsock_ready {
+            // Load vsock modules if not already available
+            // These modules may not be auto-loaded by the kernel
+            log::debug!("init: loading vsock modules");
+            try_load_module("vsock");
+            try_load_module("vmw_vsock_virtio_transport");
+        } else {
+            log::debug!("init: vsock already available (/dev/vsock exists)");
         }
-        eprintln!("init: exec vm-daemon");
+
+        // For vsock mode, network setup is optional (vsock works without network)
+        // Only attempt network setup if it will be quick (interfaces already present)
+        // or if we need to wait (TCP mode - but we're using vsock now)
+        // Skip the long network discovery wait for faster vm-daemon startup
+        log::debug!("init: skipping network setup for vsock mode (not needed)");
+        // Note: If network is needed in the future, call setup_network_for_vm_daemon()
+
+        log::debug!("init: exec vm-daemon");
         exec_vm_daemon()
     }
 }
@@ -190,11 +196,103 @@ fn exec_init_command(cmd_str: Option<String>) -> Result<()> {
 fn setup_mounts() -> Result<()> {
     // Virtiofs mounts root readonly; remount rw so we can create /dev, etc.
     if let Err(e) = crate::mount::remount_root_rw() {
-        log::debug!("init: remount / rw failed: {} (continuing; /dev creation may fail)", e);
+        eprintln!("init: remount / rw failed: {} (continuing; /dev creation may fail)", e);
+    }
+
+    // Debug: check if self env is visible through bind mounts
+    let self_epkg = Path::new("/home/wfg/.epkg/envs/self/usr/bin/epkg");
+    if self_epkg.exists() {
+        eprintln!("init: self epkg exists at {:?}", self_epkg);
+    } else {
+        eprintln!("init: self epkg NOT found at {:?}", self_epkg);
+        // Check what's in /home/wfg/.epkg
+        if let Ok(entries) = std::fs::read_dir("/home/wfg/.epkg") {
+            eprintln!("init: /home/wfg/.epkg contents:");
+            for entry in entries.flatten() {
+                eprintln!("  {:?}", entry.file_name());
+            }
+        } else {
+            eprintln!("init: /home/wfg/.epkg does not exist or cannot be read");
+        }
+    }
+
+    // Debug: check vm-daemon and epkg symlinks
+    let vm_daemon = Path::new("/usr/bin/vm-daemon");
+    let epkg = Path::new("/usr/bin/epkg");
+    eprintln!("init: /usr/bin/vm-daemon exists: {}", vm_daemon.exists());
+    eprintln!("init: /usr/bin/epkg exists: {}", epkg.exists());
+    if let Ok(link) = std::fs::read_link(vm_daemon) {
+        eprintln!("init: vm-daemon -> {:?}", link);
+    }
+    if let Ok(link) = std::fs::read_link(epkg) {
+        eprintln!("init: epkg -> {:?}", link);
+    }
+    // Check if we can stat the final target
+    if let Ok(meta) = std::fs::metadata(vm_daemon) {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = meta.permissions().mode();
+        eprintln!("init: vm-daemon metadata: is_file={}, mode={:o}, executable={}",
+            meta.is_file(), mode & 0o777, (mode & 0o111) != 0);
+    } else {
+        eprintln!("init: vm-daemon metadata: FAILED");
+    }
+    // Check if we can access the final epkg directly
+    let self_epkg = Path::new("/home/wfg/.epkg/envs/self/usr/bin/epkg");
+    if let Ok(meta) = std::fs::metadata(self_epkg) {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = meta.permissions().mode();
+        eprintln!("init: self_epkg metadata: is_file={}, mode={:o}, executable={}",
+            meta.is_file(), mode & 0o777, (mode & 0o111) != 0);
+    }
+
+    // Mount /sys early so we can check for virtio-fs devices
+    fs_create_dir_if_missing("/sys").wrap_err("init: create /sys")?;
+    if let Err(e) = nix::mount::mount(
+        Some("sysfs"),
+        Path::new("/sys"),
+        Some("sysfs"),
+        nix::mount::MsFlags::empty(),
+        None::<&str>,
+    ) {
+        eprintln!("init: mount sysfs on /sys failed: {} (virtio-fs detection may fail)", e);
+    } else {
+        eprintln!("init: mounted sysfs on /sys");
+    }
+
+    // Mount self env virtiofs if available (for libkrun)
+    // This makes the epkg binary accessible when main env uses symlink to self env
+    if Path::new("/sys/class/virtio-fs").exists() {
+        eprintln!("init: /sys/class/virtio-fs exists, checking for 'self' tag");
+        // Check if 'self' virtiofs device exists
+        if let Ok(entries) = std::fs::read_dir("/sys/class/virtio-fs") {
+            for entry in entries.flatten() {
+                if let Ok(tag) = std::fs::read_to_string(entry.path().join("tag")) {
+                    let tag = tag.trim();
+                    eprintln!("init: found virtio-fs device with tag '{}'", tag);
+                    if tag == "self" {
+                        fs_create_dir_if_missing("/self").wrap_err("init: create /self")?;
+                        if let Err(e) = nix::mount::mount(
+                            Some(tag),
+                            Path::new("/self"),
+                            Some("virtiofs"),
+                            nix::mount::MsFlags::empty(),
+                            None::<&str>,
+                        ) {
+                            eprintln!("init: mount virtiofs 'self' on /self failed: {}", e);
+                        } else {
+                            eprintln!("init: mounted virtiofs 'self' on /self");
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    } else {
+        eprintln!("init: /sys/class/virtio-fs does not exist");
     }
 
     let init_specs = crate::mount::vmm_init_mount_spec_strings();
-    log::debug!("init: applying {} mount specs (proc, sys, tmp, ...)", init_specs.len());
+    log::debug!("init: applying {} mount specs (proc, tmp, ...)", init_specs.len());
     crate::mount::mount_spec_strings(
         &init_specs,
         Path::new("/"),
@@ -232,15 +330,14 @@ fn setup_mounts() -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn exec_vm_daemon() -> Result<()> {
-    use nix::unistd::execvp;
-    use std::ffi::CString;
-
-    let vm_daemon_path = "/usr/bin/vm-daemon";
-    log::debug!("init: exec {} (argv[0]=vm-daemon)", vm_daemon_path);
-    let args_c: Vec<CString> = vec![CString::new("vm-daemon").map_err(|e| eyre!("init: vm-daemon argv: {}", e))?];
-    let cmd_c = CString::new(vm_daemon_path).map_err(|e| eyre!("init: vm-daemon path: {}", e))?;
-    execvp(&cmd_c, &args_c).map_err(|e| eyre!("init: exec {} failed: {}", vm_daemon_path, e))?;
-    unreachable!()
+    // Call vm_daemon::run() directly instead of exec-ing the binary.
+    // This avoids issues with symlink resolution when vm-daemon -> epkg -> /home/wfg/.epkg/envs/self/...
+    // and the epkg binary is accessed via virtiofs bind mounts.
+    eprintln!("init: starting vm-daemon directly (no exec)");
+    let options = crate::applets::vm_daemon::VmDaemonOptions::default();
+    let result = crate::applets::vm_daemon::run(options);
+    eprintln!("init: vm_daemon::run() returned: {:?}", result);
+    result
 }
 
 #[cfg(target_os = "linux")]

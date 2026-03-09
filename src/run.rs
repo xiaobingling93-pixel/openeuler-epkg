@@ -53,6 +53,10 @@ pub struct RunOptions {
     /// Can be provided via `--memory` for `epkg run`.
     pub vm_memory_mib: Option<u32>,
 
+    /// Unix socket path for vsock communication (used by libkrun).
+    /// libkrun uses Unix sockets instead of AF_VSOCK for host-guest communication.
+    pub vsock_socket_path: Option<std::path::PathBuf>,
+
     /// Input sandbox options from CLI or caller
     pub sandbox: crate::models::SandboxOptions,
     /// Effective sandbox options (merged from all configuration levels)
