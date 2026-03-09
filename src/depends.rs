@@ -254,7 +254,8 @@ fn resolve_dependencies_with_resolvo(
     let (provider, requirements) = setup_resolvo_provider_and_requirements(delta_world)?;
     if requirements.is_empty() {
         log::warn!("No valid packages to resolve");
-        return Err(color_eyre::eyre::eyre!("No requirements to solve"));
+        // When ignore_missing is enabled and all packages are missing, gracefully return empty result
+        return Ok(HashMap::new());
     }
 
     // Determine flags to use: always include REQUIRES|BUILD_REQUIRES, try with RECOMMENDS/SUGGESTS if configured
