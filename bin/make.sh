@@ -705,7 +705,7 @@ clone_repos() {
         clone_or_update_repo "https://gitee.com/wu_fengguang/libkrun"
     )
 
-    [[ "$mode" = "crossdev" ]] && {
+    if [[ "$mode" = "crossdev" ]]; then
         clone_or_update_repo "https://github.com/tpoechtrager/osxcross.git"
         (
             cd osxcross/tarballs
@@ -713,7 +713,9 @@ clone_repos() {
             wget https://github.com/joseluisq/macosx-sdks/releases/download/26.1/MacOSX26.1.sdk.tar.xz
             sha256sum -c sha256sum.txt
         )
-    }
+    else
+        true
+    fi
 }
 
 # Unified dependency installer
