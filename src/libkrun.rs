@@ -7,6 +7,7 @@ use std::thread;
 use color_eyre::eyre;
 use color_eyre::Result;
 
+use crate::lfs;
 use crate::run::RunOptions;
 use crate::qemu;
 use crate::vm_client;
@@ -351,10 +352,9 @@ pub fn run_command_in_krun(
     log::debug!("libkrun: mode: cmdline={}, vsock={}", use_cmdline_mode, use_vsock);
     log::debug!("libkrun: EPKG_VM_NO_DAEMON={}", std::env::var("EPKG_VM_NO_DAEMON").unwrap_or_else(|_| "not set".to_string()));
 
-    let rootfs = env_root
+    let _rootfs = env_root
         .to_str()
         .ok_or_else(|| eyre::eyre!("env_root path is not valid UTF-8"))?;
-    // Convert host absolute path to guest path relative to environment root
     let guest_exec_path = guest_cmd_path
         .strip_prefix(env_root)
         .map(|rel| {
@@ -492,14 +492,7 @@ pub fn run_command_in_krun(
         )?;
         log::debug!("libkrun: virtio-console configured");
 
-        // Configure console output to file for debugging kernel boot
-        let console_log_path = "/tmp/epkg-vm-console.log";
-        let console_log = std::ffi::CString::new(console_log_path)
-            .map_err(|e| eyre::eyre!("invalid console log path: {}", e))?;
-        check_status("krun_set_console_output",
-            krun_set_console_output(ctx.ctx_id, console_log.as_ptr())
-        )?;
-        log::debug!("libkrun: console output -> {}", console_log_path);
+        setup_console_output(ctx.ctx_id)?;
 
         // Configure vsock device for vsock mode
         if use_vsock {
@@ -564,5 +557,47 @@ pub fn run_command_in_krun(
             std::process::exit(1);
         }
     }
+}
+
+/// Setup console output logging to a file for debugging kernel boot.
+///
+/// Creates a per-PID log file and a symlink at "latest-console.log" for easy access.
+///
+/// Example paths:
+/// - Log file: `$HOME/.cache/epkg/vmm-logs/libkrun-console-<pid>.log`
+/// - Symlink:  `$HOME/.cache/epkg/vmm-logs/latest-console.log` -> latest log file
+///
+/// Usage:
+/// ```bash
+/// # After running a VM, check the console output:
+/// less ~/.cache/epkg/vmm-logs/latest-console.log
+/// ```
+fn setup_console_output(ctx_id: u32) -> Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::fs::symlink;
+
+    let base_log_dir = crate::models::dirs().epkg_cache.join("vmm-logs");
+    lfs::create_dir_all(&base_log_dir)
+        .map_err(|e| eyre::eyre!("Failed to create VMM log directory: {}", e))?;
+
+    let pid = std::process::id();
+    let console_log_path = base_log_dir.join(format!("libkrun-console-{}.log", pid));
+
+    let console_log = CString::new(console_log_path.to_string_lossy().as_bytes())
+        .map_err(|e| eyre::eyre!("invalid console log path: {}", e))?;
+
+    check_status("krun_set_console_output",
+        unsafe { krun_set_console_output(ctx_id, console_log.as_ptr()) }
+    )?;
+    log::debug!("libkrun: console output -> {}", console_log_path.display());
+
+    // Create/update symlink for easy access to latest log
+    let latest_log_symlink = base_log_dir.join("latest-console.log");
+    let _ = std::fs::remove_file(&latest_log_symlink); // ignore error if not exists
+    if let Err(e) = symlink(&console_log_path, &latest_log_symlink) {
+        log::warn!("libkrun: failed to create symlink: {}", e);
+    }
+
+    Ok(())
 }
 
