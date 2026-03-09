@@ -1047,7 +1047,14 @@ fn print_single_entry(entry: &FileEntry, options: &LsOptions) -> Result<()> {
         let line = format_long_entry(&fields, entry, options, &widths)?;
         println!("{}", line);
     } else {
-        let mut display_name = format_name(entry.name.as_bytes(), options);
+        // With -d flag, print the full path as given (not just the basename)
+        // This matches busybox ls behavior: ls -d a/b/c outputs "a/b/c" not "c"
+        let display_str = if options.directory {
+            entry.path.to_string_lossy().to_string()
+        } else {
+            format_name(entry.name.as_bytes(), options)
+        };
+        let mut display_name = display_str;
         if options.classify {
             let indicator = get_classify_indicator(entry);
             if indicator != '\0' {
