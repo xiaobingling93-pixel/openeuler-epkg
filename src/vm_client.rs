@@ -15,7 +15,7 @@ use std::io::{BufRead, BufReader, Read, Write, IsTerminal};
 use std::net::TcpStream;
 use std::time::Duration;
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
-use std::os::fd::{AsFd, AsRawFd, FromRawFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, IntoRawFd};
 use color_eyre::eyre;
 use color_eyre::Result;
 use serde::{Deserialize, Serialize};
@@ -108,6 +108,39 @@ fn connect_vsock_with_retry(port: u32, max_retries: u32) -> Result<TcpStream> {
     ))
 }
 
+/// Connect to Unix socket with retry logic (for libkrun vsock).
+fn connect_unix_socket_with_retry(sock_path: &std::path::Path, max_retries: u32) -> Result<TcpStream> {
+    let mut retry_count = 0;
+    let mut last_error = None;
+    while retry_count < max_retries {
+        match std::os::unix::net::UnixStream::connect(sock_path) {
+            Ok(unix_stream) => {
+                // Convert UnixStream to TcpStream by using the raw fd
+                // This works because both are stream sockets and TcpStream's read/write
+                // operations only depend on the underlying fd
+                let raw_fd = unix_stream.into_raw_fd();
+                // SAFETY: raw_fd is a valid, connected Unix stream socket
+                let stream = unsafe { TcpStream::from_raw_fd(raw_fd) };
+                return Ok(stream);
+            }
+            Err(e) => {
+                last_error = Some(e);
+                retry_count += 1;
+                if retry_count >= max_retries {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+    }
+    Err(eyre::eyre!(
+        "Failed to connect to Unix socket {} after {} retries: {}",
+        sock_path.display(),
+        max_retries,
+        last_error.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "connection failed"))
+    ))
+}
+
 /// Single vsock connect attempt, returns a TcpStream wrapper over AF_VSOCK fd.
 fn connect_vsock_once(port: u32) -> std::io::Result<TcpStream> {
     // Use a fixed guest CID (3) matching the QEMU vsock configuration.
@@ -119,16 +152,17 @@ fn connect_vsock_once(port: u32) -> std::io::Result<TcpStream> {
         None,
     )?;
     let addr = VsockAddr::new(GUEST_CID, port);
-    let raw_fd = fd.as_raw_fd();
+    // Transfer ownership of fd to raw_fd (consumes fd, no double-close)
+    let raw_fd = fd.into_raw_fd();
     match socket::connect(raw_fd, &addr) {
         Ok(()) => {
-            // SAFETY: fd is a valid, connected AF_VSOCK stream socket; TcpStream only
+            // SAFETY: raw_fd is a valid, connected AF_VSOCK stream socket; TcpStream only
             // relies on the underlying fd for read/write/dup, which works for vsock too.
-            let stream = unsafe { TcpStream::from_raw_fd(raw_fd) };
-            Ok(stream)
+            // We own raw_fd (transferred from OwnedFd), so TcpStream takes ownership.
+            Ok(unsafe { TcpStream::from_raw_fd(raw_fd) })
         }
         Err(e) => {
-            // On error, close fd and propagate as io::Error
+            // On error, close fd ourselves since we own it (into_raw_fd consumed OwnedFd)
             let _ = socket::shutdown(raw_fd, socket::Shutdown::Both);
             Err(std::io::Error::from(e))
         }
@@ -185,13 +219,29 @@ pub fn send_command_via_tcp(cmd_parts: &[String], use_pty: Option<bool>) -> Resu
 
 /// Helper to send a command via vsock to the guest VM.
 /// If `use_pty` is `None`, defaults to no PTY. Use `Some(true)` to force PTY, `Some(false)` to force no PTY.
-pub fn send_command_via_vsock(cmd_parts: &[String], use_pty: Option<bool>, port: u32) -> Result<i32> {
+///
+/// For libkrun, pass `unix_socket_path` to connect via Unix socket instead of AF_VSOCK.
+/// For QEMU, pass `None` to use AF_VSOCK.
+pub fn send_command_via_vsock(
+    cmd_parts: &[String],
+    use_pty: Option<bool>,
+    port: u32,
+    unix_socket_path: Option<&std::path::Path>,
+) -> Result<i32> {
     let should_use_pty = match use_pty {
         Some(true) => true,
         Some(false) | None => false,
     };
     log::debug!("vm_client: use_pty={:?}, should_use_pty={} (vsock port {})", use_pty, should_use_pty, port);
-    let mut stream = connect_vsock_with_retry(port, 30)?;
+
+    let mut stream = if let Some(sock_path) = unix_socket_path {
+        // libkrun mode: connect via Unix socket
+        log::debug!("vm_client: connecting via Unix socket {}", sock_path.display());
+        connect_unix_socket_with_retry(sock_path, 30)?
+    } else {
+        // QEMU mode: connect via AF_VSOCK
+        connect_vsock_with_retry(port, 30)?
+    };
     log::debug!("vm_client: vsock connected, sending command {:?}", cmd_parts);
 
     let request = build_command_request(cmd_parts, should_use_pty);
