@@ -276,9 +276,9 @@ fn build_qemu_command(
     // Kernel cmdline: console, panic, root filesystem, and epkg init parameters
     // init=/bin/init: kernel runs epkg init (bin->usr/bin, init at usr/bin/init)
     // sysctl.fs.file-max: avoid "Too many open files in system" (ENFILE) with virtiofs
+    // For virtiofs: use "rootfs" as the root device name (magic name for virtiofs)
     let mut append_args = format!(
-        "console=ttyS0 panic=1 root={} rootfstype=virtiofs init=/bin/init sysctl.fs.file-max=1048576",
-        mount_tag
+        "console=ttyS0 panic=1 root=rootfs rootfstype=virtiofs init=/bin/init sysctl.fs.file-max=1048576",
     );
     // Pass host RUST_LOG into guest so init can enable debug logging
     if let Ok(rust_log) = std::env::var("RUST_LOG") {
