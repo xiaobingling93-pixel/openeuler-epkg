@@ -484,17 +484,12 @@ pub fn run_command_in_krun(
         )?;
         log::debug!("libkrun: split IRQ chip configured");
 
-        // Configure virtio-console for kernel boot output (hvc0)
-        // Use stdin/stdout/stderr for console I/O
-        check_status("krun_add_virtio_console_default",
-            krun_add_virtio_console_default(
-                ctx.ctx_id,
-                libc::STDIN_FILENO,
-                libc::STDOUT_FILENO,
-                libc::STDERR_FILENO,
-            )
+        // Disable implicit virtio-console to prevent kernel output from polluting host console.
+        // Console output is redirected to a log file via krun_set_console_output() below.
+        check_status("krun_disable_implicit_console",
+            krun_disable_implicit_console(ctx.ctx_id)
         )?;
-        log::debug!("libkrun: virtio-console configured");
+        log::debug!("libkrun: implicit console disabled");
 
         setup_console_output(ctx.ctx_id)?;
 

@@ -135,15 +135,27 @@ fn pid1_idle_loop() -> Result<()> {
 
 fn exec_init_command(cmd_str: Option<String>) -> Result<()> {
     if let Some(cmd) = cmd_str {
-        log::debug!("init: exec user command: {:?}", cmd);
+        eprintln!("init: exec user command: {:?}", cmd);
         exec_command(&cmd)
     } else {
-        log::debug!("init: no command, starting vm-daemon");
+        eprintln!("init: no command, starting vm-daemon");
+        // Load vsock module first (required for vm-daemon in qemu/libkrun vsock mode)
+        // The vmw_vsock_virtio_transport module may not be auto-loaded by the kernel
+        eprintln!("init: attempting to load vsock module");
+        let modprobe_result = crate::applets::modprobe::run(crate::applets::modprobe::ModprobeOptions {
+            remove: false,
+            quiet: false,
+            module: "vmw_vsock_virtio_transport".to_string(),
+            params: vec![],
+        });
+        eprintln!("init: vsock modprobe result: {:?}", modprobe_result);
         // Setup network (virtio_net) if available
         // Note: network is separate from control plane (vsock)
-        setup_network_for_vm_daemon()
-            .map_err(|e| eyre!("Failed to configure network: {}", e))?;
-        log::debug!("init: exec vm-daemon");
+        if let Err(e) = setup_network_for_vm_daemon() {
+            eprintln!("init: network setup failed: {}", e);
+            eprintln!("init: continuing without network (vsock mode should still work)");
+        }
+        eprintln!("init: exec vm-daemon");
         exec_vm_daemon()
     }
 }
