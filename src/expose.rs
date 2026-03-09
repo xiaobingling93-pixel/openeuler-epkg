@@ -396,6 +396,14 @@ fn create_script_wrapper(
 
     let exec_cmd = get_exec_command(&file_type, fs_file, Some(env_root));
 
+    // Remove existing file first to avoid overwriting hard links (e.g., elf-loader)
+    // If ebin_path is a hard link to elf-loader, truncating it would corrupt all
+    // files sharing that inode. Removing first ensures we create a fresh inode.
+    if lfs::exists_in_env(ebin_path) {
+        lfs::remove_file(ebin_path)
+            .with_context(|| format!("Failed to remove existing file before overwrite: {}", ebin_path.display()))?;
+    }
+
     let mut wrapper = fs::OpenOptions::new()
         .write(true)
         .create(true)
