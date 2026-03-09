@@ -389,31 +389,19 @@ pub fn run_command_in_krun(
     // The virtio_mmio.device parameters and tsi_hijack are added automatically by libkrun.
     //
     // We also append any extra args from --kernel-args option.
+
     let base_cmdline = "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 earlyprintk=hvc0 \
                         loglevel=8 debug rootfstype=virtiofs rw no-kvmapf init=/usr/bin/init";
-    let kernel_args = if let Some(ref extra_args) = run_options.kernel_args {
-        format!("{} {}", base_cmdline, extra_args)
-    } else {
-        base_cmdline.to_string()
+    let mut kernel_args = String::from(base_cmdline);
+    if let Some(ref user_args) = run_options.kernel_args {
+        kernel_args.push(' ');
+        kernel_args.push_str(user_args);
     };
 
-    // Build environment variables for guest - only include essential ones for cmdline mode
-    let mut env_vec: Vec<(String, String)> = Vec::new();
-
     // In cmdline mode (EPKG_VM_NO_DAEMON=1), set EPKG_INIT_CMD to tell init what to execute
-    if !use_vsock {
-        let guest_cmd = format!("/{}", guest_exec_path.trim_start_matches('/'));
-        env_vec.push(("EPKG_INIT_CMD".to_string(), guest_cmd.clone()));
-        log::debug!("libkrun: cmdline mode, setting EPKG_INIT_CMD={}", guest_cmd);
-        // Also add minimal PATH for init to find commands
-        env_vec.push(("PATH".to_string(), "/usr/bin:/bin:/usr/sbin:/sbin".to_string()));
-    } else {
-        // In vsock mode, include all env vars
-        env_vec = env::vars().collect();
-        if !init_cmd.is_empty() {
-            log::debug!("libkrun: setting EPKG_INIT_CMD={}", init_cmd);
-            env_vec.push(("EPKG_INIT_CMD".to_string(), init_cmd.clone()));
-        }
+    if use_cmdline_mode {
+        kernel_args.push(' ');
+        kernel_args.push_str(&format!("epkg.init_cmd={}", init_cmd));
     }
 
     // Resolve kernel path and set it via krun_set_kernel() if explicitly specified.
@@ -481,10 +469,10 @@ pub fn run_command_in_krun(
         log::debug!("libkrun: rootfs configured via virtiofs: {:?}", env_root);
 
         // Set environment variables for the guest
-        ctx.set_env(&env_vec)?;
+        // ctx.set_env(&env_vec)?;
 
         // Set workdir to root
-        ctx.set_workdir("/")?;
+        // ctx.set_workdir("/")?;
 
         // In vsock mode, let init handle command execution via EPKG_INIT_CMD
         // set_exec would override init, so skip it entirely
