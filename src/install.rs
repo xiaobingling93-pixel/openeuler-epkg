@@ -286,7 +286,16 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
 
 /// Execute package installations and upgrades
 fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
+    // Even if no operations planned, still need to expose skipped reinstalls
+    // that have ebin_exposure=true (user-requested packages already installed)
     if plan.ordered_operations.is_empty() {
+        // Check if any skipped reinstalls need exposure
+        let has_reinstalls_to_expose = plan.skipped_reinstalls.iter()
+            .any(|(_, info)| info.ebin_exposure);
+
+        if has_reinstalls_to_expose {
+            expose_packages(plan)?;
+        }
         return Ok(());
     }
 
