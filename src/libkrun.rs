@@ -379,8 +379,10 @@ pub fn run_command_in_krun(
     // Start with default kernel cmdline for libkrun external kernel mode.
     // Use virtio-console (hvc0) since the kernel doesn't have CONFIG_SERIAL_8250 enabled.
     // The kernel is built with CONFIG_VIRTIO_CONSOLE=y, so hvc0 is available for debug output.
-    // Note: libkrun's implicit console uses virtio-console which connects to host stderr.
-    let mut kernel_args = String::from("reboot=k panic=1 console=hvc0,115200 loglevel=8 debug");
+    // Set panic=1 to reboot after 1 second on panic.
+    // Use init=/init.krun to use libkrun's built-in init process.
+    // earlyprintk=hvc0 is essential for early boot console output.
+    let mut kernel_args = String::from("reboot=k panic=1 console=hvc0,115200 earlyprintk=hvc0 loglevel=8 debug init=/init.krun");
 
     // Add initrd parameter if initrd is provided
     // Note: libkrun loads initrd into memory, but kernel still needs to know to use it
@@ -401,7 +403,15 @@ pub fn run_command_in_krun(
     }
 
     // Add command to kernel cmdline for both cmdline and vsock modes
-    if use_cmdline_mode || use_vsock {
+    // In cmdline mode, the kernel will boot and run the command directly via init
+    // In vsock mode, the vm-daemon handles command execution
+    if use_cmdline_mode {
+        // In cmdline mode, we need to use kernel's init= parameter or rely on initramfs
+        // For now, just add the command for debugging - the kernel will panic without proper init
+        kernel_args.push(' ');
+        kernel_args.push_str(&format!("epkg.init_cmd={}", init_cmd));
+    } else if use_vsock {
+        // In vsock mode, add EPKG_INIT_CMD to tell the guest what command to run
         kernel_args.push(' ');
         kernel_args.push_str(&format!("epkg.init_cmd={}", init_cmd));
     }
@@ -525,19 +535,11 @@ pub fn run_command_in_krun(
             log::debug!("libkrun: vsock configured successfully");
         }
 
-        // Add virtio-console device for guest output.
-        // The kernel cmdline has console=hvc0 which routes output to virtio-console.
+        // Note: We don't add explicit virtio-console - libkrun creates an implicit
+        // console by default (hvc0) that connects to host stderr. The kernel cmdline
+        // has console=hvc0 which routes output to this implicit virtio-console.
         // Since CONFIG_SERIAL_8250 is not set in the kernel, virtio-console (hvc0)
         // is the primary debug console for kernel boot messages.
-        check_status("krun_add_virtio_console_default",
-            krun_add_virtio_console_default(
-                ctx.ctx_id,
-                libc::STDIN_FILENO,
-                libc::STDOUT_FILENO,
-                libc::STDERR_FILENO,
-            )
-        )?;
-        log::debug!("libkrun: virtio-console configured, output goes to host stdout/stderr");
     }
 
     // Start VM in a separate thread (krun_start_enter blocks until VM exits)
