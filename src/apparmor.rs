@@ -17,7 +17,10 @@ pub fn install_apparmor_profile() -> Result<()> {
             if e.to_string().contains("Permission denied") {
                 eprintln!("Installing AppArmor profile /etc/apparmor.d/epkg requires sudo privileges");
                 let output = Command::new("sudo")
-                    .args(&["cp", &profile_src.to_string_lossy(), &profile_dst.to_string_lossy()])
+                    .args(&["sh", "-c", &format!("cp {} {} && apparmor_parser -rv {}",
+                        profile_src.to_string_lossy(),
+                        profile_dst.to_string_lossy(),
+                        profile_dst.to_string_lossy())])
                     .output()?;
                 if !output.status.success() {
                     log::warn!("Failed to install AppArmor profile: {}",

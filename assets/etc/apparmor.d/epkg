@@ -1,9 +1,12 @@
 # AppArmor profile for epkg
 # Allows epkg to create namespaces and perform mounts for container functionality
 
-profile epkg {
+include <tunables/global>
+
+profile epkg /home/*/.epkg/envs/*/usr/bin/epkg flags=(attach_disconnected) {
   # Include basic abstractions
   include <abstractions/base>
+  include <abstractions/bash>
   include <abstractions/nameservice>
 
   # Allow all file access (needed for package management)
@@ -31,6 +34,16 @@ profile epkg {
   remount,
   umount,
   pivot_root,
+
+  mount options=(rw, rprivate) -> /,
+
+  /dev/pts/* rw,
+
+  /home/*/.epkg/envs/** rmix,
+
+  /etc/ld.so.cache r,
+  /lib/** rm,
+  /usr/lib/** rm,
 
   # Allow network operations
   network,
