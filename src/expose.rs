@@ -306,11 +306,21 @@ fn create_ebin_wrapper(env_root: &Path, fs_file_absolute: &Path, fs_file_relativ
 
     // Resolve symlinks in the env context to get the actual file location
     // This is crucial for distros that use symlinks (e.g., alpine's npm -> npm-cli.js)
+    // and for packages with cross-package symlinks (e.g., clang -> clang-18)
     let resolved_env_path = resolve_ebin_target_path(env_root, &env_path);
 
-    // Determine file type from the store file
-    let (file_type, first_line) = utils::get_file_type(fs_file_absolute)
-        .with_context(|| format!("Failed to determine file type for {}", fs_file_absolute.display()))?;
+    // Determine file type from the RESOLVED env path, not the store file
+    // This handles broken symlinks in store that become valid in env context
+    // (e.g., clang package symlinks pointing to clang-18 package files)
+    let (file_type, first_line) = if lfs::is_symlink(fs_file_absolute) {
+        // For symlinks, check the resolved target in env context
+        utils::get_file_type(&resolved_env_path)
+            .with_context(|| format!("Failed to determine file type for resolved path {}", resolved_env_path.display()))?
+    } else {
+        // For regular files, check the store file
+        utils::get_file_type(fs_file_absolute)
+            .with_context(|| format!("Failed to determine file type for {}", fs_file_absolute.display()))?
+    };
     let basename = fs_file_relative.file_name()
         .ok_or_else(|| eyre::eyre!("Failed to get filename for {}", fs_file_relative.display()))?;
     let ebin_path = env_root.join("ebin").join(basename);
