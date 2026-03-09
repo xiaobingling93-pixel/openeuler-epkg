@@ -76,7 +76,7 @@ run_install() {
 
 # Quiet: no log file, no grep, no stop. Use with || lang_skip or || run_install ... for graceful fallback.
 check_cmd() {
-    "$EPKG_BIN" -e "$ENV_NAME" run -- "$@"
+    "$EPKG_BIN" -e "$ENV_NAME" run -- "$@" 2>/dev/null
 }
 
 # Direct run the exposed binary at env ebin/<name> (exercises ebin wrappers). No-op if ENV_ROOT unset.
