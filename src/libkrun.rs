@@ -376,55 +376,19 @@ pub fn run_command_in_krun(
     let (cmd_parts, init_cmd) = qemu::build_guest_command(Path::new(&guest_exec_path), &run_options.args)
         .map_err(|e| eyre::eyre!("Failed to build guest command: {}", e))?;
 
-    // Start with default kernel cmdline for libkrun external kernel mode.
-    // Use virtio-console (hvc0) since the kernel doesn't have CONFIG_SERIAL_8250 enabled.
-    // The kernel is built with CONFIG_VIRTIO_CONSOLE=y, so hvc0 is available for debug output.
-    // Set panic=1 to reboot after 1 second on panic.
-    // Use init=/init.krun to use libkrun's built-in init process.
-    // earlyprintk=hvc0 is essential for early boot console output.
-    let mut kernel_args = String::from("reboot=k panic=1 console=hvc0,115200 earlyprintk=hvc0 loglevel=8 debug init=/init.krun");
-
-    // Add initrd parameter if initrd is provided
-    // Note: libkrun loads initrd into memory, but kernel still needs to know to use it
-    if run_options.initrd.is_some() {
-        // Don't specify root= yet - let initrd handle it
-        // The kernel will boot into initrd and we can mount rootfs from there
-    } else {
-        // No initrd, use virtiofs directly as root
-        kernel_args.push_str(" root=/dev/root rootfstype=virtiofs rw");
-    }
-
-    // Append user-provided kernel args
-    if let Some(user_args) = &run_options.kernel_args {
-        if !user_args.trim().is_empty() {
-            kernel_args.push(' ');
-            kernel_args.push_str(user_args.trim());
-        }
-    }
-
-    // Add command to kernel cmdline for both cmdline and vsock modes
-    // In cmdline mode, the kernel will boot and run the command directly via init
-    // In vsock mode, the vm-daemon handles command execution
-    if use_cmdline_mode {
-        // In cmdline mode, we need to use kernel's init= parameter or rely on initramfs
-        // For now, just add the command for debugging - the kernel will panic without proper init
-        kernel_args.push(' ');
-        kernel_args.push_str(&format!("epkg.init_cmd={}", init_cmd));
-    } else if use_vsock {
-        // In vsock mode, add EPKG_INIT_CMD to tell the guest what command to run
-        kernel_args.push(' ');
-        kernel_args.push_str(&format!("epkg.init_cmd={}", init_cmd));
-    }
-
-    // Pass host RUST_LOG into guest
-    if let Ok(rust_log) = std::env::var("RUST_LOG") {
-        if !rust_log.is_empty() {
-            kernel_args.push(' ');
-            kernel_args.push_str(&format!("epkg.rust_log={}", qemu::percent_encode(&rust_log)));
-        }
-    }
+    // For external kernel boot, we pass a minimal cmdline.
+    // The kernel will use its built-in defaults and discover devices automatically.
+    // Console output goes to hvc0 (virtio-console) which is configured below.
+    let kernel_args = String::new();
 
     // Build environment variables for guest
+    let mut env_vec: Vec<(String, String)> = env::vars().collect();
+
+    // In vsock mode, add EPKG_INIT_CMD to tell the guest what command to run
+    if use_vsock && !init_cmd.is_empty() {
+        log::debug!("libkrun: setting EPKG_INIT_CMD={}", init_cmd);
+        env_vec.push(("EPKG_INIT_CMD".to_string(), init_cmd.clone()));
+    }
     let mut env_vec: Vec<(String, String)> = env::vars().collect();
 
     // In vsock mode, add EPKG_INIT_CMD to tell the guest what command to run
@@ -492,25 +456,26 @@ pub fn run_command_in_krun(
             }
         }
 
-        ctx.set_root(rootfs)?;
-        ctx.set_env(&env_vec)?;
-        ctx.set_workdir("/")?;
+        // TODO: Configure rootfs/env/workdir after kernel boot is verified
+        // ctx.set_root(rootfs)?;
+        // ctx.set_env(&env_vec)?;
+        // ctx.set_workdir("/")?;
 
-        // Mount self env at /self for epkg symlinks (../../../self/usr/bin/epkg)
-        if let Some(self_env) = crate::dirs::find_env_root("self") {
-            if let Some(self_env_str) = self_env.to_str() {
-                log::debug!("libkrun: mounting self env at /self: {}", self_env_str);
-                match ctx.add_virtiofs("self", self_env_str) {
-                    Ok(()) => log::debug!("libkrun: successfully mounted self env at /self"),
-                    Err(e) => {
-                        log::warn!("libkrun: failed to mount self env at /self: {}", e);
-                        log::warn!("libkrun: symlinks to self may not work");
-                    }
-                }
-            }
-        } else {
-            log::debug!("libkrun: self env not found, symlinks to self may not work");
-        }
+        // TODO: Mount self env at /self for epkg symlinks
+        // if let Some(self_env) = crate::dirs::find_env_root("self") {
+        //     if let Some(self_env_str) = self_env.to_str() {
+        //         log::debug!("libkrun: mounting self env at /self: {}", self_env_str);
+        //         match ctx.add_virtiofs("self", self_env_str) {
+        //             Ok(()) => log::debug!("libkrun: successfully mounted self env at /self"),
+        //             Err(e) => {
+        //                 log::warn!("libkrun: failed to mount self env at /self: {}", e);
+        //                 log::warn!("libkrun: symlinks to self may not work");
+        //             }
+        //         }
+        //     }
+        // } else {
+        //     log::debug!("libkrun: self env not found, symlinks to self may not work");
+        // }
 
         // In vsock mode, let init handle command execution via EPKG_INIT_CMD
         // set_exec would override init, so skip it entirely
@@ -521,6 +486,18 @@ pub fn run_command_in_krun(
             krun_split_irqchip(ctx.ctx_id, true)
         )?;
         log::debug!("libkrun: split IRQ chip configured");
+
+        // Configure virtio-console for kernel boot output (hvc0)
+        // Use stdin/stdout/stderr for console I/O
+        check_status("krun_add_virtio_console_default",
+            krun_add_virtio_console_default(
+                ctx.ctx_id,
+                libc::STDIN_FILENO,
+                libc::STDOUT_FILENO,
+                libc::STDERR_FILENO,
+            )
+        )?;
+        log::debug!("libkrun: virtio-console configured");
 
         // Configure vsock device for vsock mode
         if use_vsock {
