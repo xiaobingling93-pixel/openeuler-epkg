@@ -42,6 +42,9 @@ pub struct RunOptions {
     /// Optional extra kernel arguments for VM backends that support them.
     /// Can be provided via `--kernel-args` for `epkg run`.
     pub kernel_args: Option<String>,
+    /// Optional initrd image for VM backends that support it (e.g. libkrun, qemu).
+    /// Can be provided via `--initrd`.
+    pub initrd: Option<String>,
 
     /// Optional override for VM vCPU count (applies to VM backends).
     /// Can be provided via `--cpus` for `epkg run`.
@@ -649,6 +652,11 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
     if config_guard.common.in_env_root || env_root.as_os_str() == "/" {
         run_options.skip_namespace_isolation = true;
     }
+
+    // Allow bypassing namespace isolation via environment variable for testing
+    if std::env::var("EPKG_SKIP_NAMESPACE").is_ok() {
+        run_options.skip_namespace_isolation = true;
+    }
 }
 
 fn create_stdin_pipe_if_needed(run_options: &RunOptions) -> Result<(Option<OwnedFd>, Option<OwnedFd>)> {
@@ -862,6 +870,10 @@ pub fn parse_options_run(options: &mut EPKGConfig, sub_matches: &clap::ArgMatche
         .get_one::<String>("kernel-args")
         .cloned();
 
+    let initrd = sub_matches
+        .get_one::<String>("initrd")
+        .cloned();
+
     let vmm_order = sub_matches
         .get_one::<String>("vmm")
         .map(|s| {
@@ -908,6 +920,7 @@ pub fn parse_options_run(options: &mut EPKGConfig, sub_matches: &clap::ArgMatche
         vm_cpus,
         vm_memory_mib,
         kernel_args,
+        initrd,
         use_pty,
         sandbox,
         vmm_order,

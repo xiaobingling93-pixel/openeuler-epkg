@@ -851,6 +851,10 @@ fn add_run_subcommand(cmd: Command) -> Command {
                         .value_parser(clap::value_parser!(String))
                 )
                 .arg(
+                    arg!(--initrd <INITRD> "Initrd image to use for VM sandbox backends")
+                        .value_parser(clap::value_parser!(String))
+                )
+                .arg(
                     arg!(--cpus <CPUS> "Number of virtual CPUs for --sandbox=vm")
                         .value_parser(clap::value_parser!(String))
                 )

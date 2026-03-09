@@ -8,10 +8,11 @@ use color_eyre::eyre;
 use color_eyre::Result;
 use crate::models::dirs;
 
-/// Parse VMM configuration (kernel via run::resolve_vm_kernel_path; initrd, qemu, etc. from env).
+/// Parse VMM configuration (kernel via run::resolve_vm_kernel_path; initrd from run_options or env, etc.).
 fn parse_vmm_config(run_options: &RunOptions) -> Result<(String, Option<String>, String, String, String)> {
     let kernel = crate::run::resolve_vm_kernel_path(run_options)?;
-    let initrd = std::env::var("EPKG_VM_INITRD").ok();
+    // Prefer --initrd CLI option, then EPKG_VM_INITRD env var
+    let initrd = run_options.initrd.clone().or_else(|| std::env::var("EPKG_VM_INITRD").ok());
     let qemu_bin = std::env::var("EPKG_VM_QEMU").unwrap_or_else(|_| "qemu-system-x86_64".to_string());
     let virtiofsd_bin = std::env::var("EPKG_VM_VIRTIOFSD")
         .unwrap_or_else(|_| "virtiofsd".to_string());

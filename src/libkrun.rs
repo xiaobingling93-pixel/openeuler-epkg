@@ -10,22 +10,20 @@ use color_eyre::Result;
 use crate::run::RunOptions;
 use crate::qemu;
 use crate::vm_client;
-use crate::lfs;
 
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
 extern crate krun as krun_crate;
 
 // FFI for statically linked libkrun (C API from libkrun crate built as staticlib).
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[allow(dead_code)]
 unsafe extern "C" {
     fn krun_create_ctx() -> i32;
     fn krun_free_ctx(ctx_id: u32) -> i32;
-    #[allow(dead_code)]
     fn krun_init_log(target_fd: i32, level: u32, style: u32, options: u32) -> i32;
     fn krun_set_vm_config(ctx_id: u32, num_vcpus: u8, ram_mib: u32) -> i32;
     fn krun_set_root(ctx_id: u32, root_path: *const std::ffi::c_char) -> i32;
     fn krun_set_workdir(ctx_id: u32, workdir_path: *const std::ffi::c_char) -> i32;
-    #[allow(dead_code)]
     fn krun_set_exec(
         ctx_id: u32,
         exec_path: *const std::ffi::c_char,
@@ -33,7 +31,6 @@ unsafe extern "C" {
         envp: *const *const std::ffi::c_char,
     ) -> i32;
     fn krun_set_env(ctx_id: u32, envp: *const *const std::ffi::c_char) -> i32;
-    #[allow(dead_code)]
     fn krun_set_kernel(
         ctx_id: u32,
         c_kernel_path: *const std::ffi::c_char,
@@ -41,8 +38,11 @@ unsafe extern "C" {
         c_initramfs_path: *const std::ffi::c_char,
         c_cmdline: *const std::ffi::c_char,
     ) -> i32;
+    fn krun_set_firmware(ctx_id: u32, c_firmware_path: *const std::ffi::c_char) -> i32;
+    fn krun_split_irqchip(ctx_id: u32, enable: bool) -> i32;
     fn krun_start_enter(ctx_id: u32) -> i32;
     fn krun_disable_implicit_vsock(ctx_id: u32) -> i32;
+    fn krun_disable_implicit_console(ctx_id: u32) -> i32;
     fn krun_add_vsock(ctx_id: u32, tsi_features: u32) -> i32;
     unsafe fn krun_add_virtio_console_default(
         ctx_id: u32,
@@ -53,6 +53,9 @@ unsafe extern "C" {
     /// Set a file path to redirect the console output to.
     /// Must be called before krun_start_enter.
     fn krun_set_console_output(ctx_id: u32, filepath: *const std::ffi::c_char) -> i32;
+    /// Set the kernel console device (e.g., "ttyS0" or "hvc0").
+    /// Must be called before krun_start_enter.
+    fn krun_set_kernel_console(ctx_id: u32, console_id: *const std::ffi::c_char) -> i32;
     /// Mount an additional directory via virtiofs into the guest.
     /// tag: the filesystem tag (e.g., "self")
     /// path: the host directory path to mount
@@ -236,11 +239,13 @@ impl KrunContext {
     #[allow(dead_code)]
     /// kernel_format: 0 = Raw (e.g. aarch64/riscv64 Image), 1 = Elf (e.g. x86_64 vmlinux)
     /// kernel_cmdline: optional extra kernel command line (e.g. from --kernel-args)
+    /// initrd_path: optional path to initrd image (e.g. from --initrd)
     unsafe fn set_kernel(
         &self,
         kernel_path: &str,
         kernel_format: u32,
         kernel_cmdline: Option<&str>,
+        initrd_path: Option<&str>,
     ) -> Result<()> {
         let kernel_c = CString::new(kernel_path)
             .map_err(|e| eyre::eyre!("invalid kernel path: {}", e))?;
@@ -257,6 +262,21 @@ impl KrunContext {
             .as_ref()
             .map(|c| c.as_ptr())
             .unwrap_or(ptr::null());
+
+        let initrd_c = initrd_path
+            .and_then(|s| {
+                let t = s.trim();
+                if t.is_empty() {
+                    None
+                } else {
+                    CString::new(t).ok()
+                }
+            });
+        let initrd_ptr = initrd_c
+            .as_ref()
+            .map(|c| c.as_ptr())
+            .unwrap_or(ptr::null());
+
         check_status(
             "krun_set_kernel",
             unsafe {
@@ -264,7 +284,7 @@ impl KrunContext {
                     self.ctx_id,
                     kernel_c.as_ptr(),
                     kernel_format,
-                    ptr::null(), // no initramfs
+                    initrd_ptr,
                     cmdline_ptr,
                 )
             },
@@ -356,8 +376,21 @@ pub fn run_command_in_krun(
     let (cmd_parts, init_cmd) = qemu::build_guest_command(Path::new(&guest_exec_path), &run_options.args)
         .map_err(|e| eyre::eyre!("Failed to build guest command: {}", e))?;
 
-    // Start with default kernel cmdline (console=hvc0, root=/dev/root rootfstype=virtiofs, etc.)
-    let mut kernel_args = String::from("reboot=k panic=0 panic_print=0 nomodule console=hvc0 console=ttyS0 root=/dev/root rootfstype=virtiofs rw loglevel=8 ignore_loglevel debug no-kvmapf init=/usr/bin/init");
+    // Start with default kernel cmdline for libkrun external kernel mode.
+    // Use virtio-console (hvc0) since the kernel doesn't have CONFIG_SERIAL_8250 enabled.
+    // The kernel is built with CONFIG_VIRTIO_CONSOLE=y, so hvc0 is available for debug output.
+    // Note: libkrun's implicit console uses virtio-console which connects to host stderr.
+    let mut kernel_args = String::from("reboot=k panic=1 console=hvc0,115200 loglevel=8 debug");
+
+    // Add initrd parameter if initrd is provided
+    // Note: libkrun loads initrd into memory, but kernel still needs to know to use it
+    if run_options.initrd.is_some() {
+        // Don't specify root= yet - let initrd handle it
+        // The kernel will boot into initrd and we can mount rootfs from there
+    } else {
+        // No initrd, use virtiofs directly as root
+        kernel_args.push_str(" root=/dev/root rootfstype=virtiofs rw");
+    }
 
     // Append user-provided kernel args
     if let Some(user_args) = &run_options.kernel_args {
@@ -366,14 +399,6 @@ pub fn run_command_in_krun(
             kernel_args.push_str(user_args.trim());
         }
     }
-
-    // Add earlyprintk for debugging
-    kernel_args.push(' ');
-    kernel_args.push_str("earlyprintk=virtio earlyprintk=ttyS0");
-    // Add debug flag for init
-    kernel_args.push(' ');
-    kernel_args.push_str("epkg.debug=1");
-
 
     // Add command to kernel cmdline for both cmdline and vsock modes
     if use_cmdline_mode || use_vsock {
@@ -398,59 +423,64 @@ pub fn run_command_in_krun(
         env_vec.push(("EPKG_INIT_CMD".to_string(), init_cmd.clone()));
     }
 
-    // Resolve kernel path and load it via mmap, bypassing libkrunfw dlopen.
-    // This is required because statically-linked epkg cannot use dlopen().
-    // The kernel should be pre-extracted by `epkg self install` to envs/self/boot/kernel.
-    let kernel_path = crate::run::resolve_vm_kernel_path(run_options)?;
-    log::debug!("libkrun: resolving kernel path: {}", kernel_path);
-
-    // Detect kernel format: ELF (vmlinux) or Raw (everything else on x86_64)
-    let kernel_format = detect_kernel_format_for_libkrun(&kernel_path)?;
-    let format_str = match kernel_format {
-        0 => "Raw",
-        1 => "ELF (vmlinux)",
-        _ => "Unknown",
+    // Resolve kernel path and set it via krun_set_kernel() if explicitly specified.
+    // If no --kernel option is provided, libkrun will auto-load the bundled kernel
+    // from libkrunfw (this is how chroot_vm.c works).
+    let kernel_path = run_options.kernel.clone();
+    let kernel_format = if let Some(ref kernel) = kernel_path {
+        Some(detect_kernel_format_for_libkrun(kernel)?)
+    } else {
+        None
     };
-    log::debug!("libkrun: kernel format: {}", format_str);
+    if let Some(ref kernel) = kernel_path {
+        log::debug!("libkrun: kernel path: {}", kernel);
+        log::debug!("libkrun: kernel format: {:?}", kernel_format);
+    } else {
+        log::debug!("libkrun: using bundled kernel from libkrunfw (no --kernel specified)");
+    }
 
     ensure_libkrun_linked();
 
-    // Create console output log file for debugging
-    let console_log_path = {
-        let base_log_dir = crate::models::dirs().epkg_cache.join("vmm-logs");
-        lfs::create_dir_all(&base_log_dir)
-            .map_err(|e| eyre::eyre!("Failed to create VMM log directory: {}", e))?;
-        let pid = std::process::id();
-        base_log_dir.join(format!("libkrun-console-{}.log", pid))
-    };
-    log::debug!("libkrun: console output log: {}", console_log_path.display());
+    // Note: We don't call krun_init_log() since the application already has
+    // logging initialized via env_logger. libkrun's internal debug logs are
+    // not critical - kernel boot output goes through virtio-console (hvc0).
 
     // Create libkrun context and configure VM (will be moved to thread)
     let ctx = unsafe { KrunContext::create()? };
     let cpus = crate::run::resolve_vm_cpus(run_options);
     let requested_mib = crate::run::resolve_vm_memory_mib(run_options);
     log::debug!("libkrun: run_options.vm_memory_mib = {:?}", run_options.vm_memory_mib);
-    let memory_mib = crate::run::round_up_vm_memory_for_libkrun(requested_mib, &kernel_path);
+    // For bundled kernel (no --kernel), use default memory; for external kernel, round up based on kernel size
+    let memory_mib = if let Some(ref kernel) = kernel_path {
+        crate::run::round_up_vm_memory_for_libkrun(requested_mib, kernel)
+    } else {
+        requested_mib
+    };
     log::debug!("libkrun: requested_mib = {}", requested_mib);
     log::debug!("libkrun: round_up_vm_memory_for_libkrun = {}", memory_mib);
     log::debug!("libkrun: kernel cmdline: {}", kernel_args);
     unsafe {
         ctx.set_vm_config(cpus, memory_mib)?;
 
-        // Set console output to log file for debugging
-        let console_log_c = CString::new(console_log_path.to_string_lossy().to_string())
-            .map_err(|e| eyre::eyre!("invalid console log path: {}", e))?;
-        check_status("krun_set_console_output",
-            krun_set_console_output(ctx.ctx_id, console_log_c.as_ptr())
-        )?;
-        log::debug!("libkrun: console output redirected to {}", console_log_path.display());
-
-        // Use krun_set_kernel() with format=0 (Raw) to let libkrun's map_kernel()
-        // handle the kernel loading. This is the standard path for x86_64 raw kernels.
-        // Note: map_kernel() treats the kernel as a bundled raw binary and loads it
-        // at guest_addr=0x2000_0000 with entry_addr=0x2000_0000.
-        ctx.set_kernel(&kernel_path, 0, Some(&kernel_args))?;
-        log::debug!("libkrun: kernel set via krun_set_kernel() -> map_kernel()");
+        // Set kernel via krun_set_kernel() only if explicitly specified with --kernel.
+        // If no kernel is specified, libkrun auto-loads the bundled kernel from libkrunfw.
+        let initrd_path = run_options.initrd.clone();
+        if let Some(ref kernel) = kernel_path {
+            if let Some(format) = kernel_format {
+                let format_str = match format {
+                    0 => "Raw (bundled)",
+                    1 => "ELF (vmlinux)",
+                    _ => "Unknown",
+                };
+                if let Some(ref initrd) = initrd_path {
+                    log::debug!("libkrun: using initrd: {}", initrd);
+                } else {
+                    log::debug!("libkrun: no initrd provided");
+                }
+                ctx.set_kernel(kernel, format, Some(&kernel_args), initrd_path.as_deref())?;
+                log::debug!("libkrun: kernel set via krun_set_kernel() with format={} ({})", format, format_str);
+            }
+        }
 
         ctx.set_root(rootfs)?;
         ctx.set_env(&env_vec)?;
@@ -476,6 +506,12 @@ pub fn run_command_in_krun(
         // set_exec would override init, so skip it entirely
         // ctx.set_exec(exec, &args, &env_vec)?;
 
+        // Configure split IRQ chip (required for x86_64 KVM)
+        check_status("krun_split_irqchip",
+            krun_split_irqchip(ctx.ctx_id, true)
+        )?;
+        log::debug!("libkrun: split IRQ chip configured");
+
         // Configure vsock device for vsock mode
         if use_vsock {
             // Disable implicit vsock (created by libkrun by default)
@@ -489,7 +525,10 @@ pub fn run_command_in_krun(
             log::debug!("libkrun: vsock configured successfully");
         }
 
-        // Enable virtio-console for guest output (connect to host stdio)
+        // Add virtio-console device for guest output.
+        // The kernel cmdline has console=hvc0 which routes output to virtio-console.
+        // Since CONFIG_SERIAL_8250 is not set in the kernel, virtio-console (hvc0)
+        // is the primary debug console for kernel boot messages.
         check_status("krun_add_virtio_console_default",
             krun_add_virtio_console_default(
                 ctx.ctx_id,
@@ -498,9 +537,7 @@ pub fn run_command_in_krun(
                 libc::STDERR_FILENO,
             )
         )?;
-        log::debug!("libkrun: virtio-console configured successfully");
-        log::debug!("libkrun: virtio-console is connected to host stdin/stdout/stderr");
-        log::debug!("libkrun: guest console output should appear on stdout/stderr and log file");
+        log::debug!("libkrun: virtio-console configured, output goes to host stdout/stderr");
     }
 
     // Start VM in a separate thread (krun_start_enter blocks until VM exits)
