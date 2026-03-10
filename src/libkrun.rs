@@ -1,4 +1,5 @@
 use std::ffi::CString;
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::ptr;
 use std::thread;
@@ -489,6 +490,49 @@ pub fn run_command_in_krun(
         // console=hvc0 which routes kernel boot messages to this virtio-console.
     }
 
+    // For vsock mode: create ready listener BEFORE starting VM
+    // This prevents race condition where guest connects before host is ready
+    let ready_listener = if use_vsock {
+        // Clean up stale socket files from previous runs
+        // This handles cases where previous VM processes didn't exit cleanly
+        let vmm_logs_dir = crate::models::dirs().epkg_cache.join("vmm-logs");
+        if let Ok(entries) = std::fs::read_dir(&vmm_logs_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                // Remove old vsock-*.sock and ready-*.sock files
+                if name.starts_with("vsock-") && name.ends_with(".sock") {
+                    let _ = std::fs::remove_file(entry.path());
+                    log::trace!("libkrun: cleaned up stale socket {}", name);
+                }
+                if name.starts_with("ready-") && name.ends_with(".sock") {
+                    let _ = std::fs::remove_file(entry.path());
+                    log::trace!("libkrun: cleaned up stale socket {}", name);
+                }
+            }
+        }
+
+        // Derive ready socket path from command socket path
+        let cmd_path = vsock_sock_path.as_ref().unwrap();
+        let ready_path = cmd_path.parent().unwrap_or(std::path::Path::new(""))
+            .join(cmd_path.file_name().unwrap().to_string_lossy().replace("vsock-", "ready-"));
+
+        // Remove stale socket file if exists (should be cleaned above, but be safe)
+        let _ = std::fs::remove_file(&ready_path);
+
+        // Create listener for ready notification BEFORE starting VM
+        log::debug!("libkrun: creating ready listener on {}", ready_path.display());
+        let listener = std::os::unix::net::UnixListener::bind(&ready_path)
+            .map_err(|e| eyre::eyre!("Failed to bind ready socket {}: {}", ready_path.display(), e))?;
+
+        // Set non-blocking mode for timeout support
+        listener.set_nonblocking(true)
+            .map_err(|e| eyre::eyre!("Failed to set non-blocking on ready socket: {}", e))?;
+
+        Some(listener)
+    } else {
+        None
+    };
+
     // Start VM in a separate thread (krun_start_enter blocks until VM exits)
     log::debug!("libkrun: starting VM thread...");
     let vm_thread = thread::spawn(move || {
@@ -506,10 +550,43 @@ pub fn run_command_in_krun(
 
     // For vsock mode, wait for guest ready then connect and send command
     if use_vsock {
-        log::debug!("libkrun: waiting for guest to be ready...");
+        log::debug!("libkrun: waiting for guest to be ready (with timeout)...");
+
+        // Wait for guest to connect to ready socket with timeout
+        // Use poll to implement timeout for non-blocking accept
+        let listener = ready_listener.unwrap();
+        let listener_fd = listener.as_raw_fd();
+        let mut poll_fds = [libc::pollfd {
+            fd:      listener_fd,
+            events:  libc::POLLIN,
+            revents: 0,
+        }];
+
+        // 30 second timeout for VM to start and signal ready
+        const READY_TIMEOUT_MS: i32 = 30_000;
+        let poll_result = unsafe { libc::poll(poll_fds.as_mut_ptr(), 1, READY_TIMEOUT_MS) };
+
+        match poll_result {
+            0 => {
+                log::error!("libkrun: timeout waiting for VM to become ready");
+                return Err(eyre::eyre!("Timeout waiting for VM to start"));
+            }
+            n if n < 0 => {
+                log::error!("libkrun: poll error on ready socket");
+                return Err(eyre::eyre!("Poll error on ready socket"));
+            }
+            _ => {
+                // Ready for accept
+                let (stream, _addr) = listener.accept()
+                    .map_err(|e| eyre::eyre!("Failed to accept on ready socket: {}", e))?;
+                log::debug!("libkrun: guest connected to ready socket, guest is ready!");
+                drop(stream);
+            }
+        }
+
+        // Now connect to command port and send command
         // cmd_parts was computed earlier
-        // Ready socket path is derived from command socket path (vsock-xxx.sock → ready-xxx.sock)
-        let exit_code = vm_client::wait_ready_and_send_command(
+        let exit_code = vm_client::send_command_via_vsock(
             &cmd_parts,
             run_options.use_pty,
             10000,
@@ -517,9 +594,13 @@ pub fn run_command_in_krun(
         )
         .map_err(|e| eyre::eyre!("Failed to send command via vsock: {}", e))?;
         log::debug!("libkrun: vsock command completed with exit code {}", exit_code);
-        // Command completed, exit immediately. The VM thread will be cleaned up by the OS.
-        // Note: We don't wait for the VM thread to finish because libkrun's vsock reaper
-        // has a 5-second timeout that delays shutdown. The OS will clean up resources.
+
+        // Exit immediately without waiting for VM thread.
+        // On libkrun x86_64, guest poweroff via SysRq/ACPI doesn't work reliably.
+        // The VM thread will be killed when the process exits, and the OS will
+        // clean up KVM resources. Socket files are cleaned up at startup.
+        // This approach is more reliable than waiting for VM shutdown.
+        log::debug!("libkrun: exiting with code {}", exit_code);
         std::process::exit(exit_code);
     }
 
