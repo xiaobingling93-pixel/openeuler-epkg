@@ -17,7 +17,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 . "$PROJECT_ROOT/tests/common.sh"
 set_epkg_bin
 
-BUSYBOX_TS="${BUSYBOX_TESTSUITE:-$PROJECT_ROOT/busybox/testsuite}"
+BUSYBOX_TS="${BUSYBOX_TESTSUITE:-$PROJECT_ROOT/git/busybox/testsuite}"
 
 if [ ! -d "$BUSYBOX_TS" ]; then
     git -C $PROJECT_ROOT/git clone --depth 10 https://git.busybox.net/busybox

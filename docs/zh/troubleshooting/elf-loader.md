@@ -22,7 +22,7 @@ RUST_LOG=debug epkg -e <env> install <pkg> 2>&1 | grep -E "elf|handle_elf|script
 
 ```bash
 # 1. 进入 elf-loader 源码目录
-cd /c/epkg/elf-loader/src
+cd /c/epkg/git/elf-loader/src
 
 # 2. 安装开发依赖
 make dev-depends
@@ -45,14 +45,14 @@ cp loader ~/.epkg/envs/dev-alpine/ebin/go
 
 ```bash
 # 运行验证脚本快速测试修复
-/c/epkg/elf-loader/src/verify.sh
+/c/epkg/git/elf-loader/src/verify.sh
 ```
 
 ### 完整调试示例
 
 ```bash
 # 调试版本编译和测试
-cd /c/epkg/elf-loader/src
+cd /c/epkg/git/elf-loader/src
 make DEBUG=1
 cp loader ~/.epkg/envs/dev-alpine/ebin/go
 ~/.epkg/envs/dev-alpine/ebin/go version
@@ -90,7 +90,7 @@ ls -l ~/.epkg/envs/self/usr/bin/elf-loader
 **修复**：
 ```bash
 # 1. 从源码恢复 elf-loader
-cp /c/epkg/elf-loader/src/loader ~/.epkg/envs/self/usr/bin/elf-loader
+cp /c/epkg/git/elf-loader/src/loader ~/.epkg/envs/self/usr/bin/elf-loader
 
 # 2. 或者重新安装 epkg
 cd /c/epkg && make install
@@ -259,7 +259,7 @@ if [[ "$FILE_TYPE" != ELF* ]]; then
     echo "  Type: $FILE_TYPE"
     echo ""
     echo "To fix:"
-    echo "  cp /c/epkg/elf-loader/src/loader $ELF_LOADER"
+    echo "  cp /c/epkg/git/elf-loader/src/loader $ELF_LOADER"
     exit 1
 fi
 
@@ -328,7 +328,7 @@ exit 0
 file ~/.epkg/envs/self/usr/bin/elf-loader
 
 # 2. 如有问题，恢复 elf-loader
-cp /c/epkg/elf-loader/src/loader ~/.epkg/envs/self/usr/bin/elf-loader
+cp /c/epkg/git/elf-loader/src/loader ~/.epkg/envs/self/usr/bin/elf-loader
 
 # 3. 清理 ebin 目录
 rm -rf ~/.epkg/envs/<env>/ebin/*

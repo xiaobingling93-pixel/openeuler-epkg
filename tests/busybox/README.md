@@ -23,7 +23,7 @@ against epkg's busybox applets with no or minimal changes to the BusyBox tree.
 ## Environment / options
 
 - **BUSYBOX_TESTSUITE** – Path to BusyBox testsuite directory (default: busybox sub-directory
-  in epkg repo, e.g. /c/epkg/busybox/testsuite when epkg is in /c/epkg).
+  in epkg repo, e.g. /c/epkg/git/busybox/testsuite when epkg is in /c/epkg).
 - **EPKG_BIN** – Path to epkg binary (default: from tests/common.sh).
 - **EPKG_BUSYBOX_SKIP_FEATURES** – Comma-separated list of BusyBox CONFIG_ feature
   names to treat as "not set" so optional(FEATURE_*) tests are skipped (e.g. if

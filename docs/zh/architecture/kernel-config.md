@@ -88,16 +88,16 @@ CONFIG_SYSFS=y
 
 ### 配置文件管理
 
-源配置文件位于 `/c/epkg/krun/libkrunfw/config-libkrunfw_x86_64`，构建时复制到内核目录：
+源配置文件位于 `/c/epkg/git/libkrunfw/config-libkrunfw_x86_64`，构建时复制到内核目录：
 
 ```bash
-cp /c/epkg/krun/libkrunfw/config-libkrunfw_x86_64 /c/epkg/krun/linux/.config
+cp /c/epkg/git/libkrunfw/config-libkrunfw_x86_64 /c/epkg/git/linux/.config
 ```
 
 ### 编译内核
 
 ```bash
-cd /c/epkg/krun/linux
+cd /c/epkg/git/linux
 make -j$(nproc)
 ```
 
@@ -112,11 +112,11 @@ make -j$(nproc)
 ```bash
 # 检查禁用项
 grep -E "^# CONFIG_(KSM|COMPACTION|TRANSPARENT_HUGEPAGE|IPV6) is not set" \
-  /c/epkg/krun/linux/.config
+  /c/epkg/git/linux/.config
 
 # 检查启用的关键配置
 grep -E "^CONFIG_(KVM_GUEST|VIRTIO_PCI|SERIAL_8250|ACPI)=" \
-  /c/epkg/krun/linux/.config
+  /c/epkg/git/linux/.config
 ```
 
 ### 测试内核
@@ -124,11 +124,11 @@ grep -E "^CONFIG_(KVM_GUEST|VIRTIO_PCI|SERIAL_8250|ACPI)=" \
 ```bash
 # QEMU 模式
 timeout 9 epkg run --sandbox=vm --vmm=qemu \
-  --kernel=/c/epkg/krun/linux/arch/x86/boot/bzImage ls /
+  --kernel=/c/epkg/git/linux/arch/x86/boot/bzImage ls /
 
 # libkrun 模式（需要 vmlinux 格式）
 epkg run --sandbox=vm --vmm=libkrun \
-  --kernel=/c/epkg/krun/linux/vmlinux ls /
+  --kernel=/c/epkg/git/linux/vmlinux ls /
 ```
 
 ### 常见问题
