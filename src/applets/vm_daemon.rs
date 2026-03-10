@@ -940,7 +940,30 @@ fn run_vsock_server() -> Result<()> {
     const VSOCK_PORT: u32 = 10000;      // Command port
     const READY_PORT: u32 = 10001;      // Ready notification port
 
-    // Step 1: Notify host that we're ready to accept commands.
+    // Step 1: Create and bind command port FIRST, before signaling readiness.
+    // This prevents race condition where host connects before we're listening.
+    log::debug!("vm-daemon: creating vsock socket for command port...");
+    let fd = socket::socket(
+        AddressFamily::Vsock,
+        SockType::Stream,
+        SockFlag::SOCK_CLOEXEC,
+        None,
+    ).map_err(|e| { log::debug!("vm-daemon: socket() failed: {}", e); e })?;
+    log::debug!("vm-daemon: socket created, fd={}", fd.as_raw_fd());
+
+    let addr = VsockAddr::new(libc::VMADDR_CID_ANY, VSOCK_PORT);
+    let raw_fd = fd.as_raw_fd();
+
+    log::debug!("vm-daemon: binding to cid=ANY port={}...", VSOCK_PORT);
+    socket::bind(raw_fd, &addr).map_err(|e| { log::debug!("vm-daemon: bind() failed: {}", e); e })?;
+    log::debug!("vm-daemon: bind succeeded");
+
+    log::debug!("vm-daemon: calling listen()...");
+    socket::listen(&fd, Backlog::new(1)?).map_err(|e| { log::debug!("vm-daemon: listen() failed: {}", e); e })?;
+    log::debug!("vm-daemon: listen succeeded");
+
+    // Step 2: Notify host that we're ready to accept commands.
+    // Now that command port is bound and listening, signal readiness.
     // Connect to ready port on host (CID=VMADDR_CID_HOST=2).
     log::debug!("vm-daemon: notifying host that we're ready...");
     let ready_fd = socket::socket(
@@ -961,27 +984,6 @@ fn run_vsock_server() -> Result<()> {
     }
     // Close ready socket - the connection itself is the signal
     drop(ready_fd);
-
-    // Step 2: Listen on command port for incoming commands.
-    log::debug!("vm-daemon: creating vsock socket for command port...");
-    let fd = socket::socket(
-        AddressFamily::Vsock,
-        SockType::Stream,
-        SockFlag::SOCK_CLOEXEC,
-        None,
-    ).map_err(|e| { log::debug!("vm-daemon: socket() failed: {}", e); e })?;
-    log::debug!("vm-daemon: socket created, fd={}", fd.as_raw_fd());
-
-    let addr = VsockAddr::new(libc::VMADDR_CID_ANY, VSOCK_PORT);
-    let raw_fd = fd.as_raw_fd();
-
-    log::debug!("vm-daemon: binding to cid=ANY port={}...", VSOCK_PORT);
-    socket::bind(raw_fd, &addr).map_err(|e| { log::debug!("vm-daemon: bind() failed: {}", e); e })?;
-    log::debug!("vm-daemon: bind succeeded");
-
-    log::debug!("vm-daemon: calling listen()...");
-    socket::listen(&fd, Backlog::new(1)?).map_err(|e| { log::debug!("vm-daemon: listen() failed: {}", e); e })?;
-    log::debug!("vm-daemon: listen succeeded");
 
     log::debug!("vm-daemon starting (vsock), listening on port {}", VSOCK_PORT);
 

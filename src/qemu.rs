@@ -173,8 +173,8 @@ fn wait_for_virtiofsd_socket(
     virtiofsd_child: &mut std::process::Child,
     socket_path: &Path,
 ) -> Result<()> {
-    const SOCKET_WAIT_TIMEOUT_MS: u64 = 5000;
-    const SOCKET_POLL_INTERVAL_MS: u64 = 50;
+    const SOCKET_WAIT_TIMEOUT_MS: u64 = 500;
+    const SOCKET_POLL_INTERVAL_MS: u64 = 5;
     let start = std::time::Instant::now();
     loop {
         // Check if virtiofsd is still running
