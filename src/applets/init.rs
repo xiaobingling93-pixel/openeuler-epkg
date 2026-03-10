@@ -331,6 +331,19 @@ fn exec_command(cmd_str: &str) -> Result<()> {
     } else {
         (parts[0].clone(), parts[1..].to_vec())
     };
+
+    // Setup color PS for sh/bash
+    let cmd_name = std::path::Path::new(&cmd)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    if cmd_name == "sh" || cmd_name == "bash" {
+        let pwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "/".to_string());
+        std::env::set_var("PS1", &format!("\\[\\033[01;32m\\]epkg:{}\\[\\033[0m\\] $ ", pwd));
+    }
+
     log::debug!("init: exec cmd={:?} args={:?}", cmd, args);
 
     let cmd_c = CString::new(cmd.as_str()).map_err(|e| eyre!("init: command CString: {}", e))?;

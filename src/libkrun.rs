@@ -23,14 +23,6 @@ unsafe extern "C" {
     fn krun_init_log(target_fd: i32, level: u32, style: u32, options: u32) -> i32;
     fn krun_set_vm_config(ctx_id: u32, num_vcpus: u8, ram_mib: u32) -> i32;
     fn krun_set_root(ctx_id: u32, root_path: *const std::ffi::c_char) -> i32;
-    fn krun_set_workdir(ctx_id: u32, workdir_path: *const std::ffi::c_char) -> i32;
-    fn krun_set_exec(
-        ctx_id: u32,
-        exec_path: *const std::ffi::c_char,
-        argv: *const *const std::ffi::c_char,
-        envp: *const *const std::ffi::c_char,
-    ) -> i32;
-    fn krun_set_env(ctx_id: u32, envp: *const *const std::ffi::c_char) -> i32;
     fn krun_set_kernel(
         ctx_id: u32,
         c_kernel_path: *const std::ffi::c_char,
@@ -160,82 +152,6 @@ impl KrunContext {
     }
 
     #[allow(dead_code)]
-    unsafe fn set_exec(
-        &self,
-        exec: &str,
-        args: &[String],
-        env: &[(String, String)],
-    ) -> Result<()> {
-        let exec_c = CString::new(exec)
-            .map_err(|e| eyre::eyre!("invalid exec path: {}", e))?;
-
-        let arg_storage: Vec<CString> = args
-            .iter()
-            .map(|arg| {
-                CString::new(arg.as_str()).map_err(|e| {
-                    eyre::eyre!("invalid arg {:?}: {}", arg, e)
-                })
-            })
-            .collect::<Result<_>>()?;
-        let mut arg_ptrs: Vec<*const std::ffi::c_char> =
-            arg_storage.iter().map(|arg| arg.as_ptr()).collect();
-        arg_ptrs.push(ptr::null());
-
-        let env_storage = Self::env_to_cstring(env)?;
-        let mut env_ptrs: Vec<*const std::ffi::c_char> =
-            env_storage.iter().map(|entry| entry.as_ptr()).collect();
-        env_ptrs.push(ptr::null());
-
-        check_status(
-            "krun_set_exec",
-            unsafe {
-                krun_set_exec(
-                    self.ctx_id,
-                    exec_c.as_ptr(),
-                    arg_ptrs.as_ptr(),
-                    env_ptrs.as_ptr(),
-                )
-            },
-        )
-    }
-
-    #[allow(dead_code)]
-    unsafe fn set_env(&self, env: &[(String, String)]) -> Result<()> {
-        if env.is_empty() {
-            let empty: [*const std::ffi::c_char; 1] = [ptr::null()];
-            return check_status(
-                "krun_set_env",
-                unsafe { krun_set_env(self.ctx_id, empty.as_ptr()) },
-            );
-        }
-
-        let env_storage = Self::env_to_cstring(env)?;
-        let mut ptrs: Vec<*const std::ffi::c_char> =
-            env_storage.iter().map(|c| c.as_ptr()).collect();
-        ptrs.push(ptr::null());
-
-        check_status("krun_set_env", unsafe { krun_set_env(self.ctx_id, ptrs.as_ptr()) })
-    }
-
-    fn env_to_cstring(env: &[(String, String)]) -> Result<Vec<CString>> {
-        env.iter()
-            .map(|(k, v)| {
-                let kv = format!("{}={}", k, v);
-                CString::new(kv).map_err(|e| eyre::eyre!("invalid env: {}", e))
-            })
-            .collect()
-    }
-
-    #[allow(dead_code)]
-    unsafe fn set_workdir(&self, workdir: &str) -> Result<()> {
-        let workdir_c = CString::new(workdir)
-            .map_err(|e| eyre::eyre!("invalid workdir path: {}", e))?;
-        check_status(
-            "krun_set_workdir",
-            unsafe { krun_set_workdir(self.ctx_id, workdir_c.as_ptr()) },
-        )
-    }
-
     #[allow(dead_code)]
     unsafe fn add_virtiofs(&self, tag: &str, path: &str) -> Result<()> {
         let tag_c = CString::new(tag)
@@ -421,6 +337,13 @@ pub fn run_command_in_krun(
     if let Ok(rust_log) = std::env::var("RUST_LOG") {
         if !rust_log.is_empty() {
             kernel_args.push_str(&format!(" epkg.rust_log={}", qemu::percent_encode(&rust_log)));
+        }
+    }
+
+    // Pass working directory (from client) to init
+    if let Ok(pwd) = std::env::var("PWD") {
+        if !pwd.is_empty() && pwd != "/" {
+            kernel_args.push_str(&format!(" epkg.init_pwd={}", qemu::percent_encode(&pwd)));
         }
     }
 

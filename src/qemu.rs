@@ -286,10 +286,16 @@ fn build_qemu_command(
             append_args.push_str(&format!(" epkg.rust_log={}", percent_encode(&rust_log)));
         }
     }
-    // Cmdline mode: pass command to init via kernel cmdline (init reads epkg.init_cmd from /proc/cmdline)
+    // Cmdline mode: pass command and working dir to init via kernel cmdline
     if let Some(cmd) = init_cmd {
         if !cmd.is_empty() {
             append_args.push_str(&format!(" epkg.init_cmd={}", cmd));
+        }
+    }
+    // Pass working directory (from client) to init
+    if let Ok(pwd) = std::env::var("PWD") {
+        if !pwd.is_empty() && pwd != "/" {
+            append_args.push_str(&format!(" epkg.init_pwd={}", percent_encode(&pwd)));
         }
     }
     if !extra_qemu_args.is_empty() {
