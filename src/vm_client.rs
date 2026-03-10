@@ -25,6 +25,7 @@ use lazy_static::lazy_static;
 use nix::sys::signal::{signal, Signal, SigHandler};
 use nix::sys::termios;
 use nix::sys::socket::{self, AddressFamily, SockType, SockFlag, VsockAddr};
+use nix::poll::{poll, PollFd, PollFlags};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 
@@ -439,42 +440,60 @@ fn create_raw_terminal_guard() -> Option<RawTerminalGuard> {
     }
 }
 
-/// Spawn stdin reading thread.
-fn spawn_stdin_thread(mut stream: TcpStream) {
+/// Spawn stdin reading thread with stop flag support.
+/// Uses poll() with timeout to allow graceful shutdown when stop_flag is set.
+fn spawn_stdin_thread(mut stream: TcpStream, stop_flag: Arc<AtomicBool>) {
+    use std::os::fd::AsFd;
     use std::thread;
+
     thread::spawn(move || {
         let mut seq = 0u64;
         let mut buf = [0; 4096];
+        let stdin = std::io::stdin();
+        let stdin_fd = stdin.as_fd();
 
-        loop {
-            match std::io::stdin().read(&mut buf) {
-                Ok(0) => break, // EOF (Ctrl+D)
-                Ok(n) => {
-                    seq += 1;
-                    let data = STANDARD.encode(&buf[..n]);
-                    let msg = StreamMessage::Stdin { data, seq };
-                    let json = match serde_json::to_string(&msg) {
-                        Ok(j) => j,
+        while !stop_flag.load(Ordering::SeqCst) {
+            // Poll stdin with 10ms timeout to allow checking stop_flag
+            let mut pfd = [PollFd::new(stdin_fd, PollFlags::POLLIN)];
+            match poll(&mut pfd, 10u16) {
+                Ok(0) => continue, // timeout, check stop_flag again
+                Ok(_) => {
+                    // stdin has data ready
+                    match std::io::stdin().read(&mut buf) {
+                        Ok(0) => break, // EOF (Ctrl+D)
+                        Ok(n) => {
+                            seq += 1;
+                            let data = STANDARD.encode(&buf[..n]);
+                            let msg = StreamMessage::Stdin { data, seq };
+                            let json = match serde_json::to_string(&msg) {
+                                Ok(j) => j,
+                                Err(e) => {
+                                    log::debug!("Failed to serialize stdin message: {}", e);
+                                    break;
+                                }
+                            };
+                            if let Err(e) = stream.write_all(json.as_bytes()) {
+                                log::debug!("Failed to send stdin to server: {}", e);
+                                break;
+                            }
+                            if let Err(e) = stream.write_all(b"\n") {
+                                log::debug!("Failed to send newline to server: {}", e);
+                                break;
+                            }
+                        }
                         Err(e) => {
-                            log::debug!("Failed to serialize stdin message: {}", e);
+                            log::debug!("Failed to read from stdin: {}", e);
                             break;
                         }
-                    };
-                    if let Err(e) = stream.write_all(json.as_bytes()) {
-                        log::debug!("Failed to send stdin to server: {}", e);
-                        break;
-                    }
-                    if let Err(e) = stream.write_all(b"\n") {
-                        log::debug!("Failed to send newline to server: {}", e);
-                        break;
                     }
                 }
                 Err(e) => {
-                    log::debug!("Failed to read from stdin: {}", e);
+                    log::debug!("poll() failed: {}", e);
                     break;
                 }
             }
         }
+        log::debug!("stdin thread exiting, stop_flag={}", stop_flag.load(Ordering::SeqCst));
     });
 }
 
@@ -647,6 +666,9 @@ fn handle_streaming(stream: &mut TcpStream, use_pty: bool) -> Result<i32> {
     use std::io::BufReader;
     use std::sync::{Arc, Mutex};
 
+    // Stop flag to signal stdin thread to exit
+    let stop_flag = Arc::new(AtomicBool::new(false));
+
     // Clone TCP stream for stdin thread
     let stream_for_stdin = stream.try_clone()?;
     let signal_stream = if use_pty {
@@ -665,13 +687,18 @@ fn handle_streaming(stream: &mut TcpStream, use_pty: bool) -> Result<i32> {
     };
 
     // Spawn stdin thread (needed for both modes)
-    spawn_stdin_thread(stream_for_stdin);
+    spawn_stdin_thread(stream_for_stdin, Arc::clone(&stop_flag));
 
     // Main thread: read from TCP and handle messages
     let mut reader = BufReader::new(stream);
-    if use_pty {
+    let result = if use_pty {
         run_pty_main_loop(&mut reader, resize_stream)
     } else {
         run_non_pty_loop(&mut reader)
-    }
+    };
+
+    // Signal stdin thread to stop before returning
+    stop_flag.store(true, Ordering::SeqCst);
+
+    result
 }
