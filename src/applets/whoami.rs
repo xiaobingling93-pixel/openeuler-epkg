@@ -17,10 +17,18 @@ pub fn command() -> Command {
 pub fn run(_options: WhoamiOptions) -> Result<()> {
     #[cfg(unix)]
     {
-        let username = get_current_username()
-            .ok_or_else(|| color_eyre::eyre::eyre!("Cannot determine user"))?
-            .to_string_lossy()
-            .to_string();
+        use users::get_current_uid;
+
+        let username = match get_current_username() {
+            Some(name) => name.to_string_lossy().to_string(),
+            None => {
+                if get_current_uid() == 0 {
+                    "root".to_string()
+                } else {
+                    return Err(color_eyre::eyre::eyre!("Cannot determine user"));
+                }
+            }
+        };
         println!("{}", username);
     }
     #[cfg(not(unix))]
