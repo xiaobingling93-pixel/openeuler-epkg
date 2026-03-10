@@ -94,7 +94,7 @@ export PATH="$HOME/.epkg/envs/debian-env/ebin:$HOME/.epkg/envs/alpine-env/ebin:.
 ```bash
 cd /path/to/myproject
 epkg env create --root ./.eenv -c alpine
-epkg --root ./.eenv install python3-pip  # 如果您在项目目录下，--root 是可选的
+epkg --root ./.eenv install py3-pip  # 如果您在项目目录下，--root 是可选的
 epkg run ./script.py
 ```
 
