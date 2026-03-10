@@ -222,6 +222,50 @@ fn create_ebin_wrappers(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate:
             created_ebin_paths.push(created_path);
         }
     }
+
+    // Special-case: provide a `ruby` alias in ebin when the distro package
+    // only ships an alternative binary name (e.g. `ruby-mri` on Fedora).
+    //
+    // If `ENV_ROOT/ebin/ruby-mri` exists, create/overwrite `ENV_ROOT/ebin/ruby`
+    // as a small shell wrapper that delegates to `ruby-mri`. This avoids
+    // confusing elf-loader by treating the launcher script in bin/ruby as an
+    // ELF binary, and keeps the canonical interpreter behind `ruby-mri`.
+    let ruby_ebin_path = env_root.join("ebin").join("ruby");
+    let ruby_mri_ebin_path = env_root.join("ebin").join("ruby-mri");
+    if lfs::exists_in_env(&ruby_mri_ebin_path) {
+        // Remove any existing alias (from older buggy versions or previous runs)
+        if lfs::symlink_metadata(&ruby_ebin_path).is_ok() {
+            lfs::remove_file(&ruby_ebin_path)?;
+        }
+
+        // Create a simple shell wrapper that calls ruby-mri from ebin.
+        let script_content = format!(
+            "#!/bin/sh\nexec {:?} \"$@\"\n",
+            ruby_mri_ebin_path
+        );
+
+        let ebin_dir = ruby_ebin_path.parent()
+            .ok_or_else(|| eyre::eyre!("Failed to get parent directory for {}", ruby_ebin_path.display()))?;
+        let temp_path = ebin_dir.join(".tmp-ruby-alias");
+
+        let mut wrapper = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp_path)
+            .with_context(|| format!("Failed to open temp file {} for ruby alias wrapper", temp_path.display()))?;
+
+        wrapper.write_all(script_content.as_bytes())
+            .with_context(|| format!("Failed to write ruby alias wrapper to {}", temp_path.display()))?;
+
+        drop(wrapper);
+        set_wrapper_permissions(&temp_path)?;
+        fs::rename(&temp_path, &ruby_ebin_path)
+            .with_context(|| format!("Failed to rename temp file {} to {}", temp_path.display(), ruby_ebin_path.display()))?;
+
+        created_ebin_paths.push(ruby_ebin_path);
+    }
+
     log::debug!("create_ebin_wrappers: returning {} created paths: {:?}", created_ebin_paths.len(), created_ebin_paths);
     Ok(created_ebin_paths)
 }
