@@ -936,10 +936,34 @@ fn handle_connection(mut stream: TcpStream) -> Result<bool> {
 fn run_vsock_server() -> Result<()> {
     use std::os::fd::FromRawFd;
 
-    // Fixed vsock port matching host/client side.
-    const VSOCK_PORT: u32 = 10000;
+    // Fixed vsock ports matching host/client side.
+    const VSOCK_PORT: u32 = 10000;      // Command port
+    const READY_PORT: u32 = 10001;      // Ready notification port
 
-    log::debug!("vm-daemon: creating vsock socket...");
+    // Step 1: Notify host that we're ready to accept commands.
+    // Connect to ready port on host (CID=VMADDR_CID_HOST=2).
+    log::debug!("vm-daemon: notifying host that we're ready...");
+    let ready_fd = socket::socket(
+        AddressFamily::Vsock,
+        SockType::Stream,
+        SockFlag::SOCK_CLOEXEC,
+        None,
+    ).map_err(|e| { log::debug!("vm-daemon: ready socket() failed: {}", e); e })?;
+    let ready_addr = VsockAddr::new(libc::VMADDR_CID_HOST, READY_PORT);
+    match socket::connect(ready_fd.as_raw_fd(), &ready_addr) {
+        Ok(_) => {
+            log::debug!("vm-daemon: connected to ready port {}, host knows we're ready", READY_PORT);
+        }
+        Err(e) => {
+            // Ready port connection is best-effort (may not be configured for QEMU mode)
+            log::debug!("vm-daemon: ready port connection failed (non-fatal): {}", e);
+        }
+    }
+    // Close ready socket - the connection itself is the signal
+    drop(ready_fd);
+
+    // Step 2: Listen on command port for incoming commands.
+    log::debug!("vm-daemon: creating vsock socket for command port...");
     let fd = socket::socket(
         AddressFamily::Vsock,
         SockType::Stream,

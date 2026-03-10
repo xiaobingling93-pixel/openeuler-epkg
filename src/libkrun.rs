@@ -279,8 +279,9 @@ pub fn run_command_in_krun(
     log::debug!("libkrun: mode: cmdline={}, vsock={}", use_cmdline_mode, use_vsock);
     log::debug!("libkrun: EPKG_VM_NO_DAEMON={}", std::env::var("EPKG_VM_NO_DAEMON").unwrap_or_else(|_| "not set".to_string()));
 
-    // Unix socket path for vsock communication (used by libkrun)
+    // Unix socket paths for vsock communication (used by libkrun)
     let mut vsock_sock_path: Option<std::path::PathBuf> = None;
+    let mut ready_sock_path: Option<std::path::PathBuf> = None;
 
     let _rootfs = env_root
         .to_str()
@@ -463,8 +464,23 @@ pub fn run_command_in_krun(
             )?;
             log::debug!("libkrun: vsock port 10000 mapped to Unix socket {}", sock_path.display());
 
-            // Store socket path for vm_client to use
+            // Ready notification socket: guest connects to signal it's ready to accept commands.
+            // listen=false means guest initiates connection to host.
+            // This eliminates the race condition where host tries to connect before guest is ready.
+            let ready_path = crate::models::dirs().epkg_cache
+                .join("vmm-logs")
+                .join(format!("ready-{}.sock", std::process::id()));
+            let _ = std::fs::remove_file(&ready_path);
+            let ready_path_c = CString::new(ready_path.to_string_lossy().as_bytes())
+                .map_err(|e| eyre::eyre!("invalid ready socket path: {}", e))?;
+            check_status("krun_add_vsock_port2",
+                krun_add_vsock_port2(ctx.ctx_id, 10001, ready_path_c.as_ptr(), false)
+            )?;
+            log::debug!("libkrun: ready port 10001 mapped to Unix socket {}", ready_path.display());
+
+            // Store socket paths for vm_client to use
             vsock_sock_path = Some(sock_path);
+            ready_sock_path = Some(ready_path);
         }
 
         // Note: libkrun creates an implicit virtio-console (hvc0) by default.
@@ -488,16 +504,16 @@ pub fn run_command_in_krun(
         }
     });
 
-    // For vsock mode, connect to guest vsock server and send command
+    // For vsock mode, wait for guest ready then connect and send command
     if use_vsock {
-        log::debug!("libkrun: connecting to guest via vsock...");
-        log::debug!("libkrun: attempting vsock connection...");
+        log::debug!("libkrun: waiting for guest to be ready...");
         // cmd_parts was computed earlier
-        let exit_code = vm_client::send_command_via_vsock(
+        let exit_code = vm_client::wait_ready_and_send_command(
             &cmd_parts,
             run_options.use_pty,
             10000,
             vsock_sock_path.as_deref(),
+            ready_sock_path.as_deref(),
         )
         .map_err(|e| eyre::eyre!("Failed to send command via vsock: {}", e))?;
         log::debug!("libkrun: vsock command completed with exit code {}", exit_code);

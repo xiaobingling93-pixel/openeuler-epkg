@@ -408,9 +408,10 @@ fn handle_guest_execution(
     use_pty: Option<bool>,
 ) -> Result<i32> {
     if use_vsock {
-        // Vsock control plane: connect directly to guest vsock port 10000.
-        // QEMU uses AF_VSOCK, not Unix socket, so pass None for unix_socket_path.
-        match vm_client::send_command_via_vsock(cmd_parts, use_pty, 10000, None) {
+        // Vsock control plane: wait for guest ready, then connect to command port.
+        // QEMU uses AF_VSOCK, so pass None for unix_socket_path.
+        // The ready notification uses AF_VSOCK port 10001.
+        match vm_client::wait_ready_and_send_command(cmd_parts, use_pty, 10000, None, None) {
             Ok(cmd_exit_code) => {
                 let _ = qemu_child
                     .wait()
