@@ -14,6 +14,11 @@ pub struct EchoOptions {
     pub escape_mode: EscapeMode,
 }
 
+enum EscapeResult {
+    Continue,
+    Stop,
+}
+
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<EchoOptions> {
     let mut text: Vec<String> = matches.get_many::<String>("text")
         .map(|vals| vals.cloned().collect())
@@ -130,12 +135,15 @@ fn handle_hex_escape(chars: &mut std::iter::Peekable<std::str::Chars>) -> String
     }
 }
 
-fn handle_escape(chars: &mut std::iter::Peekable<std::str::Chars>, result: &mut String) -> bool {
+fn handle_escape(
+    chars: &mut std::iter::Peekable<std::str::Chars>,
+    result: &mut String,
+) -> EscapeResult {
     match chars.next() {
         Some('\\') => result.push('\\'),
         Some('a') => result.push('\x07'),
         Some('b') => result.push('\x08'),
-        Some('c') => return true,
+        Some('c') => return EscapeResult::Stop,
         Some('e') => result.push('\x1b'),
         Some('f') => result.push('\x0c'),
         Some('n') => result.push('\n'),
@@ -152,10 +160,10 @@ fn handle_escape(chars: &mut std::iter::Peekable<std::str::Chars>, result: &mut 
             result.push('\\');
         }
     }
-    false
+    EscapeResult::Continue
 }
 
-fn process_escapes(s: &str) -> String {
+fn process_escapes(s: &str) -> (String, bool) {
     let mut result = String::new();
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
@@ -163,20 +171,21 @@ fn process_escapes(s: &str) -> String {
             result.push(c);
             continue;
         }
-        if handle_escape(&mut chars, &mut result) {
-            return result;
+        if let EscapeResult::Stop = handle_escape(&mut chars, &mut result) {
+            return (result, true);
         }
     }
-    result
+    (result, false)
 }
 
 pub fn run(options: EchoOptions) -> Result<()> {
     let text = options.text.join(" ");
-    let output = match options.escape_mode {
+    let (output, cancel_newline) = match options.escape_mode {
         EscapeMode::Enabled => process_escapes(&text),
-        EscapeMode::Disabled => text,
+        EscapeMode::Disabled => (text, false),
     };
-    if options.no_newline {
+    let no_newline = options.no_newline || cancel_newline;
+    if no_newline {
         print!("{}", output);
     } else {
         println!("{}", output);
