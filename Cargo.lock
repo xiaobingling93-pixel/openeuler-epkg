@@ -670,7 +670,6 @@ dependencies = [
  "mlua-sys",
  "nix 0.30.1",
  "num_cpus",
- "object",
  "pathdiff",
  "quick-xml",
  "rancor",

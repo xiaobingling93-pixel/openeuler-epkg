@@ -5,7 +5,7 @@ version = "0.2.3"
 edition = "2021"
 
 [features]
-libkrun = ["dep:libkrun", "dep:object"]
+libkrun = ["dep:libkrun"]
 
 # https://github.com/johnthagen/min-sized-rust
 [profile.release]
@@ -112,13 +112,6 @@ default-features = false
 path = "rpm-rs" # Replaced version = "0.17"
 default-features = false
 features = ["zstd-compression", "xz-compression"]
-
-# ELF parsing (extract kernel from libkrunfw .so when feature libkrun is enabled)
-[dependencies.object]
-version = "0.37"
-default-features = false
-features = ["read"]
-optional = true
 
 # https://docs.rs/color-eyre/latest/color_eyre/#improving-perf-on-debug-builds
 [profile.dev.package.backtrace]

@@ -150,175 +150,62 @@ detect_package_manager() {
     echo "Detected package manager: $PKG_MANAGER"
 }
 
-# Install libkrunfw for a given architecture.
-# This checks if libkrunfw is already installed in the final location,
-# and if not, downloads and installs it to both the self env and target/debug.
-install_libkrunfw() {
+# Install kernel for libkrun VM from local build or download.
+# For local development: copies vmlinux from git/linux to ~/.epkg/envs/self/boot/
+# Only works when building for host architecture.
+install_kernel_for_libkrun() {
     local arch="$1"
 
     # Only needed for current arch
     [[ "$arch" != $(arch) ]] && return
 
-    # Check if libkrunfw is supported for this architecture
+    # Check if libkrun is supported for this architecture
     case "$arch" in
         x86_64|aarch64|riscv64)
             ;;
         loongarch64)
-            echo "Warning: libkrunfw not available for loongarch64, libkrun feature won't be usable" >&2
+            echo "Warning: libkrun not available for loongarch64, VM feature won't be usable" >&2
             return 0
             ;;
         *)
-            echo "Warning: libkrunfw not available for $arch, libkrun feature won't be usable" >&2
+            echo "Warning: libkrun not available for $arch, VM feature won't be usable" >&2
             return 0
             ;;
     esac
 
-    # Final installation locations
-    local dev_env_lib_dir="$HOME/.epkg/envs/self/usr/lib"
-    local target_debug_lib_dir="$PROJECT_ROOT/target/debug"
-    local rust_target=$(get_rust_target "$arch")
-    local target_arch_debug_lib_dir="$PROJECT_ROOT/target/$rust_target/debug"
-
-    # End-to-end check: default kernel exists under self/boot (libs + extraction done)
+    # Check if kernel already exists
     local self_boot_kernel="${HOME}/.epkg/envs/self/boot/kernel"
     if [[ -f "$self_boot_kernel" ]]; then
-        # echo "libkrunfw already installed for $arch (kernel at $self_boot_kernel)"
         return 0
     fi
 
-    # Download if needed
-    local tarball="$PROJECT_ROOT/krun/libkrunfw/libkrunfw-$arch.tgz"
-    if [[ ! -f "$tarball" ]]; then
-        echo "libkrunfw tarball not found at $tarball, downloading latest release..." >&2
-        if ! has_cmd curl || ! has_cmd jq; then
-            echo "Error: curl and jq are required to auto-download libkrunfw." >&2
-            echo "Please install them or download libkrunfw-$arch.tgz manually into krun/libkrunfw/." >&2
-            exit 1
+    # Try to install from local build
+    local vmlinux="$PROJECT_ROOT/git/linux/vmlinux"
+    if [[ -f "$vmlinux" ]]; then
+        local self_boot_dir="${HOME}/.epkg/envs/self/boot"
+        mkdir -p "$self_boot_dir"
+
+        # Get kernel version for naming
+        local version
+        version=$(strings "$vmlinux" 2>/dev/null | grep -m1 "Linux version " | awk '{print $3}')
+        version=$(echo "$version" | tr -cd '0-9.-')
+
+        if [[ -n "$version" ]]; then
+            local named_kernel="${self_boot_dir}/kernel-${version}"
+            cp -l "$vmlinux" "$named_kernel" 2>/dev/null || cp "$vmlinux" "$named_kernel"
+            ln -sf "kernel-${version}" "$self_boot_kernel"
+            echo "Installed kernel from local build: kernel-${version}"
+        else
+            cp -l "$vmlinux" "$self_boot_kernel" 2>/dev/null || cp "$vmlinux" "$self_boot_kernel"
+            echo "Installed kernel from local build: kernel"
         fi
-        local tag
-        tag=$(curl -sL https://api.github.com/repos/containers/libkrunfw/releases/latest | jq -r .tag_name)
-        if [[ -z "$tag" || "$tag" == "null" ]]; then
-            echo "Error: failed to detect latest libkrunfw release tag from GitHub." >&2
-            exit 1
-        fi
-        local url="https://github.com/containers/libkrunfw/releases/download/${tag}/libkrunfw-$arch.tgz"
-        echo "Downloading libkrunfw from $url ..."
-        mkdir -p "$PROJECT_ROOT/krun/libkrunfw"
-        curl -L -o "$tarball" "$url"
+        return 0
     fi
 
-    local tmp_dir="$PROJECT_ROOT/target/libkrunfw-$arch-tmp"
-    rm -rf "$tmp_dir"
-    mkdir -p "$tmp_dir"
-
-    echo "Unpacking libkrunfw from $tarball..."
-    tar xf "$tarball" -C "$tmp_dir"
-
-    local src_lib_dir="$tmp_dir/lib64"
-    if [[ ! -d "$src_lib_dir" ]]; then
-        echo "Error: expected lib64 directory in extracted libkrunfw payload, but not found at $src_lib_dir" >&2
-        exit 1
-    fi
-
-    # Install into the self env so the development epkg binary can find it
-    mkdir -p "$dev_env_lib_dir"
-    echo "Installing libkrunfw into $dev_env_lib_dir..."
-    cp -v "$src_lib_dir"/libkrunfw*.so* "$dev_env_lib_dir"/
-
-    # Also symlink to target/debug and target/$rust_target/debug for direct execution
-    mkdir -p "$target_debug_lib_dir"
-    mkdir -p "$target_arch_debug_lib_dir"
-    echo "Creating symlinks in $target_debug_lib_dir and $target_arch_debug_lib_dir..."
-    for lib in "$dev_env_lib_dir"/libkrunfw*.so*; do
-        local lib_name=$(basename "$lib")
-        ln -sf "$lib" "$target_debug_lib_dir/$lib_name"
-        ln -sf "$lib" "$target_arch_debug_lib_dir/$lib_name"
-    done
-
-    # Extract default kernel image from .so to self/boot (same path as Rust init.rs uses)
-    extract_libkrunfw_kernel "$dev_env_lib_dir"
+    echo "Note: No kernel found for libkrun VM. Run 'epkg self install' to download one." >&2
+    echo "      Or build one with: cd git/libkrunfw && ./build.sh $arch" >&2
 }
 
-# Extract KERNEL_BUNDLE from a libkrunfw .so into $HOME/.epkg/envs/self/boot/kernel.
-# First argument: directory containing libkrunfw*.so*
-# Uses readelf (binutils); optional Python fallback can be added.
-extract_libkrunfw_kernel() {
-    local lib_dir="$1"
-    local self_boot_dir="${HOME}/.epkg/envs/self/boot"
-    local kernel_path="${self_boot_dir}/kernel"
-
-    if ! has_cmd readelf; then
-        echo "Warning: readelf not found, skipping kernel extraction (libkrun default kernel will not be written to self/boot)" >&2
-        return 0
-    fi
-
-    local so_file=""
-    for f in "$lib_dir"/libkrunfw.so.5 "$lib_dir"/libkrunfw.so "$lib_dir"/libkrunfw*.so*; do
-        [[ -f "$f" ]] || continue
-        if readelf -s -W "$f" 2>/dev/null | grep -q ' KERNEL_BUNDLE$'; then
-            so_file="$f"
-            break
-        fi
-    done
-    if [[ -z "$so_file" ]]; then
-        echo "Warning: no libkrunfw .so with KERNEL_BUNDLE found in $lib_dir" >&2
-        return 0
-    fi
-
-    local sym_line
-    sym_line=$(readelf -s -W "$so_file" 2>/dev/null | grep ' KERNEL_BUNDLE$' | head -1)
-    if [[ -z "$sym_line" ]]; then
-        echo "Warning: KERNEL_BUNDLE symbol not found in $so_file" >&2
-        return 0
-    fi
-    local sym_value sym_size ndx
-    sym_value=$(echo "$sym_line" | awk '{print $2}')
-    sym_size=$(echo "$sym_line" | awk '{print $3}')
-    ndx=$(echo "$sym_line" | awk '{print $7}')
-    # Size may be decimal or 0xhex; normalize for dd (decimal)
-    sym_size=$((sym_size))
-    if [[ -z "$sym_value" || -z "$sym_size" || -z "$ndx" ]]; then
-        echo "Warning: could not parse KERNEL_BUNDLE from readelf output" >&2
-        return 0
-    fi
-
-    local sec_line
-    sec_line=$(readelf -S -W "$so_file" 2>/dev/null | awk -v ndx="$ndx" 'index($1, "["ndx"]") > 0 {print; exit}')
-    if [[ -z "$sec_line" ]]; then
-        echo "Warning: section $ndx not found in $so_file" >&2
-        return 0
-    fi
-    local sec_addr sec_off
-    sec_addr=$(echo "$sec_line" | awk '{print $4}')
-    sec_off=$(echo "$sec_line" | awk '{print $5}')
-    if [[ -z "$sec_addr" || -z "$sec_off" ]]; then
-        echo "Warning: could not parse section $ndx from readelf output" >&2
-        return 0
-    fi
-
-    local file_off
-    file_off=$((0x${sec_off} + 0x${sym_value} - 0x${sec_addr}))
-    mkdir -p "$self_boot_dir"
-    local tmp_kernel="${self_boot_dir}/kernel.tmp.$$"
-    if ! dd if="$so_file" of="$tmp_kernel" bs=1 skip="$file_off" count="$sym_size" 2>/dev/null; then
-        echo "Warning: failed to extract kernel" >&2
-        rm -f "$tmp_kernel"
-        return 0
-    fi
-    # If we can get kernel release (uname -r style), save as kernel-<version> and symlink kernel -> it
-    local version
-    version=$(strings "$tmp_kernel" 2>/dev/null | grep -m1 "Linux version " | awk '{print $3}')
-    version=$(echo "$version" | tr -cd '0-9.-')
-    if [[ -n "$version" ]]; then
-        local named_kernel="${self_boot_dir}/kernel-${version}"
-        mv "$tmp_kernel" "$named_kernel"
-        ln -sf "kernel-${version}" "$kernel_path"
-        echo "Extracted default kernel image to $named_kernel (kernel -> kernel-$version)"
-    else
-        mv "$tmp_kernel" "$kernel_path"
-        echo "Extracted default kernel image to $kernel_path"
-    fi
-}
 
 # Clone or update a git repository
 clone_or_update_repo() {
@@ -696,14 +583,14 @@ install_packages() {
 
 # Clone required repositories (without building elf-loader dependencies)
 clone_repos() {
+    mkdir -p git
+    cd git || exit
+
     clone_or_update_repo "https://gitee.com/wu_fengguang/rpm-rs"
     clone_or_update_repo "https://gitee.com/wu_fengguang/resolvo"
     clone_or_update_repo "https://gitee.com/wu_fengguang/elf-loader"
-    clone_or_update_repo "https://atomgit.com/wu_fengguang/krun"
-    (
-        cd krun
-        clone_or_update_repo "https://gitee.com/wu_fengguang/libkrun"
-    )
+    clone_or_update_repo "https://gitee.com/wu_fengguang/libkrun"
+    clone_or_update_repo "https://gitee.com/wu_fengguang/libkrunfw"
 
     if [[ "$mode" = "crossdev" ]]; then
         clone_or_update_repo "https://github.com/tpoechtrager/osxcross.git"
@@ -852,9 +739,9 @@ build_static() {
         export RUSTFLAGS="$rustflags"
     fi
 
-    # If we're building with libkrun support, ensure libkrunfw is available.
+    # If we're building with libkrun support, ensure kernel is available.
     if [[ "$cargo_features" == *"libkrun"* ]]; then
-        install_libkrunfw "$arch"
+        install_kernel_for_libkrun "$arch"
     fi
 
     # Build the binary (optionally with extra Cargo features)

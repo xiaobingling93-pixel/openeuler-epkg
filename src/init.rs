@@ -27,8 +27,8 @@ const GITEE_API_BASE:   &str = &"https://gitee.com/api/v5";
 const GITEE_OWNER:      &str = &"wu_fengguang";
 const REPO_EPKG:        &str = &"epkg";
 const REPO_ELF_LOADER:  &str = &"elf-loader";
-#[allow(dead_code)]
-const REPO_LIBKRUNFW:   &str = &"libkrunfw";
+#[cfg(all(feature = "libkrun", target_os = "linux"))]
+const REPO_VMLINUX:     &str = &"libkrunfw";
 
 fn print_banner() {
     println!(r#"         ____  _  ______   "#);
@@ -221,12 +221,15 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
         ]);
     }
 
-    // Download libkrunfw if built with libkrun feature
+    // Download vmlinux if built with libkrun feature
     #[cfg(all(feature = "libkrun", target_os = "linux"))]
     {
-        if let Some(ref libkrunfw_url) = init_plan.libkrunfw_url {
-            println!("Downloading libkrunfw from {}", libkrunfw_url);
-            urls.push(libkrunfw_url.clone());
+        if let Some(ref vmlinux_url) = init_plan.vmlinux_url {
+            println!("Downloading vmlinux from {}", vmlinux_url);
+            urls.extend(vec![
+                vmlinux_url.clone(),
+                init_plan.vmlinux_sha_url.clone().unwrap_or_default(),
+            ]);
         }
     }
 
@@ -237,7 +240,11 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
     // Delete .sha256 files first: gitee.com HTTP headers have no file timestamp,
     // so download.rs would think "File unchanged" based on file size matching.
     let sha256_files_to_delete = vec![&init_plan.elf_loader_sha_path, &init_plan.epkg_binary_sha_path];
-    for sha256_path in sha256_files_to_delete {
+    #[cfg(all(feature = "libkrun", target_os = "linux"))]
+    if let Some(ref sha_path) = init_plan.vmlinux_path {
+        sha256_files_to_delete.push(sha_path.with_extension("zst.sha256").as_path());
+    }
+    for sha256_path in &sha256_files_to_delete {
         if sha256_path.exists() {
             lfs::remove_file(sha256_path)?;
         }
@@ -265,12 +272,12 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
         return Err(eyre::eyre!("Failed to download epkg source code tar file from {}", init_plan.epkg_src_url));
     }
 
-    // Extract and install libkrunfw if downloaded
+    // Install vmlinux if downloaded
     #[cfg(all(feature = "libkrun", target_os = "linux"))]
     {
-        if let Some(ref libkrunfw_path) = init_plan.libkrunfw_path {
-            if libkrunfw_path.exists() {
-                install_libkrunfw_runtime(libkrunfw_path)?;
+        if let (Some(ref vmlinux_path), Some(ref version)) = (&init_plan.vmlinux_path, &init_plan.vmlinux_version) {
+            if vmlinux_path.exists() {
+                install_vmlinux(vmlinux_path, version)?;
             }
         }
     }
@@ -696,11 +703,15 @@ struct InitPlan {
     using_local_repo: bool,
     // Local elf-loader info
     local_elf_loader_path: Option<std::path::PathBuf>,
-    // libkrunfw info (only used when built with libkrun feature)
+    // vmlinux info for libkrun (only used when built with libkrun feature)
     #[allow(dead_code)]
-    libkrunfw_url: Option<String>,
+    vmlinux_url:        Option<String>,
     #[allow(dead_code)]
-    libkrunfw_path: Option<std::path::PathBuf>,
+    vmlinux_sha_url:    Option<String>,
+    #[allow(dead_code)]
+    vmlinux_version:    Option<String>,
+    #[allow(dead_code)]
+    vmlinux_path:       Option<std::path::PathBuf>,
 }
 
 /// Fetch the latest release information from Gitee API
@@ -835,218 +846,14 @@ fn get_current_epkg_version_info() -> Result<EpkgVersionInfo> {
     })
 }
 
-/// Install libkrunfw runtime libraries from downloaded tarball and extract default kernel image.
-/// The kernel is read from the KERNEL_BUNDLE symbol in the .so and written to
-/// envs/self/boot/kernel for use when --kernel is not specified.
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
-fn install_libkrunfw_runtime(tarball_path: &Path) -> Result<()> {
-    println!("Installing libkrunfw runtime libraries...");
-
-    // Create temporary extraction directory
-    let tmp_dir = dirs().epkg_downloads_cache.join("libkrunfw-tmp");
-    if tmp_dir.exists() {
-        lfs::remove_dir_all(&tmp_dir)?;
-    }
-    lfs::create_dir_all(&tmp_dir)?;
-
-    // Extract tarball using our own extract_tar_gz
-    utils::extract_tar_gz(tarball_path, &tmp_dir)
-        .context("Failed to extract libkrunfw tarball")?;
-
-    // Find lib64 directory in extracted content
-    let lib64_dir = tmp_dir.join("lib64");
-    if !lib64_dir.exists() {
-        return Err(eyre::eyre!("Expected lib64 directory not found in libkrunfw tarball"));
-    }
-
-    // Install to self env lib directory and extract kernel from first .so that has KERNEL_BUNDLE
-    let self_env_root = dirs().user_envs.join(SELF_ENV);
-    let usr_lib = self_env_root.join("usr/lib");
-    lfs::create_dir_all(&usr_lib)?;
-
-    let mut kernel_extracted = false;
-
-    for entry in fs::read_dir(&lib64_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if let Some(name) = path.file_name() {
-            if let Some(name_str) = name.to_str() {
-                if name_str.starts_with("libkrunfw") {
-                    let dest = usr_lib.join(name);
-                    lfs::copy(&path, &dest)?;
-                    println!("  Installed: {}", name_str);
-                    if !kernel_extracted {
-                        match extract_kernel_from_libkrunfw_so(&path, &self_env_root) {
-                            Ok(()) => kernel_extracted = true,
-                            Err(e) => {
-                                log::debug!("Failed to extract kernel from {}: {}", path.display(), e);
-                                eprintln!("Warning: Failed to extract default kernel from {}: {}", path.display(), e);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if kernel_extracted {
-        println!("  Default kernel image extracted to self/boot");
-    }
-
-    // Clean up temporary directory
-    lfs::remove_dir_all(&tmp_dir)?;
-
-    Ok(())
-}
-
-/// Extract the KERNEL_BUNDLE symbol from a libkrunfw .so and write to envs/self/boot/kernel.
-///
-/// The libkrunfw.so is built from /c/rust/libkrunfw/ and contains a bundled kernel image
-/// exported as the KERNEL_BUNDLE symbol. This function extracts it for use by libkrun.
-///
-/// Uses two methods:
-/// 1. Try data_range() from the object crate
-/// 2. Fall back to manual file offset calculation (like readelf does)
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
-fn extract_kernel_from_libkrunfw_so(so_path: &Path, self_env_root: &Path) -> Result<()> {
-    use object::Object;
-    use object::ObjectSymbol;
-    use object::read::ObjectSection;
-
-    log::debug!("Extracting kernel from {}", so_path.display());
-
-    let data = fs::read(so_path).context("Failed to read libkrunfw .so")?;
-    let file = object::File::parse(&*data).context("Failed to parse libkrunfw .so as ELF")?;
-
-    // Search both static and dynamic symbol tables
-    // KERNEL_BUNDLE may only be in .dynsym (dynamic symbol table)
-    let mut sym_addr: Option<u64> = None;
-    let mut sym_size: Option<u64> = None;
-    let mut sym_shndx: Option<object::SectionIndex> = None;
-
-    // First try static symbol table
-    for symbol in file.symbols() {
-        if let Ok(name) = symbol.name() {
-            if name == "KERNEL_BUNDLE" {
-                sym_addr = Some(symbol.address());
-                sym_size = Some(symbol.size());
-                sym_shndx = symbol.section_index();
-                break;
-            }
-        }
-    }
-
-    // If not found, try dynamic symbol table
-    if sym_addr.is_none() {
-        for symbol in file.dynamic_symbols() {
-            if let Ok(name) = symbol.name() {
-                if name == "KERNEL_BUNDLE" {
-                    sym_addr = Some(symbol.address());
-                    sym_size = Some(symbol.size());
-                    sym_shndx = symbol.section_index();
-                    break;
-                }
-            }
-        }
-    }
-
-    let (addr, size, shndx) = match (sym_addr, sym_size, sym_shndx) {
-        (Some(a), Some(s), Some(i)) if s > 0 => (a, s, i),
-        _ => return Err(eyre::eyre!("KERNEL_BUNDLE symbol not found in {}", so_path.display())),
-    };
-
-    log::debug!("Found KERNEL_BUNDLE at addr={:#x}, size={}, section={:?}", addr, size, shndx);
-
-    // Try method 1: use data_range() from object crate
-    let kernel_data: Vec<u8> = match file.sections().find_map(|sec| sec.data_range(addr, size).ok().flatten()) {
-        Some(slice) => {
-            log::debug!("Extracted kernel via data_range(): {} bytes", slice.len());
-            slice.to_vec()
-        }
-        None => {
-            // Method 2: manually calculate file offset using section info (like readelf does)
-            log::debug!("data_range() failed, trying manual offset calculation...");
-
-            // Find the section by index using section_by_index
-            let section = file.section_by_index(shndx)
-                .map_err(|e| eyre::eyre!("Section {:?} not found: {}", shndx, e))?;
-
-            let sec_addr = section.address();
-            let sec_size = section.size();
-            let (sec_offset, _sec_file_size) = section.file_range()
-                .ok_or_else(|| eyre::eyre!("Section {:?} has no file range", shndx))?;
-
-            log::debug!("Section: addr={:#x}, offset={:#x}, size={}", sec_addr, sec_offset, sec_size);
-
-            if addr < sec_addr || addr >= sec_addr + sec_size {
-                return Err(eyre::eyre!(
-                    "KERNEL_BUNDLE address {:#x} is outside section range [{:#x}, {:#x})",
-                    addr, sec_addr, sec_addr + sec_size
-                ));
-            }
-
-            let file_offset = sec_offset + (addr - sec_addr);
-            if file_offset + size > data.len() as u64 {
-                return Err(eyre::eyre!(
-                    "File offset {:#x} + size {:#x} exceeds file size {:#x}",
-                    file_offset, size, data.len()
-                ));
-            }
-
-            let kernel_data = data[file_offset as usize..(file_offset + size) as usize].to_vec();
-            log::debug!("Extracted kernel via manual offset: {} bytes from file offset {:#x}", kernel_data.len(), file_offset);
-            kernel_data
-        }
-    };
-
-    if kernel_data.is_empty() {
-        return Err(eyre::eyre!("Extracted kernel data is empty"));
-    }
-
-    let kernel_dir = self_env_root.join("boot");
-    lfs::create_dir_all(&kernel_dir)?;
-
-    // If we can get kernel release (uname -r style), save as kernel-<version> and symlink kernel -> it
-    let version = parse_linux_version_from_kernel_image(&kernel_data);
-    let (named_path, link_path) = if let Some(ref v) = version {
-        let name = format!("kernel-{}", v);
-        (kernel_dir.join(&name), Some(kernel_dir.join("kernel")))
-    } else {
-        (kernel_dir.join("kernel"), None)
-    };
-    lfs::write(&named_path, &kernel_data)?;
-    if let Some(link) = link_path {
-        let _ = lfs::remove_file(&link);
-        #[cfg(unix)]
-        lfs::symlink(named_path.file_name().unwrap(), &link)?;
-        log::debug!("Extracted kernel to {} ({} bytes), kernel -> {}", named_path.display(), kernel_data.len(), link.display());
-    } else {
-        log::debug!("Extracted kernel to {} ({} bytes)", named_path.display(), kernel_data.len());
-    }
-    Ok(())
-}
-
-/// Parse "Linux version X.Y.Z..." from kernel image bytes (same as uname -r prefix).
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
-fn parse_linux_version_from_kernel_image(data: &[u8]) -> Option<String> {
-    const PREFIX: &[u8] = b"Linux version ";
-    let i = data.windows(PREFIX.len()).position(|w| w == PREFIX)?;
-    let rest = &data[i + PREFIX.len()..];
-    let end = rest.iter().position(|&b| b == b' ' || b == b'\t' || b == b'\n' || b == b'\r')?;
-    let version = std::str::from_utf8(&rest[..end]).ok()?;
-    let sanitized: String = version
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-')
-        .collect();
-    if sanitized.is_empty() { None } else { Some(sanitized) }
-}
-
-/// Path to the default VM kernel image (from libkrunfw, written during `epkg self install`). Shared by libkrun and qemu.
+/// Path to the default VM kernel image (from vmlinux release, written during `epkg self install`).
+/// Shared by libkrun and qemu.
 fn default_kernel_path() -> PathBuf {
     dirs().user_envs.join(SELF_ENV).join("boot").join("kernel")
 }
 
-/// Returns the default kernel path as a string if the file exists; otherwise None. Used by libkrun and qemu.
+/// Returns the default kernel path as a string if the file exists; otherwise None.
+/// Used by libkrun and qemu.
 pub fn default_kernel_path_if_exists() -> Option<String> {
     let default = default_kernel_path();
     if default.exists() {
@@ -1056,31 +863,90 @@ pub fn default_kernel_path_if_exists() -> Option<String> {
     }
 }
 
-/// Get libkrunfw download URL for the current architecture
+/// Get vmlinux download URL for the current architecture from Gitee releases.
+/// Returns (url, sha256_url, version) tuple.
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
-fn get_libkrunfw_url() -> Result<Option<String>> {
+fn get_vmlinux_url() -> Result<Option<(String, String, String)>> {
     let arch = &config().common.arch;
 
-    // Check if libkrunfw is available for this architecture
-    let libkrunfw_filename = match arch.as_str() {
-        "x86_64" => "libkrunfw-x86_64.tgz",
-        "aarch64" => "libkrunfw-aarch64.tgz",
-        "riscv64" => "libkrunfw-riscv64.tgz",
+    // Check if vmlinux is available for this architecture
+    match arch.as_str() {
+        "x86_64" | "aarch64" | "riscv64" => {}
         "loongarch64" => {
-            eprintln!("Warning: libkrunfw not available for loongarch64, libkrun feature won't be usable");
+            log::debug!("vmlinux not available for loongarch64, VM feature won't be usable");
             return Ok(None);
         }
         _ => {
-            eprintln!("Warning: libkrunfw not available for {}, libkrun feature won't be usable", arch);
+            log::debug!("vmlinux not available for {}, VM feature won't be usable", arch);
             return Ok(None);
         }
     };
 
     // Fetch latest release from Gitee
-    let release = fetch_latest_release(GITEE_OWNER, REPO_LIBKRUNFW)?;
+    let release = fetch_latest_release(GITEE_OWNER, REPO_VMLINUX)?;
 
-    let url = format!("https://gitee.com/{}/{}/releases/download/{}/{}", GITEE_OWNER, REPO_LIBKRUNFW, release.tag_name, libkrunfw_filename);
-    Ok(Some(url))
+    // Find the vmlinux asset for this architecture
+    // Format: vmlinux-$arch-$kver.zst
+    let prefix = format!("vmlinux-{}-", arch);
+    let asset = release.assets.iter()
+        .find(|a| a.name.starts_with(&prefix) && a.name.ends_with(".zst"))
+        .ok_or_else(|| eyre::eyre!("No vmlinux asset found for architecture {}", arch))?;
+
+    let version = asset.name
+        .strip_prefix(&prefix)
+        .and_then(|s| s.strip_suffix(".zst"))
+        .ok_or_else(|| eyre::eyre!("Failed to parse version from asset name: {}", asset.name))?
+        .to_string();
+
+    let url = asset.browser_download_url.clone();
+    let sha_url = format!("{}.sha256", url);
+
+    Ok(Some((url, sha_url, version)))
+}
+
+/// Install vmlinux from downloaded .zst file to self/boot directory.
+#[cfg(all(feature = "libkrun", target_os = "linux"))]
+fn install_vmlinux(zst_path: &Path, version: &str) -> Result<()> {
+    let self_env_root = dirs().user_envs.join(SELF_ENV);
+    let boot_dir = self_env_root.join("boot");
+    lfs::create_dir_all(&boot_dir)?;
+
+    // Decompress .zst file
+    println!("  Decompressing vmlinux-{}...", version);
+    let kernel_data = zstd_decompress_file(zst_path)?;
+
+    // Write to kernel-$version
+    let kernel_name = format!("kernel-{}", version);
+    let kernel_path = boot_dir.join(&kernel_name);
+    lfs::write(&kernel_path, &kernel_data)?;
+
+    // Create symlink kernel -> kernel-$version
+    let kernel_link = boot_dir.join("kernel");
+    if kernel_link.exists() || kernel_link.is_symlink() {
+        lfs::remove_file(&kernel_link)?;
+    }
+    #[cfg(unix)]
+    lfs::symlink(&kernel_name, &kernel_link)?;
+
+    println!("  Installed kernel: {} ({} bytes)", kernel_path.display(), kernel_data.len());
+
+    Ok(())
+}
+
+/// Decompress a .zst file and return the decompressed data.
+#[cfg(all(feature = "libkrun", target_os = "linux"))]
+fn zstd_decompress_file(path: &Path) -> Result<Vec<u8>> {
+    use std::io::Read;
+    use zstd::stream::Decoder;
+
+    let file = fs::File::open(path)
+        .context("Failed to open zst file")?;
+    let mut decoder = Decoder::new(file)
+        .context("Failed to create zstd decoder")?;
+    let mut data = Vec::new();
+    decoder.read_to_end(&mut data)
+        .context("Failed to decompress zst file")?;
+    Ok(data)
 }
 
 /// Check for updates and return initialization plan
@@ -1144,24 +1010,24 @@ fn check_for_updates() -> Result<InitPlan> {
     let need_download_epkg_src = !using_local_repo;
     let need_download_elf_loader = !has_local_elf_loader;
 
-    // Get libkrunfw URL and path if built with libkrun feature
+    // Get vmlinux URL and path if built with libkrun feature
     #[cfg(all(feature = "libkrun", target_os = "linux"))]
-    let (libkrunfw_url, libkrunfw_path) = {
-        match get_libkrunfw_url() {
-            Ok(Some(url)) => {
+    let (vmlinux_url, vmlinux_sha_url, vmlinux_version, vmlinux_path) = {
+        match get_vmlinux_url() {
+            Ok(Some((url, sha_url, version))) => {
                 let path = mirror::Mirrors::remote_url_to_path(&url, &epkg_download_dir, "epkg")?;
-                (Some(url), Some(path))
+                (Some(url), Some(sha_url), Some(version), Some(path))
             }
-            Ok(None) => (None, None),
+            Ok(None) => (None, None, None, None),
             Err(e) => {
-                log::warn!("Failed to get libkrunfw URL: {}", e);
-                (None, None)
+                log::warn!("Failed to get vmlinux URL: {}", e);
+                (None, None, None, None)
             }
         }
     };
 
     #[cfg(not(all(feature = "libkrun", target_os = "linux")))]
-    let (libkrunfw_url, libkrunfw_path) = (None, None);
+    let (vmlinux_url, vmlinux_sha_url, vmlinux_version, vmlinux_path) = (None, None, None, None);
 
     Ok(InitPlan {
         current: current_version,
@@ -1181,8 +1047,10 @@ fn check_for_updates() -> Result<InitPlan> {
         need_download_elf_loader,
         using_local_repo,
         local_elf_loader_path: if has_local_elf_loader { Some(local_elf_loader_path) } else { None },
-        libkrunfw_url,
-        libkrunfw_path,
+        vmlinux_url,
+        vmlinux_sha_url,
+        vmlinux_version,
+        vmlinux_path,
     })
 }
 
