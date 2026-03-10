@@ -61,6 +61,11 @@ fn add_output_args(cmd: Command) -> Command {
             .long("silent")
             .help("Suppress all output")
             .action(clap::ArgAction::SetTrue))
+        .arg(Arg::new("count")
+            .short('c')
+            .long("count")
+            .help("Print only a count of matching lines per file")
+            .action(clap::ArgAction::SetTrue))
         .arg(Arg::new("files_with_matches")
             .short('l')
             .long("files-with-matches")
@@ -156,6 +161,7 @@ pub struct GrepOptions {
     pub word_match: bool,
     pub line_match: bool,
     pub quiet: bool,
+    pub count: bool,
     pub files_with_matches: bool,
     pub files_without_match: bool,
     pub no_messages: bool,
@@ -220,13 +226,14 @@ fn collect_patterns_from_positional(matches: &clap::ArgMatches, patterns: &mut V
     }
 }
 
-fn extract_flags_from_matches(matches: &clap::ArgMatches, default_match_mode: MatchMode) -> (bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, MatchMode) {
+fn extract_flags_from_matches(matches: &clap::ArgMatches, default_match_mode: MatchMode) -> (bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, MatchMode) {
     let ignore_case = matches.get_flag("ignore-case");
     let line_number = matches.get_flag("line-number");
     let invert_match = matches.get_flag("invert-match");
     let word_match = matches.get_flag("word-regexp");
     let line_match = matches.get_flag("line-regexp");
     let quiet = matches.get_flag("quiet") || matches.get_flag("silent");
+    let count = matches.get_flag("count");
     let files_with_matches = matches.get_flag("files_with_matches");
     let files_without_match = matches.get_flag("files_without_match");
     let no_messages = matches.get_flag("no-messages");
@@ -246,7 +253,7 @@ fn extract_flags_from_matches(matches: &clap::ArgMatches, default_match_mode: Ma
     };
 
     (ignore_case, line_number, invert_match, word_match, line_match, quiet,
-     files_with_matches, files_without_match, no_messages, recursive,
+     count, files_with_matches, files_without_match, no_messages, recursive,
      only_matching, text, match_mode)
 }
 
@@ -274,7 +281,7 @@ pub fn parse_shared_options(matches: &clap::ArgMatches, default_match_mode: Matc
 
     let files = build_files_vector(matches, patterns_from_options, had_pattern_file);
     let (ignore_case, line_number, invert_match, word_match, line_match, quiet,
-         files_with_matches, files_without_match, no_messages, recursive,
+         count, files_with_matches, files_without_match, no_messages, recursive,
          only_matching, text, match_mode) = extract_flags_from_matches(matches, default_match_mode);
 
     Ok(GrepOptions {
@@ -286,6 +293,7 @@ pub fn parse_shared_options(matches: &clap::ArgMatches, default_match_mode: Matc
         word_match,
         line_match,
         quiet,
+        count,
         files_with_matches,
         files_without_match,
         no_messages,
@@ -411,8 +419,9 @@ fn process_lines(
     matcher: &Matcher,
     multiple_files: bool,
     name_only: bool,
-) -> (bool, bool) {
+) -> (bool, bool, usize) {
     let mut found_match = false;
+    let mut match_count = 0;
     for (line_num, line_result) in reader.lines().enumerate() {
         let line = match line_result {
             Ok(l) => l,
@@ -429,11 +438,15 @@ fn process_lines(
 
         if should_print {
             found_match = true;
+            match_count += 1;
             if options.quiet {
-                return (true, false);
+                return (true, false, match_count);
             }
             if name_only {
-                return (true, false);
+                return (true, false, match_count);
+            }
+            if options.count {
+                continue; // Don't print lines when counting
             }
 
             let name = display_name(file_path);
@@ -452,11 +465,11 @@ fn process_lines(
             }
         }
     }
-    (found_match, false)
+    (found_match, false, match_count)
 }
 
-/// Returns (found_match, had_error).
-fn search_file(file_path: &str, options: &GrepOptions, matcher: &Matcher, multiple_files: bool) -> Result<(bool, bool)> {
+/// Returns (found_match, had_error, match_count).
+fn search_file(file_path: &str, options: &GrepOptions, matcher: &Matcher, multiple_files: bool) -> Result<(bool, bool, usize)> {
     let reader: Box<dyn BufRead> = if file_path == "-" {
         Box::new(BufReader::new(io::stdin()))
     } else {
@@ -464,7 +477,7 @@ fn search_file(file_path: &str, options: &GrepOptions, matcher: &Matcher, multip
             if !options.no_messages {
                 eprintln!("grep: {}: Is a directory", file_path);
             }
-            return Ok((false, true));
+            return Ok((false, true, 0));
         }
         let file = match File::open(file_path) {
             Ok(f) => f,
@@ -472,7 +485,7 @@ fn search_file(file_path: &str, options: &GrepOptions, matcher: &Matcher, multip
                 if !options.no_messages {
                     eprintln!("grep: {}: {}", file_path, e);
                 }
-                return Ok((false, true));
+                return Ok((false, true, 0));
             }
         };
         Box::new(BufReader::new(file))
@@ -679,7 +692,7 @@ fn handle_files(matcher: &Matcher, options: &GrepOptions) -> Result<bool> {
     let (files_to_search, has_dir_arg) = build_files_to_search(&options.files, options.recursive);
     let multiple_files = files_to_search.len() > 1 || has_dir_arg;
     for file_path in files_to_search {
-        let (found, err) = search_file(&file_path, options, matcher, multiple_files)?;
+        let (found, err, count) = search_file(&file_path, options, matcher, multiple_files)?;
         if err {
             had_error = true;
         }
@@ -692,7 +705,17 @@ fn handle_files(matcher: &Matcher, options: &GrepOptions) -> Result<bool> {
             println!("{}", name);
             found_any_match = true;
         }
-        if found && !options.files_with_matches && !options.files_without_match {
+        if options.count {
+            if multiple_files {
+                println!("{}:{}", name, count);
+            } else {
+                println!("{}", count);
+            }
+            if count > 0 {
+                found_any_match = true;
+            }
+        }
+        if found && !options.files_with_matches && !options.files_without_match && !options.count {
             found_any_match = true;
             if options.quiet {
                 std::process::exit(0);
