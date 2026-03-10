@@ -279,9 +279,8 @@ pub fn run_command_in_krun(
     log::debug!("libkrun: mode: cmdline={}, vsock={}", use_cmdline_mode, use_vsock);
     log::debug!("libkrun: EPKG_VM_NO_DAEMON={}", std::env::var("EPKG_VM_NO_DAEMON").unwrap_or_else(|_| "not set".to_string()));
 
-    // Unix socket paths for vsock communication (used by libkrun)
+    // Unix socket path for vsock communication (used by libkrun)
     let mut vsock_sock_path: Option<std::path::PathBuf> = None;
-    let mut ready_sock_path: Option<std::path::PathBuf> = None;
 
     let _rootfs = env_root
         .to_str()
@@ -467,6 +466,7 @@ pub fn run_command_in_krun(
             // Ready notification socket: guest connects to signal it's ready to accept commands.
             // listen=false means guest initiates connection to host.
             // This eliminates the race condition where host tries to connect before guest is ready.
+            // Path convention: vsock-{pid}.sock → ready-{pid}.sock (must match vm_client.rs)
             let ready_path = crate::models::dirs().epkg_cache
                 .join("vmm-logs")
                 .join(format!("ready-{}.sock", std::process::id()));
@@ -478,9 +478,9 @@ pub fn run_command_in_krun(
             )?;
             log::debug!("libkrun: ready port 10001 mapped to Unix socket {}", ready_path.display());
 
-            // Store socket paths for vm_client to use
+            // Store command socket path for vm_client to use
+            // (ready socket path is derived from this by replacing "vsock-" with "ready-")
             vsock_sock_path = Some(sock_path);
-            ready_sock_path = Some(ready_path);
         }
 
         // Note: libkrun creates an implicit virtio-console (hvc0) by default.
@@ -508,12 +508,12 @@ pub fn run_command_in_krun(
     if use_vsock {
         log::debug!("libkrun: waiting for guest to be ready...");
         // cmd_parts was computed earlier
+        // Ready socket path is derived from command socket path (vsock-xxx.sock → ready-xxx.sock)
         let exit_code = vm_client::wait_ready_and_send_command(
             &cmd_parts,
             run_options.use_pty,
             10000,
             vsock_sock_path.as_deref(),
-            ready_sock_path.as_deref(),
         )
         .map_err(|e| eyre::eyre!("Failed to send command via vsock: {}", e))?;
         log::debug!("libkrun: vsock command completed with exit code {}", exit_code);

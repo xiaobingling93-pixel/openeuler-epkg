@@ -263,18 +263,24 @@ pub fn send_command_via_vsock(
 /// Wait for guest to signal readiness, then send command via vsock.
 ///
 /// This implements the "ready notification" pattern from boxlite:
-/// 1. Host creates listener (Unix or AF_VSOCK) on ready port
+/// 1. Host creates listener on ready port
 /// 2. Guest connects to signal "I'm ready to accept commands"
 /// 3. Host connects to command port and sends command
 ///
-/// For libkrun, pass both `unix_socket_path` and `ready_socket_path`.
-/// For QEMU, pass `None` for both (uses AF_VSOCK for both ready and command).
+/// # Modes
+/// * **libkrun**: Pass `unix_socket_path` (command socket path).
+///   Ready socket path is derived by replacing `vsock-` with `ready-` in filename.
+///   Uses Unix socket files as vsock bridge (libkrun's vsock is Unix-based).
+/// * **QEMU**: Pass `None`. Uses native AF_VSOCK on port 10001.
+///
+/// The mode is determined by `unix_socket_path.is_none()`:
+/// - None → QEMU mode (native AF_VSOCK)
+/// - Some(_) → libkrun mode (Unix socket bridge)
 pub fn wait_ready_and_send_command(
     cmd_parts: &[String],
     use_pty: Option<bool>,
     cmd_port: u32,
     unix_socket_path: Option<&std::path::Path>,
-    ready_socket_path: Option<&std::path::Path>,
 ) -> Result<i32> {
     let should_use_pty = match use_pty {
         Some(true) => true,
@@ -283,13 +289,18 @@ pub fn wait_ready_and_send_command(
     log::debug!("vm_client: use_pty={:?}, should_use_pty={} (cmd port {})", use_pty, should_use_pty, cmd_port);
 
     // For libkrun mode with ready notification (Unix socket)
-    if let Some(ready_path) = ready_socket_path {
+    if let Some(cmd_path) = unix_socket_path {
+        // Derive ready socket path from command socket path
+        // e.g., vsock-123.sock → ready-123.sock
+        let ready_path = cmd_path.parent().unwrap_or(std::path::Path::new(""))
+            .join(cmd_path.file_name().unwrap().to_string_lossy().replace("vsock-", "ready-"));
+
         // Remove stale socket file if exists
-        let _ = std::fs::remove_file(ready_path);
+        let _ = std::fs::remove_file(&ready_path);
 
         // Create listener for ready notification
         log::debug!("vm_client: creating listener on ready socket {}", ready_path.display());
-        let listener = std::os::unix::net::UnixListener::bind(ready_path)
+        let listener = std::os::unix::net::UnixListener::bind(&ready_path)
             .map_err(|e| eyre::eyre!("Failed to bind ready socket {}: {}", ready_path.display(), e))?;
 
         // Wait for guest to connect (signals readiness)
@@ -301,7 +312,7 @@ pub fn wait_ready_and_send_command(
         drop(listener);
 
         // Now connect to command port
-        return send_command_via_vsock(cmd_parts, use_pty, cmd_port, unix_socket_path);
+        return send_command_via_vsock(cmd_parts, use_pty, cmd_port, Some(cmd_path));
     }
 
     // For QEMU mode with AF_VSOCK ready notification
