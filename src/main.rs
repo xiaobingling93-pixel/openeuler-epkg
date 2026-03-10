@@ -174,7 +174,7 @@ fn main() -> Result<()> {
     let invoked_as_init = argv.first().map(|a| std::path::Path::new(a).file_name()) == Some(Some(std::ffi::OsStr::new("init")));
     #[cfg(target_os = "linux")]
     if invoked_as_init {
-        crate::applets::init::early_init_rust_log_from_cmdline();
+        crate::applets::init::init_logging_early();
     }
     setup_logging();
 

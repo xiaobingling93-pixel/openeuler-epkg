@@ -10,8 +10,30 @@
 use clap::Command as ClapCommand;
 use color_eyre::Result;
 use color_eyre::eyre::{eyre, WrapErr};
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::path::Path;
+use std::sync::OnceLock;
+
+static CMDLINE: OnceLock<HashMap<String, String>> = OnceLock::new();
+
+fn parse_cmdline() -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    if let Err(e) = std::fs::read_to_string("/proc/cmdline").map(|cmdline| {
+        for token in cmdline.split_whitespace() {
+            if let Some((k, v)) = token.split_once('=') {
+                map.insert(k.to_string(), v.to_string());
+            }
+        }
+    }) {
+        eprintln!("init: read /proc/cmdline failed: {} (cmdline params unavailable)", e);
+    }
+    map
+}
+
+fn get_cmdline_param(key: &str) -> Option<String> {
+    CMDLINE.get_or_init(parse_cmdline).get(key).cloned()
+}
 
 pub fn command() -> ClapCommand {
     ClapCommand::new("init")
@@ -31,8 +53,8 @@ pub fn parse_options(_matches: &clap::ArgMatches) -> Result<()> {
 /// Called from main() before setup_logging when argv[0] is init. Mounts /proc, reads
 /// epkg.rust_log from kernel cmdline (percent-encoded), sets RUST_LOG so env_logger sees it.
 #[cfg(target_os = "linux")]
-pub fn early_init_rust_log_from_cmdline() {
-    eprintln!("init: early_init_rust_log_from_cmdline started");
+pub fn init_logging_early() {
+    eprintln!("init: init_logging_early() started");
     let proc_path = Path::new("/proc");
     if !proc_path.exists() {
         if let Err(e) = std::fs::create_dir_all(proc_path) {
@@ -50,7 +72,7 @@ pub fn early_init_rust_log_from_cmdline() {
             eprintln!("init: mount proc on /proc failed: {} (cmdline/RUST_LOG unavailable)", e);
         }
     }
-    if let Some(v) = read_cmdline_param("epkg.rust_log") {
+    if let Some(v) = get_cmdline_param("epkg.rust_log") {
         let decoded = percent_decode(&v);
         if !decoded.is_empty() {
             std::env::set_var("RUST_LOG", &decoded);
@@ -59,18 +81,18 @@ pub fn early_init_rust_log_from_cmdline() {
 }
 
 fn run_init() -> Result<()> {
-    let (pwd, cmd_str) = (read_cmdline_param("epkg.init_pwd"), read_cmdline_param("epkg.init_cmd"));
-    eprintln!("init: config pwd={:?} cmd={:?}", pwd, cmd_str.as_deref());
+    let (pwd, cmd_str) = (get_cmdline_param("epkg.init_pwd"), get_cmdline_param("epkg.init_cmd"));
+    log::debug!("init: config pwd={:?} cmd={:?}", pwd, cmd_str.as_deref());
 
     if let Err(e) = setup_mounts() {
-        eprintln!("init: setup_mounts failed: {}", e);
+        log::debug!("init: setup_mounts failed: {}", e);
         return Err(e).wrap_err("init: setup_mounts failed");
     }
     if let Some(ref r) = pwd {
         if let Err(e) = std::env::set_current_dir(r) {
-            eprintln!("init: chdir {} failed: {}", r, e);
+            log::debug!("init: chdir {} failed: {}", r, e);
         } else {
-            eprintln!("init: chdir {} ok", r);
+            log::debug!("init: chdir {} ok", r);
         }
     }
     raise_system_file_limit();
@@ -78,20 +100,20 @@ fn run_init() -> Result<()> {
     // Fork and run command in child process
     match unsafe { nix::unistd::fork() } {
         Ok(nix::unistd::ForkResult::Parent { child }) => {
-            eprintln!("init: forked child pid={}, parent entering idle loop", child);
+            log::debug!("init: forked child pid={}, parent entering idle loop", child);
             let status = pid1_idle_loop();
-            eprintln!("init: parent idle_loop returned with status: {:?}", status);
+            log::debug!("init: parent idle_loop returned with status: {:?}", status);
             Ok(())
         }
         Ok(nix::unistd::ForkResult::Child) => {
-            eprintln!("init: child process running exec_init_command");
+            log::debug!("init: child process running exec_init_command");
             match exec_init_command(cmd_str) {
                 Ok(_) => unreachable!(),
                 Err(e) => {
-                    eprintln!("init: exec_init_command failed: {}", e);
+                    log::debug!("init: exec_init_command failed: {}", e);
                     // Fallback to shell if command execution fails
                     if let Err(e2) = exec_command("/bin/sh -i") {
-                        eprintln!("init: /bin/sh fallback failed: {}", e2);
+                        log::debug!("init: /bin/sh fallback failed: {}", e2);
                         poweroff_guest();
                     }
                     unreachable!()
@@ -99,7 +121,7 @@ fn run_init() -> Result<()> {
             }
         }
         Err(e) => {
-            eprintln!("init: fork failed: {}", e);
+            log::debug!("init: fork failed: {}", e);
             Err(eyre!("init: fork failed: {}", e))
         }
     }
@@ -196,45 +218,45 @@ fn exec_init_command(cmd_str: Option<String>) -> Result<()> {
 fn setup_mounts() -> Result<()> {
     // Virtiofs mounts root readonly; remount rw so we can create /dev, etc.
     if let Err(e) = crate::mount::remount_root_rw() {
-        eprintln!("init: remount / rw failed: {} (continuing; /dev creation may fail)", e);
+        log::debug!("init: remount / rw failed: {} (continuing; /dev creation may fail)", e);
     }
 
     // Debug: check if self env is visible through bind mounts
     let self_epkg = Path::new("/home/wfg/.epkg/envs/self/usr/bin/epkg");
     if self_epkg.exists() {
-        eprintln!("init: self epkg exists at {:?}", self_epkg);
+        log::debug!("init: self epkg exists at {:?}", self_epkg);
     } else {
-        eprintln!("init: self epkg NOT found at {:?}", self_epkg);
+        log::debug!("init: self epkg NOT found at {:?}", self_epkg);
         // Check what's in /home/wfg/.epkg
         if let Ok(entries) = std::fs::read_dir("/home/wfg/.epkg") {
-            eprintln!("init: /home/wfg/.epkg contents:");
+            log::debug!("init: /home/wfg/.epkg contents:");
             for entry in entries.flatten() {
-                eprintln!("  {:?}", entry.file_name());
+                log::debug!("  {:?}", entry.file_name());
             }
         } else {
-            eprintln!("init: /home/wfg/.epkg does not exist or cannot be read");
+            log::debug!("init: /home/wfg/.epkg does not exist or cannot be read");
         }
     }
 
     // Debug: check vm-daemon and epkg symlinks
     let vm_daemon = Path::new("/usr/bin/vm-daemon");
     let epkg = Path::new("/usr/bin/epkg");
-    eprintln!("init: /usr/bin/vm-daemon exists: {}", vm_daemon.exists());
-    eprintln!("init: /usr/bin/epkg exists: {}", epkg.exists());
+    log::debug!("init: /usr/bin/vm-daemon exists: {}", vm_daemon.exists());
+    log::debug!("init: /usr/bin/epkg exists: {}", epkg.exists());
     if let Ok(link) = std::fs::read_link(vm_daemon) {
-        eprintln!("init: vm-daemon -> {:?}", link);
+        log::debug!("init: vm-daemon -> {:?}", link);
     }
     if let Ok(link) = std::fs::read_link(epkg) {
-        eprintln!("init: epkg -> {:?}", link);
+        log::debug!("init: epkg -> {:?}", link);
     }
     // Check if we can stat the final target
     if let Ok(meta) = std::fs::metadata(vm_daemon) {
         use std::os::unix::fs::PermissionsExt;
         let mode = meta.permissions().mode();
-        eprintln!("init: vm-daemon metadata: is_file={}, mode={:o}, executable={}",
+        log::debug!("init: vm-daemon metadata: is_file={}, mode={:o}, executable={}",
             meta.is_file(), mode & 0o777, (mode & 0o111) != 0);
     } else {
-        eprintln!("init: vm-daemon metadata: FAILED");
+        log::debug!("init: vm-daemon metadata: FAILED");
     }
 
     let init_specs = crate::mount::vmm_init_mount_spec_strings();
@@ -351,24 +373,6 @@ fn ensure_minimal_dev() -> Result<()> {
         log::debug!("init: ensure_devpts_mount(/dev) failed: {} (PTY may not work)", e);
     }
     Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn read_cmdline_param(key: &str) -> Option<String> {
-    let cmdline = match std::fs::read_to_string("/proc/cmdline") {
-        Ok(s) => s,
-        Err(e) => {
-            log::debug!("init: read /proc/cmdline failed: {} (key {} not available)", e, key);
-            return None;
-        }
-    };
-    let prefix = format!("{}=", key);
-    for token in cmdline.split_whitespace() {
-        if let Some(v) = token.strip_prefix(&prefix) {
-            return Some(v.to_string());
-        }
-    }
-    None
 }
 
 #[cfg(target_os = "linux")]
