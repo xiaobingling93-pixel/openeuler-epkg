@@ -332,16 +332,28 @@ fn exec_command(cmd_str: &str) -> Result<()> {
         (parts[0].clone(), parts[1..].to_vec())
     };
 
-    // Setup color PS for sh/bash
+    // Setup color PS1 for bash and non-dash sh (busybox sh supports \w, dash does not)
     let cmd_name = std::path::Path::new(&cmd)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
-    if cmd_name == "sh" || cmd_name == "bash" {
-        let pwd = std::env::current_dir()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| "/".to_string());
-        std::env::set_var("PS1", &format!("\\[\\033[01;32m\\]epkg:{}\\[\\033[0m\\] $ ", pwd));
+    let set_ps1 = if cmd_name == "bash" {
+        true
+    } else if cmd_name == "sh" {
+        // Check if sh is actually dash (dash doesn't support \w)
+        std::fs::canonicalize(&cmd)
+            .ok()
+            .and_then(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|name| name != "dash")
+            })
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    if set_ps1 {
+        std::env::set_var("PS1", "\\[\\033[01;32m\\]\\w\\[\\033[0m\\] $ ");
     }
 
     log::debug!("init: exec cmd={:?} args={:?}", cmd, args);
