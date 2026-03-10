@@ -20,7 +20,7 @@ set_epkg_bin
 BUSYBOX_TS="${BUSYBOX_TESTSUITE:-$PROJECT_ROOT/busybox/testsuite}"
 
 if [ ! -d "$BUSYBOX_TS" ]; then
-    git -C $PROJECT_ROOT clone --depth 10 https://git.busybox.net/busybox
+    git -C $PROJECT_ROOT/git clone --depth 10 https://git.busybox.net/busybox
 fi
 
 if [ ! -d "$BUSYBOX_TS" ]; then

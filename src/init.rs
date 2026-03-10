@@ -966,7 +966,7 @@ fn check_for_updates() -> Result<InitPlan> {
     // Check for local repo and local elf-loader BEFORE making API calls
     let repo_root = find_repo_root()?;
     let using_local_repo = is_valid_local_repo(&repo_root);
-    let local_elf_loader_path = repo_root.join("elf-loader/src/loader");
+    let local_elf_loader_path = repo_root.join("git/elf-loader/src/loader");
     let has_local_elf_loader = local_elf_loader_path.exists();
 
     let (new_version, epkg_binary_url, epkg_binary_sha_url, elf_loader_url, elf_loader_sha_url) = if using_local_repo && has_local_elf_loader {

@@ -1,10 +1,13 @@
 # Cargo build
-/elf-loader/
-/resolvo/
-/rpm-rs/
-/krun/
+/git/
+/git/elf-loader/
+/git/resolvo/
+/git/rpm-rs/
+/git/libkrunfw/
+/git/libkrun/
+/git/linux/
+/git/busybox/
 
-/busybox/
 /target/
 /dist/
 /src/tags

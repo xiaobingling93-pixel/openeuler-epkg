@@ -64,8 +64,8 @@ tempfile = "=3.24"
 rkyv = { version = "0.8", features = ["std", "alloc", "bytecheck"] }
 rancor = "0.1"
 md-5 = "0.10"
-resolvo = { version = "0.10.1", path = "resolvo" }
-libkrun = { path = "krun/libkrun/src/libkrun", optional = true }
+resolvo = { version = "0.10.1", path = "git/resolvo" }
+libkrun = { path = "git/libkrun/src/libkrun", optional = true }
 
 # Pin these versions: higher version will need edition 2024
 time = { version = "=0.3.44", features = ["formatting", "local-offset", "macros", "parsing"] }
@@ -109,7 +109,7 @@ default-features = false
 
 # RPM package support
 [dependencies.rpm]
-path = "rpm-rs" # Replaced version = "0.17"
+path = "git/rpm-rs" # Replaced version = "0.17"
 default-features = false
 features = ["zstd-compression", "xz-compression"]
 
