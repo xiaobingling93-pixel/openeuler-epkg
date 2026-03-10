@@ -283,7 +283,7 @@ fn resolve_dependencies_with_resolvo(
     // Setup provider and requirements
     let (provider, requirements) = setup_resolvo_provider_and_requirements(delta_world)?;
     if requirements.is_empty() {
-        log::warn!("No valid packages to resolve");
+        log::info!("No valid packages to resolve");
         // When ignore_missing is enabled and all packages are missing, gracefully return empty result
         return Ok(HashMap::new());
     }
