@@ -193,7 +193,14 @@ fn create_ebin_wrappers(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate:
         let fs_file = &fs_file_info.path;
         let path_str = fs_file.as_str();
 
-        if !path_str.contains("/bin/") && !path_str.contains("/sbin/") && !path_str.contains("/libexec/") {
+        // Check for bin/sbin/libexec directories (with or without leading /)
+        let is_bin_path = path_str.starts_with("bin/") ||
+                          path_str.contains("/bin/") ||
+                          path_str.starts_with("sbin/") ||
+                          path_str.contains("/sbin/");
+        let is_libexec_path = path_str.starts_with("libexec/") || path_str.contains("/libexec/");
+
+        if !is_bin_path && !is_libexec_path {
             continue;
         }
 
