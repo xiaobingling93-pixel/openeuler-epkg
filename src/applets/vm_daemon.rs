@@ -938,41 +938,39 @@ fn run_vsock_server() -> Result<()> {
     // Fixed vsock port matching host/client side.
     const VSOCK_PORT: u32 = 10000;
 
-    eprintln!("vm-daemon: creating vsock socket...");
+    log::debug!("vm-daemon: creating vsock socket...");
     let fd = socket::socket(
         AddressFamily::Vsock,
         SockType::Stream,
         SockFlag::SOCK_CLOEXEC,
         None,
-    ).map_err(|e| { eprintln!("vm-daemon: socket() failed: {}", e); e })?;
-    eprintln!("vm-daemon: socket created, fd={}", fd.as_raw_fd());
+    ).map_err(|e| { log::debug!("vm-daemon: socket() failed: {}", e); e })?;
+    log::debug!("vm-daemon: socket created, fd={}", fd.as_raw_fd());
 
     let addr = VsockAddr::new(libc::VMADDR_CID_ANY, VSOCK_PORT);
     let raw_fd = fd.as_raw_fd();
 
-    eprintln!("vm-daemon: binding to cid=ANY port={}...", VSOCK_PORT);
-    socket::bind(raw_fd, &addr).map_err(|e| { eprintln!("vm-daemon: bind() failed: {}", e); e })?;
-    eprintln!("vm-daemon: bind succeeded");
+    log::debug!("vm-daemon: binding to cid=ANY port={}...", VSOCK_PORT);
+    socket::bind(raw_fd, &addr).map_err(|e| { log::debug!("vm-daemon: bind() failed: {}", e); e })?;
+    log::debug!("vm-daemon: bind succeeded");
 
-    eprintln!("vm-daemon: calling listen()...");
-    socket::listen(&fd, Backlog::new(1)?).map_err(|e| { eprintln!("vm-daemon: listen() failed: {}", e); e })?;
-    eprintln!("vm-daemon: listen succeeded");
+    log::debug!("vm-daemon: calling listen()...");
+    socket::listen(&fd, Backlog::new(1)?).map_err(|e| { log::debug!("vm-daemon: listen() failed: {}", e); e })?;
+    log::debug!("vm-daemon: listen succeeded");
 
-    eprintln!("vm-daemon starting (vsock)");
-    eprintln!("vsock server listening on cid=ANY port={}", VSOCK_PORT);
-    log::debug!("vm-daemon vsock listening on port {}", VSOCK_PORT);
+    log::debug!("vm-daemon starting (vsock), listening on port {}", VSOCK_PORT);
 
-    eprintln!("vm-daemon: calling accept()...");
+    log::debug!("vm-daemon: calling accept()...");
     match socket::accept(raw_fd) {
         Ok(client_fd) => {
-            eprintln!("vm-daemon: accept() succeeded, fd={}", client_fd);
+            log::debug!("vm-daemon: accept() succeeded, fd={}", client_fd);
             let stream = unsafe { TcpStream::from_raw_fd(client_fd) };
             log::debug!("vm-daemon vsock: accepted connection");
             match handle_connection(stream) {
                 Ok(_) => {
                     log::debug!("Command processed, powering off guest (vsock)");
-                    // Directly exit to shut down VM; reboot() syscall may hang in some environments
-                    std::process::exit(0);
+                    // Return Ok to let caller handle shutdown
+                    Ok(())
                 }
                 Err(e) => {
                     log::debug!("Error handling vsock connection: {}", e);
@@ -981,7 +979,6 @@ fn run_vsock_server() -> Result<()> {
             }
         }
         Err(e) => {
-            eprintln!("vm-daemon: accept() failed: {}", e);
             log::debug!("vsock accept failed: {}", e);
             Err(eyre!("vsock accept failed: {}", e))
         }

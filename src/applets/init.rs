@@ -333,10 +333,15 @@ fn exec_vm_daemon() -> Result<()> {
     // Call vm_daemon::run() directly instead of exec-ing the binary.
     // This avoids issues with symlink resolution when vm-daemon -> epkg -> /home/wfg/.epkg/envs/self/...
     // and the epkg binary is accessed via virtiofs bind mounts.
-    eprintln!("init: starting vm-daemon directly (no exec)");
+    log::debug!("init: starting vm-daemon directly (no exec)");
     let options = crate::applets::vm_daemon::VmDaemonOptions::default();
     let result = crate::applets::vm_daemon::run(options);
-    eprintln!("init: vm_daemon::run() returned: {:?}", result);
+    log::debug!("init: vm_daemon::run() returned: {:?}", result);
+    // vm_daemon returns after handling command; exit child process cleanly
+    if result.is_ok() {
+        log::debug!("init: vm_daemon finished successfully, exiting child process");
+        std::process::exit(0);
+    }
     result
 }
 
@@ -634,10 +639,35 @@ fn configure_network() -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 fn poweroff_guest() -> ! {
-    // Directly exit init process; kernel will panic and VM should shut down.
-    // Note: reboot() syscall hangs in libkrun, so we use process::exit() instead.
-    log::debug!("poweroff_guest: calling process::exit(0)");
-    std::process::exit(0);
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    log::debug!("poweroff_guest: initiating VM shutdown");
+
+    // Method 1: Try SysRq 'o' (immediate power off)
+    // This works even when ACPI/power management is not available
+    if let Ok(mut file) = OpenOptions::new().write(true).open("/proc/sysrq-trigger") {
+        log::debug!("poweroff_guest: trying SysRq 'o' (power off)");
+        let _ = file.write_all(b"o");
+    }
+
+    // Method 2: Try proper poweroff syscall (works on QEMU with ACPI)
+    // Note: reboot() returns Infallible on success (never returns) or Errno on failure
+    match nix::sys::reboot::reboot(nix::sys::reboot::RebootMode::RB_POWER_OFF) {
+        Ok(infallible) => match infallible {},
+        Err(e) => {
+            log::debug!("poweroff_guest: RB_POWER_OFF failed ({}), trying halt", e);
+            // Method 3: Try halt (works when power off is not available)
+            match nix::sys::reboot::reboot(nix::sys::reboot::RebootMode::RB_HALT_SYSTEM) {
+                Ok(infallible) => match infallible {},
+                Err(e2) => {
+                    log::debug!("poweroff_guest: RB_HALT_SYSTEM also failed ({}), falling back to exit", e2);
+                    // Method 4: Fall back to exit which triggers kernel panic and VM shutdown
+                    std::process::exit(0);
+                }
+            }
+        }
+    }
 }
 
 /// Percent-decode a string from kernel command line

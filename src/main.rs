@@ -271,7 +271,7 @@ fn setup_logging() {
                 buf,
                 "[{} {} {}:{}] {}",
                 match OffsetDateTime::now_local() {
-                    Ok(dt) => dt.format(&format_description!("[year]-[month]-[day] [hour repr:24]:[minute]:[second] [offset_hour sign:mandatory][offset_minute]")).unwrap_or_else(|_| "<time_fmt_err>".to_string()),
+                    Ok(dt) => dt.format(&format_description!("[year]-[month]-[day] [hour repr:24]:[minute]:[second].[subsecond digits:3] [offset_hour sign:mandatory][offset_minute]")).unwrap_or_else(|_| "<time_fmt_err>".to_string()),
                     Err(_) => "<local_time_err>".to_string(),
                 },
                 record.level(),
