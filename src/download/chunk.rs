@@ -20,6 +20,7 @@ use crate::lfs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, atomic::Ordering, mpsc::SyncSender as Sender};
 use super::types::*;
+use super::task::update_download_status;
 use crate::download::http::execute_download_request;
 use crate::download::http::process_download_response;
 use crate::download::http::process_chunk_download_stream;
@@ -1632,7 +1633,39 @@ fn process_chunks_at_level(
                     chunks.remove(0);
                 }
             },
-            DownloadStatus::Pending | DownloadStatus::Downloading => {
+            DownloadStatus::Pending => {
+                // Chunk is not started yet - spawn it in a separate thread for parallel execution
+                // This is critical for streaming decompression which expects continuous data
+                log::debug!("Spawning pending chunk {} in background for {}", chunk_index, chunk.chunk_path.display());
+
+                // Update status to Downloading to prevent duplicate scheduling
+                if let Err(e) = update_download_status(chunk, DownloadStatus::Downloading) {
+                    log::error!("Failed to set chunk status to Downloading: {}", e);
+                    *any_fail = true;
+                    chunks.remove(0);
+                } else {
+                    // Spawn the chunk download in a separate thread for parallel execution
+                    let chunk_clone = Arc::clone(chunk);
+                    std::thread::spawn(move || {
+                        match download_chunk_task(&chunk_clone) {
+                            Ok(()) => {
+                                log::debug!("Chunk {} completed successfully", chunk_clone.chunk_path.display());
+                                if let Ok(mut status) = chunk_clone.status.lock() {
+                                    *status = DownloadStatus::Completed;
+                                }
+                            }
+                            Err(e) => {
+                                log::debug!("Chunk {} failed: {}", chunk_clone.chunk_path.display(), e);
+                                if let Ok(mut status) = chunk_clone.status.lock() {
+                                    *status = DownloadStatus::Failed(format!("{}", e));
+                                }
+                            }
+                        }
+                    });
+                    // The thread runs independently - we check status in the loop
+                }
+            }
+            DownloadStatus::Downloading => {
                 // Sleep WITHOUT holding any locks
                 std::thread::sleep(std::time::Duration::from_millis(CHUNK_SLEEP_DURATION_MS));
             }
