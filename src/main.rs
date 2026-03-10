@@ -1450,7 +1450,13 @@ fn try_env_from_epkg_activenv(config: &mut EPKGConfig) -> bool {
     let Ok(active_env) = env::var("EPKG_ACTIVE_ENV") else {
         return false;
     };
-    config.common.env_name = active_env.trim_end_matches(':').to_string();
+    // EPKG_ACTIVE_ENV may contain multiple envs separated by ':' (stack mode)
+    // and may have PURE_ENV_SUFFIX ('!') appended for pure mode.
+    // We need to extract the first (most recently activated) environment name.
+    let env_name = active_env.split(':').next().unwrap_or(&active_env);
+    // Remove pure mode suffix if present
+    let env_name = env_name.trim_end_matches(PURE_ENV_SUFFIX);
+    config.common.env_name = env_name.to_string();
     config.common.env_explicit = true;
     if let Ok(env_root) = env::var("EPKG_ENV_ROOT") {
         config.common.env_root = env_root;
