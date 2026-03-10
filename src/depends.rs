@@ -172,6 +172,48 @@ fn extend_ebin_by_source(packages: &mut InstalledPackagesMap) -> Result<Installe
     Ok(packages_to_expose)
 }
 
+/// Extend ebin_exposure to direct dependencies of user-requested packages.
+///
+/// This handles the case where a user requests a meta-package (like default-jdk)
+/// which depends on other packages that provide the actual executables (like openjdk-21-jdk).
+/// Without this, the meta-package would get ebin_exposure=true but its dependencies
+/// would not, resulting in no executables being exposed.
+fn extend_ebin_to_dependencies(packages: &mut InstalledPackagesMap) -> Result<()> {
+    // Collect pkgkeys that have ebin_exposure=true (user-requested packages)
+    let user_requested_pkgkeys: Vec<String> = packages.iter()
+        .filter(|(_, info)| info.ebin_exposure)
+        .map(|(pkgkey, _)| pkgkey.clone())
+        .collect();
+
+    if user_requested_pkgkeys.is_empty() {
+        return Ok(());
+    }
+
+    // Collect dependencies that need exposure
+    let mut deps_to_expose: Vec<String> = Vec::new();
+    for pkgkey in &user_requested_pkgkeys {
+        if let Some(info) = packages.get(pkgkey) {
+            for dep_pkgkey in &info.depends {
+                if let Some(dep_info) = packages.get(dep_pkgkey) {
+                    if !dep_info.ebin_exposure {
+                        deps_to_expose.push(dep_pkgkey.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Now set ebin_exposure for the collected dependencies
+    for dep_pkgkey in deps_to_expose {
+        if let Some(dep_info) = packages.get_mut(&dep_pkgkey) {
+            Arc::make_mut(dep_info).ebin_exposure = true;
+            log::debug!("Setting ebin_exposure=true for dependency {} of user-requested package", dep_pkgkey);
+        }
+    }
+
+    Ok(())
+}
+
 
 /// Setup resolvo provider and convert delta_world to requirements
 fn setup_resolvo_provider_and_requirements(
@@ -445,6 +487,10 @@ pub fn resolve_and_install_packages(
 
     // Determine packages to expose based on source matching
     let packages_to_expose = extend_ebin_by_source(&mut all_packages_for_session)?;
+
+    // Also expose direct dependencies of user-requested packages
+    // This handles meta-packages like default-jdk that depend on packages providing executables
+    extend_ebin_to_dependencies(&mut all_packages_for_session)?;
 
     if packages_to_expose.is_empty() && all_packages_for_session.is_empty() {
         let empty_msg = if user_request_world.is_some() {
