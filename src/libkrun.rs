@@ -578,10 +578,13 @@ pub fn run_command_in_krun(
         )
         .map_err(|e| eyre::eyre!("Failed to send command via vsock: {}", e))?;
         log::debug!("libkrun: vsock command completed with exit code {}", exit_code);
-        // VM will power off after command execution
+        // Command completed, exit immediately. The VM thread will be cleaned up by the OS.
+        // Note: We don't wait for the VM thread to finish because libkrun's vsock reaper
+        // has a 5-second timeout that delays shutdown. The OS will clean up resources.
+        std::process::exit(exit_code);
     }
 
-    // Wait for VM thread to finish (VM will run command and exit)
+    // Wait for VM thread to finish (only for non-vsock mode)
     log::debug!("libkrun: waiting for VM thread to finish...");
     match vm_thread.join() {
         Ok(exit_status) => {
