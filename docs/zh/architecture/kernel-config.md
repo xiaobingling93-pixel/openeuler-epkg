@@ -6,10 +6,10 @@
 
 沙箱 VM 内核只保留必要的功能，移除不需要的驱动和子系统：
 
-- **移除物理设备驱动**: INPUT、USB、HID、SOUND 等 libkrun 不支持的设备
-- **移除多余文件系统**: XFS、EXT4、FAT 等，仅保留 Btrfs
+- **移除物理设备驱动**: INPUT、USB、HID、SOUND、DRM 等 libkrun 不支持的设备
+- **移除多余文件系统**: XFS、EXT4、FAT、BTRFS 等，仅保留 virtiofs 必需的 FUSE
 - **移除安全子系统**: AUDIT、SELINUX 等非必要安全模块
-- **移除调试功能**: PERF_EVENTS、DEBUG_KERNEL 等
+- **移除调试功能**: DEBUG_KERNEL、DEBUG_INFO 等
 
 ### 已禁用配置项
 
@@ -19,6 +19,9 @@
 | `CONFIG_KSM` | KSM 用于内存超卖，隔离 VM 不需要 |
 | `CONFIG_COMPACTION` | 内存整理增加内核复杂度 |
 | `CONFIG_TRANSPARENT_HUGEPAGE` | THP 可能导致延迟抖动 |
+| `CONFIG_PCIEASPM` | VM 不需要 PCIe 电源管理 |
+| `CONFIG_BTRFS_FS` | 仅使用 virtiofs，不需要 Btrfs |
+| `CONFIG_DEBUG_KERNEL` | 调试功能增加内核大小和运行时开销 |
 
 ## 关键配置
 
@@ -65,7 +68,16 @@ CONFIG_INTEL_IOMMU=y
 ### 文件系统
 
 ```kconfig
-CONFIG_BTRFS_FS=y
+# FUSE/virtiofs 根文件系统 (必需)
+CONFIG_FUSE_FS=y
+CONFIG_VIRTIO_FS=y
+
+# 其他禁用的文件系统
+# CONFIG_BTRFS_FS is not set
+# CONFIG_XFS_FS is not set
+# CONFIG_EXT4_FS is not set
+
+# 临时文件系统和虚拟文件系统
 CONFIG_EROFS_FS=y
 CONFIG_TMPFS=y
 CONFIG_PROC_FS=y
