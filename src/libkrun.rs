@@ -66,6 +66,9 @@ unsafe extern "C" {
         c_filepath: *const std::ffi::c_char,
         listen: bool,
     ) -> i32;
+    /// Get the eventfd for triggering VM shutdown from host.
+    /// Writing 1u64 to this fd will cause the VM to exit gracefully.
+    fn krun_get_shutdown_eventfd(ctx_id: u32) -> i32;
 }
 
 
@@ -222,6 +225,17 @@ impl KrunContext {
 
     unsafe fn start_enter(&self) -> i32 {
         unsafe { krun_start_enter(self.ctx_id) }
+    }
+
+    /// Get the shutdown eventfd for triggering VM shutdown from host.
+    /// Writing 1u64 to this fd will cause the VM to exit gracefully.
+    unsafe fn get_shutdown_eventfd(&self) -> Result<i32> {
+        let fd = unsafe { krun_get_shutdown_eventfd(self.ctx_id) };
+        if fd < 0 {
+            Err(eyre::eyre!("krun_get_shutdown_eventfd failed with status {}", fd))
+        } else {
+            Ok(fd)
+        }
     }
 }
 
@@ -535,6 +549,13 @@ pub fn run_command_in_krun(
 
     // Start VM in a separate thread (krun_start_enter blocks until VM exits)
     log::debug!("libkrun: starting VM thread...");
+
+    // Get shutdown eventfd before moving ctx to thread
+    // This allows us to trigger graceful VM shutdown from host
+    let shutdown_fd = unsafe { ctx.get_shutdown_eventfd() }
+        .map_err(|e| eyre::eyre!("Failed to get shutdown eventfd: {}", e))?;
+    log::debug!("libkrun: shutdown_eventfd = {}", shutdown_fd);
+
     let vm_thread = thread::spawn(move || {
         unsafe {
             let status = ctx.start_enter();
@@ -595,11 +616,25 @@ pub fn run_command_in_krun(
         .map_err(|e| eyre::eyre!("Failed to send command via vsock: {}", e))?;
         log::debug!("libkrun: vsock command completed with exit code {}", exit_code);
 
-        // Exit immediately without waiting for VM thread.
-        // On libkrun x86_64, guest poweroff via SysRq/ACPI doesn't work reliably.
-        // The VM thread will be killed when the process exits, and the OS will
-        // clean up KVM resources. Socket files are cleaned up at startup.
-        // This approach is more reliable than waiting for VM shutdown.
+        // Trigger graceful VM shutdown via shutdown_eventfd.
+        // Writing 1u64 to the eventfd causes Vmm to call stop(0).
+        log::debug!("libkrun: triggering VM shutdown via eventfd...");
+        let buf = 1u64.to_le_bytes();
+        let write_result = unsafe { libc::write(shutdown_fd, buf.as_ptr() as *const _, buf.len()) };
+        if write_result < 0 {
+            log::warn!("libkrun: failed to write shutdown eventfd: {}", std::io::Error::last_os_error());
+        }
+
+        // Wait for VM thread to finish for proper resource cleanup.
+        match vm_thread.join() {
+            Ok(vm_status) => {
+                log::debug!("libkrun: VM thread finished with status {}", vm_status);
+            }
+            Err(e) => {
+                log::error!("libkrun: VM thread join failed: {:?}", e);
+            }
+        }
+
         log::debug!("libkrun: exiting with code {}", exit_code);
         std::process::exit(exit_code);
     }
