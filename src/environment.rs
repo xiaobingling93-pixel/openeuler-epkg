@@ -792,7 +792,10 @@ pub fn deactivate_environment() -> Result<()> {
     // Remove the last activated environment
     let deactivated_env = active_envs.pop().unwrap();
 
-    let deactivate_script = format!("{}-{}.sh", session_path, deactivated_env);
+    // Remove pure mode suffix from the environment name for script filename lookup
+    // The deactivate script is created without the '!' suffix
+    let deactivated_env_name = deactivated_env.trim_end_matches(PURE_ENV_SUFFIX);
+    let deactivate_script = format!("{}-{}.sh", session_path, deactivated_env_name);
     let script = fs::read_to_string(&deactivate_script)
         .with_context(|| format!("Failed to read deactivate script: {}", deactivate_script))?;
     println!("{}", script);
