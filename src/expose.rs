@@ -271,13 +271,10 @@ fn resolve_ebin_target_path(env_root: &Path, env_path: &Path) -> PathBuf {
                     if target.starts_with(env_root) {
                         current = target.clone();
                     } else {
-                        // Points outside env (e.g., /etc/alternatives/go)
-                        // Use the target path but mapped back into env context
-                        // This handles cases like /etc/alternatives/go -> /usr/lib/go/bin/go
+                        // Points outside env (e.g., /etc/alternatives/go -> /usr/lib/go/bin/go)
+                        // Map it back to env context by prepending env_root
                         log::debug!("Absolute symlink outside env: {} -> {}", current.display(), target.display());
-                        // For absolute symlinks pointing outside env, we use the target as-is
-                        // since it should be accessible from the host
-                        current = target.clone();
+                        current = env_root.join(target.strip_prefix("/").unwrap_or(target.as_ref()));
                         break;
                     }
                 } else {
