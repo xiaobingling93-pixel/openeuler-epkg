@@ -305,12 +305,12 @@ fn exec_vm_daemon() -> Result<()> {
     let options = crate::applets::vm_daemon::VmDaemonOptions::default();
     let result = crate::applets::vm_daemon::run(options);
     log::debug!("init: vm_daemon::run() returned: {:?}", result);
-    // vm_daemon returns after handling command; exit child process cleanly
-    if result.is_ok() {
-        log::debug!("init: vm_daemon finished successfully, exiting child process");
-        std::process::exit(0);
+    // vm_daemon returns after handling command; trigger immediate shutdown
+    // to avoid waiting for PID 1's 1-second poll loop
+    if result.is_err() {
+        log::debug!("init: vm_daemon failed, still powering off");
     }
-    result
+    poweroff_guest();
 }
 
 #[cfg(target_os = "linux")]
