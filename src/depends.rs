@@ -172,12 +172,13 @@ fn extend_ebin_by_source(packages: &mut InstalledPackagesMap) -> Result<Installe
     Ok(packages_to_expose)
 }
 
-/// Extend ebin_exposure to direct dependencies of user-requested packages.
+/// Extend ebin_exposure to all dependencies (transitive) of user-requested packages.
 ///
 /// This handles the case where a user requests a meta-package (like default-jdk)
-/// which depends on other packages that provide the actual executables (like openjdk-21-jdk).
-/// Without this, the meta-package would get ebin_exposure=true but its dependencies
-/// would not, resulting in no executables being exposed.
+/// which depends on other packages that provide the actual executables (like
+/// openjdk-21-jdk-headless which contains javac). Without this, the meta-package
+/// would get ebin_exposure=true but its transitive dependencies would not,
+/// resulting in no executables being exposed.
 fn extend_ebin_to_dependencies(packages: &mut InstalledPackagesMap) -> Result<()> {
     // Collect pkgkeys that have ebin_exposure=true (user-requested packages)
     let user_requested_pkgkeys: Vec<String> = packages.iter()
@@ -189,25 +190,39 @@ fn extend_ebin_to_dependencies(packages: &mut InstalledPackagesMap) -> Result<()
         return Ok(());
     }
 
-    // Collect dependencies that need exposure
-    let mut deps_to_expose: Vec<String> = Vec::new();
-    for pkgkey in &user_requested_pkgkeys {
-        if let Some(info) = packages.get(pkgkey) {
-            for dep_pkgkey in &info.depends {
-                if let Some(dep_info) = packages.get(dep_pkgkey) {
-                    if !dep_info.ebin_exposure {
-                        deps_to_expose.push(dep_pkgkey.clone());
-                    }
-                }
-            }
-        }
-    }
+    // Use a worklist algorithm to propagate ebin_exposure to all transitive dependencies
+    let mut worklist: std::collections::VecDeque<String> = user_requested_pkgkeys.into_iter().collect();
+    let mut processed: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // Now set ebin_exposure for the collected dependencies
-    for dep_pkgkey in deps_to_expose {
-        if let Some(dep_info) = packages.get_mut(&dep_pkgkey) {
-            Arc::make_mut(dep_info).ebin_exposure = true;
-            log::debug!("Setting ebin_exposure=true for dependency {} of user-requested package", dep_pkgkey);
+    while let Some(pkgkey) = worklist.pop_front() {
+        if processed.contains(&pkgkey) {
+            continue;
+        }
+        processed.insert(pkgkey.clone());
+
+        // Get dependencies of this package
+        let deps_to_add: Vec<String> = if let Some(info) = packages.get(&pkgkey) {
+            info.depends.iter()
+                .filter(|dep_pkgkey| {
+                    if let Some(dep_info) = packages.get(*dep_pkgkey) {
+                        !dep_info.ebin_exposure
+                    } else {
+                        false
+                    }
+                })
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Set ebin_exposure for dependencies and add them to worklist
+        for dep_pkgkey in deps_to_add {
+            if let Some(dep_info) = packages.get_mut(&dep_pkgkey) {
+                Arc::make_mut(dep_info).ebin_exposure = true;
+                log::debug!("Setting ebin_exposure=true for dependency {}", dep_pkgkey);
+                worklist.push_back(dep_pkgkey);
+            }
         }
     }
 
