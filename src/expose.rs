@@ -354,13 +354,35 @@ fn create_ebin_wrapper(env_root: &Path, fs_file_absolute: &Path, fs_file_relativ
     // This handles broken symlinks in store that become valid in env context
     // (e.g., clang package symlinks pointing to clang-18 package files)
     let (file_type, first_line) = if lfs::is_symlink(fs_file_absolute) {
-        // For symlinks, check the resolved target in env context
-        utils::get_file_type(&resolved_env_path)
-            .with_context(|| format!("Failed to determine file type for resolved path {}", resolved_env_path.display()))?
+        // For symlinks, check the resolved target in env context.
+        // If the target is missing (e.g. helper like rust-clang points to
+        // a non-installed clang), skip creating an ebin wrapper instead of
+        // failing the whole exposure for the package.
+        match utils::get_file_type(&resolved_env_path) {
+            Ok(info) => info,
+            Err(e) => {
+                log::info!(
+                    "Skipping ebin wrapper for {}: failed to determine file type for resolved path {}: {}",
+                    fs_file_absolute.display(),
+                    resolved_env_path.display(),
+                    e
+                );
+                return Ok(None);
+            }
+        }
     } else {
-        // For regular files, check the store file
-        utils::get_file_type(fs_file_absolute)
-            .with_context(|| format!("Failed to determine file type for {}", fs_file_absolute.display()))?
+        // For regular files, check the store file; if missing, skip wrapper.
+        match utils::get_file_type(fs_file_absolute) {
+            Ok(info) => info,
+            Err(e) => {
+                log::info!(
+                    "Skipping ebin wrapper for {}: failed to determine file type: {}",
+                    fs_file_absolute.display(),
+                    e
+                );
+                return Ok(None);
+            }
+        }
     };
     let basename = fs_file_relative.file_name()
         .ok_or_else(|| eyre::eyre!("Failed to get filename for {}", fs_file_relative.display()))?;
