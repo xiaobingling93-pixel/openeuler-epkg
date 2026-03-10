@@ -536,7 +536,6 @@ fn drain_pipes(
 /// Handle TCP input for non-PTY mode: parse stdin messages and forward to child.
 fn handle_nonpty_tcp_input(
     stream: &mut TcpStream,
-    stdin_file: &mut std::process::ChildStdin,
     tcp_buf: &mut [u8],
     tcp_buf_pos: &mut usize,
 ) -> Result<bool> {
@@ -546,11 +545,10 @@ fn handle_nonpty_tcp_input(
             *tcp_buf_pos += n;
             process_tcp_line_buffer(tcp_buf, tcp_buf_pos, |msg| {
                 match msg {
-                    StreamMessage::Stdin { data, .. } => {
-                        let bytes = STANDARD.decode(&data)?;
-                        stdin_file.write_all(&bytes)?;
-                        Ok(())
-                    }
+                    // Stdin messages are no longer supported since we close
+                    // stdin immediately after writing initial data. This is
+                    // kept for protocol compatibility.
+                    StreamMessage::Stdin { .. } => Ok(()),
                     _ => Ok(()),
                 }
             })?;
@@ -741,7 +739,6 @@ fn handle_nonpty_poll_events(
     poll_fds: &[PollFd],
     stdout_file: &mut std::process::ChildStdout,
     stderr_file: &mut std::process::ChildStderr,
-    stdin_file: &mut std::process::ChildStdin,
     stream: &mut TcpStream,
     buf: &mut [u8],
     tcp_buf: &mut [u8],
@@ -762,7 +759,7 @@ fn handle_nonpty_poll_events(
     }
 
     if poll_fds[2].revents().unwrap().contains(PollFlags::POLLIN) {
-        if handle_nonpty_tcp_input(stream, stdin_file, tcp_buf, tcp_buf_pos)? {
+        if handle_nonpty_tcp_input(stream, tcp_buf, tcp_buf_pos)? {
             return Ok(true);
         }
     }
@@ -773,7 +770,6 @@ fn handle_nonpty_poll_events(
 /// Poll loop for non-PTY mode: forward pipe output to TCP, TCP input to stdin, check child status.
 fn nonpty_poll_loop(
     child_pid: Pid,
-    stdin_file: &mut std::process::ChildStdin,
     stdout_file: &mut std::process::ChildStdout,
     stderr_file: &mut std::process::ChildStderr,
     stream: &mut TcpStream,
@@ -831,7 +827,7 @@ fn nonpty_poll_loop(
                 }
             }
             Ok(_) => {
-                if handle_nonpty_poll_events(&poll_fds, stdout_file, stderr_file, stdin_file, stream, &mut buf, &mut tcp_buf, &mut tcp_buf_pos, &mut seq_out, &mut seq_err)? {
+                if handle_nonpty_poll_events(&poll_fds, stdout_file, stderr_file, stream, &mut buf, &mut tcp_buf, &mut tcp_buf_pos, &mut seq_out, &mut seq_err)? {
                     break;
                 }
 
@@ -856,16 +852,20 @@ fn execute_without_pty(request: &CommandRequest, stream: &mut TcpStream, initial
         SpawnOutcome::Spawned(c, si, so, se)    => (c, si, so, se),
     };
 
-    let mut stdin_file  = stdin_pipe;
+    let stdin_file  = stdin_pipe;
     let mut stdout_file = stdout_pipe;
     let mut stderr_file = stderr_pipe;
 
     if !request.stdin.is_empty() {
-        stdin_file.write_all(request.stdin.as_bytes())?;
+        let mut stdin_file_mut = &stdin_file;
+        stdin_file_mut.write_all(request.stdin.as_bytes())?;
     }
+    // Close stdin to signal EOF to child process. Without this, commands like
+    // `sh` will hang waiting for input.
+    drop(stdin_file);
 
     let child_pid    = Pid::from_raw(child.id() as i32);
-    let child_status = nonpty_poll_loop(child_pid, &mut stdin_file, &mut stdout_file, &mut stderr_file, stream, initial_data)?;
+    let child_status = nonpty_poll_loop(child_pid, &mut stdout_file, &mut stderr_file, stream, initial_data)?;
 
     let status = match child_status {
         Some(s) => s,
