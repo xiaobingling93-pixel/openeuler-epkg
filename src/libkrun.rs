@@ -118,6 +118,239 @@ fn check_status(op: &str, status: i32) -> Result<()> {
     }
 }
 
+#[cfg(all(feature = "libkrun", target_os = "linux"))]
+struct LibkrunConfig {
+    use_vsock: bool,
+    cmd_parts: Vec<String>,
+    kernel_args: String,
+    kernel_path: Option<String>,
+    kernel_format: Option<u32>,
+}
+
+#[cfg(all(feature = "libkrun", target_os = "linux"))]
+fn build_libkrun_config(
+    env_root: &Path,
+    run_options: &RunOptions,
+    guest_cmd_path: &Path,
+) -> Result<LibkrunConfig> {
+    let use_cmdline_mode = std::env::var("EPKG_VM_NO_DAEMON").is_ok();
+    let use_vsock = !use_cmdline_mode;
+    log::debug!("libkrun: mode: cmdline={}, vsock={}", use_cmdline_mode, use_vsock);
+    log::debug!("libkrun: EPKG_VM_NO_DAEMON={}", std::env::var("EPKG_VM_NO_DAEMON").unwrap_or_else(|_| "not set".to_string()));
+
+    let guest_exec_path = guest_cmd_path
+        .strip_prefix(env_root)
+        .map(|rel| {
+            let rel_str = rel.to_string_lossy().to_string();
+            if rel_str.starts_with('/') {
+                rel_str
+            } else {
+                format!("/{}", rel_str)
+            }
+        })
+        .unwrap_or_else(|_| guest_cmd_path.to_string_lossy().to_string());
+
+    let (cmd_parts, init_cmd) = qemu::build_guest_command(Path::new(&guest_exec_path), &run_options.args)
+        .map_err(|e| eyre::eyre!("Failed to build guest command: {}", e))?;
+
+    let base_cmdline = "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 earlyprintk=hvc0 \
+                        loglevel=8 debug rootfstype=virtiofs rw no-kvmapf init=/usr/bin/init";
+    let mut kernel_args = String::from(base_cmdline);
+    if let Some(ref user_args) = run_options.kernel_args {
+        kernel_args.push(' ');
+        kernel_args.push_str(user_args);
+    };
+
+    if use_cmdline_mode {
+        kernel_args.push(' ');
+        kernel_args.push_str(&format!("epkg.init_cmd={}", init_cmd));
+    }
+
+    if let Ok(rust_log) = std::env::var("RUST_LOG") {
+        if !rust_log.is_empty() {
+            kernel_args.push_str(&format!(" epkg.rust_log={}", qemu::percent_encode(&rust_log)));
+        }
+    }
+
+    if let Ok(pwd) = std::env::var("PWD") {
+        if !pwd.is_empty() && pwd != "/" {
+            kernel_args.push_str(&format!(" epkg.init_pwd={}", qemu::percent_encode(&pwd)));
+        }
+    }
+
+    let kernel_path = run_options.kernel.clone();
+    let kernel_format = if let Some(ref kernel) = kernel_path {
+        Some(detect_kernel_format_for_libkrun(kernel)?)
+    } else {
+        None
+    };
+    if let Some(ref kernel) = kernel_path {
+        log::debug!("libkrun: kernel path: {}", kernel);
+        log::debug!("libkrun: kernel format: {:?}", kernel_format);
+    } else {
+        log::debug!("libkrun: using bundled kernel from libkrunfw (no --kernel specified)");
+    }
+
+    Ok(LibkrunConfig {
+        use_vsock,
+        cmd_parts,
+        kernel_args,
+        kernel_path,
+        kernel_format,
+    })
+}
+
+#[cfg(all(feature = "libkrun", target_os = "linux"))]
+struct VmContext {
+    ctx: KrunContext,
+    shutdown_fd: i32,
+    vsock_sock_path: Option<std::path::PathBuf>,
+}
+
+#[cfg(all(feature = "libkrun", target_os = "linux"))]
+fn create_and_configure_vm(
+    env_root: &Path,
+    run_options: &RunOptions,
+    config: &LibkrunConfig,
+) -> Result<VmContext> {
+    ensure_libkrun_linked();
+
+    let ctx = unsafe { KrunContext::create()? };
+    let cpus = crate::run::resolve_vm_cpus(run_options);
+    let requested_mib = crate::run::resolve_vm_memory_mib(run_options);
+    log::debug!("libkrun: run_options.vm_memory_mib = {:?}", run_options.vm_memory_mib);
+    let memory_mib = if let Some(ref kernel) = config.kernel_path {
+        crate::run::round_up_vm_memory_for_libkrun(requested_mib, kernel)
+    } else {
+        requested_mib
+    };
+    log::debug!("libkrun: requested_mib = {}", requested_mib);
+    log::debug!("libkrun: round_up_vm_memory_for_libkrun = {}", memory_mib);
+    log::debug!("libkrun: kernel cmdline: {}", config.kernel_args);
+    unsafe {
+        ctx.set_vm_config(cpus, memory_mib)?;
+
+        if let Some(ref kernel) = config.kernel_path {
+            if let Some(format) = config.kernel_format {
+                let format_str = match format {
+                    0 => "Raw (bundled)",
+                    1 => "ELF (vmlinux)",
+                    _ => "Unknown",
+                };
+                if let Some(ref initrd) = run_options.initrd {
+                    log::debug!("libkrun: using initrd: {}", initrd);
+                } else {
+                    log::debug!("libkrun: no initrd provided");
+                }
+                ctx.set_kernel(kernel, format, Some(&config.kernel_args), run_options.initrd.as_deref())?;
+                log::debug!("libkrun: kernel set via krun_set_kernel() with format={} ({})", format, format_str);
+            }
+        }
+
+        ctx.set_root(env_root.to_str().unwrap())?;
+        log::debug!("libkrun: rootfs configured via virtiofs: {:?}", env_root);
+
+        check_status("krun_split_irqchip",
+            krun_split_irqchip(ctx.ctx_id, true)
+        )?;
+        log::debug!("libkrun: split IRQ chip configured");
+
+        setup_console_output(ctx.ctx_id)?;
+
+        if config.use_vsock {
+            check_status("krun_disable_implicit_vsock",
+                krun_disable_implicit_vsock(ctx.ctx_id)
+            )?;
+            check_status("krun_add_vsock",
+                krun_add_vsock(ctx.ctx_id, 0)
+            )?;
+
+            let sock_path = crate::models::dirs().epkg_cache
+                .join("vmm-logs")
+                .join(format!("vsock-{}.sock", std::process::id()));
+            lfs::create_dir_all(sock_path.parent().unwrap())?;
+            let _ = std::fs::remove_file(&sock_path);
+
+            let sock_path_c = CString::new(sock_path.to_string_lossy().as_bytes())
+                .map_err(|e| eyre::eyre!("invalid socket path: {}", e))?;
+            check_status("krun_add_vsock_port2",
+                krun_add_vsock_port2(ctx.ctx_id, 10000, sock_path_c.as_ptr(), true)
+            )?;
+            log::debug!("libkrun: vsock port 10000 mapped to Unix socket {}", sock_path.display());
+
+            let ready_path = crate::models::dirs().epkg_cache
+                .join("vmm-logs")
+                .join(format!("ready-{}.sock", std::process::id()));
+            let _ = std::fs::remove_file(&ready_path);
+            let ready_path_c = CString::new(ready_path.to_string_lossy().as_bytes())
+                .map_err(|e| eyre::eyre!("invalid ready socket path: {}", e))?;
+            check_status("krun_add_vsock_port2",
+                krun_add_vsock_port2(ctx.ctx_id, 10001, ready_path_c.as_ptr(), false)
+            )?;
+            log::debug!("libkrun: ready port 10001 mapped to Unix socket {}", ready_path.display());
+
+            let vsock_sock_path = Some(sock_path);
+            let shutdown_fd = ctx.get_shutdown_eventfd()
+                .map_err(|e| eyre::eyre!("Failed to get shutdown eventfd: {}", e))?;
+            log::debug!("libkrun: shutdown_eventfd = {}", shutdown_fd);
+            return Ok(VmContext { ctx, shutdown_fd, vsock_sock_path });
+        }
+    }
+
+    let shutdown_fd = unsafe { ctx.get_shutdown_eventfd() }
+        .map_err(|e| eyre::eyre!("Failed to get shutdown eventfd: {}", e))?;
+    log::debug!("libkrun: shutdown_eventfd = {}", shutdown_fd);
+
+    Ok(VmContext { ctx, shutdown_fd, vsock_sock_path: None })
+}
+
+#[cfg(all(feature = "libkrun", target_os = "linux"))]
+fn setup_vsock_ready_listener() -> Result<Option<std::os::unix::net::UnixListener>> {
+    let vmm_logs_dir = crate::models::dirs().epkg_cache.join("vmm-logs");
+    if let Ok(entries) = std::fs::read_dir(&vmm_logs_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("vsock-") && name.ends_with(".sock") {
+                let _ = std::fs::remove_file(entry.path());
+                log::trace!("libkrun: cleaned up stale socket {}", name);
+            }
+            if name.starts_with("ready-") && name.ends_with(".sock") {
+                let _ = std::fs::remove_file(entry.path());
+                log::trace!("libkrun: cleaned up stale socket {}", name);
+            }
+        }
+    }
+
+    let _pid = std::process::id();
+    let _sock_path = vmm_logs_dir.join(format!("vsock-{}.sock", _pid));
+    let ready_path = vmm_logs_dir.join(format!("ready-{}.sock", _pid));
+    let _ = std::fs::remove_file(&ready_path);
+
+    log::debug!("libkrun: creating ready listener on {}", ready_path.display());
+    let listener = std::os::unix::net::UnixListener::bind(&ready_path)
+        .map_err(|e| eyre::eyre!("Failed to bind ready socket {}: {}", ready_path.display(), e))?;
+
+    listener.set_nonblocking(true)
+        .map_err(|e| eyre::eyre!("Failed to set non-blocking on ready socket: {}", e))?;
+
+    Ok(Some(listener))
+}
+
+#[cfg(all(feature = "libkrun", target_os = "linux"))]
+fn start_libkrun_vm(ctx: KrunContext) -> std::thread::JoinHandle<i32> {
+    thread::spawn(move || {
+        unsafe {
+            let status = ctx.start_enter();
+            if status < 0 {
+                log::error!("krun_start_enter failed with status {}", status);
+            } else {
+                log::debug!("libkrun: krun_start_enter returned status {}", status);
+            }
+            status
+        }
+    })
+}
+
 /// Thin wrapper that owns a libkrun context.
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
 struct KrunContext {
@@ -286,295 +519,20 @@ pub fn run_command_in_krun(
     run_options: &RunOptions,
     guest_cmd_path: &Path,
 ) -> Result<()> {
-    // Determine control plane mode for libkrun
-    // Default is vsock mode (vm-daemon over vsock) because libkrun has no virtual network.
-    // EPKG_VM_NO_DAEMON=1 forces cmdline mode (kernel command line).
-    let use_cmdline_mode = std::env::var("EPKG_VM_NO_DAEMON").is_ok();
-    let use_vsock = !use_cmdline_mode;
-    log::debug!("libkrun: mode: cmdline={}, vsock={}", use_cmdline_mode, use_vsock);
-    log::debug!("libkrun: EPKG_VM_NO_DAEMON={}", std::env::var("EPKG_VM_NO_DAEMON").unwrap_or_else(|_| "not set".to_string()));
+    let config = build_libkrun_config(env_root, run_options, guest_cmd_path)?;
+    let vm_ctx = create_and_configure_vm(env_root, run_options, &config)?;
 
-    // Unix socket path for vsock communication (used by libkrun)
-    let mut vsock_sock_path: Option<std::path::PathBuf> = None;
-
-    let _rootfs = env_root
-        .to_str()
-        .ok_or_else(|| eyre::eyre!("env_root path is not valid UTF-8"))?;
-    let guest_exec_path = guest_cmd_path
-        .strip_prefix(env_root)
-        .map(|rel| {
-            let rel_str = rel.to_string_lossy().to_string();
-            if rel_str.starts_with('/') {
-                rel_str
-            } else {
-                format!("/{}", rel_str)
-            }
-        })
-        .unwrap_or_else(|_| guest_cmd_path.to_string_lossy().to_string());
-    let exec = guest_exec_path.as_str();
-
-    let mut args: Vec<String> = Vec::new();
-    args.push(exec.to_string());
-    args.extend(run_options.args.clone());
-
-    // Build command for kernel cmdline (epkg.init_cmd=)
-    let (cmd_parts, init_cmd) = qemu::build_guest_command(Path::new(&guest_exec_path), &run_options.args)
-        .map_err(|e| eyre::eyre!("Failed to build guest command: {}", e))?;
-
-    // Build kernel cmdline based on working example from libkrun/examples/run_external_kernel.sh.
-    // Key parameters:
-    // - console=hvc0 earlyprintk=hvc0: console output via virtio-console
-    // - loglevel=8 debug: enable debug logging for troubleshooting
-    // - rootfstype=virtiofs rw: use virtiofs for root filesystem, read-write
-    // - init=/usr/bin/init: use epkg (via symlink) as init process
-    // - reboot=k panic=-1 panic_print=0 nomodule no-kvmapf: kernel behavior settings
-    //
-    // Environment variables are passed as part of cmdline (EPKG_* format).
-    // The virtio_mmio.device parameters and tsi_hijack are added automatically by libkrun.
-    //
-    // We also append any extra args from --kernel-args option.
-
-    let base_cmdline = "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 earlyprintk=hvc0 \
-                        loglevel=8 debug rootfstype=virtiofs rw no-kvmapf init=/usr/bin/init";
-    let mut kernel_args = String::from(base_cmdline);
-    if let Some(ref user_args) = run_options.kernel_args {
-        kernel_args.push(' ');
-        kernel_args.push_str(user_args);
-    };
-
-    // In cmdline mode (EPKG_VM_NO_DAEMON=1), set epkg.init_cmd to tell init what to execute
-    if use_cmdline_mode {
-        kernel_args.push(' ');
-        kernel_args.push_str(&format!("epkg.init_cmd={}", init_cmd));
-    }
-
-    // Pass host RUST_LOG into guest so init can enable debug logging
-    if let Ok(rust_log) = std::env::var("RUST_LOG") {
-        if !rust_log.is_empty() {
-            kernel_args.push_str(&format!(" epkg.rust_log={}", qemu::percent_encode(&rust_log)));
-        }
-    }
-
-    // Pass working directory (from client) to init
-    if let Ok(pwd) = std::env::var("PWD") {
-        if !pwd.is_empty() && pwd != "/" {
-            kernel_args.push_str(&format!(" epkg.init_pwd={}", qemu::percent_encode(&pwd)));
-        }
-    }
-
-    // Resolve kernel path and set it via krun_set_kernel() if explicitly specified.
-    // If no --kernel option is provided, libkrun will auto-load the bundled kernel
-    // from libkrunfw (this is how chroot_vm.c works).
-    let kernel_path = run_options.kernel.clone();
-    let kernel_format = if let Some(ref kernel) = kernel_path {
-        Some(detect_kernel_format_for_libkrun(kernel)?)
-    } else {
-        None
-    };
-    if let Some(ref kernel) = kernel_path {
-        log::debug!("libkrun: kernel path: {}", kernel);
-        log::debug!("libkrun: kernel format: {:?}", kernel_format);
-    } else {
-        log::debug!("libkrun: using bundled kernel from libkrunfw (no --kernel specified)");
-    }
-
-    ensure_libkrun_linked();
-
-    // Note: We don't call krun_init_log() since the application already has
-    // logging initialized via env_logger. libkrun's internal debug logs are
-    // not critical - kernel boot output goes through virtio-console (hvc0).
-
-    // Create libkrun context and configure VM (will be moved to thread)
-    let ctx = unsafe { KrunContext::create()? };
-    let cpus = crate::run::resolve_vm_cpus(run_options);
-    let requested_mib = crate::run::resolve_vm_memory_mib(run_options);
-    log::debug!("libkrun: run_options.vm_memory_mib = {:?}", run_options.vm_memory_mib);
-    // For bundled kernel (no --kernel), use default memory; for external kernel, round up based on kernel size
-    let memory_mib = if let Some(ref kernel) = kernel_path {
-        crate::run::round_up_vm_memory_for_libkrun(requested_mib, kernel)
-    } else {
-        requested_mib
-    };
-    log::debug!("libkrun: requested_mib = {}", requested_mib);
-    log::debug!("libkrun: round_up_vm_memory_for_libkrun = {}", memory_mib);
-    log::debug!("libkrun: kernel cmdline: {}", kernel_args);
-    unsafe {
-        ctx.set_vm_config(cpus, memory_mib)?;
-
-        // Set kernel via krun_set_kernel() only if explicitly specified with --kernel.
-        // If no kernel is specified, libkrun auto-loads the bundled kernel from libkrunfw.
-        let initrd_path = run_options.initrd.clone();
-        if let Some(ref kernel) = kernel_path {
-            if let Some(format) = kernel_format {
-                let format_str = match format {
-                    0 => "Raw (bundled)",
-                    1 => "ELF (vmlinux)",
-                    _ => "Unknown",
-                };
-                if let Some(ref initrd) = initrd_path {
-                    log::debug!("libkrun: using initrd: {}", initrd);
-                } else {
-                    log::debug!("libkrun: no initrd provided");
-                }
-                ctx.set_kernel(kernel, format, Some(&kernel_args), initrd_path.as_deref())?;
-                log::debug!("libkrun: kernel set via krun_set_kernel() with format={} ({})", format, format_str);
-            }
-        }
-
-        // Configure rootfs via virtiofs - this mounts env_root as the root filesystem
-        // The kernel cmdline has rootfstype=virtiofs which tells the kernel to mount it
-        ctx.set_root(env_root.to_str().unwrap())?;
-        log::debug!("libkrun: rootfs configured via virtiofs: {:?}", env_root);
-
-        // Set environment variables for the guest
-        // ctx.set_env(&env_vec)?;
-
-        // Set workdir to root
-        // ctx.set_workdir("/")?;
-
-        // In vsock mode, let init handle command execution via epkg.init_cmd
-        // set_exec would override init, so skip it entirely
-
-        // Configure split IRQ chip (required for x86_64 KVM)
-        check_status("krun_split_irqchip",
-            krun_split_irqchip(ctx.ctx_id, true)
-        )?;
-        log::debug!("libkrun: split IRQ chip configured");
-
-        // Setup console output to a log file.
-        // Note: We intentionally do NOT call krun_disable_implicit_console() because:
-        // 1. libkrun only writes to console_output file when implicit console is enabled
-        // 2. When implicit console is disabled, output goes to Rust log framework instead
-        // By keeping implicit console enabled with a file output, we get console output
-        // in the log file without polluting host stderr.
-        setup_console_output(ctx.ctx_id)?;
-
-        // Configure vsock device for vsock mode
-        if use_vsock {
-            // Disable implicit vsock (created by libkrun by default)
-            check_status("krun_disable_implicit_vsock",
-                krun_disable_implicit_vsock(ctx.ctx_id)
-            )?;
-            // Add explicit vsock without TSI features (we handle command execution ourselves)
-            check_status("krun_add_vsock",
-                krun_add_vsock(ctx.ctx_id, 0)  // 0 = no TSI hijacking
-            )?;
-
-            // Create Unix socket path for host-guest vsock communication
-            let sock_path = crate::models::dirs().epkg_cache
-                .join("vmm-logs")
-                .join(format!("vsock-{}.sock", std::process::id()));
-            lfs::create_dir_all(sock_path.parent().unwrap())?;
-
-            // Remove stale socket file if exists
-            let _ = std::fs::remove_file(&sock_path);
-
-            // Map guest vsock port 10000 to Unix socket on host
-            // listen=true means host initiates connections to guest
-            let sock_path_c = CString::new(sock_path.to_string_lossy().as_bytes())
-                .map_err(|e| eyre::eyre!("invalid socket path: {}", e))?;
-            check_status("krun_add_vsock_port2",
-                krun_add_vsock_port2(ctx.ctx_id, 10000, sock_path_c.as_ptr(), true)
-            )?;
-            log::debug!("libkrun: vsock port 10000 mapped to Unix socket {}", sock_path.display());
-
-            // Ready notification socket: guest connects to signal it's ready to accept commands.
-            // listen=false means guest initiates connection to host.
-            // This eliminates the race condition where host tries to connect before guest is ready.
-            // Path convention: vsock-{pid}.sock → ready-{pid}.sock (must match vm_client.rs)
-            let ready_path = crate::models::dirs().epkg_cache
-                .join("vmm-logs")
-                .join(format!("ready-{}.sock", std::process::id()));
-            let _ = std::fs::remove_file(&ready_path);
-            let ready_path_c = CString::new(ready_path.to_string_lossy().as_bytes())
-                .map_err(|e| eyre::eyre!("invalid ready socket path: {}", e))?;
-            check_status("krun_add_vsock_port2",
-                krun_add_vsock_port2(ctx.ctx_id, 10001, ready_path_c.as_ptr(), false)
-            )?;
-            log::debug!("libkrun: ready port 10001 mapped to Unix socket {}", ready_path.display());
-
-            // Store command socket path for vm_client to use
-            // (ready socket path is derived from this by replacing "vsock-" with "ready-")
-            vsock_sock_path = Some(sock_path);
-        }
-
-        // Note: libkrun creates an implicit virtio-console (hvc0) by default.
-        // With krun_set_console_output() configured, the console output goes to
-        // the specified log file instead of host stderr. The kernel cmdline has
-        // console=hvc0 which routes kernel boot messages to this virtio-console.
-    }
-
-    // For vsock mode: create ready listener BEFORE starting VM
-    // This prevents race condition where guest connects before host is ready
-    let ready_listener = if use_vsock {
-        // Clean up stale socket files from previous runs
-        // This handles cases where previous VM processes didn't exit cleanly
-        let vmm_logs_dir = crate::models::dirs().epkg_cache.join("vmm-logs");
-        if let Ok(entries) = std::fs::read_dir(&vmm_logs_dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                // Remove old vsock-*.sock and ready-*.sock files
-                if name.starts_with("vsock-") && name.ends_with(".sock") {
-                    let _ = std::fs::remove_file(entry.path());
-                    log::trace!("libkrun: cleaned up stale socket {}", name);
-                }
-                if name.starts_with("ready-") && name.ends_with(".sock") {
-                    let _ = std::fs::remove_file(entry.path());
-                    log::trace!("libkrun: cleaned up stale socket {}", name);
-                }
-            }
-        }
-
-        // Derive ready socket path from command socket path
-        let cmd_path = vsock_sock_path.as_ref().unwrap();
-        let ready_path = cmd_path.parent().unwrap_or(std::path::Path::new(""))
-            .join(cmd_path.file_name().unwrap().to_string_lossy().replace("vsock-", "ready-"));
-
-        // Remove stale socket file if exists (should be cleaned above, but be safe)
-        let _ = std::fs::remove_file(&ready_path);
-
-        // Create listener for ready notification BEFORE starting VM
-        log::debug!("libkrun: creating ready listener on {}", ready_path.display());
-        let listener = std::os::unix::net::UnixListener::bind(&ready_path)
-            .map_err(|e| eyre::eyre!("Failed to bind ready socket {}: {}", ready_path.display(), e))?;
-
-        // Set non-blocking mode for timeout support
-        listener.set_nonblocking(true)
-            .map_err(|e| eyre::eyre!("Failed to set non-blocking on ready socket: {}", e))?;
-
-        Some(listener)
+    let ready_listener = if config.use_vsock {
+        setup_vsock_ready_listener()?
     } else {
         None
     };
 
-    // Start VM in a separate thread (krun_start_enter blocks until VM exits)
     log::debug!("libkrun: starting VM thread...");
+    let vm_thread = start_libkrun_vm(vm_ctx.ctx);
 
-    // Get shutdown eventfd before moving ctx to thread
-    // This allows us to trigger graceful VM shutdown from host
-    let shutdown_fd = unsafe { ctx.get_shutdown_eventfd() }
-        .map_err(|e| eyre::eyre!("Failed to get shutdown eventfd: {}", e))?;
-    log::debug!("libkrun: shutdown_eventfd = {}", shutdown_fd);
-
-    let vm_thread = thread::spawn(move || {
-        unsafe {
-            let status = ctx.start_enter();
-            if status < 0 {
-                log::error!("krun_start_enter failed with status {}", status);
-                status
-            } else {
-                log::debug!("libkrun: krun_start_enter returned status {}", status);
-                status
-            }
-        }
-    });
-
-    // For vsock mode, wait for guest ready then connect and send command
-    if use_vsock {
+    if config.use_vsock {
         log::debug!("libkrun: waiting for guest to be ready (with timeout)...");
-
-        // Wait for guest to connect to ready socket with timeout
-        // Use poll to implement timeout for non-blocking accept
         let listener = ready_listener.unwrap();
         let listener_fd = listener.as_raw_fd();
         let mut poll_fds = [libc::pollfd {
@@ -583,7 +541,6 @@ pub fn run_command_in_krun(
             revents: 0,
         }];
 
-        // 30 second timeout for VM to start and signal ready
         const READY_TIMEOUT_MS: i32 = 30_000;
         let poll_result = unsafe { libc::poll(poll_fds.as_mut_ptr(), 1, READY_TIMEOUT_MS) };
 
@@ -597,7 +554,6 @@ pub fn run_command_in_krun(
                 return Err(eyre::eyre!("Poll error on ready socket"));
             }
             _ => {
-                // Ready for accept
                 let (stream, _addr) = listener.accept()
                     .map_err(|e| eyre::eyre!("Failed to accept on ready socket: {}", e))?;
                 log::debug!("libkrun: guest connected to ready socket, guest is ready!");
@@ -605,27 +561,22 @@ pub fn run_command_in_krun(
             }
         }
 
-        // Now connect to command port and send command
-        // cmd_parts was computed earlier
         let exit_code = vm_client::send_command_via_vsock(
-            &cmd_parts,
+            &config.cmd_parts,
             run_options.use_pty,
             10000,
-            vsock_sock_path.as_deref(),
+            vm_ctx.vsock_sock_path.as_deref(),
         )
         .map_err(|e| eyre::eyre!("Failed to send command via vsock: {}", e))?;
         log::debug!("libkrun: vsock command completed with exit code {}", exit_code);
 
-        // Trigger graceful VM shutdown via shutdown_eventfd.
-        // Writing 1u64 to the eventfd causes Vmm to call stop(0).
         log::debug!("libkrun: triggering VM shutdown via eventfd...");
         let buf = 1u64.to_le_bytes();
-        let write_result = unsafe { libc::write(shutdown_fd, buf.as_ptr() as *const _, buf.len()) };
+        let write_result = unsafe { libc::write(vm_ctx.shutdown_fd, buf.as_ptr() as *const _, buf.len()) };
         if write_result < 0 {
             log::warn!("libkrun: failed to write shutdown eventfd: {}", std::io::Error::last_os_error());
         }
 
-        // Wait for VM thread to finish for proper resource cleanup.
         match vm_thread.join() {
             Ok(vm_status) => {
                 log::debug!("libkrun: VM thread finished with status {}", vm_status);
@@ -639,7 +590,6 @@ pub fn run_command_in_krun(
         std::process::exit(exit_code);
     }
 
-    // Wait for VM thread to finish (only for non-vsock mode)
     log::debug!("libkrun: waiting for VM thread to finish...");
     match vm_thread.join() {
         Ok(exit_status) => {
