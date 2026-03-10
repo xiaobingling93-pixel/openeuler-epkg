@@ -3,7 +3,8 @@
 
 . "$(dirname "$0")/../common.sh"
 
-run_install ruby
+run_install ruby ruby-dev ruby-devel gcc make redhat-rpm-config
+
 check_cmd ruby --version || lang_skip "no ruby for OS=$OS"
 
 run_ebin ruby --version
