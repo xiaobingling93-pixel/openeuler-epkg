@@ -372,8 +372,19 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
         }
     }
 
-    // Step 5: update X11 desktop database
-    // expose_packages(plan)?; // Now done earlier in run_action() PackageAction::ExposeExecutables branch
+    // Step 5: Expose skipped reinstalls that have ebin_exposure=true
+    // These are packages already installed but user explicitly requested them
+    {
+        let has_reinstalls_to_expose = plan.skipped_reinstalls.iter()
+            .any(|(_, info)| info.ebin_exposure);
+        if has_reinstalls_to_expose {
+            log::info!("Exposing {} skipped reinstalls with ebin_exposure=true",
+                plan.skipped_reinstalls.iter().filter(|(_, info)| info.ebin_exposure).count());
+            expose_packages(plan)?;
+        }
+    }
+
+    // Step 6: update X11 desktop database
     #[cfg(unix)]
     crate::xdesktop::update_desktop_databases(&plan.env_root, &plan.desktop_integration_occurred);
 
