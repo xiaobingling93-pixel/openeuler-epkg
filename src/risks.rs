@@ -240,13 +240,16 @@ pub fn validate_file_conflicts(
                     // File already exists in map - conflict detected
                     // Check if conflict is with another new package (transaction conflict) or installed package
                     if plan.batch.new_pkgkeys.contains(&existing_pkgkey) {
-                        // Transaction conflict: file provided by multiple new packages
-                        return Err(eyre!(
+                        // Transaction conflict: file provided by multiple new packages.
+                        // Downgrade transaction-time conflicts to warnings so that package
+                        // sets that legitimately share some files can still be installed.
+                        log::warn!(
                             "Transaction file conflict: {} is provided by multiple packages: {} and {}",
                             file_path,
                             existing_pkgkey,
                             pkgkey
-                        ));
+                        );
+                        continue;
                     } else {
                         // Conflict with installed package
                         return Err(eyre!(

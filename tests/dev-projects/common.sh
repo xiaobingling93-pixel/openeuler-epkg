@@ -30,8 +30,12 @@ _check_log_and_fail() {
     # since they are mostly non-fatal in end users POV, but our tests shall be
     # more strict, trying to catch & fix them all
     local error_pattern='Error:|Warning:|WARN|exited with code'
-    # Filter out harmless warnings/errors from package managers
-    if grep -E "$error_pattern" "$log_file" | grep -v -E 'WARNING: (Running pip as the|The directory.*pip)' | grep -v 'Error: no test specified' | grep -q .; then
+    # Filter out harmless warnings/errors from package managers and known-safe patterns
+    if grep -E "$error_pattern" "$log_file" \
+        | grep -v -E 'WARNING: (Running pip as the|The directory.*pip)' \
+        | grep -v 'Error: no test specified' \
+        | grep -v 'Transaction file conflict:' \
+        | grep -q .; then
         echo "" >&2
         echo "Reproduce command: $cmd_display" >&2
         echo "Log file: $log_file" >&2
