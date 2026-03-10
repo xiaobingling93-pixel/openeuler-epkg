@@ -71,7 +71,7 @@ fn connect_with_retry(max_retries: u32) -> Result<TcpStream> {
                 if retry_count >= max_retries {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(500));
+                std::thread::sleep(Duration::from_millis(5));
             }
         }
     }
@@ -96,7 +96,7 @@ fn connect_vsock_with_retry(port: u32, max_retries: u32) -> Result<TcpStream> {
                 if retry_count >= max_retries {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(500));
+                std::thread::sleep(Duration::from_millis(5));
             }
         }
     }
@@ -129,7 +129,9 @@ fn connect_unix_socket_with_retry(sock_path: &std::path::Path, max_retries: u32)
                 if retry_count >= max_retries {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(500));
+                // Use 5ms retry interval for faster connection establishment.
+                // The vsock Unix socket typically becomes ready within ~100-200ms after VM start.
+                std::thread::sleep(Duration::from_millis(5));
             }
         }
     }
@@ -389,6 +391,7 @@ fn write_stream_output(
     bytes: &[u8],
     is_terminal: bool,
 ) -> std::io::Result<()> {
+    log::trace!("write_stream_output: {} bytes, is_terminal={}", bytes.len(), is_terminal);
     if is_terminal {
         let mut last = 0;
         for i in 0..bytes.len() {

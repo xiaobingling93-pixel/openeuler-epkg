@@ -142,6 +142,7 @@ const TCP_LINE_BUF_SIZE: usize = 4096;
 
 /// Write a single newline-delimited JSON stream message to the TCP stream.
 fn write_stream_message(stream: &mut TcpStream, msg: &StreamMessage) -> Result<()> {
+    log::trace!("write_stream_message: {:?}", msg);
     let json = serde_json::to_string(msg)?;
     stream.write_all(json.as_bytes())?;
     stream.write_all(b"\n")?;
