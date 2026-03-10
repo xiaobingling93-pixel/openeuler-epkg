@@ -236,60 +236,6 @@ fn setup_mounts() -> Result<()> {
     } else {
         eprintln!("init: vm-daemon metadata: FAILED");
     }
-    // Check if we can access the final epkg directly
-    let self_epkg = Path::new("/home/wfg/.epkg/envs/self/usr/bin/epkg");
-    if let Ok(meta) = std::fs::metadata(self_epkg) {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = meta.permissions().mode();
-        eprintln!("init: self_epkg metadata: is_file={}, mode={:o}, executable={}",
-            meta.is_file(), mode & 0o777, (mode & 0o111) != 0);
-    }
-
-    // Mount /sys early so we can check for virtio-fs devices
-    fs_create_dir_if_missing("/sys").wrap_err("init: create /sys")?;
-    if let Err(e) = nix::mount::mount(
-        Some("sysfs"),
-        Path::new("/sys"),
-        Some("sysfs"),
-        nix::mount::MsFlags::empty(),
-        None::<&str>,
-    ) {
-        eprintln!("init: mount sysfs on /sys failed: {} (virtio-fs detection may fail)", e);
-    } else {
-        eprintln!("init: mounted sysfs on /sys");
-    }
-
-    // Mount self env virtiofs if available (for libkrun)
-    // This makes the epkg binary accessible when main env uses symlink to self env
-    if Path::new("/sys/class/virtio-fs").exists() {
-        eprintln!("init: /sys/class/virtio-fs exists, checking for 'self' tag");
-        // Check if 'self' virtiofs device exists
-        if let Ok(entries) = std::fs::read_dir("/sys/class/virtio-fs") {
-            for entry in entries.flatten() {
-                if let Ok(tag) = std::fs::read_to_string(entry.path().join("tag")) {
-                    let tag = tag.trim();
-                    eprintln!("init: found virtio-fs device with tag '{}'", tag);
-                    if tag == "self" {
-                        fs_create_dir_if_missing("/self").wrap_err("init: create /self")?;
-                        if let Err(e) = nix::mount::mount(
-                            Some(tag),
-                            Path::new("/self"),
-                            Some("virtiofs"),
-                            nix::mount::MsFlags::empty(),
-                            None::<&str>,
-                        ) {
-                            eprintln!("init: mount virtiofs 'self' on /self failed: {}", e);
-                        } else {
-                            eprintln!("init: mounted virtiofs 'self' on /self");
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-    } else {
-        eprintln!("init: /sys/class/virtio-fs does not exist");
-    }
 
     let init_specs = crate::mount::vmm_init_mount_spec_strings();
     log::debug!("init: applying {} mount specs (proc, tmp, ...)", init_specs.len());
@@ -449,6 +395,7 @@ fn try_load_module(name: &str) -> bool {
 /// Setup network for vm-daemon: load virtio_net driver and configure network interface.
 /// Returns error if network setup fails (caller may fallback to /bin/sh).
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 fn setup_network_for_vm_daemon() -> Result<(), String> {
     log::debug!("init: checking virtio_net module / interfaces for vm-daemon");
 
@@ -492,6 +439,7 @@ fn setup_network_for_vm_daemon() -> Result<(), String> {
 
 /// Parse network interface flags, supporting both decimal and hex (0x prefix)
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 fn parse_net_flags(s: &str) -> Option<u32> {
     let s = s.trim();
     if s.starts_with("0x") || s.starts_with("0X") {
@@ -503,6 +451,7 @@ fn parse_net_flags(s: &str) -> Option<u32> {
 
 /// Check if interface is suitable (non-loopback). Returns true if suitable, false if loopback.
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 fn is_interface_suitable(name: &str, net_dir: &Path) -> bool {
     const IFF_LOOPBACK: u32 = 0x8;
     if name == "lo" {
@@ -529,6 +478,7 @@ fn is_interface_suitable(name: &str, net_dir: &Path) -> bool {
 /// Attempt to discover primary interface once. Returns Ok(Some(name)) if found,
 /// Ok(None) if not found yet, or Err on read_dir failure.
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 fn try_discover_interface_once(net_dir: &Path, attempt: u32, log_first: bool) -> Result<Option<String>, std::io::Error> {
     let mut entries: Vec<_> = std::fs::read_dir(net_dir)?
         .filter_map(|e| e.ok())
@@ -554,6 +504,7 @@ fn try_discover_interface_once(net_dir: &Path, attempt: u32, log_first: bool) ->
 /// Returns Ok(interface) or Err(last_seen_names) for error context.
 /// Retries for up to 10 seconds (50 attempts * 200ms) to allow virtio_net driver to initialize.
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 fn discover_primary_interface() -> Result<String, Vec<String>> {
     const MAX_ATTEMPTS: u32 = 50;      // Total attempts before giving up
     const RETRY_MS: u64 = 200;         // Delay between attempts (total: 10 seconds)
@@ -588,6 +539,7 @@ fn discover_primary_interface() -> Result<String, Vec<String>> {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 fn configure_network() -> Result<(), String> {
     // QEMU user networking default configuration (matches -netdev user defaults)
     const GUEST_IP:      (u8, u8, u8, u8) = (10, 0, 2, 15);     // Guest IP address

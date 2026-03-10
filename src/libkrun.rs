@@ -488,24 +488,6 @@ pub fn run_command_in_krun(
         ctx.set_root(env_root.to_str().unwrap())?;
         log::debug!("libkrun: rootfs configured via virtiofs: {:?}", env_root);
 
-        // Add self env as additional virtiofs mount so epkg symlink works in guest.
-        // The main env's epkg binary is a symlink pointing to self env, which is not
-        // visible in guest without this mount. Guest init will mount it at /self.
-        let self_env_path = crate::models::dirs().home_epkg.join("envs/self");
-        log::debug!("libkrun: checking self_env_path={:?}, env_root={:?}", self_env_path, env_root);
-        if self_env_path.exists() && self_env_path != env_root {
-            let tag = CString::new("self").map_err(|e| eyre::eyre!("invalid tag: {}", e))?;
-            let path_c = CString::new(self_env_path.to_string_lossy().as_bytes())
-                .map_err(|e| eyre::eyre!("invalid self env path: {}", e))?;
-            check_status("krun_add_virtiofs",
-                unsafe { krun_add_virtiofs(ctx.ctx_id, tag.as_ptr(), path_c.as_ptr()) }
-            )?;
-            log::debug!("libkrun: added virtiofs mount 'self' -> {:?}", self_env_path);
-        } else {
-            log::debug!("libkrun: skipping self virtiofs mount (exists={}, same_as_root={})",
-                self_env_path.exists(), self_env_path == env_root);
-        }
-
         // Set environment variables for the guest
         // ctx.set_env(&env_vec)?;
 
@@ -554,7 +536,7 @@ pub fn run_command_in_krun(
             let sock_path_c = CString::new(sock_path.to_string_lossy().as_bytes())
                 .map_err(|e| eyre::eyre!("invalid socket path: {}", e))?;
             check_status("krun_add_vsock_port2",
-                unsafe { krun_add_vsock_port2(ctx.ctx_id, 10000, sock_path_c.as_ptr(), true) }
+                krun_add_vsock_port2(ctx.ctx_id, 10000, sock_path_c.as_ptr(), true)
             )?;
             log::debug!("libkrun: vsock port 10000 mapped to Unix socket {}", sock_path.display());
 

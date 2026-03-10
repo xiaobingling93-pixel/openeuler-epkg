@@ -120,7 +120,7 @@ pub(crate) fn pseudo_fs_mount_spec_strings() -> Vec<&'static str> {
 /// Mount specification strings for VMM init (proc, sys, tmp). Run at root (/).
 /// /dev is handled in run_init with mount().or_else() for devtmpfs/tmpfs fallback.
 pub(crate) static MOUNT_SPECS_VMM_INIT: &[&str] = &[
-    "proc:/proc:silent,relatime,try",
+    // "proc:/proc:silent,relatime,try",  // mounted by init_logging_early()
     "sysfs:/sys:silent,relatime,try",
     "tmpfs:/tmp:mode=0755,silent,relatime,try",
 ];

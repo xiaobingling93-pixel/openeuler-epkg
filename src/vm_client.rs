@@ -15,7 +15,7 @@ use std::io::{BufRead, BufReader, Read, Write, IsTerminal};
 use std::net::TcpStream;
 use std::time::Duration;
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, IntoRawFd};
+use std::os::fd::{AsFd, FromRawFd, IntoRawFd};
 use color_eyre::eyre;
 use color_eyre::Result;
 use serde::{Deserialize, Serialize};
