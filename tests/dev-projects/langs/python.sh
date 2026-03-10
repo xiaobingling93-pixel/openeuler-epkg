@@ -3,7 +3,8 @@
 
 . "$(dirname "$0")/../common.sh"
 
-run_install python3 py3-pip python3-pip
+# Note: Arch Linux uses python-pip, Debian/Ubuntu uses python3-pip, Alpine uses py3-pip
+run_install python3 py3-pip python3-pip python-pip
 check_cmd python3 --version || lang_skip "no python3 for OS=$OS"
 
 run python3 -c "print(1+1)"

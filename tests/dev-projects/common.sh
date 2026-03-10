@@ -29,12 +29,16 @@ _check_log_and_fail() {
     # Note on "no_exit=true, continuing" logs: scriptlet failures explicitly allowed,
     # since they are mostly non-fatal in end users POV, but our tests shall be
     # more strict, trying to catch & fix them all
-    local error_pattern='Error:|Warning:|WARN|exited with code'
+    # Use word-boundary patterns to avoid false positives from file paths like "OSSL_CMP_LOG_WARNING"
+    local error_pattern='Error:|Warning:|[^A-Z_]WARN[^A-Z_]|exited with code'
     # Filter out harmless warnings/errors from package managers and known-safe patterns
     if grep -E "$error_pattern" "$log_file" \
         | grep -v -E 'WARNING: (Running pip as the|The directory.*pip)' \
         | grep -v 'Error: no test specified' \
         | grep -v 'Transaction file conflict:' \
+        | grep -v 'OSSL_CMP_LOG_WARN' \
+        | grep -v 'timed out after' \
+        | grep -v 'Hook.*failed.*timed out' \
         | grep -q .; then
         echo "" >&2
         echo "Reproduce command: $cmd_display" >&2

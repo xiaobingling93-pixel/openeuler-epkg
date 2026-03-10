@@ -3,7 +3,8 @@
 
 . "$(dirname "$0")/../common.sh"
 
-run_install build-base g++ gcc-c++ build-essential
+# Note: on Arch Linux, g++ is part of gcc package, not a separate package
+run_install build-base g++ gcc-c++ build-essential gcc
 check_cmd g++ --version || lang_skip "no g++ for OS=$OS"
 
 run_ebin g++ --version
