@@ -616,6 +616,72 @@ pub fn save_installed_packages(new_generation: &PathBuf) -> Result<()> {
     Ok(())
 }
 
+/// Get the path to the pending-packages.json file for the current environment
+fn get_pending_packages_path() -> Result<PathBuf> {
+    let env_root = crate::dirs::get_env_root(config().common.env_name.clone())?;
+    Ok(env_root.join("pending-packages.json"))
+}
+
+/// Save pending packages (packages being installed in the current transaction)
+/// This allows dpkg-query to see packages that are being installed but not yet saved
+/// to installed-packages.json
+pub fn save_pending_packages(packages: &InstalledPackagesMap) -> Result<()> {
+    if packages.is_empty() {
+        return Ok(());
+    }
+    let file_path = get_pending_packages_path()?;
+    let entries = installed_packages_to_array(packages);
+    let json = serde_json::to_string_pretty(&entries)?;
+    lfs::write(&file_path, json)?;
+    log::debug!("Saved {} pending packages to {}", entries.len(), file_path.display());
+    Ok(())
+}
+
+/// Load pending packages from pending-packages.json
+/// Returns an empty map if the file doesn't exist
+pub fn load_pending_packages() -> Result<HashMap<String, InstalledPackageInfo>> {
+    let file_path = get_pending_packages_path()?;
+    if !lfs::exists_on_host(&file_path) {
+        return Ok(HashMap::new());
+    }
+    let value: Value = read_json_file(&file_path)?;
+    installed_packages_from_value(value)
+}
+
+/// Remove the pending-packages.json file after installation completes
+pub fn remove_pending_packages() -> Result<()> {
+    let file_path = get_pending_packages_path()?;
+    if lfs::exists_on_host(&file_path) {
+        lfs::remove_file(&file_path)?;
+        log::debug!("Removed pending packages file: {}", file_path.display());
+    }
+    Ok(())
+}
+
+/// Load installed packages including pending packages from the current transaction
+/// This is used by dpkg-query to see packages being installed.
+/// Updates PACKAGE_CACHE.installed_packages with pending packages merged in.
+pub fn load_installed_packages_with_pending() -> Result<()> {
+    // First load installed packages
+    load_installed_packages()?;
+
+    // Then load and merge pending packages into the cache
+    let pending = load_pending_packages()?;
+    if !pending.is_empty() {
+        let count = pending.len();
+        let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();
+        let mut pkgline2installed = PACKAGE_CACHE.pkgline2installed.write().unwrap();
+        for (pkgkey, info) in pending {
+            let info_arc = Arc::new(info);
+            pkgline2installed.insert(info_arc.pkgline.clone(), Arc::clone(&info_arc));
+            installed.insert(pkgkey, info_arc);
+        }
+        log::debug!("Merged {} pending packages into installed packages cache", count);
+    }
+
+    Ok(())
+}
+
 pub fn read_world(env: &str, generation_id: u32) -> Result<HashMap<String, String>> {
     let generations_root = get_generations_root(env)?;
     let file_path = generations_root.join(generation_id.to_string()).join("world.json");

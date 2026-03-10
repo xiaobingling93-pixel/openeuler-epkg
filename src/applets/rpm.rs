@@ -113,7 +113,8 @@ pub(crate) fn select_installed_packages_by_predicate<P>(
 where
     P: Fn(&Package, &InstalledPackageInfo) -> bool,
 {
-    crate::io::load_installed_packages()?;
+    // Load installed packages including pending packages from current transaction
+    crate::io::load_installed_packages_with_pending()?;
 
     let mut pkglines = Vec::new();
     let mut found_keys = HashSet::new();
@@ -620,7 +621,8 @@ pub(crate) fn select_installed_pkglines_by_nvra(spec: &PackageNVRA) -> Result<Ve
 /// Pattern can be exact path, path prefix, substring, or glob (*?[).
 /// Shared by rpm and dpkg-query applets; other distro query applets should use this.
 pub(crate) fn select_installed_pkglines_owning_path(path_pattern: &str) -> Result<Vec<String>> {
-    crate::io::load_installed_packages()?;
+    // Load installed packages including pending packages from current transaction
+    crate::io::load_installed_packages_with_pending()?;
     let state = path_match_prepare(path_pattern);
     let mut pkglines = Vec::new();
     for (_pkgkey, installed_info) in PACKAGE_CACHE.installed_packages.read().unwrap().iter() {
@@ -829,7 +831,8 @@ fn for_each_package<F>(
 where
     F: FnMut(&Package, Option<&Path>, Option<&InstalledPackageInfo>) -> Result<()>,
 {
-    crate::io::load_installed_packages()?;
+    // Load installed packages including pending packages from current transaction
+    crate::io::load_installed_packages_with_pending()?;
     let mut exit_code = 0;
     for pkg_spec in package_specs {
         let matches = resolve_package_spec(pkg_spec, options.allow_repo_query);
@@ -854,7 +857,8 @@ where
 }
 
 fn get_all_package_specs() -> Result<Vec<String>> {
-    crate::io::load_installed_packages()?;
+    // Load installed packages including pending packages from current transaction
+    crate::io::load_installed_packages_with_pending()?;
 
     let mut specs = Vec::new();
     for pkgkey in PACKAGE_CACHE.installed_packages.read().unwrap().keys() {

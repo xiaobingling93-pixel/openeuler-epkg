@@ -275,7 +275,8 @@ fn list_packages(pattern: Option<&str>) -> Result<()> {
 
 /// Select installed package pkglines by one pattern. Use None or "*" for all installed.
 fn select_pkglines(pattern: Option<&str>) -> Result<Vec<String>> {
-    crate::io::load_installed_packages()?;
+    // Load installed packages including pending packages from current transaction
+    crate::io::load_installed_packages_with_pending()?;
     let spec = pattern.unwrap_or("*");
     let matches = resolve_package_spec(spec, false);
     let pkglines = matches
@@ -387,8 +388,6 @@ fn search_files(pattern: &str) -> Result<()> {
 }
 
 fn show_control_path(package_spec: &str, control_file: Option<&str>) -> Result<()> {
-    crate::io::load_installed_packages()?;
-
     let pkglines = select_pkglines(Some(package_spec))?;
     let maybe_package = pkglines.first().and_then(|pkgline| pkgline_to_package_and_installed_info(pkgline));
 

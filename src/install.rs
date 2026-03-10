@@ -13,7 +13,7 @@ use crate::download;
 use crate::plan::InstallationPlan;
 use crate::models::PACKAGE_CACHE;
 use crate::link::compute_link_type_and_reflink;
-use crate::io::{load_world, save_installed_packages, save_world};
+use crate::io::{load_world, save_installed_packages, save_world, save_pending_packages, remove_pending_packages};
 use crate::repo::sync_channel_metadata;
 use crate::world::{apply_no_install_changes, apply_delta_world, add_essential_packages_to_delta_world, create_delta_world_from_specs};
 use crate::depends::resolve_and_install_packages;
@@ -360,7 +360,11 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
     plan.batch.is_first = true;
     #[cfg(unix)]
     {
+        // Save pending packages so dpkg-query can see packages being installed
+        save_pending_packages(&plan.new_pkgs)?;
         run_transaction_batch(plan)?;
+        // Clean up pending packages after transaction completes
+        remove_pending_packages()?;
     }
 
     // Step 4: Build and install AUR packages (build with makepkg)
