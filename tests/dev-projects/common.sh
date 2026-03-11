@@ -41,6 +41,9 @@ _check_log_and_fail() {
         | grep -v 'timed out after .* seconds' \
         | grep -v 'Hook.*failed:.*timed out' \
         | grep -v "exited with code [0-9]* (no_exit=true, continuing)" \
+        | grep -v -E 'Unknown (user|group): .* \( ?continuing with special' \
+        | grep -v 'ensure_mount_propagation_private: failed with EPERM' \
+        | grep -v -E 'Error::[A-Z]' \
         | grep -q .; then
         echo "" >&2
         echo "Reproduce command: $cmd_display" >&2
