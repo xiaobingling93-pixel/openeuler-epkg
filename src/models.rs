@@ -104,6 +104,11 @@ pub struct Package {
 
     #[serde(default)]
     pub size: u32,
+    // installed_size is in BYTES. Different package formats have different source units:
+    // - Debian: Installed-Size is in KB, converted to bytes by appending "000"
+    // - RPM: RPMTAG_SIZE is already in bytes (no conversion needed)
+    // - Conda: size in bytes (no conversion needed)
+    // - Arch Linux: %SIZE% in bytes (no conversion needed)
     #[serde(default)]
     #[serde(rename = "installedSize")]
     pub installed_size: u32,

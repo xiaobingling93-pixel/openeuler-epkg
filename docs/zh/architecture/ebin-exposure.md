@@ -152,58 +152,21 @@ fn expose_packages(plan: &mut InstallationPlan) -> Result<()> {
 
 **位置**：`src/depends.rs`
 
-**作用**：为元包（meta-package）的依赖设置 `ebin_exposure=true`
+**作用**：为元包的依赖设置 `ebin_exposure=true`
 
-元包是指没有自己可执行文件的包，它们依赖其他包来提供实际功能。
-例如 `default-jdk` 是一个元包，它依赖 `openjdk-21-jdk` 来提供 `javac` 等工具。
+**原理**：元包（如 `default-jdk`）没有自己的可执行文件，依赖其他包提供实际功能。
+只对元包传播 ebin_exposure，避免普通包（如 `gcc`）的依赖被不必要地暴露。
 
-```rust
-fn extend_ebin_to_dependencies(packages: &mut InstalledPackagesMap) -> Result<()> {
-    // 收集用户请求的包
-    let user_requested_pkgkeys: Vec<String> = packages.iter()
-        .filter(|(_, info)| info.ebin_exposure)
-        .map(|(pkgkey, _)| pkgkey.clone())
-        .collect();
+**判断元包**：`0 < installed_size < 200KB`
 
-    // 使用工作列表算法传播 ebin_exposure
-    // 但仅对元包（没有自己可执行文件的包）传播
-    let mut worklist: VecDeque<String> = VecDeque::new();
+`installed_size` 单位是 bytes。各发行版的源单位：
+- Debian: `Installed-Size` 是 KB，解析时追加 "000" 转换为 bytes
+- RPM: `RPMTAG_SIZE` 已经是 bytes
+- Arch Linux: `%ISIZE%` 已经是 bytes
+- Conda: size 已经是 bytes
 
-    for pkgkey in &user_requested_pkgkeys {
-        if let Some(info) = packages.get(pkgkey) {
-            // 仅对元包传播
-            if !package_has_binaries(&store_root, &info.pkgline) {
-                worklist.push_back(pkgkey.clone());
-            }
-        }
-    }
-    // ... 传播逻辑
-}
-```
-
-**判断元包的方法**：
-
-```rust
-fn package_has_binaries(store_root: &Path, pkgline: &str) -> bool {
-    let filelist = map_pkgline2filelist(store_root, pkgline)?;
-
-    for file in &filelist {
-        let file_lower = file.to_lowercase();
-        // 检查是否有 bin/ 或 sbin/ 目录下的文件
-        if file_lower.starts_with("bin/") ||
-           file_lower.starts_with("sbin/") ||
-           file_lower.contains("/bin/") ||
-           file_lower.contains("/sbin/") {
-            return true;
-        }
-    }
-    false
-}
-```
-
-**为什么只对元包传播**：
-- 用户安装 `gcc` 时，只需要 `gcc` 本身被暴露，不需要所有依赖都被暴露
-- 用户安装 `default-jdk` 时，由于它是元包，需要传播到实际提供 `javac` 的 `openjdk-21-jdk`
+**注意**：小包如 `rubypick` 可能有很小的 installed_size 但仍提供二进制文件，
+阈值 200KB 应该足够区分元包和有实际内容的包。
 
 ## 调用流程
 

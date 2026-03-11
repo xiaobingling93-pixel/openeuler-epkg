@@ -172,34 +172,22 @@ fn extend_ebin_by_source(packages: &mut InstalledPackagesMap) -> Result<Installe
     Ok(packages_to_expose)
 }
 
-/// Check if a package has any binaries to expose.
-/// Uses the package filelist to check for files in bin/ or sbin/ directories.
-/// Returns true if the package has files in bin/ or sbin/ directories.
-fn package_has_binaries(store_root: &std::path::Path, pkgline: &str) -> bool {
-    // Get filelist for the package
-    let filelist = match crate::package_cache::map_pkgline2filelist(store_root, pkgline) {
-        Ok(list) => list,
-        Err(_) => return false,
-    };
-
-    // Early exit: meta-packages typically have very few files
-    // A package with < 10 files is likely a meta-package with no binaries
-    if filelist.len() < 10 {
-        return false;
+/// Check if a package is likely a meta-package (no binaries).
+/// Meta-packages typically have tiny installed_size in repo metadata.
+/// This is a heuristic that works well for Debian meta-packages.
+/// Note: installed_size == 0 is excluded as it may indicate missing metadata.
+fn pkg_is_likely_metapkg(pkgkey: &str) -> bool {
+    if let Ok(package) = crate::package_cache::load_package_info(pkgkey) {
+        // installed_size is in BYTES from repo metadata
+        // Meta-packages like default-jdk have tiny installed_size (6KB = 6000 bytes)
+        // Regular packages like python3-dev have larger installed_size (150KB+)
+        // Threshold: < 200KB to identify meta-packages
+        // Exclude size == 0 as it may indicate missing metadata
+        let is_meta = package.installed_size > 0 && package.installed_size < 200 * 1024;
+        log::debug!("pkg_is_likely_metapkg: pkgkey={}, installed_size={}, is_meta={}",
+                   pkgkey, package.installed_size, is_meta);
+        return is_meta;
     }
-
-    // Check if any file is in a bin directory
-    for file in &filelist {
-        let file_lower = file.to_lowercase();
-        // Check for files in bin/ directories
-        if file_lower.starts_with("bin/") ||
-           file_lower.starts_with("sbin/") ||
-           file_lower.contains("/bin/") ||
-           file_lower.contains("/sbin/") {
-            return true;
-        }
-    }
-
     false
 }
 
@@ -225,9 +213,6 @@ fn extend_ebin_to_dependencies(packages: &mut InstalledPackagesMap) -> Result<()
         return Ok(());
     }
 
-    // Get store root for filelist lookups
-    let store_root = crate::models::dirs().epkg_store.clone();
-
     // Use a worklist algorithm to propagate ebin_exposure to transitive dependencies
     // BUT only for meta-packages (packages without their own binaries)
     let mut worklist: std::collections::VecDeque<String> = std::collections::VecDeque::new();
@@ -235,10 +220,10 @@ fn extend_ebin_to_dependencies(packages: &mut InstalledPackagesMap) -> Result<()
 
     // Initialize worklist with meta-packages only
     for pkgkey in &user_requested_pkgkeys {
-        if let Some(info) = packages.get(pkgkey) {
-            // Only propagate for meta-packages (packages without binaries)
-            if !package_has_binaries(&store_root, &info.pkgline) {
-                log::debug!("Package {} is a meta-package (no binaries), will propagate ebin_exposure", pkgkey);
+        if let Some(_info) = packages.get(pkgkey) {
+            // Only propagate for meta-packages
+            if pkg_is_likely_metapkg(pkgkey) {
+                log::debug!("Package {} is a meta-package, will propagate ebin_exposure", pkgkey);
                 worklist.push_back(pkgkey.clone());
             } else {
                 log::debug!("Package {} has binaries, not propagating ebin_exposure to dependencies", pkgkey);
@@ -274,7 +259,7 @@ fn extend_ebin_to_dependencies(packages: &mut InstalledPackagesMap) -> Result<()
                 Arc::make_mut(dep_info).ebin_exposure = true;
                 log::debug!("Setting ebin_exposure=true for dependency {}", dep_pkgkey);
                 // Continue propagating only if this dependency is also a meta-package
-                if !package_has_binaries(&store_root, &dep_info.pkgline) {
+                if pkg_is_likely_metapkg(&dep_pkgkey) {
                     worklist.push_back(dep_pkgkey);
                 }
             }
