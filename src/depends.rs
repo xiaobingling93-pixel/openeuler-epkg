@@ -172,13 +172,42 @@ fn extend_ebin_by_source(packages: &mut InstalledPackagesMap) -> Result<Installe
     Ok(packages_to_expose)
 }
 
-/// Extend ebin_exposure to all dependencies (transitive) of user-requested packages.
+/// Check if a package has any binaries to expose.
+/// Uses the package filelist to check for files in bin/ or sbin/ directories.
+/// Returns true if the package has files in bin/ or sbin/ directories.
+fn package_has_binaries(store_root: &std::path::Path, pkgline: &str) -> bool {
+    // Get filelist for the package
+    let filelist = match crate::package_cache::map_pkgline2filelist(store_root, pkgline) {
+        Ok(list) => list,
+        Err(_) => return false,
+    };
+
+    // Check if any file is in a bin directory
+    for file in &filelist {
+        let file_lower = file.to_lowercase();
+        // Check for files in bin/ directories
+        if file_lower.starts_with("bin/") ||
+           file_lower.starts_with("sbin/") ||
+           file_lower.contains("/bin/") ||
+           file_lower.contains("/sbin/") {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Extend ebin_exposure to all dependencies (transitive) of meta-packages.
 ///
 /// This handles the case where a user requests a meta-package (like default-jdk)
 /// which depends on other packages that provide the actual executables (like
 /// openjdk-21-jdk-headless which contains javac). Without this, the meta-package
 /// would get ebin_exposure=true but its transitive dependencies would not,
 /// resulting in no executables being exposed.
+///
+/// NOTE: This only propagates ebin_exposure for meta-packages (packages without
+/// their own binaries). Regular packages with binaries do not propagate ebin_exposure
+/// to their dependencies, as the user only requested the package itself.
 fn extend_ebin_to_dependencies(packages: &mut InstalledPackagesMap) -> Result<()> {
     // Collect pkgkeys that have ebin_exposure=true (user-requested packages)
     let user_requested_pkgkeys: Vec<String> = packages.iter()
@@ -190,9 +219,26 @@ fn extend_ebin_to_dependencies(packages: &mut InstalledPackagesMap) -> Result<()
         return Ok(());
     }
 
-    // Use a worklist algorithm to propagate ebin_exposure to all transitive dependencies
-    let mut worklist: std::collections::VecDeque<String> = user_requested_pkgkeys.into_iter().collect();
+    // Get store root for filelist lookups
+    let store_root = crate::models::dirs().epkg_store.clone();
+
+    // Use a worklist algorithm to propagate ebin_exposure to transitive dependencies
+    // BUT only for meta-packages (packages without their own binaries)
+    let mut worklist: std::collections::VecDeque<String> = std::collections::VecDeque::new();
     let mut processed: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Initialize worklist with meta-packages only
+    for pkgkey in &user_requested_pkgkeys {
+        if let Some(info) = packages.get(pkgkey) {
+            // Only propagate for meta-packages (packages without binaries)
+            if !package_has_binaries(&store_root, &info.pkgline) {
+                log::debug!("Package {} is a meta-package (no binaries), will propagate ebin_exposure", pkgkey);
+                worklist.push_back(pkgkey.clone());
+            } else {
+                log::debug!("Package {} has binaries, not propagating ebin_exposure to dependencies", pkgkey);
+            }
+        }
+    }
 
     while let Some(pkgkey) = worklist.pop_front() {
         if processed.contains(&pkgkey) {
@@ -221,7 +267,10 @@ fn extend_ebin_to_dependencies(packages: &mut InstalledPackagesMap) -> Result<()
             if let Some(dep_info) = packages.get_mut(&dep_pkgkey) {
                 Arc::make_mut(dep_info).ebin_exposure = true;
                 log::debug!("Setting ebin_exposure=true for dependency {}", dep_pkgkey);
-                worklist.push_back(dep_pkgkey);
+                // Continue propagating only if this dependency is also a meta-package
+                if !package_has_binaries(&store_root, &dep_info.pkgline) {
+                    worklist.push_back(dep_pkgkey);
+                }
             }
         }
     }
