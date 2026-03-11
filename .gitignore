@@ -3,9 +3,10 @@
 /git/elf-loader/
 /git/resolvo/
 /git/rpm-rs/
-/git/libkrunfw/
 /git/libkrun/
-/git/linux/
+
+/git/sandbox-kernel/
+/git/linux-stable/
 /git/busybox/
 
 /target/

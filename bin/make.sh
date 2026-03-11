@@ -590,7 +590,7 @@ clone_repos() {
     clone_or_update_repo "https://gitee.com/wu_fengguang/resolvo"
     clone_or_update_repo "https://gitee.com/wu_fengguang/elf-loader"
     clone_or_update_repo "https://gitee.com/wu_fengguang/libkrun"
-    clone_or_update_repo "https://gitee.com/wu_fengguang/libkrunfw"
+    clone_or_update_repo "https://gitee.com/wu_fengguang/sandbox-kernel"
 
     if [[ "$mode" = "crossdev" ]]; then
         clone_or_update_repo "https://github.com/tpoechtrager/osxcross.git"
