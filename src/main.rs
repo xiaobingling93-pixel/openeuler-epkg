@@ -536,10 +536,10 @@ COMMANDS:
   Package Utilities:
     hash      Compute binary package hash
     unpack    Unpack package file(s) into store directory
-    convert   Convert rpm/deb/apk/... packages to epkg format
+    convert   Convert rpm/deb/apk/... packages to epkg format (not ready)
 
   Build:
-    build     Build package from source
+    build     Build package from source (not ready)
 
 OPTIONS:
       --config <FILE>               Configuration file to use
@@ -770,7 +770,7 @@ fn add_history_and_utility_subcommands(cmd: Command) -> Command {
         )
         .subcommand(
             Command::new("build")
-                .about("Build package from source")
+                .about("Build package from source (not ready)")
                 .arg(arg!(<PACKAGE_YAML> "Package YAML file to build"))
                 .arg_required_else_help(true)
         )
@@ -782,7 +782,7 @@ fn add_history_and_utility_subcommands(cmd: Command) -> Command {
         )
         .subcommand(
             Command::new("convert")
-                .about("Convert rpm/deb/apk/... packages to epkg format")
+                .about("Convert rpm/deb/apk/... packages to epkg format (not ready)")
                 .arg(arg!(--"out-dir" <OUTPUT_DIR> "Output directory").default_value("."))
                 .arg(arg!(--"origin-url" <ORIGIN_URL> "Where the package originated from").required(true))
                 .arg(arg!(<PACKAGE_FILE>... "Package files to convert (RPM, DEB, APK, etc.)").required(true))
