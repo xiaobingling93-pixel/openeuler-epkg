@@ -148,6 +148,63 @@ fn expose_packages(plan: &mut InstallationPlan) -> Result<()> {
 }
 ```
 
+### 5. extend_ebin_to_dependencies（元包处理）
+
+**位置**：`src/depends.rs`
+
+**作用**：为元包（meta-package）的依赖设置 `ebin_exposure=true`
+
+元包是指没有自己可执行文件的包，它们依赖其他包来提供实际功能。
+例如 `default-jdk` 是一个元包，它依赖 `openjdk-21-jdk` 来提供 `javac` 等工具。
+
+```rust
+fn extend_ebin_to_dependencies(packages: &mut InstalledPackagesMap) -> Result<()> {
+    // 收集用户请求的包
+    let user_requested_pkgkeys: Vec<String> = packages.iter()
+        .filter(|(_, info)| info.ebin_exposure)
+        .map(|(pkgkey, _)| pkgkey.clone())
+        .collect();
+
+    // 使用工作列表算法传播 ebin_exposure
+    // 但仅对元包（没有自己可执行文件的包）传播
+    let mut worklist: VecDeque<String> = VecDeque::new();
+
+    for pkgkey in &user_requested_pkgkeys {
+        if let Some(info) = packages.get(pkgkey) {
+            // 仅对元包传播
+            if !package_has_binaries(&store_root, &info.pkgline) {
+                worklist.push_back(pkgkey.clone());
+            }
+        }
+    }
+    // ... 传播逻辑
+}
+```
+
+**判断元包的方法**：
+
+```rust
+fn package_has_binaries(store_root: &Path, pkgline: &str) -> bool {
+    let filelist = map_pkgline2filelist(store_root, pkgline)?;
+
+    for file in &filelist {
+        let file_lower = file.to_lowercase();
+        // 检查是否有 bin/ 或 sbin/ 目录下的文件
+        if file_lower.starts_with("bin/") ||
+           file_lower.starts_with("sbin/") ||
+           file_lower.contains("/bin/") ||
+           file_lower.contains("/sbin/") {
+            return true;
+        }
+    }
+    false
+}
+```
+
+**为什么只对元包传播**：
+- 用户安装 `gcc` 时，只需要 `gcc` 本身被暴露，不需要所有依赖都被暴露
+- 用户安装 `default-jdk` 时，由于它是元包，需要传播到实际提供 `javac` 的 `openjdk-21-jdk`
+
 ## 调用流程
 
 ```
