@@ -633,10 +633,11 @@ fn run_unincorp_trigger_hooks(
             let matched_targets = vec![trigger_name.clone()];
             crate::hooks::execute_hook(hook.as_ref(), plan, &matched_targets)?;
         } else {
-            log::warn!("No hook found for trigger '{}' (hook name: '{}')", trigger_name, hook_name);
-            let mut available: Vec<&str> = plan.hooks_by_name.keys().map(String::as_str).collect();
-            available.sort();
-            log::debug!("Available hooks: {:?}", available);
+            // No hook found for this trigger - this is normal when the package
+            // that declared interest in this trigger is not installed.
+            // Example: libc-upgrade trigger's interest belongs to systemd package,
+            // but systemd might not be installed in minimal environments.
+            log::debug!("No hook found for trigger '{}' (no interested package installed)", trigger_name);
         }
     }
 
