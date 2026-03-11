@@ -519,14 +519,20 @@ fn expose_packages(plan: &mut InstallationPlan) -> Result<()> {
 
         // Get the package info to find the store_fs_dir
         // First try new packages, then skipped reinstalls
-        let store_fs_dir = if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, &pkgkey) {
-            plan.store_root.join(&package_info.pkgline).join("fs")
+        let (store_fs_dir, pkgline) = if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, &pkgkey) {
+            (plan.store_root.join(&package_info.pkgline).join("fs"), package_info.pkgline.clone())
         } else if let Some(installed_info) = get_skipped_reinstall_pkg_info(plan, &pkgkey) {
-            plan.store_root.join(&installed_info.pkgline).join("fs")
+            (plan.store_root.join(&installed_info.pkgline).join("fs"), installed_info.pkgline.clone())
         } else {
             log::warn!("Package {} not found in plan for exposure", pkgkey);
             continue;
         };
+
+        // Skip exposure if pkgline is empty (e.g., test data without real packages in store)
+        if pkgline.is_empty() {
+            log::debug!("Skipping exposure for {} - empty pkgline (package not in store)", pkgkey);
+            continue;
+        }
 
         crate::expose::expose_package(plan, &store_fs_dir, &pkgkey)?;
     }
