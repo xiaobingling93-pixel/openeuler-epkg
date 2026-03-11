@@ -173,100 +173,133 @@ fn extend_ebin_by_source(packages: &mut InstalledPackagesMap) -> Result<Installe
 }
 
 /// Check if a package is likely a meta-package (no binaries).
-/// Meta-packages typically have tiny installed_size in repo metadata.
-/// This is a heuristic that works well for Debian meta-packages.
+/// Uses multiple heuristics for robustness:
+/// 1. installed_size check: meta-packages typically have tiny installed_size (< 200KB)
+/// 2. filelist check: meta-packages don't have files in bin/ directories
 /// Note: installed_size == 0 is excluded as it may indicate missing metadata.
-fn pkg_is_likely_metapkg(pkgkey: &str) -> bool {
+///
+/// The filelist walk is low cost since the installed_size check excludes most packages,
+/// so the filelist check just makes it robust with little actual overhead.
+fn pkg_is_likely_metapkg(pkgkey: &str, pkgline: Option<&str>) -> bool {
     if let Ok(package) = crate::package_cache::load_package_info(pkgkey) {
         // installed_size is in BYTES from repo metadata
         // Meta-packages like default-jdk have tiny installed_size (6KB = 6000 bytes)
         // Regular packages like python3-dev have larger installed_size (150KB+)
         // Threshold: < 200KB to identify meta-packages
         // Exclude size == 0 as it may indicate missing metadata
-        let is_meta = package.installed_size > 0 && package.installed_size < 200 * 1024;
-        log::debug!("pkg_is_likely_metapkg: pkgkey={}, installed_size={}, is_meta={}",
-                   pkgkey, package.installed_size, is_meta);
-        return is_meta;
+        if package.installed_size == 0 || package.installed_size >= 200 * 1024 {
+            log::debug!("pkg_is_likely_metapkg: pkgkey={}, installed_size={} -> false (size check)",
+                       pkgkey, package.installed_size);
+            return false;
+        }
+    } else {
+        return false;
     }
-    false
+
+    // Secondary check: verify the package has no binaries
+    // This handles edge cases like rubypick which has tiny installed_size but provides bin/ruby
+    // The filelist may not be available for packages being installed (not yet downloaded)
+    if let Some(pkgline) = pkgline {
+        if !pkgline.is_empty() {
+            let store_root = &crate::models::dirs().epkg_store;
+            if let Ok(filelist) = crate::package_cache::map_pkgline2filelist(store_root, pkgline) {
+                // Check if any file is in a bin directory
+                for file in &filelist {
+                    let file_lower = file.to_lowercase();
+                    if file_lower.starts_with("bin/") ||
+                       file_lower.starts_with("sbin/") ||
+                       file_lower.contains("/bin/") ||
+                       file_lower.contains("/sbin/") {
+                        log::debug!("pkg_is_likely_metapkg: pkgkey={} -> false (has binary: {})",
+                                   pkgkey, file);
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
+    log::debug!("pkg_is_likely_metapkg: pkgkey={} -> true (no binaries)", pkgkey);
+    true
 }
 
-/// Extend ebin_exposure to all dependencies (transitive) of meta-packages.
+/// Get pkgkeys that should be exposed for meta-package dependencies.
 ///
 /// This handles the case where a user requests a meta-package (like default-jdk)
 /// which depends on other packages that provide the actual executables (like
-/// openjdk-21-jdk-headless which contains javac). Without this, the meta-package
-/// would get ebin_exposure=true but its transitive dependencies would not,
-/// resulting in no executables being exposed.
+/// openjdk-21-jdk-headless which contains javac).
 ///
-/// NOTE: This only propagates ebin_exposure for meta-packages (packages without
+/// NOTE: This only returns dependencies of meta-packages (packages without
 /// their own binaries). Regular packages with binaries do not propagate ebin_exposure
 /// to their dependencies, as the user only requested the package itself.
-fn extend_ebin_to_dependencies(packages: &mut InstalledPackagesMap) -> Result<()> {
+///
+/// Should be called after link_packages so filelist is available for robust detection.
+pub fn get_meta_package_exposures(packages: &InstalledPackagesMap) -> Result<Vec<String>> {
+    let mut pkgkeys_to_expose: Vec<String> = Vec::new();
+
     // Collect pkgkeys that have ebin_exposure=true (user-requested packages)
     let user_requested_pkgkeys: Vec<String> = packages.iter()
         .filter(|(_, info)| info.ebin_exposure)
         .map(|(pkgkey, _)| pkgkey.clone())
         .collect();
 
+    log::info!("get_meta_package_exposures: found {} user-requested packages", user_requested_pkgkeys.len());
+
     if user_requested_pkgkeys.is_empty() {
-        return Ok(());
+        return Ok(pkgkeys_to_expose);
     }
 
-    // Use a worklist algorithm to propagate ebin_exposure to transitive dependencies
-    // BUT only for meta-packages (packages without their own binaries)
-    let mut worklist: std::collections::VecDeque<String> = std::collections::VecDeque::new();
-    let mut processed: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    // Initialize worklist with meta-packages only
+    // For each user-requested package that is a meta-package,
+    // collect ALL its dependencies (including transitive)
     for pkgkey in &user_requested_pkgkeys {
-        if let Some(_info) = packages.get(pkgkey) {
+        if let Some(info) = packages.get(pkgkey) {
+            let is_meta = pkg_is_likely_metapkg(pkgkey, Some(&info.pkgline));
+            log::info!("Package {} meta-package check: is_meta={}, depends_count={}",
+                      pkgkey, is_meta, info.depends.len());
             // Only propagate for meta-packages
-            if pkg_is_likely_metapkg(pkgkey) {
-                log::debug!("Package {} is a meta-package, will propagate ebin_exposure", pkgkey);
-                worklist.push_back(pkgkey.clone());
-            } else {
-                log::debug!("Package {} has binaries, not propagating ebin_exposure to dependencies", pkgkey);
-            }
-        }
-    }
+            if is_meta {
+                log::debug!("Package {} is a meta-package, collecting all dependencies for exposure", pkgkey);
 
-    while let Some(pkgkey) = worklist.pop_front() {
-        if processed.contains(&pkgkey) {
-            continue;
-        }
-        processed.insert(pkgkey.clone());
+                // Iteratively expand to all transitive dependencies
+                let mut to_expose: std::collections::HashSet<String> = std::collections::HashSet::new();
+                let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
 
-        // Get dependencies of this package
-        let deps_to_add: Vec<String> = if let Some(info) = packages.get(&pkgkey) {
-            info.depends.iter()
-                .filter(|dep_pkgkey| {
-                    if let Some(dep_info) = packages.get(*dep_pkgkey) {
-                        !dep_info.ebin_exposure
-                    } else {
-                        false
+                // Start with direct dependencies
+                for dep in &info.depends {
+                    if !to_expose.contains(dep) {
+                        to_expose.insert(dep.clone());
+                        queue.push_back(dep.clone());
                     }
-                })
-                .cloned()
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        // Set ebin_exposure for dependencies and add them to worklist
-        for dep_pkgkey in deps_to_add {
-            if let Some(dep_info) = packages.get_mut(&dep_pkgkey) {
-                Arc::make_mut(dep_info).ebin_exposure = true;
-                log::debug!("Setting ebin_exposure=true for dependency {}", dep_pkgkey);
-                // Continue propagating only if this dependency is also a meta-package
-                if pkg_is_likely_metapkg(&dep_pkgkey) {
-                    worklist.push_back(dep_pkgkey);
                 }
+
+                // Expand to transitive dependencies
+                while let Some(dep_pkgkey) = queue.pop_front() {
+                    if let Some(dep_info) = packages.get(&dep_pkgkey) {
+                        for transitive_dep in &dep_info.depends {
+                            if !to_expose.contains(transitive_dep) {
+                                to_expose.insert(transitive_dep.clone());
+                                queue.push_back(transitive_dep.clone());
+                            }
+                        }
+                    }
+                }
+
+                // Collect dependencies that are in this packages map
+                for dep_pkgkey in &to_expose {
+                    if packages.contains_key(dep_pkgkey) {
+                        if !user_requested_pkgkeys.contains(dep_pkgkey) {
+                            pkgkeys_to_expose.push(dep_pkgkey.clone());
+                            log::debug!("Collecting {} for exposure (dependency of meta-package {})", dep_pkgkey, pkgkey);
+                        }
+                    }
+                }
+            } else {
+                log::debug!("Package {} has binaries, not collecting dependencies for exposure", pkgkey);
             }
         }
     }
 
-    Ok(())
+    Ok(pkgkeys_to_expose)
 }
 
 
@@ -543,9 +576,8 @@ pub fn resolve_and_install_packages(
     // Determine packages to expose based on source matching
     let packages_to_expose = extend_ebin_by_source(&mut all_packages_for_session)?;
 
-    // Also expose direct dependencies of user-requested packages
-    // This handles meta-packages like default-jdk that depend on packages providing executables
-    extend_ebin_to_dependencies(&mut all_packages_for_session)?;
+    // Note: extend_ebin_to_dependencies is now called after link_packages in install.rs
+    // so that filelist is available for robust meta-package detection
 
     if packages_to_expose.is_empty() && all_packages_for_session.is_empty() {
         let empty_msg = if user_request_world.is_some() {

@@ -399,16 +399,10 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
         }
     }
 
-    // Step 5: Expose skipped reinstalls that have ebin_exposure=true
-    // These are packages already installed but user explicitly requested them
+    // Step 5: Expose packages with ebin_exposure=true
+    // This includes both skipped reinstalls and dependencies of meta-packages
     {
-        let has_reinstalls_to_expose = plan.skipped_reinstalls.iter()
-            .any(|(_, info)| info.ebin_exposure);
-        if has_reinstalls_to_expose {
-            log::info!("Exposing {} skipped reinstalls with ebin_exposure=true",
-                plan.skipped_reinstalls.iter().filter(|(_, info)| info.ebin_exposure).count());
-            expose_packages(plan)?;
-        }
+        expose_packages(plan)?;
     }
 
     // Step 6: update X11 desktop database
@@ -510,6 +504,11 @@ fn expose_packages(plan: &mut InstallationPlan) -> Result<()> {
             pkgkeys_to_expose.push(pkgkey.clone());
         }
     }
+
+    // Also collect dependencies of meta-packages for exposure
+    // This handles meta-packages like default-jdk that depend on packages providing executables
+    let meta_exposures = crate::depends::get_meta_package_exposures(&plan.new_pkgs)?;
+    pkgkeys_to_expose.extend(meta_exposures);
 
     // Remove duplicates while preserving order
     let mut seen = std::collections::HashSet::new();
