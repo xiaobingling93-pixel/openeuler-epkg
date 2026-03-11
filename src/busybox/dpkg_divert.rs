@@ -199,11 +199,15 @@ fn add_diversion(opts: &DpkgDivertOptions) -> Result<i32> {
         ));
     }
 
-    if Path::new(&path).is_dir() {
-        return Err(eyre!(
-            "dpkg-divert: error: cannot divert directory: '{}' -> '{}'",
-            path, divert_to
-        ));
+    // Use symlink_metadata to check if path is a real directory without following symlinks.
+    // This is important for paths like /bin which is a symlink to /usr/bin on merged-usr systems.
+    if let Ok(metadata) = std::fs::symlink_metadata(&path) {
+        if metadata.is_dir() {
+            return Err(eyre!(
+                "dpkg-divert: error: cannot divert directory: '{}' -> '{}'",
+                path, divert_to
+            ));
+        }
     }
 
     let mut records = load_diversions();
