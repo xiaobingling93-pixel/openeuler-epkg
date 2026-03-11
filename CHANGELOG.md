@@ -2,6 +2,66 @@
 
 ---
 
+## [v0.2.4] – 2026-03-12
+
+### Added
+
+#### VMM Kernel Management
+- **sandbox-kernel repository** – New standalone repository for building VM kernels.
+- **Multi-arch kernel builds** – Build x86_64, aarch64, riscv64 kernels with single command: `./scripts/build.sh ALL`.
+- **Kernel naming convention** – `vmlinux-$KVER-$arch` format; multiple architectures can coexist.
+- **zstd compression** – Release kernels compressed with zstd for smaller downloads (~7.3MB vs ~26MB).
+
+#### libkrun Backend
+- **libkrun module** – New `src/libkrun.rs` for libkrun microVM backend support.
+- **vsock mode** – Unified control plane using vsock instead of TCP; improved reliability.
+- **External kernel support** – `--kernel` option to specify custom kernel image; ELF vmlinux only.
+- **Extra kernel cmdline** – `--kernel-args` for appending kernel cmdline.
+- **VM ready notification** – Eliminates vsock connection delay.
+
+#### Tool Mirror Acceleration
+- **tool_wrapper module** – Mirror acceleration for pip, npm, gem, cargo, go, mvn.
+- **Environment variables** – Pre-configured mirror URLs for CN region (`assets/tool/env_vars/cn/`).
+- **Wrapper scripts** – Transparent wrapper scripts for development tools.
+
+#### DPKG Compatibility
+- **dpkg_db module** – Generate dpkg-compatible metadata (`/var/lib/dpkg/status`, `available`, `info/*`) for real dpkg commands.
+- **Pending packages support** – Handle packages being installed during dpkg-query operations.
+
+#### Security
+- **AppArmor profile** – `assets/etc/apparmor.d/epkg` for confined execution.
+
+#### Testing
+- **dev-projects test suite** – Multi-language development tests (C, C++, Rust, Go, Python, Node.js, Ruby, Java, Lua, Lisp, Scala, Zig).
+- **test-env-register-activate.sh** – Environment registration and activation tests extended.
+
+#### Documentation (zh)
+- **Architecture docs** – dpkg-database, ebin-exposure, elf-loader, kernel-config, vmlinux-kernel.
+- **Troubleshooting docs** – Corresponding troubleshooting guides.
+- **User guides** – ebin-exposure, elf-loader, vmlinux-kernel.
+
+### Changed
+- **applets → busybox** – Renamed applets module to busybox for clarity.
+- **ebin exposure** – Extend transitively to all dependencies; limit propagation to meta-packages only.
+- **Meta-package detection** – Robust `pkg_is_likely_metapkg()` and `package_has_binaries()` for better exposure handling.
+- **Git repos reorganization** – Moved add-on repos to `git/` directory.
+
+### Fixed
+- **init** – Type mismatch and lifetime issues in `sha256_files_to_delete`.
+- **main** – Unpack command output to stdout instead of stderr.
+- **dpkg_divert** – `is_dir()` following symlinks on merged-usr systems.
+- **deb_triggers** – Demote 'no hook found' warning to debug level.
+- **install** – Skip exposure for packages with empty pkgline.
+- **expose** – Fix ebin wrapper creation for various edge cases (broken symlinks, paths without leading slash, Node.js wrappers).
+- **VM reliability** – vsock connection race, stdin thread blocking, shutdown delay, socket cleanup.
+- **lfs functions** – Replaced `fs::metadata()` and `.exists()` calls with explicit `lfs::` functions for consistent symlink handling.
+- **Various symlink handling** – Recursive symlink resolution, extract_tar_gz symlinks, relative symlink paths.
+
+### Statistics
+- **218 commits, 330 files changed, 12936 insertions(+), 1697 deletions(-)**
+
+---
+
 ## [v0.2.3] – 2026-03-01
 
 ### Added
