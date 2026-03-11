@@ -853,7 +853,7 @@ fn get_current_epkg_version_info() -> Result<EpkgVersionInfo> {
 /// Path to the default VM kernel image (from vmlinux release, written during `epkg self install`).
 /// Shared by libkrun and qemu.
 fn default_kernel_path() -> PathBuf {
-    dirs().user_envs.join(SELF_ENV).join("boot").join("kernel")
+    dirs().user_envs.join(SELF_ENV).join("boot").join("vmlinux")
 }
 
 /// Returns the default kernel path as a string if the file exists; otherwise None.
@@ -919,20 +919,20 @@ fn install_vmlinux(zst_path: &Path, version: &str) -> Result<()> {
     println!("  Decompressing vmlinux-{}...", version);
     let kernel_data = zstd_decompress_file(zst_path)?;
 
-    // Write to kernel-$version
-    let kernel_name = format!("kernel-{}", version);
-    let kernel_path = boot_dir.join(&kernel_name);
-    lfs::write(&kernel_path, &kernel_data)?;
+    // Write to vmlinux-$version
+    let vmlinux_name = format!("vmlinux-{}", version);
+    let vmlinux_path = boot_dir.join(&vmlinux_name);
+    lfs::write(&vmlinux_path, &kernel_data)?;
 
-    // Create symlink kernel -> kernel-$version
-    let kernel_link = boot_dir.join("kernel");
-    if kernel_link.exists() || kernel_link.is_symlink() {
-        lfs::remove_file(&kernel_link)?;
+    // Create symlink vmlinux -> vmlinux-$version
+    let vmlinux_link = boot_dir.join("vmlinux");
+    if vmlinux_link.exists() || vmlinux_link.is_symlink() {
+        lfs::remove_file(&vmlinux_link)?;
     }
     #[cfg(unix)]
-    lfs::symlink(&kernel_name, &kernel_link)?;
+    lfs::symlink(&vmlinux_name, &vmlinux_link)?;
 
-    println!("  Installed kernel: {} ({} bytes)", kernel_path.display(), kernel_data.len());
+    println!("  Installed kernel: {} ({} bytes)", vmlinux_path.display(), kernel_data.len());
 
     Ok(())
 }

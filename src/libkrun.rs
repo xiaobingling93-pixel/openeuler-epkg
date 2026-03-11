@@ -175,7 +175,12 @@ fn build_libkrun_config(
         }
     }
 
-    let kernel_path = run_options.kernel.clone();
+    let kernel_path = if run_options.kernel.is_some() {
+        run_options.kernel.clone()
+    } else {
+        // Fall back to default kernel path (envs/self/boot/vmlinux from `epkg self install`)
+        crate::init::default_kernel_path_if_exists()
+    };
     let kernel_format = if let Some(ref kernel) = kernel_path {
         Some(detect_kernel_format_for_libkrun(kernel)?)
     } else {
@@ -185,7 +190,7 @@ fn build_libkrun_config(
         log::debug!("libkrun: kernel path: {}", kernel);
         log::debug!("libkrun: kernel format: {:?}", kernel_format);
     } else {
-        log::debug!("libkrun: using vmlinux from sandbox-kernel (no --kernel specified)");
+        log::debug!("libkrun: no kernel available (no --kernel specified and no default kernel found)");
     }
 
     Ok(LibkrunConfig {
