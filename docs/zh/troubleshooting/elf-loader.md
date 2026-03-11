@@ -357,8 +357,6 @@ ls -la ~/.epkg/envs/<env>/ebin/<tool>
 
 ### 症状
 
-在 Conda 环境中直接运行 ebin 包装器失败：
-
 ```bash
 $ ~/.epkg/envs/dev-conda/ebin/gcc --version
 error: can't open /lib64/ld-linux-x86-64.so.2
@@ -366,51 +364,19 @@ error: can't open /lib64/ld-linux-x86-64.so.2
 
 ### 原因
 
-Conda 环境与传统 Linux 发行版有根本性的差异：
+**Conda 的应用程序设计为直接在 host OS 上运行，无需 ebin 包装器。**
 
-1. **库路径不同**：Conda 包将库放在 `lib/` 而非 `usr/lib/`
-2. **动态链接器缺失**：Conda 环境中没有 `/lib64/ld-linux-x86-64.so.2`
-3. **自包含设计**：Conda 设计为完全自包含，不依赖系统库
-
-### elf-loader 的工作原理
-
-elf-loader 需要设置正确的库路径来运行隔离环境中的二进制文件：
-
-```
-传统发行版（Alpine/Debian）:
-  /lib64/ld-linux-x86-64.so.2 → 存在
-  /usr/lib/ → 存在
-
-Conda 环境:
-  /lib64/ld-linux-x86-64.so.2 → 不存在！
-  lib/ → 存在（而非 usr/lib/）
-```
+Conda 环境与传统发行版的差异：
+- 库路径：`lib/` 而非 `usr/lib/`
+- 无 `/lib64/ld-linux-x86-64.so.2`
+- 自包含设计，不依赖系统库
 
 ### 解决方案
 
-**推荐方式**：使用 `epkg run` 而非直接运行 ebin 包装器：
+使用 `epkg run`：
 
 ```bash
-# 不要这样
-~/.epkg/envs/dev-conda/ebin/gcc --version
-
-# 而是这样
 epkg -e dev-conda run -- gcc --version
 ```
 
-`epkg run` 命令会正确设置命名空间和库路径，使 Conda 二进制文件能够正常运行。
-
-### 技术细节
-
-对于 Conda 环境，`run_ebin` 在测试中被跳过：
-
-```bash
-# tests/dev-projects/common.sh
-run_ebin() {
-    [ -z "${ENV_ROOT:-}" ] && return 0
-    [ "$OS" = "conda" ] && return 0  # 跳过 Conda
-    ...
-}
-```
-
-这是设计限制，而非 bug。Conda 的隔离模型与 epkg 的 elf-loader 方法不兼容。
+这是设计差异，而非 bug。

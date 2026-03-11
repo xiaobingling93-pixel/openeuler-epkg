@@ -182,6 +182,12 @@ fn package_has_binaries(store_root: &std::path::Path, pkgline: &str) -> bool {
         Err(_) => return false,
     };
 
+    // Early exit: meta-packages typically have very few files
+    // A package with < 10 files is likely a meta-package with no binaries
+    if filelist.len() < 10 {
+        return false;
+    }
+
     // Check if any file is in a bin directory
     for file in &filelist {
         let file_lower = file.to_lowercase();
