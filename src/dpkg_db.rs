@@ -312,14 +312,3 @@ pub fn generate_dpkg_database() -> Result<()> {
     create_all_dpkg_info_symlinks()?;
     Ok(())
 }
-
-/// Update dpkg database after package installation
-pub fn update_dpkg_database_for_package(pkgname: &str, pkgline: &str) -> Result<()> {
-    // Regenerate the status file
-    generate_dpkg_status()?;
-
-    // Create info symlinks for the new package
-    create_dpkg_info_symlinks(pkgname, pkgline)?;
-
-    Ok(())
-}
