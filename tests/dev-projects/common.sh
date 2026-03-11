@@ -40,8 +40,6 @@ _check_log_and_fail() {
         | grep -v 'OSSL_CMP_LOG_WARN' \
         | grep -v 'timed out after .* seconds' \
         | grep -v 'Hook.*failed:.*timed out' \
-        | grep -v 'emacsen-common: dpkg invocation failed' \
-        | grep -v 'dpkg-query: package.*is not installed' \
         | grep -v "exited with code [0-9]* (no_exit=true, continuing)" \
         | grep -q .; then
         echo "" >&2
