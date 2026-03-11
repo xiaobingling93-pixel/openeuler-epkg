@@ -141,6 +141,59 @@ epkg -e <env> run -- awk '
 ' /var/lib/dpkg/status | head -20
 ```
 
+## 问题：触发器激活但无 interest 包
+
+### 症状
+
+```bash
+# 安装包时出现 DEBUG 日志
+[DEBUG] No hook found for trigger 'libc-upgrade' (no interested package installed)
+```
+
+### 原因
+
+Debian 触发器机制允许一个包激活触发器，另一个包声明 interest 来处理它。
+当 interest 包未安装时，触发器被激活但没有处理程序，这是正常情况。
+
+典型例子：
+- `libc6` 的 postinst 调用 `dpkg-trigger --no-await libc-upgrade`
+- `libc-upgrade` 触发器的 `interest` 属于 `systemd` 包
+- 最小化环境通常不安装 `systemd`，所以没有 hook 处理该触发器
+
+### 触发器机制说明
+
+```
+包 A (libc6)                触发器                包 B (systemd)
+┌─────────────┐                              ┌─────────────────┐
+│ postinst    │ ──activate──▶ libc-upgrade ◀──interest─────│ systemd.triggers│
+│ dpkg-trigger│                              │ interest-noawait│
+└─────────────┘                              └─────────────────┘
+
+如果包 B 未安装，触发器激活后被静默忽略（正常行为）
+```
+
+### 排查步骤
+
+```bash
+# 1. 查找触发器的 interest 属于哪个包
+grep -r "interest.*<trigger-name>" /var/lib/dpkg/info/*.triggers
+
+# 例如查找 libc-upgrade
+grep -r "interest.*libc-upgrade" /var/lib/dpkg/info/*.triggers
+# 输出: systemd.triggers:interest-noawait libc-upgrade
+
+# 2. 检查该包是否安装
+dpkg -l systemd
+```
+
+### 解决方案
+
+这是 dpkg 的正常行为，无需处理。如果确实需要触发器功能，安装 interest 包即可：
+
+```bash
+epkg -e <env> install systemd
+```
+
 ## 已知限制
 
 1. **文件列表缺失**：`{pkg}.list` 文件不生成，`dpkg -L` 不工作
