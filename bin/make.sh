@@ -298,7 +298,7 @@ build_and_deploy_lua() {
     # Add musl compatibility shims for missing *64 functions
     echo "Adding musl compatibility shims..."
     $compiler -O2 -Wall -fPIC -D_FILE_OFFSET_BITS=64 -U_LARGEFILE64_SOURCE -c -o src/musl_compat.o "$PROJECT_ROOT/lib/musl_compat.c" || echo "Failed to compile musl_compat.c"
-    ar rcs src/liblua.a src/musl_compat.o || echo "Failed to add musl_compat.o to liblua.a"
+    ar rs src/liblua.a src/musl_compat.o || echo "Failed to add musl_compat.o to liblua.a"
     # Deploy
     mkdir -p "$lua_lib_dir"
     cp src/liblua.a "$lua_lib_dir/"
@@ -680,7 +680,8 @@ export_linker_var() {
 # Get Rust flags for architecture
 get_rustflags() {
     local arch="$1"
-    local common_opts=
+    # Force static CRT linkage for musl targets
+    local common_opts="-C target-feature=+crt-static"
     case "$arch" in
         x86_64|aarch64|riscv64|loongarch64)
             # Valid architecture
@@ -705,6 +706,51 @@ get_rustflags() {
             ;;
     esac
     echo "$cross_opts"
+}
+
+# Add musl compatibility shims to mlua-sys's Lua library
+# This is needed because mlua-sys builds its own Lua which may reference *64 functions
+# that don't exist in musl libc (musl always uses 64-bit file operations)
+add_musl_compat_to_mlua() {
+    local arch="$1"
+    local rust_target=$(get_rust_target "$arch")
+    local build_dir="$2"  # "debug" or "release"
+
+    # Find mlua-sys output directory
+    local mlua_lib_dir=$(find "$PROJECT_ROOT/target/$rust_target/$build_dir/build" -type d -name "out" -path "*mlua-sys*" 2>/dev/null | head -1)
+    if [[ -z "$mlua_lib_dir" ]]; then
+        return 0  # mlua-sys not built yet or not found
+    fi
+
+    local mlua_lib="$mlua_lib_dir/lib/liblua5.4.a"
+    if [[ ! -f "$mlua_lib" ]]; then
+        return 0  # library not found
+    fi
+
+    # Check if musl_compat.o is already in the library
+    if ar t "$mlua_lib" 2>/dev/null | grep -q "musl_compat.o"; then
+        return 0  # already added
+    fi
+
+    # Compile musl_compat.c for this architecture
+    local compiler=$(get_c_compiler "$arch" "musl")
+    local musl_compat_o="$mlua_lib_dir/musl_compat.o"
+
+    echo "Adding musl compatibility shims to mlua-sys's Lua library..."
+    $compiler -O2 -Wall -fPIC -D_FILE_OFFSET_BITS=64 -U_LARGEFILE64_SOURCE \
+        -c -o "$musl_compat_o" "$PROJECT_ROOT/lib/musl_compat.c" || {
+        echo "Warning: Failed to compile musl_compat.c for $arch" >&2
+        return 1
+    }
+
+    # Add to the library
+    ar rs "$mlua_lib" "$musl_compat_o" || {
+        echo "Warning: Failed to add musl_compat.o to mlua-sys library" >&2
+        return 1
+    }
+
+    echo "Added musl compatibility shims to $mlua_lib"
+    return 0
 }
 
 # Build static binary for a specific architecture with mode (debug/release)
@@ -750,12 +796,35 @@ build_static() {
         cargo_feature_args=(--features "$cargo_features")
     fi
 
+    local build_dir
     if [[ "$mode" == "release" ]]; then
-        cargo build --release --target "$rust_target" --ignore-rust-version "${cargo_feature_args[@]}"
-        local build_dir="release"
+        build_dir="release"
+        local cargo_args=(--release)
     else
-        cargo build --target "$rust_target" --ignore-rust-version "${cargo_feature_args[@]}"
-        local build_dir="debug"
+        build_dir="debug"
+        local cargo_args=()
+    fi
+
+    # For cross-compilation to musl targets using glibc cross-compilers,
+    # we need to add musl compatibility shims to mlua-sys's Lua library.
+    # This is because mlua-sys builds its own Lua which may reference *64 functions
+    # that don't exist in musl libc.
+    # We do a two-pass build: first build dependencies, then add shims, then build final.
+    if [[ "$arch" != "x86_64" ]] && ! is_native_arch "$arch"; then
+        # First pass: build dependencies only (this builds mlua-sys's Lua)
+        cargo build --target "$rust_target" --ignore-rust-version "${cargo_args[@]}" "${cargo_feature_args[@]}" 2>&1 | \
+            tee /tmp/epkg_build.log || true
+
+        # Add musl compatibility shims to mlua-sys's Lua library
+        add_musl_compat_to_mlua "$arch" "$build_dir"
+
+        # Second pass: build everything (may be a no-op if first pass succeeded)
+        if grep -q "undefined reference to" /tmp/epkg_build.log 2>/dev/null; then
+            echo "Retrying build after adding musl compatibility shims..."
+            cargo build --target "$rust_target" --ignore-rust-version "${cargo_args[@]}" "${cargo_feature_args[@]}"
+        fi
+    else
+        cargo build --target "$rust_target" --ignore-rust-version "${cargo_args[@]}" "${cargo_feature_args[@]}"
     fi
 
     # Deploy only for release mode

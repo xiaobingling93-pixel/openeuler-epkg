@@ -3,10 +3,16 @@
 
 #define _GNU_SOURCE
 #include <stdio.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #include <sys/types.h>
+
+// musl doesn't define off64_t (off_t is always 64-bit), so define it here
+#ifndef off64_t
+typedef off_t off64_t;
+#endif
 
 // fopen64 -> fopen
 FILE *fopen64(const char *pathname, const char *mode) {
@@ -21,6 +27,21 @@ FILE *freopen64(const char *pathname, const char *mode, FILE *stream) {
 // tmpfile64 -> tmpfile
 FILE *tmpfile64(void) {
     return tmpfile();
+}
+
+// fseeko64 -> fseeko
+int fseeko64(FILE *stream, off64_t offset, int whence) {
+    return fseeko(stream, (off_t)offset, whence);
+}
+
+// ftello64 -> ftello
+off64_t ftello64(FILE *stream) {
+    return (off64_t)ftello(stream);
+}
+
+// mkstemp64 -> mkstemp
+int mkstemp64(char *template) {
+    return mkstemp(template);
 }
 
 // Additional *64 functions that might be needed
@@ -39,4 +60,4 @@ FILE *tmpfile64(void) {
 // }
 
 // Note: We don't need to implement all *64 functions, only those referenced.
-// Lua references fopen64, freopen64, tmpfile64.
+// Lua references: fopen64, freopen64, tmpfile64, fseeko64, ftello64, mkstemp64.
