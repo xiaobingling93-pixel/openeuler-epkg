@@ -1417,11 +1417,11 @@ pub fn rename_or_copy_dir(src: &Path, dst: &Path) -> Result<()> {
                        src.display(), dst.display());
             #[cfg(unix)]
             {
-                let mut cp_options = crate::applets::cp::CpOptions::default();
+                let mut cp_options = crate::busybox::cp::CpOptions::default();
                 cp_options.archive = true; // cp -a
                 cp_options.force = true; // force overwrite
                 cp_options.compute_derived();
-                crate::applets::cp::copy_directory_recursive(src, dst, &cp_options)
+                crate::busybox::cp::copy_directory_recursive(src, dst, &cp_options)
                     .wrap_err_with(|| format!("Failed to copy directory from {} to {}", src.display(), dst.display()))?;
             }
             #[cfg(not(unix))]

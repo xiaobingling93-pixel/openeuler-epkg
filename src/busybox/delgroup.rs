@@ -1,7 +1,7 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 
-use crate::applets::groupdel::{GroupDelOptions, run as run_groupdel};
+use crate::busybox::groupdel::{GroupDelOptions, run as run_groupdel};
 
 #[derive(Debug, Clone)]
 pub struct DelGroupCmd {

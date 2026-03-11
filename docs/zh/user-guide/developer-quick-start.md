@@ -46,8 +46,7 @@ epkg -e $os run bash
 - **单元测试** — 树内的 `.rs` 测试：`cargo test`（或使用项目的测试运行器）。
 - **tests/solver** — 解析器测试。
 - **tests/lua** — Lua 测试。
-- **tests/busybox** — 外部 busybox 测试。
-- **tests/applets** — Busybox 小程序测试。
+- **tests/busybox** — BusyBox 小程序测试和上游测试套件集成。
 - **tests/e2e** — 端到端：bare-rootfs、export-import、history-restore、public-multi-user、env-register-activate、install-remove-upgrade。从 `tests/e2e/` 运行（请参阅 [tests/e2e/README.md](../../../tests/e2e/README.md)）。
 
 ## 另请参阅

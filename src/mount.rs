@@ -34,7 +34,7 @@ use crate::lfs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use crate::applets::mount::parse_mount_options;
+use crate::busybox::mount::parse_mount_options;
 use crate::dirs;
 use crate::models::{config, MountSpec, SandboxMode};
 use crate::RunOptions;

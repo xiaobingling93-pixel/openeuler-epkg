@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use crate::posix::{posix_stat, PosixError};
-use crate::applets::{format_list_columns, terminal_width, visible_width_ansi};
+use crate::busybox::{format_list_columns, terminal_width, visible_width_ansi};
 use users::{get_user_by_uid, get_group_by_gid};
 use libc;
 use std::io::IsTerminal;

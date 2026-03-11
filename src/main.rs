@@ -108,7 +108,7 @@ mod qemu;
 mod libkrun;
 #[cfg(unix)]
 mod vm_client;
-mod applets;
+mod busybox;
 mod info;
 mod list;
 mod search;
@@ -176,7 +176,7 @@ fn main() -> Result<()> {
     let invoked_as_init = argv.first().map(|a| std::path::Path::new(a).file_name()) == Some(Some(std::ffi::OsStr::new("init")));
     #[cfg(target_os = "linux")]
     if invoked_as_init {
-        crate::applets::init::init_logging_early();
+        crate::busybox::init::init_logging_early();
     }
     setup_logging();
 
@@ -190,7 +190,7 @@ fn main() -> Result<()> {
     log::debug!("argv[{}]: {:?}", argv.len(), argv);
 
     // Init CONFIG (and CLAP_MATCHES) for either applet or epkg main invocation
-    let invoked_as_applet = crate::applets::is_invoked_as_applet();
+    let invoked_as_applet = crate::busybox::is_invoked_as_applet();
     init_config(invoked_as_applet)?;
     setup_ctrlc();
 
@@ -211,7 +211,7 @@ fn main() -> Result<()> {
 
     // If invoked as an applet (via symlink/hardlink), handle it and return early
     if invoked_as_applet {
-        match crate::applets::handle_applet_invocation()? {
+        match crate::busybox::handle_applet_invocation()? {
             Some(_) => return Ok(()), // Handled as applet, exit
             None => {} // Should not happen after is_invoked_as_applet()
         }
@@ -222,7 +222,7 @@ fn main() -> Result<()> {
     #[cfg(target_os = "linux")]
     if invoked_as_init {
         log::debug!("init: invoked as init, running init process");
-        use crate::applets::init::run;
+        use crate::busybox::init::run;
         run(()).wrap_err("init: init::run failed")?;
         return Ok(());
     }
@@ -940,13 +940,13 @@ EXAMPLES:
 
 fn add_busybox_subcommand(cmd: Command) -> Command {
 
-    let width = crate::applets::terminal_width();
+    let width = crate::busybox::terminal_width();
     let width = if width == 0 { 80 } else { width };
 
     // Format commands list for help output (compact, wrapped to terminal width)
     let mut commands_list = String::new();
     commands_list.push_str("Commands:\n");
-    commands_list.push_str(&crate::applets::format_applet_list_compact(width));
+    commands_list.push_str(&crate::busybox::format_applet_list_compact(width));
 
     cmd.subcommand(
             Command::new("busybox")

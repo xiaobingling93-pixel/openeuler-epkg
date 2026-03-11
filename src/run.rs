@@ -724,7 +724,7 @@ pub fn command_run(_sub_matches: &clap::ArgMatches) -> Result<()> {
 pub fn command_busybox(sub_matches: &clap::ArgMatches) -> Result<()> {
     // Handle --list flag
     if sub_matches.get_flag("list") {
-        println!("{}", crate::applets::sorted_applet_names().join("\n"));
+        println!("{}", crate::busybox::sorted_applet_names().join("\n"));
         return Ok(());
     }
 
@@ -734,13 +734,13 @@ pub fn command_busybox(sub_matches: &clap::ArgMatches) -> Result<()> {
      */
     match sub_matches.subcommand() {
         Some((cmd_name, cmd_matches)) => {
-            let known = crate::applets::busybox_subcommands()
+            let known = crate::busybox::busybox_subcommands()
                 .iter()
                 .any(|c| c.get_name() == cmd_name);
             if known {
                 debug!("Running built-in command: {}", cmd_name);
                 // Find the applet command
-                let applet_cmd = crate::applets::busybox_subcommands()
+                let applet_cmd = crate::busybox::busybox_subcommands()
                     .into_iter()
                     .find(|c| c.get_name() == cmd_name)
                     .expect("Applet command should exist");
@@ -764,7 +764,7 @@ pub fn command_busybox(sub_matches: &clap::ArgMatches) -> Result<()> {
                     // Parse arguments using the applet's command parser
                     match applet_cmd.clone().try_get_matches_from(all_args) {
                         Ok(parsed_matches) => {
-                            crate::applets::exec_builtin_command(cmd_name, &parsed_matches)
+                            crate::busybox::exec_builtin_command(cmd_name, &parsed_matches)
                         }
                         Err(e) => {
                             // If parsing fails, print error and exit with appropriate code
@@ -784,7 +784,7 @@ pub fn command_busybox(sub_matches: &clap::ArgMatches) -> Result<()> {
                      * - This mode would cause option name conflicts if used
                      */
                     // Matches are already parsed by applet command parser (when subcommands are registered)
-                    crate::applets::exec_builtin_command(cmd_name, cmd_matches)
+                    crate::busybox::exec_builtin_command(cmd_name, cmd_matches)
                 }
             } else {
                 /* Unknown applet:

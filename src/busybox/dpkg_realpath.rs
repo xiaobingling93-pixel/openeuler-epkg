@@ -5,8 +5,8 @@ use std::env;
 use std::path::Path;
 
 // Import the realpath module to reuse its functionality
-use crate::applets::realpath;
-use crate::applets::realpath::RealpathOptions;
+use crate::busybox::realpath;
+use crate::busybox::realpath::RealpathOptions;
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<RealpathOptions> {
     let files: Vec<String> = matches.get_many::<String>("files")

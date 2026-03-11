@@ -25,7 +25,7 @@ perf.data*
 tests/e2e/reproduce/
 
 # Auto-generated files
-/src/applets/_modules_gen.rs
+/src/busybox/_modules_gen.rs
 
 /.cargo/
 /.claude/

@@ -1,7 +1,7 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 
-use crate::applets::groupadd::{GroupAddOptions, run as run_groupadd};
+use crate::busybox::groupadd::{GroupAddOptions, run as run_groupadd};
 use crate::userdb::add_user_to_group;
 use crate::userdb::{group_exists, user_exists};
 use crate::userdb;

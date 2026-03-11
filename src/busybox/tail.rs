@@ -2,7 +2,7 @@ use clap::Command;
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use std::io::{BufRead, Read};
-use crate::applets::head::{open_file_as_bufread, open_file_as_read, print_file_header, parse_head_tail_options, head_tail_command};
+use crate::busybox::head::{open_file_as_bufread, open_file_as_read, print_file_header, parse_head_tail_options, head_tail_command};
 
 pub struct TailOptions {
     pub files: Vec<String>,

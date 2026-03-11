@@ -383,7 +383,7 @@ fn create_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -> Result
     }
 
     // Automatically discover all applets and create symlinks
-    crate::applets::create_all_applet_symlinks(env_root, pkg_format)?;
+    crate::busybox::create_all_applet_symlinks(env_root, pkg_format)?;
 
     Ok(())
 }

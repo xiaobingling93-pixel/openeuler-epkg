@@ -41,7 +41,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use crate::userdb;
-use crate::applets::systemd_tmpfiles::find_default_config_files;
+use crate::busybox::systemd_tmpfiles::find_default_config_files;
 
 const SYSUSERS_DIRS: &[&str] = &[
     "/etc/sysusers.d",

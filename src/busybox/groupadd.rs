@@ -2,7 +2,7 @@ use clap::{Arg, Command};
 use color_eyre::Result;
 use std::path::Path;
 
-use crate::applets::systemd_sysusers::validate_user_group_name;
+use crate::busybox::systemd_sysusers::validate_user_group_name;
 use crate::userdb::{group_exists, user_exists};
 use crate::userdb;
 

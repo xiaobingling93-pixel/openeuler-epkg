@@ -51,8 +51,8 @@ use std::io::ErrorKind;
 use std::os::unix::fs::chown;
 use std::path::{Path, PathBuf};
 
-use crate::applets::cp::copy_single_item;
-use crate::applets::systemd_sysusers::apply_root;
+use crate::busybox::cp::copy_single_item;
+use crate::busybox::systemd_sysusers::apply_root;
 use crate::posix::{posix_getgroup, posix_getpasswd, posix_mkfifo};
 use crate::utils::set_permissions_from_mode;
 use glob::glob;
@@ -845,7 +845,7 @@ fn process_copy_line(parts: &[String], modifiers: &Modifiers, root: Option<&Path
 
     // Copy recursively, preserving symlinks (dereference=false)
     // Use preserve=true to keep source attributes, but we'll override with specified mode/user/group later
-    let mut cp_options = crate::applets::cp::CpOptions::default();
+    let mut cp_options = crate::busybox::cp::CpOptions::default();
     cp_options.archive = true; // cp -a
     cp_options.force = modifiers.append_or_force; // force overwrite if + modifier
     cp_options.no_clobber = !modifiers.append_or_force;

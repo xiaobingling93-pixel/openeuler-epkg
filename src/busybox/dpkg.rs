@@ -3,7 +3,7 @@ use color_eyre::Result;
 use std::cmp::Ordering;
 
 use crate::models::{PackageFormat};
-use crate::applets::rpm::{pkgline_to_package_and_installed_info, select_installed_packages_by_predicate};
+use crate::busybox::rpm::{pkgline_to_package_and_installed_info, select_installed_packages_by_predicate};
 use crate::version_compare::compare_versions;
 
 #[derive(Debug, Clone)]
@@ -183,21 +183,21 @@ fn run_status(patterns: &[String]) -> i32 {
 }
 
 fn run_dpkg_query(args: Vec<String>) -> i32 {
-    let cmd = crate::applets::dpkg_query::command();
+    let cmd = crate::busybox::dpkg_query::command();
     let matches = match cmd.try_get_matches_from(args.clone()) {
         Ok(m) => m,
         Err(e) => {
             crate::utils::handle_clap_error_with_cmdline(e, args.join(" "));
         }
     };
-    let opts = match crate::applets::dpkg_query::parse_options(&matches) {
+    let opts = match crate::busybox::dpkg_query::parse_options(&matches) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("dpkg-query: {}", e);
             return 2;
         }
     };
-    if let Err(e) = crate::applets::dpkg_query::run(opts) {
+    if let Err(e) = crate::busybox::dpkg_query::run(opts) {
         eprintln!("dpkg-query: {}", e);
         return 2;
     }

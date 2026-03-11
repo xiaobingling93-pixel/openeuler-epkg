@@ -3,9 +3,9 @@ use color_eyre::Result;
 use std::path::Path;
 
 use crate::userdb::{group_exists, user_exists};
-use crate::applets::groupdel::{GroupDelOptions, run as run_groupdel};
+use crate::busybox::groupdel::{GroupDelOptions, run as run_groupdel};
 use crate::userdb;
-use crate::applets::userdel::UserDelOptions;
+use crate::busybox::userdel::UserDelOptions;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DelUserMode {
@@ -113,7 +113,7 @@ pub fn command() -> Command {
 
 fn delete_account(cmd: DelUserCmd) -> Result<()> {
     // Delegate to userdel core
-    crate::applets::userdel::run(cmd.options)
+    crate::busybox::userdel::run(cmd.options)
 }
 
 fn delete_group(cmd: DelUserCmd) -> Result<()> {

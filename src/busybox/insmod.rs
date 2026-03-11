@@ -47,6 +47,6 @@ pub fn run(options: InsmodOptions) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         let path = Path::new(&options.filename);
-        crate::applets::modprobe::load_module(path, &options.params)
+        crate::busybox::modprobe::load_module(path, &options.params)
     }
 }

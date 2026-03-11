@@ -102,8 +102,7 @@ epkg -e $os run bash
 - **Unit tests** — In-tree `.rs` tests: `cargo test` (or use the project’s test runner).
 - **tests/solver** — Solver tests.
 - **tests/lua** — Lua tests.
-- **tests/busybox** — External busybox tests.
-- **tests/applets** — Busybox applets tests.
+- **tests/busybox** — BusyBox applets tests and upstream test suite integration.
 - **tests/e2e** — End-to-end: bare-rootfs, export-import, history-restore, public-multi-user, env-register-activate, install-remove-upgrade. Run from `tests/e2e/` (see [tests/e2e/README.md](../../../tests/e2e/README.md)).
 
 ## See also

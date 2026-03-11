@@ -3,7 +3,7 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use std::fs;
 use std::path::Path;
-use crate::applets::extract_reference_metadata;
+use crate::busybox::extract_reference_metadata;
 use crate::posix::posix_chmod;
 
 pub struct ChmodOptions {

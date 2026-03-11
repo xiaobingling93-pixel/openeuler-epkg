@@ -4,7 +4,7 @@ use color_eyre::eyre::eyre;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, Write};
-use crate::applets::comm::open_file_or_stdin;
+use crate::busybox::comm::open_file_or_stdin;
 
 #[derive(Clone)]
 pub struct UniqOptions {

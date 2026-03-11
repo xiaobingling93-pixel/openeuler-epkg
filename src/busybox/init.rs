@@ -302,8 +302,8 @@ fn exec_vm_daemon() -> Result<()> {
     // This avoids issues with symlink resolution when vm-daemon -> epkg -> /home/wfg/.epkg/envs/self/...
     // and the epkg binary is accessed via virtiofs bind mounts.
     log::debug!("init: starting vm-daemon directly (no exec)");
-    let options = crate::applets::vm_daemon::VmDaemonOptions::default();
-    let result = crate::applets::vm_daemon::run(options);
+    let options = crate::busybox::vm_daemon::VmDaemonOptions::default();
+    let result = crate::busybox::vm_daemon::run(options);
     log::debug!("init: vm_daemon::run() returned: {:?}", result);
     // vm_daemon returns after handling command; trigger immediate shutdown
     // to avoid waiting for PID 1's 1-second poll loop
@@ -402,7 +402,7 @@ fn ensure_minimal_dev() -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn try_load_module(name: &str) -> bool {
-    let r = crate::applets::modprobe::run(crate::applets::modprobe::ModprobeOptions {
+    let r = crate::busybox::modprobe::run(crate::busybox::modprobe::ModprobeOptions {
         remove: false,
         quiet: false,
         module: name.to_string(),
@@ -583,7 +583,7 @@ fn configure_network() -> Result<(), String> {
                 GUEST_NETMASK.0, GUEST_NETMASK.1, GUEST_NETMASK.2, GUEST_NETMASK.3);
 
     log::debug!("init: ifconfig {} up", iface);
-    crate::applets::ifconfig::run(crate::applets::ifconfig::IfconfigOptions {
+    crate::busybox::ifconfig::run(crate::busybox::ifconfig::IfconfigOptions {
         interface: iface.clone(),
         address: None,
         netmask: None,
@@ -595,7 +595,7 @@ fn configure_network() -> Result<(), String> {
     log::debug!("init: ifconfig {} {}.{}.{}.{}/{}.{}.{}.{}", iface,
                 GUEST_IP.0, GUEST_IP.1, GUEST_IP.2, GUEST_IP.3,
                 GUEST_NETMASK.0, GUEST_NETMASK.1, GUEST_NETMASK.2, GUEST_NETMASK.3);
-    crate::applets::ifconfig::run(crate::applets::ifconfig::IfconfigOptions {
+    crate::busybox::ifconfig::run(crate::busybox::ifconfig::IfconfigOptions {
         interface: iface.clone(),
         address: Some(Ipv4Addr::new(GUEST_IP.0, GUEST_IP.1, GUEST_IP.2, GUEST_IP.3)),
         netmask: Some(Ipv4Addr::new(GUEST_NETMASK.0, GUEST_NETMASK.1, GUEST_NETMASK.2, GUEST_NETMASK.3)),
@@ -607,9 +607,9 @@ fn configure_network() -> Result<(), String> {
 
     log::debug!("init: route add default via {}.{}.{}.{} dev {}",
                 GATEWAY_IP.0, GATEWAY_IP.1, GATEWAY_IP.2, GATEWAY_IP.3, iface);
-    crate::applets::route::run(crate::applets::route::RouteOptions {
-        operation: crate::applets::route::Operation::Add,
-        target: crate::applets::route::Target::Default,
+    crate::busybox::route::run(crate::busybox::route::RouteOptions {
+        operation: crate::busybox::route::Operation::Add,
+        target: crate::busybox::route::Target::Default,
         gateway: Some(Ipv4Addr::new(GATEWAY_IP.0, GATEWAY_IP.1, GATEWAY_IP.2, GATEWAY_IP.3)),
         interface: Some(iface),
     })

@@ -2,7 +2,7 @@ use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use std::path::Path;
-use crate::applets::extract_reference_metadata;
+use crate::busybox::extract_reference_metadata;
 
 pub struct ChgrpOptions {
     pub group: String,

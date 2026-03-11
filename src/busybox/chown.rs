@@ -3,7 +3,7 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use nix::unistd;
 use std::path::Path;
-use crate::applets::extract_reference_metadata;
+use crate::busybox::extract_reference_metadata;
 use walkdir::WalkDir;
 use crate::posix::resolve_user_group_ids;
 

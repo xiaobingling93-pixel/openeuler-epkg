@@ -3,7 +3,7 @@ use color_eyre::Result;
 use std::fs;
 use crate::models::InstalledPackageInfo;
 use crate::models::dirs;
-use crate::applets::rpm::{
+use crate::busybox::rpm::{
     path_match_matches, path_match_prepare, pkgline_to_package_and_installed_info,
     resolve_package_spec, select_installed_pkglines_owning_path,
 };

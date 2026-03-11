@@ -4,7 +4,7 @@ use color_eyre::Result;
 use crate::userdb::{add_user_to_group, ensure_group};
 use crate::userdb::{group_exists, user_exists};
 use crate::userdb;
-use crate::applets::useradd::UserAddOptions;
+use crate::busybox::useradd::UserAddOptions;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AddUserMode {
@@ -241,7 +241,7 @@ pub fn run(cmd: AddUserCmd) -> Result<()> {
                 opts.home = Some("/nonexistent".to_string());
             }
             // Use useradd helper
-            crate::applets::useradd::run(opts)?;
+            crate::busybox::useradd::run(opts)?;
         }
     }
 
