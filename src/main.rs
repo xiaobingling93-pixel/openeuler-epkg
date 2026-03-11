@@ -2034,8 +2034,8 @@ fn command_unpack(sub_matches: &clap::ArgMatches) -> Result<()> {
                     eprintln!("No packages were unpacked by the store. This might indicate issues with the provided files or empty input.");
                 } else {
                     for final_dir in &final_dirs {
-                        // Print both the final directory path and the pkgline (directory name)
-                        eprintln!("{}", final_dir.display());
+                        // Print the final directory path to stdout for shell capture
+                        println!("{}", final_dir.display());
                     }
                 }
             }
