@@ -3,6 +3,16 @@
 // These can be tested independently and reused outside of Lua bindings
 //
 // Compatible with /c/rpm-software-management/rpm/rpmio/lposix.cc
+//
+// NOTE: epkg is compiled with musl libc (target: x86_64-unknown-linux-musl).
+// musl libc returns POSIX-mandated minimum values for some sysconf() and
+// pathconf() parameters, while glibc queries actual runtime kernel values.
+// Known differences (musl returns POSIX min, glibc returns runtime):
+//   - _SC_ARG_MAX:     musl=131072, glibc=runtime (e.g., 2097152)
+//   - _SC_NGROUPS_MAX: musl=32, glibc=runtime (e.g., 65536)
+//   - _PC_LINK_MAX:    musl=8, glibc=runtime (e.g., 127)
+// These are NOT bugs - both behaviors are POSIX compliant. The POSIX spec
+// defines these as "minimum values" that must be at least the specified amount.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

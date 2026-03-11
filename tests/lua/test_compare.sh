@@ -1,6 +1,14 @@
 #!/bin/bash
 # Compare epkg rpmlua with system rpm rpmlua for basic posix functions
 # This script tests compatibility between implementations
+#
+# Note: epkg is compiled with musl libc while system rpm uses glibc.
+# musl returns POSIX-mandated minimum values for some sysconf/pathconf
+# parameters, while glibc queries actual runtime kernel values.
+# Known differences:
+#   - ARG_MAX:     musl=131072 (POSIX min), glibc=runtime value
+#   - NGROUPS_MAX: musl=32 (POSIX min), glibc=runtime value
+#   - LINK_MAX:    musl=8 (POSIX min), glibc=runtime value
 
 set -e
 
@@ -17,6 +25,11 @@ fi
 
 TEST_DIR="/tmp/epkg_posix_compare_test"
 mkdir -p "$TEST_DIR"
+
+# Known differences between musl (epkg) and glibc (rpm) for sysconf/pathconf.
+# musl returns POSIX minimum values, glibc returns runtime kernel values.
+# These are NOT bugs - both behaviors are POSIX compliant.
+MUSL_GLIBC_DIFFS="arg_max ngroups_max link_max"
 
 
 # Helper function to compare epkg and rpm rpmlua results
@@ -44,7 +57,19 @@ compare_test() {
     RPM_NORMALIZED="${RPM_RESULT%.0}"
 
     if [ "$EPKG_RESULT" != "$RPM_NORMALIZED" ]; then
-        echo "  WARNING: Results differ"
+        # Check if this is a known musl vs glibc difference
+        local is_known_diff=false
+        for diff in $MUSL_GLIBC_DIFFS; do
+            if [[ "$test_name" == *"$diff"* ]]; then
+                is_known_diff=true
+                break
+            fi
+        done
+        if $is_known_diff; then
+            echo "  KNOWN: musl/glibc difference (POSIX min vs runtime value)"
+        else
+            echo "  WARNING: Results differ"
+        fi
     else
         echo "  OK: Results match"
     fi
