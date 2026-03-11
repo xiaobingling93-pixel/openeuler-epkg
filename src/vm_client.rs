@@ -196,14 +196,23 @@ fn build_command_request(cmd_parts: &[String], should_use_pty: bool) -> serde_js
     request
 }
 
+/// Resolve use_pty option to actual PTY usage.
+/// - `Some(true)` → force PTY
+/// - `Some(false)` → force no PTY
+/// - `None` → auto-detect based on stdin.is_terminal()
+fn resolve_use_pty(use_pty: Option<bool>) -> bool {
+    match use_pty {
+        Some(true) => true,
+        Some(false) => false,
+        None => std::io::stdin().is_terminal(),
+    }
+}
 
 /// Helper to send a command via TCP to the guest VM.
-/// If `use_pty` is `None`, defaults to no PTY. Use `Some(true)` to force PTY, `Some(false)` to force no PTY.
+/// If `use_pty` is `None`, auto-detects based on stdin.is_terminal().
+/// Use `Some(true)` to force PTY, `Some(false)` to force no PTY.
 pub fn send_command_via_tcp(cmd_parts: &[String], use_pty: Option<bool>) -> Result<i32> {
-    let should_use_pty = match use_pty {
-        Some(true) => true,
-        Some(false) | None => false,
-    };
+    let should_use_pty = resolve_use_pty(use_pty);
     log::debug!("vm_client: use_pty={:?}, should_use_pty={}", use_pty, should_use_pty);
     // Connect to guest TCP server with retry
     let mut stream = connect_with_retry(60)?;
@@ -221,7 +230,8 @@ pub fn send_command_via_tcp(cmd_parts: &[String], use_pty: Option<bool>) -> Resu
 }
 
 /// Helper to send a command via vsock to the guest VM.
-/// If `use_pty` is `None`, defaults to no PTY. Use `Some(true)` to force PTY, `Some(false)` to force no PTY.
+/// If `use_pty` is `None`, auto-detects based on stdin.is_terminal().
+/// Use `Some(true)` to force PTY, `Some(false)` to force no PTY.
 ///
 /// For libkrun, pass `unix_socket_path` to connect via Unix socket instead of AF_VSOCK.
 /// For QEMU, pass `None` to use AF_VSOCK.
@@ -231,10 +241,7 @@ pub fn send_command_via_vsock(
     port: u32,
     unix_socket_path: Option<&std::path::Path>,
 ) -> Result<i32> {
-    let should_use_pty = match use_pty {
-        Some(true) => true,
-        Some(false) | None => false,
-    };
+    let should_use_pty = resolve_use_pty(use_pty);
     log::debug!("vm_client: use_pty={:?}, should_use_pty={} (vsock port {})", use_pty, should_use_pty, port);
 
     let mut stream = if let Some(sock_path) = unix_socket_path {
@@ -283,10 +290,7 @@ pub fn wait_ready_and_send_command(
     cmd_port: u32,
     unix_socket_path: Option<&std::path::Path>,
 ) -> Result<i32> {
-    let should_use_pty = match use_pty {
-        Some(true) => true,
-        Some(false) | None => false,
-    };
+    let should_use_pty = resolve_use_pty(use_pty);
     log::debug!("vm_client: use_pty={:?}, should_use_pty={} (cmd port {})", use_pty, should_use_pty, cmd_port);
 
     // For libkrun mode with ready notification (Unix socket)
