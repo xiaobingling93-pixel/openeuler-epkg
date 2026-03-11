@@ -239,7 +239,10 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
 
     // Delete .sha256 files first: gitee.com HTTP headers have no file timestamp,
     // so download.rs would think "File unchanged" based on file size matching.
-    let sha256_files_to_delete = vec![&init_plan.elf_loader_sha_path, &init_plan.epkg_binary_sha_path];
+    let sha256_files_to_delete = vec![
+        init_plan.elf_loader_sha_path.as_path(),
+        init_plan.epkg_binary_sha_path.as_path(),
+    ];
     #[cfg(all(feature = "libkrun", target_os = "linux"))]
     if let Some(ref sha_path) = init_plan.vmlinux_path {
         sha256_files_to_delete.push(sha_path.with_extension("zst.sha256").as_path());
