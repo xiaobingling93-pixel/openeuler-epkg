@@ -290,6 +290,14 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
         save_installed_packages(&new_generation)?;
         save_world(&new_generation)?;
         update_current_generation_symlink_with_root(&generations_root, new_generation)?;
+
+        // Generate dpkg database for Debian/Ubuntu environments
+        // This allows the real dpkg/dpkg-query commands to see installed packages
+        if plan.package_format == crate::models::PackageFormat::Deb {
+            if let Err(e) = crate::dpkg_db::generate_dpkg_database() {
+                log::warn!("Failed to generate dpkg database: {}", e);
+            }
+        }
     }
 
     Ok(plan)
@@ -362,7 +370,22 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
     {
         // Save pending packages so dpkg-query can see packages being installed
         save_pending_packages(&plan.new_pkgs)?;
+
+        // Generate dpkg database for Debian/Ubuntu environments before running scriptlets
+        // This allows maintainer scripts to query packages being installed
+        if plan.package_format == crate::models::PackageFormat::Deb {
+            // First generate status for already installed packages
+            if let Err(e) = crate::dpkg_db::generate_dpkg_status() {
+                log::warn!("Failed to generate initial dpkg status: {}", e);
+            }
+            // Then add pending packages to the dpkg status
+            if let Err(e) = crate::dpkg_db::append_pending_to_dpkg_status(&plan.new_pkgs) {
+                log::warn!("Failed to append pending packages to dpkg status: {}", e);
+            }
+        }
+
         run_transaction_batch(plan)?;
+
         // Clean up pending packages after transaction completes
         remove_pending_packages()?;
     }

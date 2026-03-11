@@ -87,6 +87,8 @@ mod userdb;
 #[cfg(unix)]
 mod deb_triggers;
 #[cfg(unix)]
+mod dpkg_db;
+#[cfg(unix)]
 mod rpm_triggers;
 #[cfg(unix)]
 mod lua;
