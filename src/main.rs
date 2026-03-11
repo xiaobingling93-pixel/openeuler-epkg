@@ -563,7 +563,7 @@ OPTIONS:
 
 PATHS:
   User private installation: (in data-flow order)
-    $HOME/.bashrc  # sources $HOME/.epkg/envs/self/usr/src/epkg/lib/epkg-rc.sh for epkg() builtin func
+    $HOME/.bashrc  # sources $HOME/.epkg/envs/self/usr/src/epkg/assets/shell/epkg.sh for epkg() builtin func
     $HOME/.cache/downloads/
     $HOME/.cache/channels/
     $HOME/.epkg/store/

@@ -8,7 +8,7 @@ When epkg is installed for a single user (e.g. `epkg self install` as non-root, 
 
 | Purpose | Path |
 |---------|------|
-| Shell integration | `$HOME/.bashrc` (or `.zshrc`) sources `$HOME/.epkg/envs/self/usr/src/epkg/lib/epkg-rc.sh` |
+| Shell integration | `$HOME/.bashrc` (or `.zshrc`) sources `$HOME/.epkg/envs/self/usr/src/epkg/assets/shell/epkg.sh` |
 | Download cache | `$HOME/.cache/downloads/` |
 | Channel metadata cache | `$HOME/.cache/channels/` |
 | AUR build cache | `$HOME/.cache/aur_builds/` (if used) |

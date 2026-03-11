@@ -1,6 +1,6 @@
 # Repositories (channels)
 
-epkg uses **channels** to refer to a distribution and version (e.g. `debian`, `ubuntu`, `alpine`, `fedora`, `openeuler`, `archlinux`, `conda`). Each channel has a default version and one or more **repos** (e.g. main, community, extra). Mirrors are chosen automatically; the placeholder `$mirror` in index URLs is replaced by a mirror from [sources/mirrors.json](https://atomgit.com/openeuler/epkg/tree/master/sources/mirrors.json).
+epkg uses **channels** to refer to a distribution and version (e.g. `debian`, `ubuntu`, `alpine`, `fedora`, `openeuler`, `archlinux`, `conda`). Each channel has a default version and one or more **repos** (e.g. main, community, extra). Mirrors are chosen automatically; the placeholder `$mirror` in index URLs is replaced by a mirror from [assets/mirrors/mirrors.json](https://atomgit.com/openeuler/epkg/tree/master/assets/mirrors/mirrors.json).
 
 ## List channels and repos
 

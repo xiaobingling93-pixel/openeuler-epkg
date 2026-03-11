@@ -114,7 +114,7 @@ epkg [选项] <命令>
 
 **用户私有安装**（数据流顺序）：
 
-- `$HOME/.bashrc` — 加载 epkg RC（例如 `$HOME/.epkg/envs/self/usr/src/epkg/lib/epkg-rc.sh`）。
+- `$HOME/.bashrc` — 加载 epkg RC（例如 `$HOME/.epkg/envs/self/usr/src/epkg/assets/shell/epkg.sh`）。
 - `$HOME/.cache/downloads/` — 已下载的包文件
 - `$HOME/.cache/channels/` — 仓库元数据缓存
 - `$HOME/.epkg/store/` — 内容寻址包存储

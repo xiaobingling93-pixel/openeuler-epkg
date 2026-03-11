@@ -31,7 +31,7 @@ wfg@crystal ~/epkg% zsh
 Your ~/.bashrc or ~/.zshrc
 =>
 # grep -C1 epkg ~/.zshrc
-source $HOME/.epkg/envs/self/profile-current/usr/src/epkg/lib/epkg-rc.sh
+source $HOME/.epkg/envs/self/profile-current/usr/src/epkg/assets/shell/epkg.sh
 =>
 1) set PATH
 PATH=$HOME/.epkg/envs/main/profile-current/ebin:...

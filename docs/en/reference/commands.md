@@ -114,7 +114,7 @@ epkg [OPTIONS] <COMMAND>
 
 **User private installation** (data-flow order):
 
-- `$HOME/.bashrc` — sources epkg RC (e.g. `$HOME/.epkg/envs/self/usr/src/epkg/lib/epkg-rc.sh`).
+- `$HOME/.bashrc` — sources epkg RC (e.g. `$HOME/.epkg/envs/self/usr/src/epkg/assets/shell/epkg.sh`).
 - `$HOME/.cache/downloads/` — Downloaded package files
 - `$HOME/.cache/channels/` — Repository metadata cache
 - `$HOME/.epkg/store/` — Content-addressed package store

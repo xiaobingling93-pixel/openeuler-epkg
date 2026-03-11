@@ -8,7 +8,7 @@
 
 | 用途 | 路径 |
 |------|------|
-| Shell 集成 | `$HOME/.bashrc`（或 `.zshrc`）加载 `$HOME/.epkg/envs/self/usr/src/epkg/lib/epkg-rc.sh` |
+| Shell 集成 | `$HOME/.bashrc`（或 `.zshrc`）加载 `$HOME/.epkg/envs/self/usr/src/epkg/assets/shell/epkg.sh` |
 | 下载缓存 | `$HOME/.cache/downloads/` |
 | channel 元数据缓存 | `$HOME/.cache/channels/` |
 | AUR 构建缓存 | `$HOME/.cache/aur_builds/`（如果使用） |

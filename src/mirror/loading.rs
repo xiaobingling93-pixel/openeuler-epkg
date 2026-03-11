@@ -6,8 +6,8 @@
 //!
 //! ## Key Processes
 //!
-//! - **Configuration Loading**: Load primary mirrors from `sources/mirrors.json`
-//! - **Manual Overrides**: Merge manual mirror configurations from `sources/manual-mirrors.json`
+//! - **Configuration Loading**: Load primary mirrors from `assets/mirrors/mirrors.json`
+//! - **Manual Overrides**: Merge manual mirror configurations from `assets/mirrors/manual-mirrors.json`
 //! - **Distro Filtering**: Filter mirrors to only include those supporting required distributions
 //! - **Country Filtering**: Apply geographic optimization based on user location
 //! - **Performance Loading**: Bulk load 6 months of historical performance data
@@ -146,11 +146,11 @@ fn apply_channel_config_filtering(
     Ok(filtered_mirrors)
 }
 
-/// Load sources/mirrors.json with filtering by channel_config().distro OR channel_config().distro_dirs
+/// Load assets/mirrors/mirrors.json with filtering by channel_config().distro OR channel_config().distro_dirs
 fn load_mirrors_for_distro() -> Result<HashMap<String, Mirror>> {
     let manager_path = crate::dirs::get_epkg_src_path();
-    let mirrors_file_path = manager_path.join("sources/mirrors.json");
-    let manual_mirrors_file_path = manager_path.join("sources/manual-mirrors.json");
+    let mirrors_file_path = manager_path.join("assets/mirrors/mirrors.json");
+    let manual_mirrors_file_path = manager_path.join("assets/mirrors/manual-mirrors.json");
 
     // Load primary mirrors.json
     let mut all_mirrors_raw: HashMap<String, Mirror> = crate::io::read_json_file(&mirrors_file_path)?;

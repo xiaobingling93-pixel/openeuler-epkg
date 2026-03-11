@@ -17,11 +17,11 @@ def debug_print(message, category=None):
             print(f"DEBUG: {message}")
 
 def load_distro_configs(base_dir):
-    """Loads distro-specific configurations from YAML files in the 'sources' directory."""
+    """Loads distro-specific configurations from YAML files in the 'assets/repos' directory."""
     global DISTRO_CONFIGS
     # sources_dir is where files like 'alpine.yaml', 'debian.yaml' are stored.
-    # BASE_DIR is 'scripts/mirror/', so sources_dir is '../../sources/'.
-    sources_dir = os.path.join(base_dir, '../..', 'sources')
+    # BASE_DIR is 'scripts/mirror/', so sources_dir is '../../assets/repos/'.
+    sources_dir = os.path.join(base_dir, '../..', 'assets/repos')
     yaml_files = glob.glob(os.path.join(sources_dir, '*.yaml'))
 
     debug_print(f"Searching for distro configs in: {os.path.abspath(sources_dir)}")

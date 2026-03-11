@@ -172,7 +172,7 @@ Example private self env dir layout:
 ~/.epkg/envs/self/usr/bin/elf-loader
 ~/.epkg/envs/self/usr/src/epkg -> epkg-master
 ~/.epkg/envs/self/usr/src/epkg-master  # general form: epkg-$version, source code in epkg.git
-~/.epkg/envs/self/usr/src/epkg-master/lib/epkg-rc.sh # sourced by .bashrc/.zshrc
+~/.epkg/envs/self/usr/src/epkg-master/assets/shell/epkg.sh # sourced by .bashrc/.zshrc
 ```
 
 ## ebin/ entry-point executable wrappers

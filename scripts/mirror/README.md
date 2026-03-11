@@ -6,15 +6,17 @@ This document describes the mirror management system used in epkg, including its
 
 ```
 /c/epkg/
-├── sources/                         # Final output directory
-│   ├── manual-mirrors.json          # Manual mirror configurations
-│   ├── mirrors.json                 # Final mirror database
-│   ├── ubuntu.yaml                  # Ubuntu distribution config
-│   ├── debian.yaml                  # Debian distribution config
-│   ├── fedora.yaml                  # Fedora distribution config
-│   ├── archlinux.yaml               # Arch Linux distribution config
-│   ├── alpine.yaml                  # Alpine distribution config
-│   └── *.yaml                       # Other distribution configs
+├── assets/
+│   ├── mirrors/                      # Mirror configurations
+│   │   ├── manual-mirrors.json       # Manual mirror configurations
+│   │   └── mirrors.json              # Final mirror database
+│   └── repos/                        # Distribution configs
+│       ├── ubuntu.yaml               # Ubuntu distribution config
+│       ├── debian.yaml               # Debian distribution config
+│       ├── fedora.yaml               # Fedora distribution config
+│       ├── archlinux.yaml            # Arch Linux distribution config
+│       ├── alpine.yaml               # Alpine distribution config
+│       └── *.yaml                    # Other distribution configs
 │
 └── scripts/mirror/                  # Processing scripts directory
     ├── *.py                         # Python processing scripts
@@ -73,7 +75,7 @@ epkg run fetch_official_mirrors.py
 cd scripts/mirror/
 
 # Fetches directory listings from discovered mirrors
-# Input: output/official-mirrors.json + previous output/ls-mirrors.json + sources/*.yaml
+# Input: output/official-mirrors.json + previous output/ls-mirrors.json + assets/repos/*.yaml
 # Output: updated output/ls-mirrors.json
 epkg run ls_mirrors.py
 
@@ -84,21 +86,21 @@ epkg run ls_mirrors.py
 cd scripts/mirror/
 
 # Probes mirrors without directory listings
-# Input: output/ls-mirrors.json + sources/*.yaml
+# Input: output/ls-mirrors.json + assets/repos/*.yaml
 # Output: output/probe-mirrors.json + output/noreach-mirrors.txt + output/nocontent-mirrors.txt
 epkg run probe_dirs.py
 ```
 
 #### 4. Update Manual Configuration
-ls_mirrors.py will print recommendations for `sources/manual-mirrors.json`:
+ls_mirrors.py will print recommendations for `assets/mirrors/manual-mirrors.json`:
 ```json
 "http://mirror.example.com":{"cc":"US","ls":["ubuntu","debian"]},
 ```
 
-Copy/paste relevant entries to `sources/manual-mirrors.json`:
+Copy/paste relevant entries to `assets/mirrors/manual-mirrors.json`:
 ```shell
 # Edit manual configuration
-vim sources/manual-mirrors.json
+vim assets/mirrors/manual-mirrors.json
 ```
 
 #### 5. Generate Final Configuration
@@ -106,8 +108,8 @@ vim sources/manual-mirrors.json
 cd scripts/mirror/
 
 # Merges all data sources into final configuration
-# Input: All JSON files + sources/manual-mirrors.json + error files
-# Output: sources/mirrors.json
+# Input: All JSON files + assets/mirrors/manual-mirrors.json + error files
+# Output: assets/mirrors/mirrors.json
 epkg run merge_mirrors.py
 ```
 
@@ -173,10 +175,10 @@ ls scripts/mirror/output/*.json
 ls scripts/mirror/output/*.txt
 
 # Check final output
-ls sources/*.json
+ls assets/mirrors/*.json
 
 # Check distribution configs
-ls sources/*.yaml
+ls assets/repos/*.yaml
 
 # Check downloaded mirror lists
 ls scripts/mirror/input/mirrors-*
@@ -220,11 +222,11 @@ rm lftp-cache/*.lftp
 ## Configuration Files
 
 ### DISTRO_CONFIGS Structure
-Located in: `sources/*.yaml` (one file per distribution)
+Located in: `assets/repos/*.yaml` (one file per distribution)
 
 Each distribution configuration file maps the distribution name to its expected directory structures:
 
-**Example `sources/ubuntu.yaml`:**
+**Example `assets/repos/ubuntu.yaml`:**
 ```yaml
 distro_dirs:
   - ubuntu
@@ -233,7 +235,7 @@ distro_dirs:
   - ubuntu-security
 ```
 
-**Example `sources/debian.yaml`:**
+**Example `assets/repos/debian.yaml`:**
 ```yaml
 distro_dirs:
   - debian
@@ -242,7 +244,7 @@ distro_dirs:
   - debian-backports
 ```
 
-**Example `sources/archlinux.yaml`:**
+**Example `assets/repos/archlinux.yaml`:**
 ```yaml
 distro_dirs:
   - archlinux
@@ -267,18 +269,18 @@ graph TB
     F --> H[scripts/mirror/output/noreach-mirrors.txt]
     F --> I[scripts/mirror/output/nocontent-mirrors.txt]
 
-    J[sources/manual-mirrors.json] --> K[scripts/mirror/merge_mirrors.py]
+    J[assets/mirrors/manual-mirrors.json] --> K[scripts/mirror/merge_mirrors.py]
     C --> K
     E --> K
     G --> K
     H --> K
     I --> K
 
-    K --> L[sources/mirrors.json]
+    K --> L[assets/mirrors/mirrors.json]
     L --> M[Rust Application]
     J --> M
 
-    N[sources/*.yaml] --> D
+    N[assets/repos/*.yaml] --> D
     N --> F
     N --> K
 
@@ -319,17 +321,17 @@ graph TB
 ### Configuration Files
 | File | Path | Purpose | Format | Usage |
 |------|------|---------|--------|-------|
-| `ubuntu.yaml` | `sources/` | Ubuntu distribution directory mappings | YAML | Directory filtering |
-| `debian.yaml` | `sources/` | Debian distribution directory mappings | YAML | Directory filtering |
-| `fedora.yaml` | `sources/` | Fedora distribution directory mappings | YAML | Directory filtering |
-| `archlinux.yaml` | `sources/` | Arch Linux distribution directory mappings | YAML | Directory filtering |
-| `alpine.yaml` | `sources/` | Alpine distribution directory mappings | YAML | Directory filtering |
-| `*.yaml` | `sources/` | Other distribution configs | YAML | Directory filtering |
+| `ubuntu.yaml` | `assets/repos/` | Ubuntu distribution directory mappings | YAML | Directory filtering |
+| `debian.yaml` | `assets/repos/` | Debian distribution directory mappings | YAML | Directory filtering |
+| `fedora.yaml` | `assets/repos/` | Fedora distribution directory mappings | YAML | Directory filtering |
+| `archlinux.yaml` | `assets/repos/` | Arch Linux distribution directory mappings | YAML | Directory filtering |
+| `alpine.yaml` | `assets/repos/` | Alpine distribution directory mappings | YAML | Directory filtering |
+| `*.yaml` | `assets/repos/` | Other distribution configs | YAML | Directory filtering |
 
 ### Manual Configuration Files
 | File | Path | Purpose | Format | Maintenance |
 |------|------|---------|--------|-------------|
-| `manual-mirrors.json` | `sources/` | Manually curated mirror configurations | JSON (linewise) | Manual editing |
+| `manual-mirrors.json` | `assets/repos/` | Manually curated mirror configurations | JSON (linewise) | Manual editing |
 
 ### Intermediate Processing Files
 | File | Path | Purpose | Generated By | Used By |
@@ -347,8 +349,8 @@ graph TB
 ### Final Output Files
 | File | Path | Purpose | Format | Used By |
 |------|------|---------|--------|---------|
-| `mirrors.json` | `sources/` | Final mirror configuration | JSON (compact) | Rust `load_mirrors_for_distro()` |
-| `manual-mirrors.json` recommendations | `sources/` | Suggested manual configurations | JSON (linewise) | Rust `load_mirrors_for_distro()` |
+| `mirrors.json` | `assets/repos/` | Final mirror configuration | JSON (compact) | Rust `load_mirrors_for_distro()` |
+| `manual-mirrors.json` recommendations | `assets/repos/` | Suggested manual configurations | JSON (linewise) | Rust `load_mirrors_for_distro()` |
 
 ### Cache Directories
 | Directory | Path | Purpose | Contents |
@@ -408,7 +410,7 @@ graph LR
     F --> G[LFTP Fallback]
     G --> H[scripts/mirror/output/ls-mirrors.json]
 
-    I[sources/*.yaml] --> E
+    I[assets/repos/*.yaml] --> E
 
     style B fill:#e3f2fd,color:#1976d2
     style A fill:#fff3e0,color:#f57c00
@@ -420,7 +422,7 @@ graph LR
 - **Input**:
   - `scripts/mirror/output/official-mirrors.json`
   - Previous `scripts/mirror/output/ls-mirrors.json`
-  - `sources/*.yaml` (distribution configs)
+  - `assets/repos/*.yaml` (distribution configs)
 - **Output**: Updated `scripts/mirror/output/ls-mirrors.json`
 - **Cache**: `scripts/mirror/html-cache/*.html`, `scripts/mirror/lftp-cache/*.lftp`
 
@@ -435,7 +437,7 @@ graph LR
     E --> H[scripts/mirror/output/noreach-mirrors.txt]
     E --> I[scripts/mirror/output/nocontent-mirrors.txt]
 
-    J[sources/*.yaml] --> D
+    J[assets/repos/*.yaml] --> D
 
     style B fill:#e3f2fd,color:#1976d2
     style A fill:#fff3e0,color:#f57c00
@@ -448,7 +450,7 @@ graph LR
 **File Operations:**
 - **Input**:
   - `scripts/mirror/output/ls-mirrors.json`
-  - `sources/*.yaml` (distribution configs)
+  - `assets/repos/*.yaml` (distribution configs)
 - **Output**:
   - `scripts/mirror/output/probe-mirrors.json`
   - `scripts/mirror/output/noreach-mirrors.txt`
@@ -466,7 +468,7 @@ graph LR
     F --> G[Data Deduplication]
     G --> H[Country Code Resolution]
     H --> I[Field Compaction]
-    I --> J[sources/mirrors.json]
+    I --> J[assets/mirrors/mirrors.json]
 
     style F fill:#e3f2fd,color:#1976d2
     style A fill:#fff3e0,color:#f57c00
@@ -484,7 +486,7 @@ graph LR
   - `scripts/mirror/output/noreach-mirrors.txt`
   - `scripts/mirror/output/nocontent-mirrors.txt`
 - **Output**:
-  - `sources/mirrors.json`
+  - `assets/mirrors/mirrors.json`
 
 ## File Type Color Legend
 
@@ -510,12 +512,12 @@ scripts/mirror/input/mirrors-opensuse.html      # openSUSE mirrors
 scripts/mirror/input/mirrors-ubuntu.html        # Ubuntu mirrors
 
 # Distribution configuration files
-sources/ubuntu.yaml                       # Ubuntu directory mappings
-sources/debian.yaml                       # Debian directory mappings
-sources/fedora.yaml                       # Fedora directory mappings
-sources/archlinux.yaml                    # Arch Linux directory mappings
-sources/alpine.yaml                       # Alpine directory mappings
-sources/*.yaml                            # Other distribution configs
+assets/repos/ubuntu.yaml                       # Ubuntu directory mappings
+assets/repos/debian.yaml                       # Debian directory mappings
+assets/mirrors/fedora.yaml                       # Fedora directory mappings
+assets/repos/archlinux.yaml                    # Arch Linux directory mappings
+assets/mirrors/alpine.yaml                       # Alpine directory mappings
+assets/repos/*.yaml                            # Other distribution configs
 ```
 
 ### Processing File Locations
@@ -533,7 +535,7 @@ scripts/mirror/output/nocontent-mirrors.txt     # Content failures
 ### Final Output Locations
 ```shell
 # Production files
-sources/mirrors.json                     # Final mirror database
+assets/mirrors/mirrors.json                     # Final mirror database
 ```
 
 ### Cache and Log Locations
@@ -597,8 +599,8 @@ graph TB
 
     C --> F[merge_single_manual_mirror]
 
-    G[sources/mirrors.json] --> B
-    H[sources/manual-mirrors.json] --> C
+    G[assets/mirrors/mirrors.json] --> B
+    H[assets/mirrors/manual-mirrors.json] --> C
 
     E --> I[Filtered Mirror Collection]
 
@@ -616,8 +618,8 @@ graph TB
 ### Function Responsibilities
 | Function | Purpose | Input File Path | Output |
 |----------|---------|-----------------|--------|
-| `load_primary_mirrors` | Load main mirror data | `sources/mirrors.json` | Raw mirror HashMap |
-| `load_and_merge_manual_mirrors` | Merge manual overrides | `sources/manual-mirrors.json` | Updated HashMap |
+| `load_primary_mirrors` | Load main mirror data | `assets/mirrors/mirrors.json` | Raw mirror HashMap |
+| `load_and_merge_manual_mirrors` | Merge manual overrides | `assets/mirrors/manual-mirrors.json` | Updated HashMap |
 | `merge_single_manual_mirror` | Merge individual mirror | Single mirror data | Updated entry |
 | `convert_mirror_data_structure` | Transform data structure | Raw HashMap | Processed HashMap |
 | `apply_distro_filtering` | Filter by distribution | Processed HashMap + filter | Filtered HashMap |

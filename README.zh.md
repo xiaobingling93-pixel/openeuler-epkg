@@ -128,4 +128,4 @@ target/debug/epkg self install
 ## 链接
 
 - 仓库: [atomgit.com/openeuler/epkg](https://atomgit.com/openeuler/epkg)
-- 镜像配置: [sources/mirrors.json](https://atomgit.com/openeuler/epkg/tree/master/sources/mirrors.json)
+- 镜像配置: [assets/mirrors/mirrors.json](https://atomgit.com/openeuler/epkg/tree/master/assets/mirrors/mirrors.json)

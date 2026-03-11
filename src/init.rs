@@ -529,7 +529,7 @@ fn build_epkg_rc_block(self_env_root: &Path) -> String {
     format!(
         r#"
 # epkg begin
-epkg_rc='{base_path}/usr/src/epkg/lib/epkg-rc.sh'
+epkg_rc='{base_path}/usr/src/epkg/assets/shell/epkg.sh'
 test -r "$epkg_rc" && . "$epkg_rc"
 # epkg end
 "#,
@@ -637,7 +637,7 @@ fn find_repo_root() -> Result<std::path::PathBuf> {
 
 fn is_valid_local_repo(repo_root: &std::path::Path) -> bool {
     repo_root.join(".git").exists() &&
-    repo_root.join("lib/epkg-rc.sh").exists()
+    repo_root.join("assets/shell/epkg.sh").exists()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

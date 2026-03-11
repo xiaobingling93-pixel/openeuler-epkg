@@ -595,7 +595,7 @@ fn copy_repo_configs(sources_path: &Path, env_root: &Path, distro_name: &str) ->
 /// and saving it to etc/epkg/channel.yaml in the target environment.
 /// Also copies additional repo configurations to etc/epkg/repos.d/
 fn copy_channel_configs(env_root: &Path) -> Result<()> {
-    let sources_path = get_epkg_src_path().join("sources");
+    let sources_path = get_epkg_src_path().join("assets/repos");
     let (distro_name, distro_version) = parse_channel_option();
 
     copy_main_channel_config(&sources_path, env_root, &distro_name, distro_version.as_deref())?;

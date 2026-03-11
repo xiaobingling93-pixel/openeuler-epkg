@@ -115,4 +115,4 @@ Design notes and format specs: [docs/design-notes/](docs/design-notes/), [docs/e
 ## Links
 
 - Repository: [atomgit.com/openeuler/epkg](https://atomgit.com/openeuler/epkg)
-- Mirrors config: [sources/mirrors.json](https://atomgit.com/openeuler/epkg/tree/master/sources/mirrors.json)
+- Mirrors config: [assets/mirrors/mirrors.json](https://atomgit.com/openeuler/epkg/tree/master/assets/mirrors/mirrors.json)

@@ -41,7 +41,7 @@ pub fn extend_repodata_name2distro_dirs(channel_config: &ChannelConfig, repos: &
     let mut hashmap = REPODATA_NAME2DISTRO_DIRS.lock()
         .map_err(|e| color_eyre::eyre::eyre!("Failed to lock repodata_name2distro_dirs: {}", e))?;
 
-    // Example output for sources/openeuler.yaml
+    // Example output for assets/repos/openeuler.yaml
     // repodata_name2distro_dirs[update] = ["openEuler", "openeuler.org", "openeuler"]
     // repodata_name2distro_dirs[everything] = ["openEuler", "openeuler.org", "openeuler"]
     // repodata_name2distro_dirs[EPOL/main] = ["openEuler", "openeuler.org", "openeuler"]

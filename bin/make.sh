@@ -251,8 +251,8 @@ install_to_dev_env() {
     [[ -d "$DEV_ENV_BIN_DIR" ]] || return 0
 
     if [[ ! -L "$DEV_ENV_SRC_DIR" ]] || [[ "$(readlink "$DEV_ENV_SRC_DIR")" != "$(pwd)" ]]; then
-        local src_rc="$PROJECT_ROOT/lib/epkg-rc.sh"
-        local dst_rc="$DEV_ENV_SRC_DIR/lib/epkg-rc.sh"
+        local src_rc="$PROJECT_ROOT/assets/shell/epkg.sh"
+        local dst_rc="$DEV_ENV_SRC_DIR/assets/shell/epkg.sh"
         if [[ "$(readlink -f "$src_rc")" != "$(readlink -f "$dst_rc")" ]]; then
             safe_cp "$src_rc" "$dst_rc"
         fi

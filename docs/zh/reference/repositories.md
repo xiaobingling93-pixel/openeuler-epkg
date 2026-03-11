@@ -1,6 +1,6 @@
 # 软件源（channel）
 
-epkg 使用 **channel** 来指代一个发行版和版本（例如 `debian`、`ubuntu`、`alpine`、`fedora`、`openeuler`、`archlinux`、`conda`）。每个 channel 有一个默认版本和一个或多个 **软件源**（例如 main、community、extra）。镜像自动选择；索引 URL 中的占位符 `$mirror` 会被替换为来自 [sources/mirrors.json](https://atomgit.com/openeuler/epkg/tree/master/sources/mirrors.json) 的镜像。
+epkg 使用 **channel** 来指代一个发行版和版本（例如 `debian`、`ubuntu`、`alpine`、`fedora`、`openeuler`、`archlinux`、`conda`）。每个 channel 有一个默认版本和一个或多个 **软件源**（例如 main、community、extra）。镜像自动选择；索引 URL 中的占位符 `$mirror` 会被替换为来自 [assets/mirrors/mirrors.json](https://atomgit.com/openeuler/epkg/tree/master/assets/mirrors/mirrors.json) 的镜像。
 
 ## 列出 channel 和软件源
 

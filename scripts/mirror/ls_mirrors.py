@@ -41,7 +41,7 @@ COUNTRY_CODE_CACHE = {}
 #
 # Inputs:
 # - OFFICIAL_MIRRORS_PATH (`output/official-mirrors.json`): primary mirror source; main iteration is over this file.
-# - FINAL_MIRRORS_PATH (`sources/mirrors.json`): legacy mirror data, used only as a cache for
+# - FINAL_MIRRORS_PATH (`assets/mirrors/mirrors.json`): legacy mirror data, used only as a cache for
 #   country code (`cc`/`country_code`/`country`) lookup when OFFICIAL_MIRRORS_PATH and GeoIP do not have it.
 #   It is never used as the iteration key for processing mirrors.
 #
@@ -104,7 +104,7 @@ INPUT_DIR = os.path.join(BASE_DIR, 'input')
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
 LS_MIRRORS_OUTPUT_PATH = os.path.join(OUTPUT_DIR, 'ls-mirrors.json')
 OFFICIAL_MIRRORS_PATH = os.path.join(OUTPUT_DIR, 'official-mirrors.json')
-FINAL_MIRRORS_PATH = os.path.join(BASE_DIR, '../../sources/mirrors.json')
+FINAL_MIRRORS_PATH = os.path.join(BASE_DIR, '../../assets/mirrors/mirrors.json')
 HTML_CACHE_DIR = os.path.join(BASE_DIR, 'html-cache')
 LFTP_CACHE_DIR = os.path.join(BASE_DIR, 'lftp-cache')
 FAILED_MIRRORS_LOG_PATH = os.path.join(OUTPUT_DIR, 'failed-mirrors.log')
@@ -872,7 +872,7 @@ def parse_lftp_output(lftp_output, mirror_url):
     if redirect_url:
         print(f"\n### REDIRECTION DETECTED via LFTP")
         print(f"Mirror {mirror_url} redirects to: {redirect_url}")
-        print(f"### RECOMMENDED: Add the redirect URL to sources/manual-mirrors.json:")
+        print(f"### RECOMMENDED: Add the redirect URL to assets/mirrors/manual-mirrors.json:")
         redirect_url_json = json.dumps(redirect_url)
         entry_data = {}
         if directories:
@@ -1118,7 +1118,7 @@ def filter_directories(official_mirrors, directories, mirror_distros, mirror_dis
                 if new_url in official_mirrors:
                     continue
 
-                print("\n### RECOMMENDED CONFIGURATION for sources/manual-mirrors.json")
+                print("\n### RECOMMENDED CONFIGURATION for assets/mirrors/manual-mirrors.json")
                 new_url_json = json.dumps(new_url)
                 # Filter valid_dir entries to only include those in VALID_DIRS
                 filtered_ls_entries = [valid_dir for valid_dir, _ in matches if valid_dir in VALID_DIRS]

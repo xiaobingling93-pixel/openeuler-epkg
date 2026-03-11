@@ -52,10 +52,10 @@ chmod +x "$MOCK_EPKG"
 
 log "Mock epkg binary created at $MOCK_EPKG"
 
-# Source the actual epkg-rc.sh wrapper
-EPKG_RC_PATH="$(dirname "$0")/../../../lib/epkg-rc.sh"
+# Source the actual epkg.sh wrapper
+EPKG_RC_PATH="$(dirname "$0")/../../../assets/shell/epkg.sh"
 if [ ! -f "$EPKG_RC_PATH" ]; then
-    error "epkg-rc.sh not found at $EPKG_RC_PATH"
+    error "epkg.sh not found at $EPKG_RC_PATH"
 fi
 . "$EPKG_RC_PATH"
 

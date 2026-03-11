@@ -143,12 +143,12 @@ fn process_channel_config(mut channel_config: ChannelConfig, main_config: Option
         //   Fedora Linux  <a href="https://mirrors.tuna.tsinghua.edu.cn/fedora">https</a>
         //   Fedora Linux  <a href="http://ftp.sh.cvut.cz/fedora/linux">http</a>
         //
-        // Why sources/fedora.yaml omits "fedora" from distro_dirs: ls_mirrors.py discovers
+        // Why assets/repos/fedora.yaml omits "fedora" from distro_dirs: ls_mirrors.py discovers
         // mirrors by listing top-level dirs on each site. If "fedora" were in distro_dirs,
         // it would pick any site that has a top-level "fedora" dir and assume a uniform
         // layout -- but some sites use fedora/ and others fedora/linux/, so discovery must
         // use the explicit path suffixes from the HTML (e.g. fedora/linux, fedora-secondary).
-        // Hence sources/fedora.yaml only lists those suffixes (fedora/linux, fedora/..., etc.)
+        // Hence assets/repos/fedora.yaml only lists those suffixes (fedora/linux, fedora/..., etc.)
         // and does not list the bare "fedora" entry.
         //
         // Why we insert "fedora" here: When matching mirrors and resolving paths (e.g.

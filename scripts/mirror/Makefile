@@ -5,7 +5,8 @@
 SCRIPT_DIR := .
 INPUT_DIR := input
 OUTPUT_DIR := output
-SOURCES_DIR := ../sources
+SOURCES_DIR := ../../assets/repos
+MIRRORS_DIR := ../../assets/mirrors
 INPUT_FILES := mirrors-alpine.txt mirrors-archlinux.txt mirrors-debian.html \
 			   mirrors-fedora.html mirrors-openeuler.html mirrors-opensuse.html \
 			   mirrors-ubuntu.html
@@ -19,7 +20,7 @@ DIRS := $(INPUT_DIR) $(OUTPUT_DIR)
 STAGE1_OUT := $(OUTPUT_DIR)/official-mirrors.json
 STAGE2_OUT := $(OUTPUT_DIR)/ls-mirrors.json
 STAGE3_OUT := $(OUTPUT_DIR)/probe-mirrors.json $(OUTPUT_DIR)/noreach-mirrors.txt $(OUTPUT_DIR)/nocontent-mirrors.txt
-STAGE4_OUT := $(SOURCES_DIR)/mirrors.json
+STAGE4_OUT := $(MIRRORS_DIR)/mirrors.json
 
 # Python scripts with epkg execution
 EPKG_RUN = epkg run
@@ -85,7 +86,7 @@ $(STAGE1_OUT): $(FETCH_SCRIPT) $(INPUT_FILES_EXIST) $(DIRS)
 	@echo "Stage 1 complete: $(STAGE1_OUT) generated"
 
 # Stage 2: Directory Listing
-# Input: official-mirrors.json + previous ls-mirrors.json + sources/*.yaml
+# Input: official-mirrors.json + previous ls-mirrors.json + assets/repos/*.yaml
 # Output: output/ls-mirrors.json
 .PHONY: stage2 list
 stage2 list: $(STAGE2_OUT)
@@ -97,7 +98,7 @@ $(STAGE2_OUT): $(LIST_SCRIPT) $(STAGE1_OUT) $(YAML_FILES) $(DIRS)
 
 
 # Stage 3: Mirror Probing
-# Input: ls-mirrors.json + sources/*.yaml
+# Input: ls-mirrors.json + assets/repos/*.yaml
 # Output: output/probe-mirrors.json + output/noreach-mirrors.txt + output/nocontent-mirrors.txt
 .PHONY: stage3 probe
 stage3 probe: $(OUTPUT_DIR)/probe-mirrors.json $(OUTPUT_DIR)/noreach-mirrors.txt $(OUTPUT_DIR)/nocontent-mirrors.txt
@@ -120,7 +121,7 @@ $(OUTPUT_DIR)/noreach-mirrors.txt $(OUTPUT_DIR)/nocontent-mirrors.txt: $(OUTPUT_
 
 # Stage 4: Data Merging
 # Input: All JSON files + error files
-# Output: sources/mirrors.json
+# Output: assets/mirrors/mirrors.json
 .PHONY: stage4 merge
 stage4 merge: $(STAGE4_OUT)
 

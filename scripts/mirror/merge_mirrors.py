@@ -21,7 +21,7 @@ LS_MIRRORS_INPUT_PATH = os.path.join(OUTPUT_DIR, 'ls-mirrors.json')
 PROBE_MIRRORS_INPUT_PATH = os.path.join(OUTPUT_DIR, 'probe-mirrors.json')
 NOREACH_MIRRORS_INPUT_PATH = os.path.join(OUTPUT_DIR, 'noreach-mirrors.txt')
 NOCONTENT_MIRRORS_INPUT_PATH = os.path.join(OUTPUT_DIR, 'nocontent-mirrors.txt')
-FINAL_JSON_OUTPUT_PATH = os.path.join(BASE_DIR, '../..', 'sources', 'mirrors.json')
+FINAL_JSON_OUTPUT_PATH = os.path.join(BASE_DIR, '../..', 'assets/mirrors', 'mirrors.json')
 
 # Define protocol bit masks
 PROTO_HTTP = 1    # 0b001

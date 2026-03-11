@@ -283,7 +283,7 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                         // => main
                         // => main-updates
                         // => main-security
-                        .replace("Official-", "");  // matches the "Official" in sources/debian.yaml
+                        .replace("Official-", "");  // matches the "Official" in assets/repos/debian.yaml
 
                     // Create a new RepoRevise object with augmented repodata_name with component
                     let component_repo = crate::repo::RepoRevise {
