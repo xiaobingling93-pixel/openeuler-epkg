@@ -88,22 +88,29 @@ CONFIG_SYSFS=y
 
 ### 配置文件管理
 
-源配置文件位于 `/c/epkg/git/libkrunfw/config-libkrunfw_x86_64`，构建时复制到内核目录：
+配置文件采用分层结构，由共享配置和架构特定配置合并生成：
+
+```
+.config = kconfig/common + kconfig/arch/$arch
+```
+
+构建脚本自动合并配置：
 
 ```bash
-cp /c/epkg/git/libkrunfw/config-libkrunfw_x86_64 /c/epkg/git/linux/.config
+cd /c/epkg/git/sandbox-kernel
+./scripts/build.sh x86_64
 ```
 
 ### 编译内核
 
 ```bash
-cd /c/epkg/git/linux
-make -j$(nproc)
+cd git/sandbox-kernel
+./scripts/build.sh x86_64
 ```
 
 输出：
-- `arch/x86/boot/bzImage` - QEMU 使用（约 6.4M）
-- `vmlinux` - libkrun 使用（约 24M，未压缩）
+- `boot/vmlinux-$KVER-$arch` - 本地开发缓存
+- `linux-stable/vmlinux` - 构建产物
 
 ## 调试命令
 
@@ -112,23 +119,19 @@ make -j$(nproc)
 ```bash
 # 检查禁用项
 grep -E "^# CONFIG_(KSM|COMPACTION|TRANSPARENT_HUGEPAGE|IPV6) is not set" \
-  /c/epkg/git/linux/.config
+  git/sandbox-kernel/linux-stable/.config
 
 # 检查启用的关键配置
 grep -E "^CONFIG_(KVM_GUEST|VIRTIO_PCI|SERIAL_8250|ACPI)=" \
-  /c/epkg/git/linux/.config
+  git/sandbox-kernel/linux-stable/.config
 ```
 
 ### 测试内核
 
 ```bash
-# QEMU 模式
-timeout 9 epkg run --sandbox=vm --vmm=qemu \
-  --kernel=/c/epkg/git/linux/arch/x86/boot/bzImage ls /
-
-# libkrun 模式（需要 vmlinux 格式）
+# libkrun 模式
 epkg run --sandbox=vm --vmm=libkrun \
-  --kernel=/c/epkg/git/linux/vmlinux ls /
+  --kernel=git/sandbox-kernel/linux-stable/vmlinux ls /
 ```
 
 ### 常见问题

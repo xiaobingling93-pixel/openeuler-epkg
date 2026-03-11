@@ -441,7 +441,7 @@ fn setup_network_for_vm_daemon() -> Result<(), String> {
                 log::debug!("init: non-loopback interface already present, skipping virtio_net modprobe");
             } else if std::path::Path::new("/lib/modules").exists() {
                 // Only attempt modprobe when /lib/modules exists; on minimal or
-                // libkrunfw-based systems there may be no module tree at all.
+                // sandbox-kernel-based systems there may be no module tree at all.
                 log::debug!("init: no non-loopback interface yet, trying virtio_net modprobe");
                 try_load_module("failover");
                 try_load_module("net_failover");

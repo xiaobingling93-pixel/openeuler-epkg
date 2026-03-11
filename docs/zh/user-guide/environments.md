@@ -207,7 +207,7 @@ epkg -e myenv run --sandbox=vm --vmm=qemu bash
 后端名称：
 
 - **libkrun** — 基于 libkrun 的 microVM 后端（仅在构建 epkg 时启用了
-  `libkrun` Cargo feature 且环境中已安装 libkrunfw 时可用）。
+  `libkrun` Cargo feature 且环境中已安装 sandbox-kernel 时可用）。
 - **qemu** — QEMU + virtiofs 后端。
 
 如果未显式指定 `--vmm`：

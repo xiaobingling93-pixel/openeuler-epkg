@@ -25,7 +25,7 @@ static: $(PROJECT_ROOT)/target/lua-musl-$(HOST_ARCH)/liblua.a
 	@EPKG_CARGO_FEATURES="$(FEATURES)" $(PROJECT_ROOT)/bin/make.sh static-debug $(HOST_ARCH)
 
 # Static build with libkrun integrated (Cargo --features libkrun) and
-# libkrunfw unpacked into the self env so the libkrun backend can run
+# sandbox-kernel unpacked into the self env so the libkrun backend can run
 # without extra manual steps on the host.
 static-libkrun: $(PROJECT_ROOT)/target/lua-musl-$(HOST_ARCH)/liblua.a
 	@EPKG_CARGO_FEATURES="libkrun$(if $(FEATURES),,$(FEATURES))" $(PROJECT_ROOT)/bin/make.sh static-libkrun $(HOST_ARCH)

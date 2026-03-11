@@ -151,7 +151,7 @@ detect_package_manager() {
 }
 
 # Install kernel for libkrun VM from local build or download.
-# For local development: copies vmlinux from git/linux to ~/.epkg/envs/self/boot/
+# For local development: copies vmlinux from git/sandbox-kernel/linux-stable to ~/.epkg/envs/self/boot/
 # Only works when building for host architecture.
 install_kernel_for_libkrun() {
     local arch="$1"
@@ -174,13 +174,13 @@ install_kernel_for_libkrun() {
     esac
 
     # Check if kernel already exists
-    local self_boot_kernel="${HOME}/.epkg/envs/self/boot/kernel"
-    if [[ -f "$self_boot_kernel" ]]; then
+    local self_boot_vmlinux="${HOME}/.epkg/envs/self/boot/vmlinux"
+    if [[ -f "$self_boot_vmlinux" ]]; then
         return 0
     fi
 
-    # Try to install from local build
-    local vmlinux="$PROJECT_ROOT/git/linux/vmlinux"
+    # Try to install from local build (sandbox-kernel)
+    local vmlinux="$PROJECT_ROOT/git/sandbox-kernel/linux-stable/vmlinux"
     if [[ -f "$vmlinux" ]]; then
         local self_boot_dir="${HOME}/.epkg/envs/self/boot"
         mkdir -p "$self_boot_dir"
@@ -191,19 +191,19 @@ install_kernel_for_libkrun() {
         version=$(echo "$version" | tr -cd '0-9.-')
 
         if [[ -n "$version" ]]; then
-            local named_kernel="${self_boot_dir}/kernel-${version}"
-            cp -l "$vmlinux" "$named_kernel" 2>/dev/null || cp "$vmlinux" "$named_kernel"
-            ln -sf "kernel-${version}" "$self_boot_kernel"
-            echo "Installed kernel from local build: kernel-${version}"
+            local named_vmlinux="${self_boot_dir}/vmlinux-${version}-${arch}"
+            cp -l "$vmlinux" "$named_vmlinux" 2>/dev/null || cp "$vmlinux" "$named_vmlinux"
+            ln -sf "vmlinux-${version}-${arch}" "$self_boot_vmlinux"
+            echo "Installed kernel from local build: vmlinux-${version}-${arch}"
         else
-            cp -l "$vmlinux" "$self_boot_kernel" 2>/dev/null || cp "$vmlinux" "$self_boot_kernel"
-            echo "Installed kernel from local build: kernel"
+            cp -l "$vmlinux" "$self_boot_vmlinux" 2>/dev/null || cp "$vmlinux" "$self_boot_vmlinux"
+            echo "Installed kernel from local build: vmlinux"
         fi
         return 0
     fi
 
     echo "Note: No kernel found for libkrun VM. Run 'epkg self install' to download one." >&2
-    echo "      Or build one with: cd git/libkrunfw && ./build.sh $arch" >&2
+    echo "      Or build one with: cd git/sandbox-kernel && ./scripts/build.sh $arch" >&2
 }
 
 
@@ -1246,7 +1246,7 @@ case $cmd in
         echo "  static [<arch>]                      Build static debug binary (auto-detects arch if not specified)"
         echo "  static-debug [<arch>]                Build static debug binary"
         echo "  static-release [<arch>]              Build static release binary"
-        echo "  static-libkrun [<arch>]              Build static debug binary with --features libkrun and bundled libkrunfw (x86_64 only)"
+        echo "  static-libkrun [<arch>]              Build static debug binary with --features libkrun and vmlinux build by sandbox-kernel"
         echo "  dev-depends                          Install development dependencies (current arch only)"
         echo "  crossdev-depends                     Install cross-development dependencies (all arch cross-compilers)"
         echo "  clone-repos                          Clone required repositories (rpm-rs, resolvo, elf-loader)"

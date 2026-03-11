@@ -14,8 +14,9 @@ epkg 的 VM 内核可以来自以下途径：
 
 ```
 ~/.epkg/envs/self/boot/
-├── kernel -> kernel-6.19.6    # 符号链接指向当前内核
-└── kernel-6.19.6              # 实际内核文件
+├── vmlinux -> vmlinux-6.19.6-x86_64    # 符号链接指向当前内核
+├── vmlinux-6.19.6-x86_64               # 实际内核文件
+└── config-6.19.6-x86_64                # 对应的配置文件
 ```
 
 ### 2. 本地构建
@@ -24,11 +25,14 @@ epkg 的 VM 内核可以来自以下途径：
 
 ```bash
 # 构建并安装到 ~/.epkg/envs/self/boot/
-cd git/libkrunfw
-./build.sh
+cd git/sandbox-kernel
+./scripts/build.sh
 
 # 指定架构构建
-./build.sh aarch64
+./scripts/build.sh aarch64
+
+# 构建所有架构（发布模式）
+./scripts/build.sh ALL
 ```
 
 ### 3. 手动指定
@@ -41,18 +45,19 @@ epkg run --kernel /path/to/vmlinux <package>
 
 ## 内核版本命名
 
-内核文件命名格式：`kernel-$version`
+内核文件命名格式：`vmlinux-$version-$arch`
 
 - `version` 来自内核构建时的 `Linux version` 字符串
-- 例如：`kernel-6.19.6`, `kernel-6.12.68`
+- `arch` 为目标架构
+- 例如：`vmlinux-6.19.6-x86_64`, `vmlinux-6.19.6-aarch64`
 
 ## 支持的架构
 
 | 架构 | 内核格式 | 状态 |
 |------|----------|------|
 | x86_64 | ELF vmlinux | 支持 |
-| aarch64 | Image | 支持 |
-| riscv64 | Image | 支持 |
+| aarch64 | ELF vmlinux | 支持 |
+| riscv64 | ELF vmlinux | 支持 |
 | loongarch64 | - | 不支持 |
 
 ## 常见用例
@@ -62,7 +67,7 @@ epkg run --kernel /path/to/vmlinux <package>
 ```bash
 ls -la ~/.epkg/envs/self/boot/
 # 或
-file ~/.epkg/envs/self/boot/kernel
+file ~/.epkg/envs/self/boot/vmlinux
 ```
 
 ### 切换内核版本
@@ -70,39 +75,46 @@ file ~/.epkg/envs/self/boot/kernel
 如果存在多个内核版本，可以修改符号链接：
 
 ```bash
-ln -sf kernel-6.12.68 ~/.epkg/envs/self/boot/kernel
+ln -sf vmlinux-6.12.68-x86_64 ~/.epkg/envs/self/boot/vmlinux
 ```
 
 ### 自定义内核配置
 
-内核配置文件位于 `git/libkrunfw/config-libkrunfw_$arch`。
+内核配置文件采用分层结构：
+
+```
+git/sandbox-kernel/kconfig/
+├── common              # 所有架构共享配置
+└── arch/
+    ├── x86_64          # x86_64 特定配置
+    ├── aarch64         # aarch64 特定配置
+    └── riscv64         # riscv64 特定配置
+```
 
 修改配置后重新构建：
 
 ```bash
-cd git/libkrunfw
-# 编辑 config-libkrunfw_x86_64
-./build.sh
+cd git/sandbox-kernel
+# 编辑 kconfig/common 或 kconfig/arch/x86_64
+./scripts/build.sh
 ```
 
 ## 内核下载机制
 
 `epkg self install` 会：
 
-1. 从 gitee 获取 libkrunfw 仓库的最新 release
-2. 查找匹配当前架构的 `vmlinux-$arch-$kver.zst` 文件
+1. 从 gitee 获取 sandbox-kernel 仓库的最新 release
+2. 查找匹配当前架构的 `vmlinux-$kver-$arch.zst` 文件
 3. 下载并解压到 `~/.epkg/envs/self/boot/`
 
 下载的文件格式：
-- `vmlinux-x86_64-6.19.6.zst` - zstd 压缩的内核
-- `vmlinux-x86_64-6.19.6.zst.sha256` - 校验文件
+- `vmlinux-6.19.6-x86_64.zst` - zstd 压缩的内核
+- `vmlinux-6.19.6-x86_64.zst.sha256` - 校验文件
 
 ## 与 libkrun 的关系
 
 当使用 libkrun 运行 VM 时：
 
 - 如果指定了 `--kernel`，使用指定的内核
-- 如果未指定，使用 `~/.epkg/envs/self/boot/kernel`（默认内核）
+- 如果未指定，使用 `~/.epkg/envs/self/boot/vmlinux`（默认内核）
 - 如果默认内核不存在，libkrun 无法启动 VM
-
-注意：新架构不再依赖 `libkrunfw.so` 动态库，内核作为独立文件管理。

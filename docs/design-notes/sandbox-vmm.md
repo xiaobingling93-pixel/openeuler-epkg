@@ -185,7 +185,7 @@ When `--sandbox=vm` is used, epkg can try multiple VMM backends in order. The
 `--vmm` option takes a comma-separated list of backend names:
 
 - `libkrun` — libkrun-based microVM backend (available when epkg is built with the
-  `libkrun` Cargo feature, and libkrunfw is installed in the env).
+  `libkrun` Cargo feature, and sandbox-kernel is installed in the env).
 - `qemu` — QEMU + virtiofs backend described in this document.
 
 Examples:

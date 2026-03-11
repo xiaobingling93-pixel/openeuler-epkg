@@ -28,7 +28,7 @@ const GITEE_OWNER:      &str = &"wu_fengguang";
 const REPO_EPKG:        &str = &"epkg";
 const REPO_ELF_LOADER:  &str = &"elf-loader";
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
-const REPO_VMLINUX:     &str = &"libkrunfw";
+const REPO_VMLINUX:     &str = &"sandbox-kernel";
 
 fn print_banner() {
     println!(r#"         ____  _  ______   "#);

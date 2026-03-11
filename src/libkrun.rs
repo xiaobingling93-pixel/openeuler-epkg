@@ -75,8 +75,6 @@ unsafe extern "C" {
 // Force the staticlib to be linked when we only reference it via extern "C".
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
 fn ensure_libkrun_linked() {
-    // We use libkrun's krun_set_kernel() with format=0 (Raw) which calls map_kernel().
-    // This treats the kernel as a bundled raw binary and loads it at guest_addr=0x2000_0000.
     krun_crate::ensure_linked();
 }
 
@@ -97,15 +95,14 @@ fn is_elf_kernel(kernel_path: &str) -> Result<bool> {
 }
 
 /// Detect kernel format for libkrun's krun_set_kernel().
-/// Returns: 0=Raw (for x86_64 non-ELF), 1=ELF (vmlinux)
+/// Returns: 1=ELF (vmlinux), error for non-ELF
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
 #[allow(dead_code)]
 fn detect_kernel_format_for_libkrun(kernel_path: &str) -> Result<u32> {
     if is_elf_kernel(kernel_path)? {
         Ok(1) // ELF (vmlinux)
     } else {
-        // On x86_64, all non-ELF kernels use Raw format (handled by map_kernel)
-        Ok(0) // Raw
+        Err(eyre::eyre!("Non-ELF kernel format not supported: {}", kernel_path))
     }
 }
 
@@ -188,7 +185,7 @@ fn build_libkrun_config(
         log::debug!("libkrun: kernel path: {}", kernel);
         log::debug!("libkrun: kernel format: {:?}", kernel_format);
     } else {
-        log::debug!("libkrun: using bundled kernel from libkrunfw (no --kernel specified)");
+        log::debug!("libkrun: using vmlinux from sandbox-kernel (no --kernel specified)");
     }
 
     Ok(LibkrunConfig {
@@ -233,7 +230,7 @@ fn create_and_configure_vm(
         if let Some(ref kernel) = config.kernel_path {
             if let Some(format) = config.kernel_format {
                 let format_str = match format {
-                    0 => "Raw (bundled)",
+                    0 => "Raw",
                     1 => "ELF (vmlinux)",
                     _ => "Unknown",
                 };
@@ -402,7 +399,7 @@ impl KrunContext {
     }
 
     #[allow(dead_code)]
-    /// kernel_format: 0 = Raw (e.g. aarch64/riscv64 Image), 1 = Elf (e.g. x86_64 vmlinux)
+    /// kernel_format: 1 = ELF (vmlinux from sandbox-kernel)
     /// kernel_cmdline: optional extra kernel command line (e.g. from --kernel-args)
     /// initrd_path: optional path to initrd image (e.g. from --initrd)
     unsafe fn set_kernel(
@@ -481,38 +478,12 @@ impl Drop for KrunContext {
     }
 }
 
-/// Detect kernel image format for libkrun.
-///
-/// For x86_64, libkrun supports:
-/// - ELF format (1) - loaded via linux_loader::Elf::load()
-/// - Raw format (0) - loaded via map_kernel() which treats it as a bundled kernel
-///
-/// The bundled kernel from libkrunfw (KERNEL_BUNDLE) is a raw binary image.
-#[allow(dead_code)]
-fn detect_kernel_format(path: &str) -> Result<u32> {
-    let mut f = std::fs::File::open(path).map_err(|e| eyre::eyre!("open kernel {}: {}", path, e))?;
-    let mut magic = [0u8; 4];
-    use std::io::Read;
-    f.read_exact(&mut magic).map_err(|e| eyre::eyre!("read kernel {}: {}", path, e))?;
-    if magic == [0x7f, b'E', b'L', b'F'] {
-        Ok(1) // Elf (vmlinux)
-    } else {
-        // Raw format - includes bundled kernel from libkrunfw
-        // On x86_64, libkrun's map_kernel() handles this by treating it as a bundled kernel
-        log::debug!("detected raw/bundled kernel format (magic: {:02x?})", magic);
-        Ok(0) // Raw
-    }
-}
-
 /// Run a command inside a libkrun microVM.
 ///
 /// This function never returns on success; it exits the process with the
 /// guest's exit code, similar to the QEMU backend.
 ///
-/// Note: epkg release binaries are built as fully static executables (musl),
-/// so ELF RPATH/RUNPATH cannot be used to teach the dynamic loader where
-/// `libkrunfw.so.5` lives. Instead we rely on the vendored libkrun crate's
-/// support for `LIBKRUNFW_DIR` to point it at the firmware library directory.
+/// The kernel is provided by sandbox-kernel as an ELF vmlinux file.
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
 pub fn run_command_in_krun(
     env_root: &Path,

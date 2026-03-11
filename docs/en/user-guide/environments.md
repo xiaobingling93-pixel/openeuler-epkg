@@ -207,7 +207,7 @@ epkg -e myenv run --sandbox=vm --vmm=qemu bash
 Backend names:
 
 - **libkrun** — libkrun-based microVM backend (only available when epkg is built
-  with the `libkrun` feature and libkrunfw is installed in the env).
+  with the `libkrun` feature and sandbox-kernel is installed in the env).
 - **qemu** — QEMU + virtiofs backend.
 
 If `--vmm` is omitted:
