@@ -227,3 +227,128 @@ rm ~/.epkg/envs/self/boot/vmlinux-6.12.68-x86_64
 | `git/sandbox-kernel/kconfig/common` | 共享内核配置 |
 | `git/sandbox-kernel/kconfig/arch/$arch` | 架构特定配置 |
 | `git/sandbox-kernel/linux-stable/vmlinux` | 本地构建的内核 |
+
+## 启动时间排查方法论
+
+### 问题现象
+
+VM 启动时间从 ~0.3s 增加到 ~0.6s 或更长。
+
+### 科学排查方法：initcall_debug
+
+使用 QEMU + `initcall_debug` 内核参数可以精确测量每个初始化函数的耗时。
+
+#### 1. 收集启动日志
+
+```bash
+# 使用 QEMU 模式（日志更完整）
+epkg run --sandbox=vm --vmm=qemu \
+  --kernel=/c/epkg/git/sandbox-kernel/linux-stable/vmlinux \
+  --kernel-args='initcall_debug=1 ignore_loglevel printk.time=1' \
+  ls /
+
+# 日志位置
+grep initcall ~/.cache/epkg/vmm-logs/latest-qemu.log
+```
+
+#### 2. 分析 initcall 耗时
+
+```bash
+# 提取最耗时的初始化函数
+grep "initcall.*returned" ~/.cache/epkg/vmm-logs/latest-qemu.log | \
+  awk '{for(i=1;i<=NF;i++) if($i ~ /after/) print $(i+1), $0}' | \
+  sort -rn | head -20
+```
+
+输出示例：
+```
+276000 [    0.844511] initcall raid6_select_algo+0x0/0x140 returned 0 after 276000 usecs
+ 92000 [    0.533745] initcall acpi_init+0x0/0x110 returned 0 after 92000 usecs
+ 15117 [    0.920059] initcall virtio_pci_driver_init+0x0/0x20 returned 0 after 15117 usecs
+```
+
+#### 3. 常见性能瓶颈
+
+| 初始化函数 | 典型耗时 | 原因 | 解决方案 |
+|-----------|---------|------|----------|
+| `raid6_select_algo` | 200-300ms | `CONFIG_RAID6_PQ_BENCHMARK=y` | 禁用 `CONFIG_RAID6_PQ_BENCHMARK` |
+| `acpi_init` | 50-100ms | ACPI 表解析 | 通常不可避免 |
+| `jent_mod_init` | 10-15ms | 熵池初始化 | 可接受 |
+| `inet_init` | 10-15ms | 网络协议栈 | 通常不可避免 |
+
+#### 4. Top 20 耗时 initcall 对比
+
+**优化前（CONFIG_RAID6_PQ_BENCHMARK=y）：**
+```
+排名 | 耗时   | initcall 函数              | CONFIG 选项
+-----|--------|----------------------------|----------------------------------
+  1  | 276ms  | raid6_select_algo          | CONFIG_RAID6_PQ_BENCHMARK  ⭐罪魁祸首
+  2  | 84ms   | acpi_init                  | CONFIG_ACPI
+  3  | 23ms   | virtio_pci_driver_init     | CONFIG_VIRTIO_PCI
+  4  | 15ms   | jent_mod_init              | CONFIG_CRYPTO_JITTERENTROPY
+  5  | 12ms   | inet_init                  | CONFIG_INET
+  6  | 11ms   | virtio_fs_init             | CONFIG_VIRTIO_FS
+  7  | 10ms   | serial8250_init            | CONFIG_SERIAL_8250
+  8  | 8ms    | pci_apply_final_quirks     | CONFIG_PCI
+  9  | 6ms    | acpi_processor_driver_init | CONFIG_ACPI_PROCESSOR
+ 10  | 6ms    | init_acpi_pm_clocksource   | CONFIG_ACPI
+```
+
+**优化后（CONFIG_RAID6_PQ_BENCHMARK disabled）：**
+```
+排名 | 耗时   | initcall 函数              | CONFIG 选项                      | 可优化?
+-----|--------|----------------------------|----------------------------------|--------
+  1  | 64ms   | acpi_init                  | CONFIG_ACPI                      | ❌ 必需
+  2  | 16ms   | virtio_pci_driver_init     | CONFIG_VIRTIO_PCI                | ❌ 必需
+  3  | 10ms   | inet_init                  | CONFIG_INET                      | ❌ 必需
+  4  | 10ms   | serial8250_init            | CONFIG_SERIAL_8250               | ⚠️ 可选
+  5  | 10ms   | jent_mod_init              | CONFIG_CRYPTO_JITTERENTROPY      | ⚠️ 可选
+  6  | 5ms    | pci_apply_final_quirks     | CONFIG_PCI                       | ❌ 必需
+  7  | 5ms    | loop_init                  | CONFIG_BLK_DEV_LOOP              | ✅ 可禁用
+  8  | 4ms    | acpi_processor_driver_init | CONFIG_ACPI_PROCESSOR            | ⚠️ 可选
+  9  | 4ms    | pcibios_assign_resources   | CONFIG_PCI                       | ❌ 必需
+ 10  | 3ms    | chr_dev_init               | CONFIG_UNIX98_PTYS               | ⚠️ 可选
+```
+
+**优化效果：**
+- `raid6_select_algo` 从 **276ms** 降至 **0ms**（禁用 BENCHMARK）
+- 启动时间从 ~0.61s 降至 ~0.35s（节省 260ms）
+- 剩余可优化空间约 30-50ms（串口、loop、熵池等）
+
+#### 5. 对比分析
+
+```bash
+# 统计 initcall 数量
+grep -c 'initcall.*+0x' ~/.cache/epkg/vmm-logs/latest-qemu.log
+
+# 对比两个内核的差异
+diff <(grep 'initcall.*+0x' good.log | awk '{print $5}') \
+     <(grep 'initcall.*+0x' bad.log | awk '{print $5}')
+```
+
+#### 6. 优化配置
+
+根据分析结果修改配置：
+
+```bash
+# git/sandbox-kernel/kconfig/common
+
+# 禁用 RAID6（节省 200-300ms）
+# CONFIG_RAID6_PQ_BENCHMARK is not set
+```
+
+#### 7. 验证优化效果
+
+```bash
+# 重新构建内核
+cd git/sandbox-kernel/linux-stable
+cp .config-libkrunfw .config
+cat ../kconfig/common ../kconfig/arch/x86_64 >> .config
+make olddefconfig
+make vmlinux
+
+# 测试启动时间
+time epkg run --sandbox=vm --vmm=qemu \
+  --kernel=/c/epkg/git/sandbox-kernel/linux-stable/vmlinux \
+  ls /
+```
