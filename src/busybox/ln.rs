@@ -80,17 +80,27 @@ pub fn command() -> Command {
 
 pub fn run(options: LnOptions) -> Result<()> {
     let target_path = Path::new(&options.target);
-    let link_path = Path::new(&options.link_name);
+    let mut link_path = Path::new(&options.link_name).to_path_buf();
+
+    // If link_name is an existing directory (and not a symlink with -n),
+    // use target's basename as the actual link name
+    let is_existing_dir = link_path.is_dir() &&
+        (!options.no_dereference || !link_path.is_symlink());
+    if is_existing_dir {
+        let basename = target_path.file_name()
+            .ok_or_else(|| eyre!("ln: cannot derive link name from target '{}'", options.target))?;
+        link_path = link_path.join(basename);
+    }
 
     // Handle force option - remove existing destination
     if options.force {
         if let Ok(metadata) = link_path.symlink_metadata() {
             if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
                 // Remove symlink or regular file
-                lfs::remove_file(link_path)?;
+                lfs::remove_file(&link_path)?;
             } else {
                 // Remove directory (not a symlink)
-                lfs::remove_dir_all(link_path)?;
+                lfs::remove_dir_all(&link_path)?;
             }
         }
     }
@@ -99,7 +109,7 @@ pub fn run(options: LnOptions) -> Result<()> {
     if options.no_dereference && link_path.is_symlink() {
         // For no-dereference, we need to remove the symlink first if it exists
         if link_path.symlink_metadata().is_ok() {
-            lfs::remove_file(link_path)?;
+            lfs::remove_file(&link_path)?;
         }
     }
 
@@ -113,14 +123,14 @@ pub fn run(options: LnOptions) -> Result<()> {
     };
 
     if options.symbolic {
-        lfs::symlink(&actual_target, link_path)?;
+        lfs::symlink(&actual_target, &link_path)?;
     } else {
-        lfs::hard_link(&actual_target, link_path)?;
+        lfs::hard_link(&actual_target, &link_path)?;
     }
 
     // Handle verbose option
     if options.verbose {
-        println!("{} -> {}", options.link_name, actual_target.display());
+        println!("{} -> {}", link_path.display(), actual_target.display());
     }
 
     Ok(())
