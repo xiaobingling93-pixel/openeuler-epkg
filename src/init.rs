@@ -230,6 +230,9 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
                 vmlinux_url.clone(),
                 init_plan.vmlinux_sha_url.clone().unwrap_or_default(),
             ]);
+            if let Some(ref config_url) = init_plan.vmlinux_config_url {
+                urls.push(config_url.clone());
+            }
         }
     }
 
@@ -281,7 +284,7 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
     {
         if let (Some(ref vmlinux_path), Some(ref version)) = (&init_plan.vmlinux_path, &init_plan.vmlinux_version) {
             if vmlinux_path.exists() {
-                install_vmlinux(vmlinux_path, version)?;
+                install_vmlinux(vmlinux_path, init_plan.vmlinux_config_path.as_deref(), version)?;
             }
         }
     }
@@ -713,9 +716,13 @@ struct InitPlan {
     #[allow(dead_code)]
     vmlinux_sha_url:    Option<String>,
     #[allow(dead_code)]
+    vmlinux_config_url: Option<String>,
+    #[allow(dead_code)]
     vmlinux_version:    Option<String>,
     #[allow(dead_code)]
     vmlinux_path:       Option<std::path::PathBuf>,
+    #[allow(dead_code)]
+    vmlinux_config_path: Option<std::path::PathBuf>,
 }
 
 /// Fetch the latest release information from Gitee API
@@ -862,9 +869,9 @@ pub fn default_kernel_path_if_exists() -> Option<String> {
 }
 
 /// Get vmlinux download URL for the current architecture from Gitee releases.
-/// Returns (url, sha256_url, version) tuple.
+/// Returns (url, sha256_url, config_url, version) tuple.
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
-fn get_vmlinux_url() -> Result<Option<(String, String, String)>> {
+fn get_vmlinux_url() -> Result<Option<(String, String, String, String)>> {
     let arch = &config().common.arch;
 
     // Check if vmlinux is available for this architecture
@@ -899,12 +906,19 @@ fn get_vmlinux_url() -> Result<Option<(String, String, String)>> {
     let url = asset.browser_download_url.clone();
     let sha_url = format!("{}.sha256", url);
 
-    Ok(Some((url, sha_url, version)))
+    // Find config file: config-$kver-$arch (e.g. config-6.19.6-x86_64)
+    let config_name = format!("config-{}-{}", version, arch);
+    let config_url = release.assets.iter()
+        .find(|a| a.name == config_name)
+        .map(|a| a.browser_download_url.clone())
+        .ok_or_else(|| eyre::eyre!("No config asset found for architecture {}", arch))?;
+
+    Ok(Some((url, sha_url, config_url, version)))
 }
 
 /// Install vmlinux from downloaded .zst file to self/boot directory.
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
-fn install_vmlinux(zst_path: &Path, version: &str) -> Result<()> {
+fn install_vmlinux(zst_path: &Path, config_path: Option<&Path>, version: &str) -> Result<()> {
     let self_env_root = dirs().user_envs.join(SELF_ENV);
     let boot_dir = self_env_root.join("boot");
     lfs::create_dir_all(&boot_dir)?;
@@ -927,6 +941,16 @@ fn install_vmlinux(zst_path: &Path, version: &str) -> Result<()> {
     lfs::symlink(&vmlinux_name, &vmlinux_link)?;
 
     println!("  Installed kernel: {} ({} bytes)", vmlinux_path.display(), kernel_data.len());
+
+    // Install config file
+    if let Some(cfg_path) = config_path {
+        if cfg_path.exists() {
+            let config_name = format!("config-{}", version);
+            let config_dest = boot_dir.join(&config_name);
+            lfs::copy(cfg_path, &config_dest)?;
+            println!("  Installed config: {}", config_dest.display());
+        }
+    }
 
     Ok(())
 }
@@ -1010,22 +1034,23 @@ fn check_for_updates() -> Result<InitPlan> {
 
     // Get vmlinux URL and path if built with libkrun feature
     #[cfg(all(feature = "libkrun", target_os = "linux"))]
-    let (vmlinux_url, vmlinux_sha_url, vmlinux_version, vmlinux_path) = {
+    let (vmlinux_url, vmlinux_sha_url, vmlinux_config_url, vmlinux_version, vmlinux_path, vmlinux_config_path) = {
         match get_vmlinux_url() {
-            Ok(Some((url, sha_url, version))) => {
+            Ok(Some((url, sha_url, config_url, version))) => {
                 let path = mirror::Mirrors::remote_url_to_path(&url, &epkg_download_dir, "epkg")?;
-                (Some(url), Some(sha_url), Some(version), Some(path))
+                let config_path = mirror::Mirrors::remote_url_to_path(&config_url, &epkg_download_dir, "epkg")?;
+                (Some(url), Some(sha_url), Some(config_url), Some(version), Some(path), Some(config_path))
             }
-            Ok(None) => (None, None, None, None),
+            Ok(None) => (None, None, None, None, None, None),
             Err(e) => {
                 log::warn!("Failed to get vmlinux URL: {}", e);
-                (None, None, None, None)
+                (None, None, None, None, None, None)
             }
         }
     };
 
     #[cfg(not(all(feature = "libkrun", target_os = "linux")))]
-    let (vmlinux_url, vmlinux_sha_url, vmlinux_version, vmlinux_path) = (None, None, None, None);
+    let (vmlinux_url, vmlinux_sha_url, vmlinux_config_url, vmlinux_version, vmlinux_path, vmlinux_config_path) = (None, None, None, None, None, None);
 
     Ok(InitPlan {
         current: current_version,
@@ -1047,8 +1072,10 @@ fn check_for_updates() -> Result<InitPlan> {
         local_elf_loader_path: if has_local_elf_loader { Some(local_elf_loader_path) } else { None },
         vmlinux_url,
         vmlinux_sha_url,
+        vmlinux_config_url,
         vmlinux_version,
         vmlinux_path,
+        vmlinux_config_path,
     })
 }
 
