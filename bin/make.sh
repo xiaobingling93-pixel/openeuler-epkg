@@ -809,20 +809,19 @@ build_static() {
     # we need to add musl compatibility shims to mlua-sys's Lua library.
     # This is because mlua-sys builds its own Lua which may reference *64 functions
     # that don't exist in musl libc.
-    # We do a two-pass build: first build dependencies, then add shims, then build final.
+    # We pre-build mlua-sys first, add shims, then build everything else.
     if [[ "$arch" != "x86_64" ]] && ! is_native_arch "$arch"; then
-        # First pass: build dependencies only (this builds mlua-sys's Lua)
-        cargo build --target "$rust_target" --ignore-rust-version "${cargo_args[@]}" "${cargo_feature_args[@]}" 2>&1 | \
-            tee /tmp/epkg_build.log || true
+        # Pre-build mlua (and mlua-sys) to generate Lua library before main build
+        # We build just the lua-related deps first so we can add musl shims
+        echo "Pre-building mlua for $arch to add musl compatibility shims..."
+        # Build mlua and its dependencies (including mlua-sys) only
+        cargo build --target "$rust_target" --ignore-rust-version "${cargo_args[@]}" --package mlua 2>&1 || true
 
         # Add musl compatibility shims to mlua-sys's Lua library
         add_musl_compat_to_mlua "$arch" "$build_dir"
 
-        # Second pass: build everything (may be a no-op if first pass succeeded)
-        if grep -q "undefined reference to" /tmp/epkg_build.log 2>/dev/null; then
-            echo "Retrying build after adding musl compatibility shims..."
-            cargo build --target "$rust_target" --ignore-rust-version "${cargo_args[@]}" "${cargo_feature_args[@]}"
-        fi
+        # Now build everything (with shims already in place)
+        cargo build --target "$rust_target" --ignore-rust-version "${cargo_args[@]}" "${cargo_feature_args[@]}"
     else
         cargo build --target "$rust_target" --ignore-rust-version "${cargo_args[@]}" "${cargo_feature_args[@]}"
     fi
