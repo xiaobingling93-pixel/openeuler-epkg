@@ -88,13 +88,16 @@ CONFIG_SYSFS=y
 
 ### 配置文件管理
 
-配置文件采用分层结构，由共享配置和架构特定配置合并生成：
+每个架构使用独立的完整配置文件：
 
 ```
-.config = kconfig/common + kconfig/arch/$arch
+kconfig/
+├── config-aarch64    # ARM64 完整配置
+├── config-riscv64    # RISC-V 64 完整配置
+└── config-x86_64     # x86_64 完整配置
 ```
 
-构建脚本自动合并配置：
+构建时直接使用对应架构的配置文件：
 
 ```bash
 cd /c/epkg/git/sandbox-kernel

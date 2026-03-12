@@ -505,6 +505,8 @@ pub fn run_command_in_krun(
     };
 
     log::debug!("libkrun: starting VM thread...");
+    // Save ctx_id before moving ctx to thread, so we can free it later
+    let ctx_id = vm_ctx.ctx.ctx_id;
     let vm_thread = start_libkrun_vm(vm_ctx.ctx);
 
     if config.use_vsock {
@@ -562,6 +564,15 @@ pub fn run_command_in_krun(
             }
         }
 
+        // Explicitly free the context before exit to release KVM resources.
+        // std::process::exit() does NOT call Drop on local variables, so we must
+        // manually clean up to avoid resource leaks that cause "Out of memory" errors
+        // in subsequent runs.
+        log::debug!("libkrun: freeing context before exit...");
+        unsafe {
+            let _ = krun_free_ctx(ctx_id);
+        }
+
         log::debug!("libkrun: exiting with code {}", exit_code);
         std::process::exit(exit_code);
     }
@@ -569,6 +580,13 @@ pub fn run_command_in_krun(
     log::debug!("libkrun: waiting for VM thread to finish...");
     match vm_thread.join() {
         Ok(exit_status) => {
+            // Explicitly free the context before exit to release KVM resources.
+            // std::process::exit() does NOT call Drop on local variables.
+            log::debug!("libkrun: freeing context before exit...");
+            unsafe {
+                let _ = krun_free_ctx(ctx_id);
+            }
+
             if exit_status < 0 {
                 log::error!("libkrun: VM failed with status {}", exit_status);
                 std::process::exit(1);
@@ -579,6 +597,9 @@ pub fn run_command_in_krun(
         }
         Err(e) => {
             log::error!("libkrun: VM thread join failed: {:?}", e);
+            unsafe {
+                let _ = krun_free_ctx(ctx_id);
+            }
             std::process::exit(1);
         }
     }

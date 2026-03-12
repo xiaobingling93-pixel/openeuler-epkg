@@ -80,23 +80,35 @@ ln -sf vmlinux-6.12.68-x86_64 ~/.epkg/envs/self/boot/vmlinux
 
 ### 自定义内核配置
 
-内核配置文件采用分层结构：
+每个架构使用独立的完整配置文件：
 
 ```
 git/sandbox-kernel/kconfig/
-├── common              # 所有架构共享配置
-└── arch/
-    ├── x86_64          # x86_64 特定配置
-    ├── aarch64         # aarch64 特定配置
-    └── riscv64         # riscv64 特定配置
+├── config-aarch64    # ARM64 完整配置
+├── config-riscv64    # RISC-V 64 完整配置
+└── config-x86_64     # x86_64 完整配置
 ```
 
 修改配置后重新构建：
 
 ```bash
 cd git/sandbox-kernel
-# 编辑 kconfig/common 或 kconfig/arch/x86_64
+# 编辑 kconfig/config-x86_64
 ./scripts/build.sh
+```
+
+更新配置文件（升级内核版本后）：
+
+```bash
+# 1. 复制当前配置到内核源码
+cp kconfig/config-x86_64 linux-stable/.config
+
+# 2. 运行 olddefconfig 应用新选项的默认值
+cd linux-stable
+make ARCH=x86_64 olddefconfig
+
+# 3. 解决交互式提示后，保存回配置文件
+cp .config ../kconfig/config-x86_64
 ```
 
 ## 内核下载机制
