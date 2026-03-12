@@ -111,7 +111,7 @@ dependencies = [
  "libc",
  "smbios",
  "utils",
- "vm-memory 0.18.0",
+ "vm-memory",
  "vmm-sys-util",
 ]
 
@@ -514,7 +514,7 @@ dependencies = [
  "utils",
  "virtio-bindings",
  "vm-fdt",
- "vm-memory 0.18.0",
+ "vm-memory",
 ]
 
 [[package]]
@@ -971,7 +971,7 @@ dependencies = [
  "rustc_version",
  "tokio",
  "tracing",
- "vm-memory 0.18.0",
+ "vm-memory",
  "windows-sys 0.61.2",
 ]
 
@@ -1081,7 +1081,7 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "utils",
- "vm-memory 0.18.0",
+ "vm-memory",
 ]
 
 [[package]]
@@ -1134,7 +1134,7 @@ dependencies = [
  "polly",
  "rand",
  "utils",
- "vm-memory 0.18.0",
+ "vm-memory",
  "vmm",
 ]
 
@@ -1187,7 +1187,7 @@ version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "de72cb02c55ecffcf75fe78295926f872eb6eb0a58d629c58a8c324dc26380f6"
 dependencies = [
- "vm-memory 0.17.1",
+ "vm-memory",
 ]
 
 [[package]]
@@ -2143,7 +2143,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 name = "smbios"
 version = "0.1.0"
 dependencies = [
- "vm-memory 0.18.0",
+ "vm-memory",
 ]
 
 [[package]]
@@ -2517,16 +2517,6 @@ checksum = "f39348a049689cabd3377cdd9182bf526ec76a6f823b79903896452e9d7a7380"
 dependencies = [
  "libc",
  "thiserror",
-]
-
-[[package]]
-name = "vm-memory"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b55e753c7725603745cb32b2287ef7ef3da05c03c7702cda3fa8abe25ae0465"
-dependencies = [
- "libc",
- "thiserror",
  "winapi",
 ]
 
@@ -2551,7 +2541,7 @@ dependencies = [
  "nix 0.30.1",
  "polly",
  "utils",
- "vm-memory 0.18.0",
+ "vm-memory",
  "vmm-sys-util",
  "windows",
  "zstd",
