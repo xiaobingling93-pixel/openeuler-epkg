@@ -169,6 +169,12 @@ fn main() -> Result<()> {
         .theme(color_eyre::config::Theme::dark())   // Use dark theme for better contrast
         .install()?;
 
+    // Install rustls crypto provider before any TLS operations
+    // This is required when using ureq with rustls-no-provider feature
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     let argv: Vec<String> = std::env::args_os()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
