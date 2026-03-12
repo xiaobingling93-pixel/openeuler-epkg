@@ -749,14 +749,8 @@ fn fetch_latest_release(owner: &str, repo: &str) -> Result<GiteeRelease> {
     let body = response.body_mut().read_to_string()
         .context("Failed to read response body")?;
 
-    // Log response body for debugging (first 500 chars)
-    let debug_body = if body.len() > 500 {
-        format!("{}...", &body[..500])
-    } else {
-        body.clone()
-    };
-
-    log::debug!("Response body: {}", debug_body);
+    // Log full response body for debugging
+    log::debug!("Response body: {}", body);
 
     let release: GiteeRelease = serde_json::from_str(&body)
         .with_context(|| format!(
@@ -890,15 +884,15 @@ fn get_vmlinux_url() -> Result<Option<(String, String, String)>> {
     let release = fetch_latest_release(GITEE_OWNER, REPO_VMLINUX)?;
 
     // Find the vmlinux asset for this architecture
-    // Format: vmlinux-$arch-$kver.zst
-    let prefix = format!("vmlinux-{}-", arch);
+    // Format: vmlinux-$kver-$arch.zst (e.g. vmlinux-6.19.6-x86_64.zst)
+    let suffix = format!("-{}.zst", arch);
     let asset = release.assets.iter()
-        .find(|a| a.name.starts_with(&prefix) && a.name.ends_with(".zst"))
+        .find(|a| a.name.starts_with("vmlinux-") && a.name.ends_with(&suffix))
         .ok_or_else(|| eyre::eyre!("No vmlinux asset found for architecture {}", arch))?;
 
     let version = asset.name
-        .strip_prefix(&prefix)
-        .and_then(|s| s.strip_suffix(".zst"))
+        .strip_prefix("vmlinux-")
+        .and_then(|s| s.strip_suffix(&suffix))
         .ok_or_else(|| eyre::eyre!("Failed to parse version from asset name: {}", asset.name))?
         .to_string();
 
