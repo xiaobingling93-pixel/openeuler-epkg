@@ -72,7 +72,8 @@ time = { version = "=0.3.44", features = ["formatting", "local-offset", "macros"
 rand = { version = "=0.9", features = ["std", "std_rng"], default-features = false }
 mlua = { version = "=0.11.5", features = ["lua54", "send"] }
 mlua-sys = { version = "=0.9", features = ["vendored"] }
-versions = "=6.3"
+# versions 7.0 uses itertools 0.14 and nom 8.0, avoiding duplicate versions
+versions = "7.0"
 deranged = "=0.5.7"
 
 [target.'cfg(target_os = "linux")'.dependencies.nix]
