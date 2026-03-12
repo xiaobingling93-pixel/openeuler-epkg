@@ -52,9 +52,9 @@ clone-repos:
 
 # Build release binaries for all architectures (sequentially to avoid Cargo lock conflicts)
 release-all:
-	$(MAKE) release-x86_64
-	$(MAKE) release-aarch64
-	$(MAKE) release-riscv64
+	$(MAKE) release-x86_64  EPKG_CARGO_FEATURES="libkrun"
+	$(MAKE) release-aarch64 EPKG_CARGO_FEATURES="libkrun"
+	$(MAKE) release-riscv64 EPKG_CARGO_FEATURES="libkrun"
 	$(MAKE) release-loongarch64
 
 # Build release binary for a specific architecture
