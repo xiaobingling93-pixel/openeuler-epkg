@@ -5,9 +5,33 @@
 ## 优化范围与目标
 
 ### 核心目标
-- **消除重复版本**：减少同一依赖的多个版本共存
-- **避免 edition 2024**：在支持前避免使用需要 Rust 2024 edition 的 crate
-- **最小化依赖树**：减少不必要的传递依赖
+
+#### 1. 避免 edition 2024（**硬要求**）
+
+**绝对不能**引入需要 Rust 2024 edition 的 crate。在升级依赖前必须检查：
+
+```bash
+# 检查 registry 中是否有 crate 使用 edition 2024
+grep edition.*2024 $HOME/.cargo/registry/src/*/*/Cargo.toml
+```
+
+**需要 pin 的版本示例：**
+```toml
+# 这些 crate 的新版本需要 edition 2024，必须 pin 旧版本
+time = { version = "=0.3.44" }        # 0.3.45+ 需要 2024
+rand = { version = "=0.9" }           # 0.10+ 需要 2024
+mlua = { version = "=0.11.5" }        # 0.12+ 需要 2024
+versions = "=6.3"                     # 7.0+ 需要 2024
+deranged = "=0.5.7"                   # 0.6+ 需要 2024
+```
+
+**注意：** 有些 crate 声称需要 edition 2024，但实际可能不需要。使用前务必验证！
+
+#### 2. 消除重复版本
+减少同一依赖的多个版本共存，减少编译时间和二进制大小。
+
+#### 3. 最小化依赖树
+减少不必要的传递依赖。
 
 ### 优化对象
 - **主项目依赖**：`/c/epkg/Cargo.toml` 中定义的直接依赖
@@ -15,10 +39,12 @@
 - **传递依赖**：通过依赖分析工具识别并优化
 
 ### 优化原则
-1. **优先直接修改**：直接升级/降级依赖版本
-2. **次优间接修改**：修改引入重复版本的父依赖
-3. **谨慎使用 patch**：仅在必要时使用 `[patch.crates-io]`
-4. **避免 git 依赖**：不使用未经发布的 git 版本（过于激进）
+
+1. **绝不使用 edition 2024**：升级前必须检查 crate 的 edition 要求
+2. **优先直接修改**：直接升级/降级依赖版本
+3. **次优间接修改**：修改引入重复版本的父依赖
+4. **谨慎使用 patch**：仅在必要时使用 `[patch.crates-io]`
+5. **避免 git 依赖**：不使用未经发布的 git 版本（过于激进）
 
 ## 发现问题的方法
 
@@ -106,17 +132,35 @@ ctrlc = "3.5.2"
 1. 升级/降级 `B` 或 `D` 以使用兼容的 `C` 版本
 2. 使用 `cargo update --precise` 强制统一版本
 
-### 场景 3：edition 2024 问题
+### 场景 3：edition 2024 问题（必须避免）
 
-**问题**：新版本 crate 使用 edition 2024
+**⚠️ 硬要求：绝对不能引入需要 Rust 2024 edition 的 crate**
+
+**问题**：某些 crate 的新版本使用 edition 2024
+
+**检查方法**：
+```bash
+# 检查 registry 中是否有 crate 使用 edition 2024
+grep edition.*2024 $HOME/.cargo/registry/src/*/*/Cargo.toml
+
+# 示例输出：
+# /home/wfg/.cargo/registry/src/.../versions-7.0.0/Cargo.toml:edition = "2024"
+```
 
 **解决方案**：
-```bash
-# 检查 registry 中的 edition
-grep edition.*2024 /home/wfg/.cargo/registry/src/*/*/Cargo.toml
+```toml
+# 必须 pin 旧版本，不能使用新版本
+versions = "=6.3"  # ✅ 使用 6.3（edition 2021）
+# versions = "7.0"  # ❌ 7.0 使用 edition 2024
+```
 
-# Pin 旧版本
-versions = "=6.3"  # 而不是 "7.0"
+**常见需要 pin 的 crate**：
+```toml
+time = "=0.3.44"        # 0.3.45+ 需要 2024
+rand = "=0.9"           # 0.10+ 需要 2024
+mlua = "=0.11.5"        # 0.12+ 需要 2024
+versions = "=6.3"       # 7.0+ 需要 2024
+deranged = "=0.5.7"     # 0.6+ 需要 2024
 ```
 
 ### 场景 4：上游限制无法升级
