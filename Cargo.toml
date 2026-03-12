@@ -89,15 +89,6 @@ default-features = false
 version = "0.11"
 default-features = false
 
-[target.'cfg(target_os = "linux")'.dependencies.hashbrown]
-version = "=0.16.1"
-
-[target.'cfg(target_os = "linux")'.dependencies.itertools]
-version = "=0.14.0"
-
-[target.'cfg(target_os = "linux")'.dependencies.foldhash]
-version = "=0.2.0"
-
 # Optional but recommended for better progress bars
 [dependencies.console]
 version = "0.16"

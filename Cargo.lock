@@ -497,7 +497,7 @@ name = "devices"
 version = "0.1.0"
 dependencies = [
  "arch",
- "bitflags 1.3.2",
+ "bitflags 2.11.0",
  "caps",
  "crossbeam-channel",
  "hvf",
@@ -651,13 +651,10 @@ dependencies = [
  "env_logger",
  "filetime",
  "flate2",
- "foldhash 0.2.0",
  "getrandom 0.3.4",
  "glob",
- "hashbrown 0.16.1",
  "hex",
  "indicatif",
- "itertools 0.14.0",
  "lazy_static",
  "libc",
  "libkrun",
@@ -2500,7 +2497,7 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 name = "utils"
 version = "0.1.0"
 dependencies = [
- "bitflags 1.3.2",
+ "bitflags 2.11.0",
  "crossbeam-channel",
  "kvm-bindings",
  "libc",
