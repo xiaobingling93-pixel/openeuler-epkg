@@ -474,12 +474,12 @@ dependencies = [
 
 [[package]]
 name = "ctrlc"
-version = "3.5.2"
+version = "3.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0b1fab2ae45819af2d0731d60f2afe17227ebb1a1538a236da84c93e9a60162"
+checksum = "73736a89c4aff73035ba2ed2e565061954da00d4970fc9ac25dcc85a2a20d790"
 dependencies = [
  "dispatch2",
- "nix 0.31.2",
+ "nix",
  "windows-sys 0.61.2",
 ]
 
@@ -508,7 +508,7 @@ dependencies = [
  "libloading",
  "log",
  "lru",
- "nix 0.30.1",
+ "nix",
  "polly",
  "rand",
  "utils",
@@ -648,7 +648,7 @@ dependencies = [
  "memmap2",
  "mlua",
  "mlua-sys",
- "nix 0.30.1",
+ "nix",
  "num_cpus",
  "pathdiff",
  "quick-xml",
@@ -960,7 +960,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "miniz_oxide",
- "nix 0.30.1",
+ "nix",
  "page_size",
  "rustc_version",
  "tokio",
@@ -1001,6 +1001,15 @@ name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
+
+[[package]]
+name = "itertools"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
+dependencies = [
+ "either",
+]
 
 [[package]]
 name = "itertools"
@@ -1268,6 +1277,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "minimal-lexical"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1340,15 +1355,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "nix"
-version = "0.31.2"
+name = "nom"
+version = "7.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d6d0705320c1e6ba1d912b5e37cf18071b6c2e9b7fa8215a1e8a7651966f5d3"
+checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
 dependencies = [
- "bitflags 2.11.0",
- "cfg-if",
- "cfg_aliases",
- "libc",
+ "memchr",
+ "minimal-lexical",
 ]
 
 [[package]]
@@ -1830,7 +1843,7 @@ dependencies = [
  "event-listener",
  "futures",
  "indexmap",
- "itertools",
+ "itertools 0.14.0",
  "petgraph",
  "tracing",
 ]
@@ -1888,11 +1901,11 @@ dependencies = [
  "digest",
  "enum-primitive-derive",
  "hex",
- "itertools",
+ "itertools 0.14.0",
  "liblzma",
  "log",
  "md-5",
- "nom",
+ "nom 8.0.0",
  "num",
  "num-derive",
  "num-traits",
@@ -2448,7 +2461,7 @@ dependencies = [
  "kvm-bindings",
  "libc",
  "log",
- "nix 0.30.1",
+ "nix",
  "vmm-sys-util",
 ]
 
@@ -2477,12 +2490,12 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "versions"
-version = "7.0.0"
+version = "6.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80a7e511ce1795821207a837b7b1c8d8aca0c648810966ad200446ae58f6667f"
+checksum = "f25d498b63d1fdb376b4250f39ab3a5ee8d103957346abacd911e2d8b612c139"
 dependencies = [
- "itertools",
- "nom",
+ "itertools 0.13.0",
+ "nom 7.1.3",
 ]
 
 [[package]]
@@ -2532,7 +2545,7 @@ dependencies = [
  "libc",
  "linux-loader",
  "log",
- "nix 0.30.1",
+ "nix",
  "polly",
  "utils",
  "vm-memory",
