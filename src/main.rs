@@ -171,7 +171,7 @@ fn main() -> Result<()> {
 
     // Install rustls crypto provider before any TLS operations
     // This is required when using ureq with rustls-no-provider feature
-    rustls::crypto::aws_lc_rs::default_provider()
+    rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
