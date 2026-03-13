@@ -1,7 +1,9 @@
+#[cfg(unix)]
 use crate::deb_triggers::setup_deb_env_vars;
 use crate::models::{InstalledPackageInfo, PackageFormat};
 use crate::package;
 use crate::plan::InstallationPlan;
+#[cfg(unix)]
 use crate::rpm_triggers::setup_rpm_env_vars;
 use crate::lfs;
 use color_eyre::eyre::{eyre, Result};
@@ -546,13 +548,17 @@ pub fn run_scriptlet(
                     .or_insert("/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string());
 
                 // Add environment variables for package scripts based on format
+                #[cfg(unix)]
                 if package_format == PackageFormat::Deb {
                     setup_deb_env_vars(&mut env_vars, pkgkey, package_info, scriptlet_type, env_root);
                 } else if package_format == PackageFormat::Rpm {
                     setup_rpm_env_vars(&mut env_vars, pkgkey, package_info, store_root);
-                } else if package_format == PackageFormat::Apk {
+                }
+                #[cfg(unix)]
+                if package_format == PackageFormat::Apk {
                     setup_apk_env_vars(&mut env_vars, pkgkey, package_info, scriptlet_type);
-                } else if package_format == PackageFormat::Conda {
+                }
+                if package_format == PackageFormat::Conda {
                     setup_conda_env_vars(&mut env_vars, pkgkey, package_info, store_root, env_root);
                 }
 

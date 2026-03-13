@@ -1,5 +1,3 @@
-#![cfg(unix)]
-
 use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;

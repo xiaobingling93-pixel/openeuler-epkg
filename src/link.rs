@@ -4,6 +4,7 @@
 //! supporting different link types (hardlink, symlink, move, runpath).
 
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use color_eyre::Result;
@@ -41,8 +42,17 @@ fn get_config_file_action(
     // Check if files are identical (simplified - just check if they exist and are same size)
     // Use symlink_metadata to avoid following symlinks in env context
     if let (Ok(meta1), Ok(meta2)) = (lfs::symlink_metadata(target_path), fs::metadata(fs_file)) {
-        if meta1.len() == meta2.len() && meta1.mode() == meta2.mode() {
-            return EtcFileAction::Identical;
+        #[cfg(unix)]
+        {
+            if meta1.len() == meta2.len() && meta1.mode() == meta2.mode() {
+                return EtcFileAction::Identical;
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            if meta1.len() == meta2.len() {
+                return EtcFileAction::Identical;
+            }
         }
     }
 

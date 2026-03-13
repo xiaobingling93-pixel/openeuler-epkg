@@ -183,6 +183,7 @@ impl TestCase {
                             bdepends: BTreeSet::new(),
                             rbdepends: BTreeSet::new(),
                             ebin_links: Vec::new(),
+                            #[cfg(unix)]
                             xdesktop_links: Vec::new(),
                             pending_triggers: Vec::new(),
                             triggers_awaited: false,

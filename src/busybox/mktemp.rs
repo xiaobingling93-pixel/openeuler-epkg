@@ -143,10 +143,8 @@ fn replace_trailing_x_with_random(template: &str, x_count: usize) -> Result<Stri
     #[cfg(unix)]
     {
         let mut bytes = vec![0u8; x_count];
-        let n = unsafe { libc::getrandom(bytes.as_mut_ptr() as *mut libc::c_void, x_count, 0) };
-        if n != x_count as isize {
-            return Err(eyre!("mktemp: getrandom failed"));
-        }
+        getrandom::fill(&mut bytes)
+            .map_err(|e| eyre!("mktemp: getrandom failed: {}", e))?;
         let suffix: String = bytes
             .iter()
             .map(|&b| CHARS[(b as usize) % 62] as char)

@@ -300,6 +300,7 @@ fn is_source_newer(src: &Path, dst: &Path) -> Result<bool> {
     Ok(src_mtime > dst_mtime)
 }
 
+#[cfg(unix)]
 pub fn preserve_attributes(src: &Path, dst: &Path, preserve_timestamps: bool) -> Result<()> {
     let metadata = fs::metadata(src)
         .map_err(|e| eyre!("cp: cannot get metadata for '{}': {}", src.display(), e))?;

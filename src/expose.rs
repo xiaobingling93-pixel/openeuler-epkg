@@ -748,8 +748,6 @@ pub fn expose_package(plan: &mut InstallationPlan, store_fs_dir: &Path, pkgkey: 
     // Desktop integration
     #[cfg(unix)]
     let xdesktop_links = xdesktop::expose_package_xdesktop(&plan.env_root, &filelist, &mut plan.desktop_integration_occurred)?;
-    #[cfg(not(unix))]
-    let xdesktop_links = Vec::new();
 
     // Update the package info with the new links
     if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {

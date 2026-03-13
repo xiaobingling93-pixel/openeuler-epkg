@@ -79,7 +79,6 @@ mod epkg;
 mod parse_version;
 mod plan;
 mod version_compare;
-mod scriptlets;
 #[cfg(unix)]
 mod hooks;
 #[cfg(unix)]
@@ -90,7 +89,7 @@ mod deb_triggers;
 mod dpkg_db;
 #[cfg(unix)]
 mod rpm_triggers;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod lua;
 #[cfg(unix)]
 mod risks;
@@ -100,18 +99,20 @@ mod run;
 mod namespace;
 #[cfg(unix)]
 mod idmap;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod mount;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod qemu;
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
 mod libkrun;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod vm_client;
 mod busybox;
 mod info;
 mod list;
 mod search;
+#[cfg(unix)]
+mod scriptlets;
 #[cfg(unix)]
 mod gc;
 #[cfg(unix)]
@@ -241,17 +242,22 @@ fn main() -> Result<()> {
     let matches = clap_matches();
     match matches.subcommand() {
         Some(("self",       sub_matches))  =>  command_self(sub_matches)?,
+        #[cfg(unix)]
         Some(("env",        sub_matches))  =>  command_env(sub_matches)?,
         Some(("list",       sub_matches))  =>  command_list(sub_matches)?,
         Some(("info",       sub_matches))  =>  command_info(sub_matches)?,
         Some(("install",    sub_matches))  =>  command_install(sub_matches)?,
         Some(("upgrade",    sub_matches))  =>  command_upgrade(sub_matches)?,
         Some(("remove",     sub_matches))  =>  command_remove(sub_matches)?,
+        #[cfg(unix)]
         Some(("history",    sub_matches))  =>  command_history(sub_matches)?,
+        #[cfg(unix)]
         Some(("restore",    sub_matches))  =>  command_restore(sub_matches)?,
         Some(("update",     sub_matches))  =>  command_update(sub_matches)?,
         Some(("repo",       sub_matches))  =>  command_repo(sub_matches)?,
+        #[cfg(unix)]
         Some(("hash",       sub_matches))  =>  command_hash(sub_matches)?,
+        #[cfg(unix)]
         Some(("build",      sub_matches))  =>  command_build(sub_matches)?,
         #[cfg(unix)]
         Some(("unpack",     sub_matches))  =>  command_unpack(&sub_matches)?,
@@ -262,7 +268,9 @@ fn main() -> Result<()> {
         #[cfg(unix)]
         Some(("busybox",    sub_matches))  =>  command_busybox(sub_matches)?,
         Some(("search",     sub_matches))  =>  command_search(sub_matches)?,
+        #[cfg(unix)]
         Some(("gc",         sub_matches))  =>  command_gc(sub_matches)?,
+        #[cfg(unix)]
         Some(("service",    sub_matches))  =>  command_service(sub_matches)?,
         _ => {} // No subcommand or unknown subcommand
     }
@@ -1864,6 +1872,7 @@ fn parse_options_service(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches
 }
 
 
+#[cfg(unix)]
 fn command_env(sub_matches: &clap::ArgMatches) -> Result<()> {
     let name = &config().common.env_name;
     match sub_matches.subcommand() {
@@ -1981,10 +1990,12 @@ fn command_remove(sub_matches: &clap::ArgMatches) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn command_history(_sub_matches: &clap::ArgMatches) -> Result<()> {
     print_history()
 }
 
+#[cfg(unix)]
 fn command_restore(sub_matches: &clap::ArgMatches) -> Result<()> {
     if let Some(rollback_id) = sub_matches.get_one::<i32>("GEN_ID") {
         rollback_history(*rollback_id)?;
@@ -2006,6 +2017,7 @@ fn command_repo(sub_matches: &clap::ArgMatches) -> Result<()> {
 }
 
 #[cfg(unix)]
+#[cfg(unix)]
 fn command_hash(sub_matches: &clap::ArgMatches) -> Result<()> {
     if let Some(package_store_dirs) = sub_matches.get_many::<String>("PACKAGE_STORE_DIR") {
         for dir in package_store_dirs {
@@ -2016,6 +2028,7 @@ fn command_hash(sub_matches: &clap::ArgMatches) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn command_build(sub_matches: &clap::ArgMatches) -> Result<()> {
     if let Some(package_yaml) = sub_matches.get_one::<String>("PACKAGE_YAML") {
         let epkg_src_path = get_epkg_src_path();
@@ -2106,12 +2119,14 @@ fn command_search(_sub_matches: &clap::ArgMatches) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn command_gc(sub_matches: &clap::ArgMatches) -> Result<()> {
     let old_downloads_days = sub_matches.get_one::<u64>("old-downloads").copied();
     gc::gc_epkg(old_downloads_days)?;
     Ok(())
 }
 
+#[cfg(unix)]
 fn command_service(sub_matches: &clap::ArgMatches) -> Result<()> {
     service::command_service(sub_matches)
 }

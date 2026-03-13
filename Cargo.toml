@@ -71,11 +71,14 @@ libkrun = { path = "git/libkrun/src/libkrun", optional = true }
 # Pin these versions: higher version will need edition 2024
 time = { version = "=0.3.44", features = ["formatting", "local-offset", "macros", "parsing"] }
 rand = { version = "=0.9", features = ["std", "std_rng"], default-features = false }
-mlua = { version = "=0.11.5", features = ["lua54", "send"] }
-mlua-sys = { version = "=0.9", features = ["vendored"] }
 # versions 7.0 uses edition 2024, pin to 6.3
 versions = "=6.3"
 deranged = "=0.5.7"
+
+# Lua is only needed for RPM scriptlets (Linux-only)
+[target.'cfg(target_os = "linux")'.dependencies]
+mlua = { version = "=0.11.5", features = ["lua54", "send"] }
+mlua-sys = { version = "=0.9", features = ["vendored"] }
 
 [target.'cfg(target_os = "linux")'.dependencies.nix]
 version = "=0.30.1"
