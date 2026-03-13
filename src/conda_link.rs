@@ -352,12 +352,25 @@ fn get_python_info(index_json: &IndexJson) -> Result<Option<PythonInfo>> {
             DEFAULT_PYTHON_VERSION
         });
 
+    #[cfg(unix)]
     let path = PathBuf::from(format!("bin/python{major}.{minor}"));
+    #[cfg(windows)]
+    let path = PathBuf::from(format!("Scripts/python{major}.{minor}.exe"));
+
     let site_packages_path = index_json.python_site_packages_path
         .as_ref()
         .map(|s| PathBuf::from(s))
-        .unwrap_or_else(|| PathBuf::from(format!("lib/python{major}.{minor}/site-packages")));
+        .unwrap_or_else(|| {
+            #[cfg(unix)]
+            { PathBuf::from(format!("lib/python{major}.{minor}/site-packages")) }
+            #[cfg(windows)]
+            { PathBuf::from("Lib/site-packages") }
+        });
+
+    #[cfg(unix)]
     let bin_dir = PathBuf::from("bin");
+    #[cfg(windows)]
+    let bin_dir = PathBuf::from("Scripts");
 
     Ok(Some(PythonInfo {
         short_version: (major, minor),
@@ -694,6 +707,45 @@ fn create_unix_python_entry_point(
     Ok(relative_path)
 }
 
+/// Create Windows Python entry point script for conda packages.
+///
+/// On Windows, Python entry points are typically `.exe` files bundled with the package.
+/// For noarch packages, we create a `.exe` wrapper using Python's `-c` approach.
+#[cfg(windows)]
+fn create_windows_python_entry_point(
+    target_dir: &Path,
+    target_prefix: &str,
+    entry_point: &EntryPoint,
+    python_info: &PythonInfo,
+) -> Result<PathBuf> {
+    let relative_path = python_info.bin_dir.join(format!("{}.exe", entry_point.command));
+    let script_path = target_dir.join(&relative_path);
+
+    // Create parent directory
+    if let Some(parent) = script_path.parent() {
+        lfs::create_dir_all(parent)?;
+    }
+
+    // For Windows, we create a simple launcher batch content that Python can execute
+    // This is a simplified version - real Conda uses actual .exe launchers
+    let python_path = Path::new(target_prefix).join(&python_info.path);
+
+    // Create a .bat wrapper that calls Python with the module
+    let bat_path = target_dir.join(python_info.bin_dir.join(format!("{}.bat", entry_point.command)));
+    let bat_content = format!(
+        "@echo off\n\"{}\" -c \"from {} import {}; {}()\"\n",
+        python_path.display(),
+        entry_point.module,
+        entry_point.function,
+        entry_point.function
+    );
+
+    lfs::write(&bat_path, bat_content)?;
+    log::debug!("Created Python entry point batch file: {}", bat_path.display());
+
+    Ok(relative_path)
+}
+
 /// Prepare conda package metadata (index.json, paths.json, Python info)
 /// Returns empty paths vector if paths.json does not exist (caller should fall back to generic linking)
 fn prepare_conda_package_metadata(
@@ -826,7 +878,15 @@ fn create_conda_entry_points(
 ) -> Result<()> {
     if let Ok(Some(entry_points)) = read_link_json(package_dir) {
         for entry_point in entry_points {
+            #[cfg(unix)]
             create_unix_python_entry_point(
+                &plan.env_root,
+                target_prefix,
+                &entry_point,
+                python_info,
+            )?;
+            #[cfg(windows)]
+            create_windows_python_entry_point(
                 &plan.env_root,
                 target_prefix,
                 &entry_point,
