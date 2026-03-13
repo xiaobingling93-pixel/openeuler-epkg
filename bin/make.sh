@@ -805,12 +805,12 @@ build_static() {
         local cargo_args=()
     fi
 
-    # For cross-compilation to musl targets using glibc cross-compilers,
+    # For musl targets, if the compiler is not musl-gcc (e.g., using glibc cross-compiler),
     # we need to add musl compatibility shims to mlua-sys's Lua library.
     # This is because mlua-sys builds its own Lua which may reference *64 functions
     # that don't exist in musl libc.
     # We pre-build mlua-sys first, add shims, then build everything else.
-    if [[ "$arch" != "x86_64" ]] && ! is_native_arch "$arch"; then
+    if [[ "$CC" != "musl-gcc" ]]; then
         # Pre-build mlua (and mlua-sys) to generate Lua library before main build
         # We build just the lua-related deps first so we can add musl shims
         echo "Pre-building mlua for $arch to add musl compatibility shims..."
