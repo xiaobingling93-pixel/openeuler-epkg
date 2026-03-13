@@ -287,10 +287,11 @@ fn build_qemu_command(
         }
         RootFsMode::Plan9 => {
             // 9p filesystem using virtfs
-            // security_model=mapped-xattr: files are stored with extended attributes
+            // security_model=none: simplest mode, files accessed as QEMU user
+            // Note: symlinks pointing outside shared directory may not resolve correctly
             qemu_cmd
                 .arg("-fsdev")
-                .arg(format!("local,id=fsdev0,path={},security_model=mapped-xattr", env_root.display()))
+                .arg(format!("local,id=fsdev0,path={},security_model=none", env_root.display()))
                 .arg("-device")
                 .arg(format!("virtio-9p-pci,fsdev=fsdev0,mount_tag={}", mount_tag));
         }
@@ -321,7 +322,7 @@ fn build_qemu_command(
         RootFsMode::Plan9 => "9p",
     };
     let mut append_args = format!(
-        "console=ttyS0 panic=1 root={} rootfstype={} init=/bin/init sysctl.fs.file-max=1048576",
+        "console=ttyS0 panic=1 root={} rootfstype={} init=/usr/bin/init sysctl.fs.file-max=1048576",
         mount_tag, rootfstype
     );
     // Pass host RUST_LOG into guest so init can enable debug logging
