@@ -8,21 +8,46 @@ use color_eyre::eyre;
 use color_eyre::Result;
 use crate::models::dirs;
 
+/// Find QEMU binary for current architecture.
+/// Tries in order: qemu-system-$arch, qemu-$arch, qemu.
+/// Returns error if none found.
+fn find_qemu_binary() -> Result<String> {
+    let arch = std::env::consts::ARCH;
+    let candidates = [
+        format!("qemu-system-{}", arch),
+        format!("qemu-{}", arch),
+        "qemu".to_string(),
+    ];
+
+    for candidate in &candidates {
+        if let Some(path) = crate::utils::find_command_in_paths(candidate) {
+            return Ok(path.to_string_lossy().to_string());
+        }
+    }
+
+    Err(eyre::eyre!(
+        "QEMU binary not found. Tried: {} in PATH and common system paths. \
+         Please install QEMU or set EPKG_VM_QEMU environment variable.",
+        candidates.join(", ")
+    ))
+}
+
 /// Parse VMM configuration (kernel via run::resolve_vm_kernel_path; initrd from run_options or env, etc.).
-fn parse_vmm_config(run_options: &RunOptions) -> Result<(String, Option<String>, String, String, String)> {
+fn parse_vmm_config(run_options: &RunOptions) -> Result<(String, Option<String>, String, Option<String>, String)> {
     let kernel = crate::run::resolve_vm_kernel_path(run_options)?;
     // Prefer --initrd CLI option, then EPKG_VM_INITRD env var
     let initrd = run_options.initrd.clone().or_else(|| std::env::var("EPKG_VM_INITRD").ok());
-    let qemu_bin = std::env::var("EPKG_VM_QEMU").unwrap_or_else(|_| "qemu-system-x86_64".to_string());
+    let qemu_bin = match std::env::var("EPKG_VM_QEMU") {
+        Ok(p) => crate::utils::find_command_in_paths(&p)
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or(p),
+        Err(_) => find_qemu_binary()?,
+    };
     let virtiofsd_bin = std::env::var("EPKG_VM_VIRTIOFSD")
         .unwrap_or_else(|_| "virtiofsd".to_string());
-    let virtiofsd_path = crate::utils::find_command_in_paths(&virtiofsd_bin)
-        .ok_or_else(|| eyre::eyre!(
-            "virtiofsd binary not found. Tried: '{}' in PATH and common system paths. \
-             Please install virtiofsd or set EPKG_VM_VIRTIOFSD environment variable.",
-            virtiofsd_bin
-        ))?;
-    let virtiofsd_bin = virtiofsd_path.to_string_lossy().to_string();
+    let virtiofsd_path = crate::utils::find_command_in_paths(&virtiofsd_bin);
+    let virtiofsd_bin = virtiofsd_path
+        .map(|p| p.to_string_lossy().to_string());
     // QEMU-specific extra kernel cmdline arguments. Prefer CLI --kernel-args,
     // then EPKG_QEMU_EXTRA_ARGS, then legacy EPKG_VM_EXTRA_ARGS.
     let env_extra = std::env::var("EPKG_QEMU_EXTRA_ARGS")
@@ -210,11 +235,13 @@ fn wait_for_virtiofsd_socket(
 
 /// Build QEMU command line for starting the VM.
 /// When init_cmd is Some (cmdline mode), it is percent-encoded and appended as epkg.init_cmd=...
+/// rootfs_mode determines whether to use virtiofs or 9p for the root filesystem.
 fn build_qemu_command(
     kernel: &str,
     initrd: &Option<String>,
     qemu_bin: &str,
-    socket_path: &std::path::Path,
+    rootfs_mode: &RootFsMode,
+    env_root: &Path,
     mount_tag: &str,
     use_vsock: bool,
     extra_qemu_args: &str,
@@ -241,20 +268,33 @@ fn build_qemu_command(
         qemu_cmd.arg("-initrd").arg(initrd_path);
     }
 
-    // Shared memory backend required for virtiofs
-    qemu_cmd
-        .arg("-object")
-        .arg(format!("memory-backend-file,id=mem,size={}M,mem-path=/dev/shm,share=on", vm_memory_mb))
-        .arg("-numa")
-        .arg("node,memdev=mem");
+    // Configure root filesystem based on mode
+    match rootfs_mode {
+        RootFsMode::Virtiofs(_, socket_path) => {
+            // Shared memory backend required for virtiofs
+            qemu_cmd
+                .arg("-object")
+                .arg(format!("memory-backend-file,id=mem,size={}M,mem-path=/dev/shm,share=on", vm_memory_mb))
+                .arg("-numa")
+                .arg("node,memdev=mem");
 
-    // Wire virtiofs device for env root
-    qemu_cmd
-        .arg("-chardev")
-        .arg(format!("socket,id=char0,path={}", socket_path.display()))
-        .arg("-device")
-        .arg(format!("vhost-user-fs-pci,queue-size=1024,chardev=char0,tag={}", mount_tag));
-
+            // Wire virtiofs device for env root
+            qemu_cmd
+                .arg("-chardev")
+                .arg(format!("socket,id=char0,path={}", socket_path.display()))
+                .arg("-device")
+                .arg(format!("vhost-user-fs-pci,queue-size=1024,chardev=char0,tag={}", mount_tag));
+        }
+        RootFsMode::Plan9 => {
+            // 9p filesystem using virtfs
+            // security_model=mapped-xattr: files are stored with extended attributes
+            qemu_cmd
+                .arg("-fsdev")
+                .arg(format!("local,id=fsdev0,path={},security_model=mapped-xattr", env_root.display()))
+                .arg("-device")
+                .arg(format!("virtio-9p-pci,fsdev=fsdev0,mount_tag={}", mount_tag));
+        }
+    }
 
     // Add user networking for guest-host communication (for normal guest networking).
     // TCP hostfwd is no longer used; control-plane uses vsock.
@@ -275,10 +315,14 @@ fn build_qemu_command(
 
     // Kernel cmdline: console, panic, root filesystem, and epkg init parameters
     // init=/bin/init: kernel runs epkg init (bin->usr/bin, init at usr/bin/init)
-    // sysctl.fs.file-max: avoid "Too many open files in system" (ENFILE) with virtiofs
+    // sysctl.fs.file-max: avoid "Too many open files in system" (ENFILE) with virtiofs/9p
+    let rootfstype = match rootfs_mode {
+        RootFsMode::Virtiofs(_, _) => "virtiofs",
+        RootFsMode::Plan9 => "9p",
+    };
     let mut append_args = format!(
-        "console=ttyS0 panic=1 root={} rootfstype=virtiofs init=/bin/init sysctl.fs.file-max=1048576",
-        mount_tag
+        "console=ttyS0 panic=1 root={} rootfstype={} init=/bin/init sysctl.fs.file-max=1048576",
+        mount_tag, rootfstype
     );
     // Pass host RUST_LOG into guest so init can enable debug logging
     if let Ok(rust_log) = std::env::var("RUST_LOG") {
@@ -309,20 +353,42 @@ fn build_qemu_command(
 
 type VirtiofsdGuard = Option<(tempfile::TempDir, std::process::Child)>;
 
+/// Root filesystem sharing mode for QEMU VM.
+enum RootFsMode {
+    /// virtiofs with virtiofsd daemon and socket path
+    Virtiofs(VirtiofsdGuard, std::path::PathBuf),
+    /// 9p filesystem (fallback when virtiofsd not available)
+    Plan9,
+}
+
 /// Setup virtiofsd socket: use existing socket or start new virtiofsd daemon.
-/// Returns (virtiofsd_guard, socket_path).
-fn setup_virtiofsd_socket(
+/// Returns RootFsMode indicating whether to use virtiofs or fall back to 9p.
+fn setup_rootfs_mode(
     env_root: &Path,
     existing_socket_path: Option<&Path>,
-    virtiofsd_bin: &str,
+    virtiofsd_bin: Option<&String>,
     virtiofsd_log_path: &Path,
-) -> Result<(VirtiofsdGuard, std::path::PathBuf)> {
+) -> Result<RootFsMode> {
+    // If existing socket is provided, use it directly
     if let Some(path) = existing_socket_path {
-        Ok((None, path.to_path_buf()))
-    } else {
-        let (tmpdir, child, path) = start_virtiofsd_at(env_root, virtiofsd_bin, virtiofsd_log_path)?;
-        Ok((Some((tmpdir, child)), path))
+        return Ok(RootFsMode::Virtiofs(None, path.to_path_buf()));
     }
+
+    // Try virtiofsd if available
+    if let Some(virtiofsd_bin) = virtiofsd_bin {
+        match start_virtiofsd_at(env_root, virtiofsd_bin, virtiofsd_log_path) {
+            Ok((tmpdir, child, path)) => {
+                return Ok(RootFsMode::Virtiofs(Some((tmpdir, child)), path));
+            }
+            Err(e) => {
+                log::warn!("virtiofsd failed to start ({}), falling back to 9p", e);
+            }
+        }
+    }
+
+    // Fall back to 9p
+    log::info!("Using 9p filesystem for VM root (virtiofsd not available)");
+    Ok(RootFsMode::Plan9)
 }
 
 /// Spawn QEMU process with configured command line.
@@ -332,7 +398,8 @@ fn spawn_qemu(
     kernel: &str,
     initrd: &Option<String>,
     qemu_bin: &str,
-    socket_path: &Path,
+    rootfs_mode: &RootFsMode,
+    env_root: &Path,
     mount_tag: &str,
     use_vsock: bool,
     extra_qemu_args: &str,
@@ -347,7 +414,8 @@ fn spawn_qemu(
         kernel,
         initrd,
         qemu_bin,
-        socket_path,
+        rootfs_mode,
+        env_root,
         mount_tag,
         use_vsock,
         extra_qemu_args,
@@ -456,15 +524,15 @@ fn handle_guest_execution(
     }
 }
 
-/// Cleanup virtiofsd process if we own it.
-fn cleanup_virtiofsd(virtiofsd_guard: VirtiofsdGuard) {
-    if let Some((_, mut virtiofsd_child)) = virtiofsd_guard {
+/// Cleanup virtiofsd process if we own it (for RootFsMode::Virtiofs only).
+fn cleanup_rootfs(rootfs_mode: RootFsMode) {
+    if let RootFsMode::Virtiofs(Some((_, mut virtiofsd_child)), _) = rootfs_mode {
         let _ = virtiofsd_child.kill();
         let _ = virtiofsd_child.wait();
     }
 }
 
-/// Start a QEMU-based VMM sandbox using virtiofs to share env_root into the guest.
+/// Start a QEMU-based VMM sandbox using virtiofs or 9p to share env_root into the guest.
 /// This function never returns normally; it exits the process with the guest's exit code.
 ///
 /// If `existing_socket_path` is Some, that virtiofsd socket is used and virtiofsd is
@@ -486,10 +554,10 @@ pub fn run_command_in_qemu(
     let vm_memory_mb = crate::run::resolve_vm_memory_mib(run_options);
     let (qemu_log_path, virtiofsd_log_path) = setup_vmm_logs()?;
 
-    let (virtiofsd_guard, socket_path) = setup_virtiofsd_socket(
+    let rootfs_mode = setup_rootfs_mode(
         env_root,
         existing_socket_path,
-        &virtiofsd_bin,
+        virtiofsd_bin.as_ref(),
         &virtiofsd_log_path,
     )?;
 
@@ -503,7 +571,8 @@ pub fn run_command_in_qemu(
         &kernel,
         &initrd,
         &qemu_bin,
-        &socket_path,
+        &rootfs_mode,
+        env_root,
         mount_tag,
         use_vsock,
         &extra_qemu_args,
@@ -521,7 +590,7 @@ pub fn run_command_in_qemu(
         run_options.use_pty,
     )?;
 
-    cleanup_virtiofsd(virtiofsd_guard);
+    cleanup_rootfs(rootfs_mode);
 
     std::process::exit(exit_code);
 }
