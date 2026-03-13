@@ -65,20 +65,30 @@ impl EPKGDirs {
 #[cfg(not(unix))]
 impl EPKGDirs {
     pub fn build_dirs(options: &EPKGConfig) -> Result<Self> {
-        // Windows/macOS (non-Unix) stub implementation
-        // For now, use dummy paths
-        let opt_epkg = PathBuf::from("C:/epkg"); // placeholder
-        let home = env::var("USERPROFILE")
-            .or_else(|_| env::var("HOME"))
-            .unwrap_or_else(|_| ".".to_string());
-        let home_epkg = PathBuf::from(&home).join(".epkg");
-        let home_cache = PathBuf::from(&home).join(".cache/epkg");
+        // Windows paths
+        let opt_epkg = PathBuf::from(r"C:\Program Files\epkg");
+
+        // Use LOCALAPPDATA for user data (standard Windows location)
+        let local_app_data = env::var("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .or_else(|_| {
+                // Fallback: try USERPROFILE\AppData\Local
+                env::var("USERPROFILE").map(|p| PathBuf::from(p).join("AppData").join("Local"))
+            })
+            .or_else(|_| {
+                // Last resort: HOME
+                env::var("HOME").map(PathBuf::from)
+            })
+            .unwrap_or_else(|_| PathBuf::from("."));
+
+        let home_epkg = local_app_data.join("epkg");
+        let home_cache = local_app_data.join("epkg").join("cache");
 
         let (epkg_store, epkg_cache) = if options.init.shared_store {
-            // Shared store/cache live under opt_epkg
+            // Shared store/cache live under Program Files
             (opt_epkg.join("store"), opt_epkg.join("cache"))
         } else {
-            // Non-shared store uses user home, cache uses home_cache
+            // Non-shared store uses user profile
             (home_epkg.join("store"), home_cache.clone())
         };
 
@@ -88,20 +98,15 @@ impl EPKGDirs {
             .unwrap_or_else(|_| "user".to_string());
 
         let user_envs = if options.init.shared_store {
-            // opt_epkg/envs/$USER
-            opt_epkg.join(format!("envs/{}", username))
+            // C:\Program Files\epkg\envs\$USER
+            opt_epkg.join("envs").join(&username)
         } else {
-            // $HOME/.epkg/envs
+            // %LOCALAPPDATA%\epkg\envs
             home_epkg.join("envs")
         };
 
-        let user_aur_builds = if options.init.shared_store {
-            // opt_epkg/cache/aur_builds/$USER
-            epkg_cache.join("aur_builds").join(&username)
-        } else {
-            // $HOME/.cache/epkg/aur_builds
-            home_cache.join("aur_builds")
-        };
+        // AUR builds not applicable on Windows, but keep for struct completeness
+        let user_aur_builds = epkg_cache.join("aur_builds").join(&username);
 
         Ok(Self {
             opt_epkg,

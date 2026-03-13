@@ -82,8 +82,22 @@ pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<(
 }
 
 #[cfg(windows)]
-pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(_original: P, _link: Q) -> Result<()> {
-    Err(color_eyre::eyre::eyre!("symlink not implemented for Windows yet"))
+pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
+    use std::os::windows::fs::symlink_file;
+    let original = original.as_ref();
+    let link = link.as_ref();
+    log::trace!("creating symlink: {} -> {}", link.display(), original.display());
+
+    // Check if original is a directory
+    if original.is_dir() {
+        // Use junction for directories (doesn't require admin privileges)
+        junction::create(original, link)
+            .wrap_err_with(|| format!("Failed to create junction from {} to {}", link.display(), original.display()))
+    } else {
+        // Use symlink_file for files
+        symlink_file(original, link)
+            .wrap_err_with(|| format!("Failed to create file symlink from {} to {}", link.display(), original.display()))
+    }
 }
 
 /// Create a hard link.
@@ -122,10 +136,19 @@ pub fn remove_file<P: AsRef<Path>>(path: P) -> Result<()> {
 }
 
 /// Remove a directory and all its contents.
+#[cfg(not(windows))]
 pub fn remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
     let path = path.as_ref();
     log::trace!("removing directory recursively: {}", path.display());
     fs::remove_dir_all(path)
+        .wrap_err_with(|| format!("Failed to remove directory {}", path.display()))
+}
+
+#[cfg(windows)]
+pub fn remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
+    let path = path.as_ref();
+    log::trace!("removing directory recursively: {}", path.display());
+    remove_dir_all::remove_dir_all(path)
         .wrap_err_with(|| format!("Failed to remove directory {}", path.display()))
 }
 

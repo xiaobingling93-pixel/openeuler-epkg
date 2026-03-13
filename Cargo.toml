@@ -94,6 +94,11 @@ default-features = false
 version = "0.11"
 default-features = false
 
+# Windows-specific dependencies
+[target.'cfg(windows)'.dependencies]
+junction = "1.2"
+remove_dir_all = "1.0"
+
 # Optional but recommended for better progress bars
 [dependencies.console]
 version = "0.16"
