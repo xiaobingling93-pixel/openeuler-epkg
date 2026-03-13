@@ -98,6 +98,8 @@ default-features = false
 [target.'cfg(windows)'.dependencies]
 junction = "1.2"
 remove_dir_all = "1.0"
+# Use static linking for liblzma to avoid missing DLL dependencies
+liblzma = { version = "0.4", features = ["parallel", "static"], default-features = false }
 
 # Optional but recommended for better progress bars
 [dependencies.console]
