@@ -984,6 +984,9 @@ pub struct CommonOptions {
     pub env_root: String,
     #[serde(skip)]
     pub env_explicit: bool,
+    /// Whether -e was explicitly used (vs env_name derived from --root)
+    #[serde(skip)]
+    pub env_name_explicit: bool,
     #[serde(skip)]
     pub in_env_root: bool,
 

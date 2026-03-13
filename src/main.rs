@@ -1354,6 +1354,7 @@ fn determine_environment_explicit(matches: &clap::ArgMatches, config: &mut EPKGC
     if let Some(env_arg) = matches.get_one::<String>("env") {
         config.common.env_name = env_arg.to_string();
         config.common.env_explicit = true;
+        config.common.env_name_explicit = true;
         return true;
     }
 
@@ -1436,7 +1437,7 @@ fn try_apply_explicit_env_root(config: &mut EPKGConfig) -> Result<bool> {
                 env_root_path
             ));
         }
-        if !config.common.env_name.is_empty() {
+        if config.common.env_name_explicit {
             eprintln!("Both options '-e {}' and '-r {}' are given, using -r for selecting environment.",
                 config.common.env_name,
                 config.common.env_root);
@@ -1664,10 +1665,12 @@ fn parse_options_env(config: &mut EPKGConfig, matches: &clap::ArgMatches) -> Res
                 // ENV_NAME must be a name or owner/name, not a path (same semantic as -e)
                 config.common.env_name = env_name.to_string();
                 config.common.env_explicit = true;
+                config.common.env_name_explicit = true;
             } else if !config.common.env_root.is_empty() &&
                 config.common.env_name.is_empty() /* no '-e ENV_NAME' option either */ {
                 config.common.env_name = env_name_from_path(&config.common.env_root);
                 config.common.env_explicit = true;
+                // Note: env_name_explicit is NOT set here since env_name is derived from --root
             }
 
             if !config.common.env_explicit {
