@@ -852,13 +852,17 @@ build_static() {
     local mode="$2"
     local rust_target=$(get_rust_target "$arch")
     local rustflags=$(get_rustflags "$arch")
-    local cargo_features="${FEATURES:-}"
+    local cargo_features=""
 
     # Auto-enable libkrun if FEATURES="auto" and platform supports it
     # Note: FEATURES="" means user explicitly wants no features
-    if [[ "$FEATURES" == "auto" ]] && should_enable_libkrun "$arch" "linux"; then
-        cargo_features="libkrun"
-        echo "Auto-enabling libkrun feature for $arch Linux"
+    if [[ "$FEATURES" == "auto" ]]; then
+        if should_enable_libkrun "$arch" "linux"; then
+            cargo_features="libkrun"
+            echo "Auto-enabling libkrun feature for $arch Linux"
+        fi
+    else
+        cargo_features="${FEATURES:-}"
     fi
 
     # Warn if user tries to force libkrun on unsupported platform
@@ -1006,11 +1010,15 @@ build() {
 
     # Auto-enable libkrun for supported platforms
     # Note: FEATURES="" means user explicitly wants no features
-    local cargo_features="${FEATURES:-}"
+    local cargo_features=""
     local current_arch=$(detect_native_arch)
-    if [[ "$FEATURES" == "auto" ]] && should_enable_libkrun "$current_arch" "$OS_FAMILY"; then
-        cargo_features="libkrun"
-        echo "Auto-enabling libkrun feature for $OS_FAMILY $current_arch"
+    if [[ "$FEATURES" == "auto" ]]; then
+        if should_enable_libkrun "$current_arch" "$OS_FAMILY"; then
+            cargo_features="libkrun"
+            echo "Auto-enabling libkrun feature for $OS_FAMILY $current_arch"
+        fi
+    else
+        cargo_features="${FEATURES:-}"
     fi
 
     local cargo_feature_args=()
@@ -1043,11 +1051,15 @@ build_release() {
 
     # Auto-enable libkrun for supported platforms
     # Note: FEATURES="" means user explicitly wants no features
-    local cargo_features="${FEATURES:-}"
+    local cargo_features=""
     local current_arch=$(detect_native_arch)
-    if [[ "$FEATURES" == "auto" ]] && should_enable_libkrun "$current_arch" "$OS_FAMILY"; then
-        cargo_features="libkrun"
-        echo "Auto-enabling libkrun feature for $OS_FAMILY $current_arch"
+    if [[ "$FEATURES" == "auto" ]]; then
+        if should_enable_libkrun "$current_arch" "$OS_FAMILY"; then
+            cargo_features="libkrun"
+            echo "Auto-enabling libkrun feature for $OS_FAMILY $current_arch"
+        fi
+    else
+        cargo_features="${FEATURES:-}"
     fi
 
     local cargo_feature_args=()
@@ -1084,10 +1096,14 @@ cross-macos() {
 
     # Auto-enable libkrun for macOS if not explicitly set
     # Note: FEATURES="" means user explicitly wants no features
-    local cargo_features="${FEATURES:-}"
-    if [[ "$FEATURES" == "auto" ]] && should_enable_libkrun "$arch" "darwin"; then
-        cargo_features="libkrun"
-        echo "Auto-enabling libkrun feature for macOS $arch"
+    local cargo_features=""
+    if [[ "$FEATURES" == "auto" ]]; then
+        if should_enable_libkrun "$arch" "darwin"; then
+            cargo_features="libkrun"
+            echo "Auto-enabling libkrun feature for macOS $arch"
+        fi
+    else
+        cargo_features="${FEATURES:-}"
     fi
 
     local cargo_feature_args=()
@@ -1119,13 +1135,20 @@ cross-windows() {
     setup_cross_env "$target"
 
     # libkrun is not supported on Windows
-    local cargo_features="${FEATURES:-}"
-    if [[ "$cargo_features" == *"libkrun"* ]]; then
-        echo "Warning: libkrun is not supported on Windows, ignoring libkrun feature"
-        cargo_features="${cargo_features//libkrun/}"
-        cargo_features="${cargo_features//,,/,}"  # Remove double commas
-        cargo_features="${cargo_features#,}"      # Remove leading comma
-        cargo_features="${cargo_features%,}"      # Remove trailing comma
+    # Note: FEATURES="" means user explicitly wants no features
+    local cargo_features=""
+    if [[ "$FEATURES" == "auto" ]]; then
+        # No features for Windows (libkrun not supported)
+        cargo_features=""
+    else
+        cargo_features="${FEATURES:-}"
+        if [[ "$cargo_features" == *"libkrun"* ]]; then
+            echo "Warning: libkrun is not supported on Windows, ignoring libkrun feature"
+            cargo_features="${cargo_features//libkrun/}"
+            cargo_features="${cargo_features//,,/,}"  # Remove double commas
+            cargo_features="${cargo_features#,}"      # Remove leading comma
+            cargo_features="${cargo_features%,}"      # Remove trailing comma
+        fi
     fi
 
     local cargo_feature_args=()
