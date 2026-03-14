@@ -698,8 +698,58 @@ pub fn command_run(_sub_matches: &clap::ArgMatches) -> Result<()> {
 
 #[cfg(not(target_os = "linux"))]
 pub fn command_run(_sub_matches: &clap::ArgMatches) -> Result<()> {
-    use color_eyre::eyre;
-    Err(eyre::eyre!("epkg run is not supported on this platform. Use Linux or run inside a Linux VM."))
+    let run_options = config().run.clone();
+
+    debug!("Running command: {} with args: {:?}", run_options.command, run_options.args);
+    debug!("Sandbox input: {:?}", run_options.sandbox);
+
+    // Check sandbox mode - only VM is supported on non-Linux platforms
+    let sandbox_mode = run_options.effective_sandbox.sandbox_mode
+        .unwrap_or(SandboxMode::Env);
+
+    match sandbox_mode {
+        SandboxMode::Vm => {
+            // VM sandbox mode - supported via libkrun
+            #[cfg(feature = "libkrun")]
+            {
+                let env_root = crate::dirs::get_default_env_root()?;
+                debug!("Using environment root: {}", env_root.display());
+
+                let cmd_path = resolve_command_path(&env_root, &run_options)?;
+
+                // Convert host path to guest path (strip env_root prefix if inside)
+                let guest_cmd_path = if let Ok(stripped) = cmd_path.strip_prefix(&env_root) {
+                    Path::new("/").join(stripped)
+                } else {
+                    cmd_path.clone()
+                };
+
+                debug!("macOS: running in VM sandbox with libkrun");
+                debug!("Guest command path: {}", guest_cmd_path.display());
+
+                crate::libkrun::run_command_in_krun(&env_root, &run_options, &guest_cmd_path)
+            }
+            #[cfg(not(feature = "libkrun"))]
+            {
+                Err(eyre::eyre!(
+                    "VM sandbox requires libkrun feature. \
+                     Recompile epkg with libkrun support for --sandbox=vm"
+                ))
+            }
+        }
+        SandboxMode::Env | SandboxMode::Fs => {
+            Err(eyre::eyre!(
+                "Sandbox mode '{}' is not supported on this platform. \
+                 Only --sandbox=vm is available on macOS. \
+                 Use Linux or run inside a Linux VM for other sandbox modes.",
+                match sandbox_mode {
+                    SandboxMode::Env => "env",
+                    SandboxMode::Fs => "fs",
+                    _ => unreachable!(),
+                }
+            ))
+        }
+    }
 }
 
 /// Execute built-in command (busybox-style)

@@ -83,6 +83,13 @@ fn main() {
     println!("cargo:rustc-env=EPKG_VERSION_TAG=v{}", env!("CARGO_PKG_VERSION"));
     println!("cargo:rustc-env=EPKG_VERSION_INFO={}", epkg_version_info);
 
+    // Link Hypervisor framework on macOS when libkrun feature is enabled
+    // Check target platform via CARGO_CFG_TARGET_OS (set by Cargo for the target)
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "macos" && std::env::var("CARGO_FEATURE_LIBKRUN").is_ok() {
+        println!("cargo:rustc-link-lib=framework=Hypervisor");
+    }
+
     // Generate busybox module declarations
     generate_busybox_modules();
 }
