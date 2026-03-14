@@ -252,6 +252,12 @@ fn build_qemu_command(
     use std::process::Command;
 
     let mut qemu_cmd = Command::new(qemu_bin);
+
+    // aarch64 requires explicit machine type; x86_64 has default "pc"
+    if std::env::consts::ARCH == "aarch64" {
+        qemu_cmd.arg("-machine").arg("virt");
+    }
+
     qemu_cmd
         .arg("-enable-kvm")
         .arg("-cpu").arg("host")
