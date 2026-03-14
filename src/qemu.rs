@@ -1,7 +1,167 @@
 use std::path::Path;
 use crate::lfs;
+use std::io::BufRead;
 
 use crate::run::RunOptions;
+
+/// Detect CPU model from /proc/cpuinfo
+/// Returns the CPU model name if found, None otherwise
+fn detect_host_cpu_model() -> Option<String> {
+    use std::fs::File;
+
+    let file = File::open("/proc/cpuinfo").ok()?;
+    let reader = std::io::BufReader::new(file);
+
+    for line in reader.lines() {
+        let line = line.ok()?;
+        if line.starts_with("model name") || line.starts_with("CPU model") {
+            // Extract the value after the colon
+            if let Some(pos) = line.find(':') {
+                let model = line[pos + 1..].trim().to_string();
+                return Some(model);
+            }
+        }
+    }
+    None
+}
+
+/// Detect CPU implementer from /proc/cpuinfo
+/// Returns the implementer ID (e.g., 0x48 for Hisilicon) if found, None otherwise
+fn detect_cpu_implementer() -> Option<u32> {
+    use std::fs::File;
+
+    let file = File::open("/proc/cpuinfo").ok()?;
+    let reader = std::io::BufReader::new(file);
+
+    for line in reader.lines() {
+        let line = line.ok()?;
+        if line.starts_with("CPU implementer") {
+            if let Some(pos) = line.find(':') {
+                let value = line[pos + 1..].trim();
+                // Parse hex value like 0x48
+                if let Some(hex_str) = value.strip_prefix("0x") {
+                    return u32::from_str_radix(hex_str, 16).ok();
+                }
+                // Try decimal
+                return value.parse().ok();
+            }
+        }
+    }
+    None
+}
+
+/// Detect CPU part number from /proc/cpuinfo
+/// Returns the part number if found, None otherwise
+fn detect_cpu_part() -> Option<u32> {
+    use std::fs::File;
+
+    let file = File::open("/proc/cpuinfo").ok()?;
+    let reader = std::io::BufReader::new(file);
+
+    for line in reader.lines() {
+        let line = line.ok()?;
+        if line.starts_with("CPU part") {
+            if let Some(pos) = line.find(':') {
+                let value = line[pos + 1..].trim();
+                // Parse hex value like 0xd01
+                if let Some(hex_str) = value.strip_prefix("0x") {
+                    return u32::from_str_radix(hex_str, 16).ok();
+                }
+                // Try decimal
+                return value.parse().ok();
+            }
+        }
+    }
+    None
+}
+
+/// Hisilicon implementer ID
+const HISILICON_IMPLEMENTER: u32 = 0x48;
+/// Kunpeng-920 part number
+const KUNPENG_920_PART: u32 = 0xd01;
+/// Kunpeng-930 part number
+const KUNPENG_930_PART: u32 = 0xd02;
+
+/// Check if the host CPU is Kunpeng-920
+/// Detects by checking CPU implementer (0x48 = Hisilicon) and part number
+fn is_kunpeng_920() -> bool {
+    // First check model name if available
+    if let Some(model) = detect_host_cpu_model() {
+        if model.contains("Kunpeng") && model.contains("920") {
+            return true;
+        }
+    }
+
+    // Otherwise check implementer and part number
+    if let Some(implementer) = detect_cpu_implementer() {
+        if let Some(part) = detect_cpu_part() {
+            return implementer == HISILICON_IMPLEMENTER && part == KUNPENG_920_PART;
+        }
+    }
+
+    false
+}
+
+/// Check if the host CPU is Kunpeng-930
+/// Detects by checking CPU implementer (0x48 = Hisilicon) and part number
+fn is_kunpeng_930() -> bool {
+    // First check model name if available
+    if let Some(model) = detect_host_cpu_model() {
+        if model.contains("Kunpeng") && model.contains("930") {
+            return true;
+        }
+    }
+
+    // Otherwise check implementer and part number
+    if let Some(implementer) = detect_cpu_implementer() {
+        if let Some(part) = detect_cpu_part() {
+            return implementer == HISILICON_IMPLEMENTER && part == KUNPENG_930_PART;
+        }
+    }
+
+    false
+}
+
+/// Check if QEMU supports a specific CPU model by running `qemu-system-aarch64 -cpu help`
+fn qemu_supports_cpu_model(qemu_bin: &str, cpu_model: &str) -> bool {
+    // Only check for aarch64
+    if std::env::consts::ARCH != "aarch64" {
+        return false;
+    }
+
+    use std::process::Command;
+
+    let output = Command::new(qemu_bin)
+        .arg("-cpu")
+        .arg("help")
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            stdout.lines().any(|line| line.trim() == cpu_model)
+        }
+        _ => false,
+    }
+}
+
+/// Get the appropriate CPU model for QEMU
+/// On aarch64: uses Kunpeng-930/Kunpeng-920 if detected & supported, otherwise "max"
+/// On x86_64: always uses "host"
+fn get_qemu_cpu_model(qemu_bin: &str) -> &'static str {
+    if std::env::consts::ARCH == "aarch64" {
+        // Check CPU type and QEMU support in order of preference
+        if is_kunpeng_930() && qemu_supports_cpu_model(qemu_bin, "Kunpeng-930") {
+            "Kunpeng-930"
+        } else if is_kunpeng_920() && qemu_supports_cpu_model(qemu_bin, "Kunpeng-920") {
+            "Kunpeng-920"
+        } else {
+            "max"
+        }
+    } else {
+        "host"
+    }
+}
 use crate::vm_client;
 use color_eyre::eyre;
 use color_eyre::Result;
@@ -260,9 +420,8 @@ fn build_qemu_command(
 
     qemu_cmd.arg("-enable-kvm");
 
-    // Use -cpu max on aarch64 to avoid kvm_arm_get_cpreg_ptr assertion failures
-    // with certain kernel/KVM versions when using -cpu host
-    let cpu_model = if std::env::consts::ARCH == "aarch64" { "max" } else { "host" };
+    // Select appropriate CPU model: host on x86_64, Kunpeng-920 or max on aarch64
+    let cpu_model = get_qemu_cpu_model(qemu_bin);
     qemu_cmd.arg("-cpu").arg(cpu_model)
         .arg("-m").arg(vm_memory_mb.to_string())
         .arg("-smp").arg(vm_cpus.to_string())
@@ -329,9 +488,11 @@ fn build_qemu_command(
         RootFsMode::Virtiofs(_, _) => "virtiofs",
         RootFsMode::Plan9 => "9p",
     };
+    // Use ttyAMA0 for aarch64, ttyS0 for x86_64
+    let console_dev = if std::env::consts::ARCH == "aarch64" { "ttyAMA0" } else { "ttyS0" };
     let mut append_args = format!(
-        "console=ttyS0 panic=1 root={} rootfstype={} init=/usr/bin/init sysctl.fs.file-max=1048576",
-        mount_tag, rootfstype
+        "console={} panic=1 root={} rootfstype={} init=/usr/bin/init sysctl.fs.file-max=1048576",
+        console_dev, mount_tag, rootfstype
     );
     // Pass host RUST_LOG into guest so init can enable debug logging
     if let Ok(rust_log) = std::env::var("RUST_LOG") {
