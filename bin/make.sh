@@ -1,6 +1,36 @@
 #!/bin/bash
 set -e
 
+# =============================================================================
+# Build Policy
+# =============================================================================
+#
+# Static Linking (Default):
+#   - All meaningful/default/actively-used builds are statically linked
+#   - This applies to both debug and release/deploy builds
+#   - Static binaries are self-contained and portable across environments
+#
+# Dynamic Linking (Legacy):
+#   - Only retained for potential corner case usage
+#   - NOT recommended for production or deployment
+#   - Commands: `build`, `release` (without static prefix)
+#
+# libkrun Feature Auto-Enable Matrix:
+#   Platform     | Architecture      | libkrun
+#   -------------|-------------------|--------
+#   Linux        | x86_64/aarch64/riscv64 | enabled (static linked)
+#   Linux        | loongarch64       | disabled (not supported)
+#   macOS        | all architectures | enabled (static linked)
+#   Windows      | all architectures | disabled (not supported)
+#
+# User Override:
+#   - EPKG_CARGO_FEATURES unset    : use default (auto-enable for supported)
+#   - EPKG_CARGO_FEATURES=""       : disable all features (no libkrun)
+#   - EPKG_CARGO_FEATURES="libkrun": explicitly enable libkrun
+#   - EPKG_CARGO_FEATURES="..."    : custom features (comma-separated)
+#
+# =============================================================================
+
 # Variables
 LUA_VERSION=5.4.7
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -813,6 +843,9 @@ detect_os_from_target() {
 }
 
 # Build static binary for a specific architecture with mode (debug/release)
+# This is the DEFAULT and RECOMMENDED build method for all platforms
+# - Produces self-contained, portable binaries
+# - libkrun auto-enabled for supported platforms (see matrix above)
 # Usage: build_static <arch> <mode>
 build_static() {
     local arch=$(get_arch "$1")
@@ -955,9 +988,10 @@ setup_glibc_lua() {
     export LUA_NO_PKG_CONFIG=1
 }
 
-# Build development binary
+# Build development binary (LEGACY - dynamic linking)
+# Prefer `static` or `static-debug` for production use
 build() {
-    echo "Building debug binary..."
+    echo "Building debug binary (dynamic linking - legacy)..."
 
     # Detect OS to adjust Lua linking
     detect_os
@@ -991,9 +1025,10 @@ build() {
     install_to_dev_env "$PROJECT_ROOT/target/debug/$BINARY_NAME"
 }
 
-# Build release binary
+# Build release binary (LEGACY - dynamic linking)
+# Prefer `static-release` for production use
 build_release() {
-    echo "Building release binary..."
+    echo "Building release binary (dynamic linking - legacy)..."
 
     # Detect OS to adjust Lua linking
     detect_os
@@ -1028,6 +1063,7 @@ build_release() {
 }
 
 # Cross-compilation to macOS
+# Note: Lua is only needed for Linux RPM scriptlets, so dynamic linking is fine here
 cross-macos() {
     local arch="${1:-aarch64}"
     local target=""
@@ -1069,6 +1105,7 @@ cross-macos() {
 }
 
 # Cross-compilation to Windows
+# Note: Lua is only needed for Linux RPM scriptlets, so dynamic linking is fine here
 cross-windows() {
     local arch="${1:-x86_64}"
     local target=""
