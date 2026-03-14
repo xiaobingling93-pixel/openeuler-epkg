@@ -16,7 +16,7 @@ use std::panic::Location;
 use crate::dirs;
 use crate::mount::*;
 use crate::models::{SandboxMode, ProcessCreationConfig, UnifiedChildContext, NamespaceStrategy};
-use crate::RunOptions;
+use crate::run::RunOptions;
 use crate::idmap::{IdMapSync, execute_idmap_for_parent, check_user_namespace_support, wait_for_idmap_sync};
 
 /// Convert a host-side absolute path to a guest-side path.

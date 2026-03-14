@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 use crate::busybox::mount::parse_mount_options;
 use crate::dirs;
 use crate::models::{config, MountSpec, SandboxMode};
-use crate::RunOptions;
+use crate::run::RunOptions;
 use crate::utils;
 
 // Mount specification constants
