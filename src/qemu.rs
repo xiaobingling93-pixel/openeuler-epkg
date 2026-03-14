@@ -258,9 +258,12 @@ fn build_qemu_command(
         qemu_cmd.arg("-machine").arg("virt");
     }
 
-    qemu_cmd
-        .arg("-enable-kvm")
-        .arg("-cpu").arg("host")
+    qemu_cmd.arg("-enable-kvm");
+
+    // Use -cpu max on aarch64 to avoid kvm_arm_get_cpreg_ptr assertion failures
+    // with certain kernel/KVM versions when using -cpu host
+    let cpu_model = if std::env::consts::ARCH == "aarch64" { "max" } else { "host" };
+    qemu_cmd.arg("-cpu").arg(cpu_model)
         .arg("-m").arg(vm_memory_mb.to_string())
         .arg("-smp").arg(vm_cpus.to_string())
         .arg("-no-reboot")
