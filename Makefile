@@ -3,6 +3,11 @@
 # Variables
 OUTPUT_DIR := dist
 
+# Export FEATURES so it's available to make.sh as environment variable
+# Use: make FEATURES=xxx to set custom cargo features
+#      make FEATURES="" to disable auto-enable of libkrun
+export FEATURES
+
 # Detect Makefile location and adjust paths
 MAKEFILE_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
 ifeq ($(shell basename $(CURDIR)),src)
@@ -22,12 +27,9 @@ HOST_ARCH := $(shell uname -m | sed -e 's/amd64/x86_64/' -e 's/arm64/aarch64/')
 # - development build (fast)
 # - static build (necessary for running applets inside various env)
 # - libkrun auto-enabled for supported platforms (see make.sh)
+# Use FEATURES=xxx to override, e.g., FEATURES="" to disable libkrun
 static: $(PROJECT_ROOT)/target/lua-musl-$(HOST_ARCH)/liblua.a
-	@if [ -n "$(FEATURES)" ]; then \
-		EPKG_CARGO_FEATURES="$(FEATURES)" $(PROJECT_ROOT)/bin/make.sh static-debug $(HOST_ARCH); \
-	else \
-		$(PROJECT_ROOT)/bin/make.sh static-debug $(HOST_ARCH); \
-	fi
+	@$(PROJECT_ROOT)/bin/make.sh static-debug $(HOST_ARCH)
 
 # Static build with libkrun integrated (Cargo --features libkrun) and
 # sandbox-kernel unpacked into the self env so the libkrun backend can run
@@ -36,19 +38,15 @@ static: $(PROJECT_ROOT)/target/lua-musl-$(HOST_ARCH)/liblua.a
 # kept for explicit usage documentation and appending extra features.
 static-libkrun: $(PROJECT_ROOT)/target/lua-musl-$(HOST_ARCH)/liblua.a
 	@if [ -n "$(FEATURES)" ]; then \
-		EPKG_CARGO_FEATURES="libkrun,$(FEATURES)" $(PROJECT_ROOT)/bin/make.sh static-debug $(HOST_ARCH); \
+		FEATURES="libkrun,$(FEATURES)" $(PROJECT_ROOT)/bin/make.sh static-debug $(HOST_ARCH); \
 	else \
-		EPKG_CARGO_FEATURES="libkrun" $(PROJECT_ROOT)/bin/make.sh static-debug $(HOST_ARCH); \
+		FEATURES="libkrun" $(PROJECT_ROOT)/bin/make.sh static-debug $(HOST_ARCH); \
 	fi
 
 # Release build target
 # Note: libkrun auto-enabled for supported platforms (see make.sh)
 release: $(PROJECT_ROOT)/target/lua-musl-$(HOST_ARCH)/liblua.a
-	@if [ -n "$(FEATURES)" ]; then \
-		EPKG_CARGO_FEATURES="$(FEATURES)" $(PROJECT_ROOT)/bin/make.sh static-release $(HOST_ARCH); \
-	else \
-		$(PROJECT_ROOT)/bin/make.sh static-release $(HOST_ARCH); \
-	fi
+	@$(PROJECT_ROOT)/bin/make.sh static-release $(HOST_ARCH)
 
 # Development build with dynamic linking, only useful for run in local host rootfs 
 build:
@@ -68,20 +66,16 @@ clone-repos:
 
 # Build release binaries for all architectures (sequentially to avoid Cargo lock conflicts)
 release-all:
-	$(MAKE) release-x86_64  EPKG_CARGO_FEATURES="libkrun"
-	$(MAKE) release-aarch64 EPKG_CARGO_FEATURES="libkrun"
-	$(MAKE) release-riscv64 EPKG_CARGO_FEATURES="libkrun"
+	$(MAKE) release-x86_64
+	$(MAKE) release-aarch64
+	$(MAKE) release-riscv64
 	$(MAKE) release-loongarch64
 
 # Build release binary for a specific architecture
 # Note: libkrun auto-enabled for supported platforms (see make.sh)
 define build_release
 release-$(1): $(PROJECT_ROOT)/target/lua-musl-$(1)/liblua.a
-	@if [ -n "$(FEATURES)" ]; then \
-		EPKG_CARGO_FEATURES="$(FEATURES)" $(PROJECT_ROOT)/bin/make.sh static-release $(1); \
-	else \
-		$(PROJECT_ROOT)/bin/make.sh static-release $(1); \
-	fi
+	@$(PROJECT_ROOT)/bin/make.sh static-release $(1)
 endef
 
 $(eval $(call build_release,x86_64))

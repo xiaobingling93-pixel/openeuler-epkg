@@ -24,10 +24,10 @@ set -e
 #   Windows      | all architectures | disabled (not supported)
 #
 # User Override:
-#   - EPKG_CARGO_FEATURES unset    : use default (auto-enable for supported)
-#   - EPKG_CARGO_FEATURES=""       : disable all features (no libkrun)
-#   - EPKG_CARGO_FEATURES="libkrun": explicitly enable libkrun
-#   - EPKG_CARGO_FEATURES="..."    : custom features (comma-separated)
+#   - FEATURES unset    : use default (auto-enable for supported)
+#   - FEATURES=""       : disable all features (no libkrun)
+#   - FEATURES="libkrun": explicitly enable libkrun
+#   - FEATURES="..."    : custom features (comma-separated)
 #
 # =============================================================================
 
@@ -852,11 +852,11 @@ build_static() {
     local mode="$2"
     local rust_target=$(get_rust_target "$arch")
     local rustflags=$(get_rustflags "$arch")
-    local cargo_features="${EPKG_CARGO_FEATURES:-}"
+    local cargo_features="${FEATURES:-}"
 
-    # Auto-enable libkrun if EPKG_CARGO_FEATURES is not set and platform supports it
-    # Note: empty string (EPKG_CARGO_FEATURES="") means user explicitly wants no features
-    if [[ ! -v EPKG_CARGO_FEATURES ]] && should_enable_libkrun "$arch" "linux"; then
+    # Auto-enable libkrun if FEATURES is not set and platform supports it
+    # Note: empty string (FEATURES="") means user explicitly wants no features
+    if [[ ! -v FEATURES ]] && should_enable_libkrun "$arch" "linux"; then
         cargo_features="libkrun"
         echo "Auto-enabling libkrun feature for $arch Linux"
     fi
@@ -1005,10 +1005,10 @@ build() {
     fi
 
     # Auto-enable libkrun for supported platforms
-    # Note: empty string (EPKG_CARGO_FEATURES="") means user explicitly wants no features
-    local cargo_features="${EPKG_CARGO_FEATURES:-}"
+    # Note: empty string (FEATURES="") means user explicitly wants no features
+    local cargo_features="${FEATURES:-}"
     local current_arch=$(detect_native_arch)
-    if [[ ! -v EPKG_CARGO_FEATURES ]] && should_enable_libkrun "$current_arch" "$OS_FAMILY"; then
+    if [[ ! -v FEATURES ]] && should_enable_libkrun "$current_arch" "$OS_FAMILY"; then
         cargo_features="libkrun"
         echo "Auto-enabling libkrun feature for $OS_FAMILY $current_arch"
     fi
@@ -1042,10 +1042,10 @@ build_release() {
     fi
 
     # Auto-enable libkrun for supported platforms
-    # Note: empty string (EPKG_CARGO_FEATURES="") means user explicitly wants no features
-    local cargo_features="${EPKG_CARGO_FEATURES:-}"
+    # Note: empty string (FEATURES="") means user explicitly wants no features
+    local cargo_features="${FEATURES:-}"
     local current_arch=$(detect_native_arch)
-    if [[ ! -v EPKG_CARGO_FEATURES ]] && should_enable_libkrun "$current_arch" "$OS_FAMILY"; then
+    if [[ ! -v FEATURES ]] && should_enable_libkrun "$current_arch" "$OS_FAMILY"; then
         cargo_features="libkrun"
         echo "Auto-enabling libkrun feature for $OS_FAMILY $current_arch"
     fi
@@ -1083,9 +1083,9 @@ cross-macos() {
     setup_cross_env "$target"
 
     # Auto-enable libkrun for macOS if not explicitly set
-    # Note: empty string (EPKG_CARGO_FEATURES="") means user explicitly wants no features
-    local cargo_features="${EPKG_CARGO_FEATURES:-}"
-    if [[ ! -v EPKG_CARGO_FEATURES ]] && should_enable_libkrun "$arch" "darwin"; then
+    # Note: empty string (FEATURES="") means user explicitly wants no features
+    local cargo_features="${FEATURES:-}"
+    if [[ ! -v FEATURES ]] && should_enable_libkrun "$arch" "darwin"; then
         cargo_features="libkrun"
         echo "Auto-enabling libkrun feature for macOS $arch"
     fi
@@ -1119,7 +1119,7 @@ cross-windows() {
     setup_cross_env "$target"
 
     # libkrun is not supported on Windows
-    local cargo_features="${EPKG_CARGO_FEATURES:-}"
+    local cargo_features="${FEATURES:-}"
     if [[ "$cargo_features" == *"libkrun"* ]]; then
         echo "Warning: libkrun is not supported on Windows, ignoring libkrun feature"
         cargo_features="${cargo_features//libkrun/}"
@@ -1392,6 +1392,7 @@ setup_cross_env() {
 }
 
 cmd="${1:-build}"
+
 # Main dispatcher
 case $cmd in
     lua|build_lua_lib)
@@ -1413,10 +1414,10 @@ case $cmd in
         # Build static debug binary with libkrun integrated.
         # Note: libkrun is now auto-enabled for supported platforms,
         # so this command is mainly for explicit usage documentation.
-        # Additional features can be supplied via EPKG_CARGO_FEATURES.
+        # Additional features can be supplied via FEATURES.
         arch=$(get_arch "$2")
-        if [[ -z "$EPKG_CARGO_FEATURES" ]]; then
-            EPKG_CARGO_FEATURES="libkrun"
+        if [[ -z "$FEATURES" ]]; then
+            FEATURES="libkrun"
         fi
         build_static "$arch" debug
         ;;
@@ -1515,7 +1516,7 @@ case $cmd in
         echo "  Linux loongarch64:            disabled (not supported)"
         echo "  Windows:                      disabled (not supported)"
         echo ""
-        echo "Set EPKG_CARGO_FEATURES to override default features."
+        echo "Set FEATURES to override default features."
         exit 1
         ;;
 esac
