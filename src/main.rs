@@ -24,17 +24,22 @@ mod link;
 mod expose;
 #[cfg(target_os = "linux")]
 mod xdesktop;
+#[cfg(unix)]
 mod transaction;
 mod world;
 mod utils;
 mod mtree;
 #[cfg(unix)]
 mod posix;
+#[cfg(unix)]
 mod history;
+#[cfg(unix)]
 mod environment;
 #[cfg(target_os = "linux")]
 mod apparmor;
+#[cfg(unix)]
 mod deinit;
+#[cfg(unix)]
 mod init;
 #[cfg(unix)]
 mod path;
@@ -77,7 +82,9 @@ mod epkg;
 mod parse_version;
 mod plan;
 mod version_compare;
-// Cross-platform: hooks/scriptlets needed for Conda/Homebrew/msys2
+// Cross-platform: scriptlets needed for Conda/Homebrew/msys2
+mod scriptlets;
+#[cfg(unix)]
 mod hooks;
 #[cfg(unix)]
 mod userdb;
@@ -109,7 +116,7 @@ mod busybox;
 mod info;
 mod list;
 mod search;
-mod scriptlets;
+#[cfg(unix)]
 mod gc;
 #[cfg(unix)]
 mod service;
@@ -1543,6 +1550,7 @@ fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn determine_command_path_info(command: &str) -> (bool, PathBuf) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     if command.contains('/') {

@@ -13,12 +13,14 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::borrow::Cow;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use serde_json::Value;
 use crate::io::read_json_file;
 use memchr::memmem;
+#[cfg(unix)]
 use crate::shebang::{is_valid_shebang_length, convert_shebang_to_env};
 use crate::plan::InstallationPlan;
 use crate::models::LinkType;
@@ -449,6 +451,7 @@ fn remap_noarch_path(relative_path: &Path, python_info: &PythonInfo) -> PathBuf 
 }
 
 /// Replace prefix in shebang, handling long shebangs and spaces
+#[cfg(unix)]
 fn replace_shebang<'a>(
     shebang: Cow<'a, str>,
     old_prefix: &str,

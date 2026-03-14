@@ -1,13 +1,23 @@
 
+#[cfg(unix)]
 use crate::models::*;
+#[cfg(unix)]
 use crate::mmio;
+#[cfg(unix)]
 use crate::models::PACKAGE_CACHE;
+#[cfg(unix)]
 use crate::io::load_installed_packages;
+#[cfg(unix)]
 use crate::utils::format_size;
+#[cfg(unix)]
 use color_eyre::Result;
+#[cfg(unix)]
 use memchr::{memchr, memmem::Finder};
+#[cfg(unix)]
 use glob::Pattern;
+#[cfg(unix)]
 use std::sync::Arc;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 // ======================================================================================
@@ -15,12 +25,17 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 // ======================================================================================
 
 // Static state for accumulating totals across multiple display_package_list() calls
+#[cfg(unix)]
 static HEADERS_PRINTED: AtomicBool = AtomicBool::new(false);
+#[cfg(unix)]
 static ACCUM_TOTAL_SIZE: AtomicU64 = AtomicU64::new(0);
+#[cfg(unix)]
 static ACCUM_TOTAL_INSTALLED_SIZE: AtomicU64 = AtomicU64::new(0);
+#[cfg(unix)]
 static ACCUM_PACKAGE_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Reset accumulated totals and header state
+#[cfg(unix)]
 fn reset_display_state() {
     HEADERS_PRINTED.store(false, Ordering::SeqCst);
     ACCUM_TOTAL_SIZE.store(0, Ordering::SeqCst);
@@ -67,6 +82,7 @@ pub enum ListScope {
     All,
 }
 
+#[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ListType {
     Installed,
@@ -74,24 +90,26 @@ pub enum ListType {
     Available,
 }
 
+#[cfg(unix)]
 #[derive(Debug, Clone)]
 pub struct PackageListItem {
-    pub pkgname: String,
-    pub version: String,
-    pub arch: String,
+    pub pkgname:       String,
+    pub version:       String,
+    pub arch:          String,
     pub repodata_name: String,
-    pub summary: String,
-    pub status: String,
-    pub depth: u16,
-    pub size: u32,
+    pub summary:       String,
+    pub status:        String,
+    pub depth:         u16,
+    pub size:          u32,
     pub installed_size: u32,
     #[allow(dead_code)]
-    pub pkgkey: String,
+    pub pkgkey:         String,
     #[allow(dead_code)]
     pub installed_info: Option<InstalledPackageInfo>,
 }
 
 /// Main entry point for the enhanced list command
+#[cfg(unix)]
 pub fn list_packages_with_scope(scope: ListScope, pattern: &str) -> Result<()> {
     // Reset display state before processing any packages
     reset_display_state();
@@ -142,6 +160,7 @@ pub fn list_packages_with_scope(scope: ListScope, pattern: &str) -> Result<()> {
 
 /// Stream through installed packages, applying filtering and upgrade checking, then sorts and displays them.
 /// Returns the number of packages found and processed.
+#[cfg(unix)]
 fn process_installed_packages(pattern: &str, list_type: ListType) -> Result<usize> {
     let mut local_items = Vec::new();
     let upgradable_only = matches!(list_type, ListType::Upgradable);
@@ -202,6 +221,7 @@ fn process_installed_packages(pattern: &str, list_type: ListType) -> Result<usiz
     Ok(count)
 }
 
+#[cfg(unix)]
 fn process_available_packages(pattern: &str) -> Result<usize> {
     if pattern.is_empty() || pattern == "*" {
         return process_all_available_packages(ListType::Available);
@@ -212,6 +232,7 @@ fn process_available_packages(pattern: &str) -> Result<usize> {
 
 /// Stream through available packages, applying filtering, excluding installed ones, then sorts and displays them.
 /// Returns the number of packages found and processed.
+#[cfg(unix)]
 fn process_few_available_packages(pattern: &str, list_type: ListType) -> Result<usize> {
     let mut local_items = Vec::new();
 
@@ -245,6 +266,7 @@ fn process_few_available_packages(pattern: &str, list_type: ListType) -> Result<
 }
 
 /// Collect matching package names with optimizations based on pattern type
+#[cfg(unix)]
 fn collect_matching_pkgnames(pattern: &str) -> Result<Vec<String>> {
     let mut repodata_indice = crate::models::repodata_indice_mut();
     let mut matching_pkgnames = Vec::new();
@@ -323,6 +345,7 @@ fn collect_matching_pkgnames(pattern: &str) -> Result<Vec<String>> {
 }
 
 /// Process all available packages when pattern is empty or "*" - optimized direct scanning
+#[cfg(unix)]
 fn process_all_available_packages(list_type: ListType) -> Result<usize> {
     let mut repodata_indice = crate::models::repodata_indice_mut();
     let mut count = 0;
@@ -353,6 +376,7 @@ fn process_all_available_packages(list_type: ListType) -> Result<usize> {
 }
 
 /// Scan a packages_mmap buffer and collect PackageListItems efficiently, dropping past mmap pages by 2MB-aligned granularity
+#[cfg(unix)]
 fn scan_packages_mmap(
     file_mapper: &crate::mmio::FileMapper,
     repodata_name: &str,
@@ -461,6 +485,7 @@ fn scan_packages_mmap(
     Ok(count)
 }
 
+#[cfg(unix)]
 fn handle_completed_package_bytes(
     pkgname: &[u8],
     version: &[u8],
@@ -503,6 +528,7 @@ fn handle_completed_package_bytes(
 /// Helper to sort and display a list of package items.
 /// Takes a mutable reference to `package_items` to sort them in place.
 /// `list_type` determines sorting strategy (Available vs Installed/Upgradable).
+#[cfg(unix)]
 fn sort_and_display_packages(package_items: &mut Vec<PackageListItem>, list_type: ListType) -> Result<()> {
     // Sort by depth then name, except for Available lists which keep alphabetical sorting
 
@@ -524,6 +550,7 @@ fn sort_and_display_packages(package_items: &mut Vec<PackageListItem>, list_type
 }
 
 /// Create a PackageListItem for an installed package
+#[cfg(unix)]
 fn create_installed_package_item(pkgname: &str, pkgkey: &str, installed_info: &InstalledPackageInfo) -> Result<PackageListItem> {
     // Try to get package details from repository using pkgkey first
     let (version, arch, summary, repodata_name, size, installed_size) = match mmio::map_pkgkey2package(pkgkey) {
@@ -579,6 +606,7 @@ fn create_installed_package_item(pkgname: &str, pkgkey: &str, installed_info: &I
 }
 
 /// Create a PackageListItem for an available package
+#[cfg(unix)]
 fn create_available_package_item(pkg: &Package) -> Result<PackageListItem> {
     let status = determine_status_for_available(&pkg.pkgname)?;
 
@@ -598,6 +626,7 @@ fn create_available_package_item(pkg: &Package) -> Result<PackageListItem> {
 }
 
 /// Determine the status string and depth for an installed package
+#[cfg(unix)]
 fn determine_status_for_installed(pkgname: &str, installed_info: &InstalledPackageInfo) -> Result<(String, u16)> {
     // Position 1: Installation/Exposure status
     let pos1 = if installed_info.ebin_exposure { 'E' } else { 'I' };
@@ -618,6 +647,7 @@ fn determine_status_for_installed(pkgname: &str, installed_info: &InstalledPacka
 }
 
 /// Determine the status string for an available package
+#[cfg(unix)]
 fn determine_status_for_available(_pkgname: &str) -> Result<String> {
     // Position 1: Available
     let pos1 = 'A';
@@ -629,6 +659,7 @@ fn determine_status_for_available(_pkgname: &str) -> Result<String> {
 }
 
 /// Check if a package has available upgrades
+#[cfg(unix)]
 fn is_package_upgradable(pkgname: &str, installed_info: &InstalledPackageInfo) -> Result<bool> {
     // Get installed version from pkgline using parse_pkgline
     let installed_version = extract_version_from_installed_info(installed_info)?;
@@ -649,6 +680,7 @@ fn is_package_upgradable(pkgname: &str, installed_info: &InstalledPackageInfo) -
 }
 
 /// Extract version from installed package info using parse_pkgline
+#[cfg(unix)]
 fn extract_version_from_installed_info(installed_info: &InstalledPackageInfo) -> Result<String> {
     // Parse the pkgline to get the actual version
     match crate::package::parse_pkgline(&installed_info.pkgline) {
@@ -662,11 +694,13 @@ fn extract_version_from_installed_info(installed_info: &InstalledPackageInfo) ->
 }
 
 /// Simple version comparison (can be enhanced with proper semver)
+#[cfg(unix)]
 fn is_version_newer(new_version: &str, current_version: &str) -> bool {
     crate::version_compare::is_version_newer(new_version, current_version)
 }
 
 /// Print table headers and separator only once
+#[cfg(unix)]
 fn print_headers_if_needed(headers: &[&str], col_widths: &[usize]) {
     // Print status legend (similar to dpkg-query) only when printing headers for the first time
     if !HEADERS_PRINTED.load(Ordering::SeqCst) {
@@ -704,6 +738,7 @@ fn print_headers_if_needed(headers: &[&str], col_widths: &[usize]) {
 }
 
 /// Compute table configuration: column widths, start positions, and alignment
+#[cfg(unix)]
 fn compute_table_config() -> ([usize; 8], [usize; 8], [bool; 8]) {
     // Fixed widths: status(2), depth(5), size(8), pkgname(36), version(30), arch(11), repo(18)
     let col_widths = [2, 5, 8, 36, 30, 11, 18, 60];
@@ -747,6 +782,7 @@ fn compute_table_config() -> ([usize; 8], [usize; 8], [bool; 8]) {
 /// - Always 2 spaces between columns
 /// - Never truncates content
 /// - Right-alignment preserved for Depth/Size columns
+#[cfg(unix)]
 fn print_row_with_shift_absorption(
     row_cells: &[&str],
     col_widths: &[usize; 8],
@@ -811,6 +847,7 @@ fn print_row_with_shift_absorption(
 }
 
 /// Display the package list in a formatted table
+#[cfg(unix)]
 fn display_package_list(items: &[PackageListItem]) -> Result<()> {
     // If no items, still may need to accumulate totals (for empty batches in --all mode)
     let has_items = !items.is_empty();

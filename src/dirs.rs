@@ -1,5 +1,7 @@
 use std::env;
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
@@ -154,6 +156,7 @@ pub fn get_generations_root(env_name: &str) -> Result<PathBuf> {
     Ok(env_root.join("generations"))
 }
 
+#[cfg(unix)]
 pub fn get_default_generations_root() -> Result<PathBuf> {
     get_generations_root(&config().common.env_name)
 }
@@ -336,6 +339,7 @@ pub fn get_repo_dir(repo: &RepoRevise) -> PathBuf {
 }
 
 /// Check if a shell binary is installed and executable
+#[cfg(unix)]
 fn is_shell_installed(shell_name: &str) -> bool {
     // Common locations where shell binaries are typically installed
     let shell_paths = [
@@ -367,6 +371,7 @@ fn is_shell_installed(shell_name: &str) -> bool {
 /// It first checks if the shell binary is installed via `is_shell_installed()`,
 /// then verifies that the RC file actually exists before returning the path.
 /// If `home_dir` is `None`, treats paths as global (absolute). Otherwise, treats them as relative to `home_dir`.
+#[cfg(unix)]
 fn collect_shell_rc_paths(
     entries: &[(&str, &str)],
     home_dir: Option<&Path>,
@@ -394,6 +399,7 @@ fn collect_shell_rc_paths(
 
 /// Get global shell RC files (e.g., `/etc/bash.bashrc`, `/etc/zsh/zshrc`)
 /// for installed shells only.
+#[cfg(unix)]
 pub fn get_global_shell_rc() -> Result<Vec<String>> {
     let entries = [
         ("/etc/bash.bashrc", "bash"),
@@ -404,6 +410,7 @@ pub fn get_global_shell_rc() -> Result<Vec<String>> {
 }
 
 /// Get per-user shell RC files under `home_dir` for installed shells only.
+#[cfg(unix)]
 pub fn get_user_shell_rc(home_dir: &Path) -> Result<Vec<String>> {
     let entries = [
         (".bashrc", "bash"),
@@ -419,6 +426,7 @@ pub fn get_user_shell_rc(home_dir: &Path) -> Result<Vec<String>> {
 
 /// Get username, with security validation when running as setuid.
 /// When running as setuid, validates environment variables against real UID for security.
+#[cfg(unix)]
 pub fn get_username() -> Result<String> {
     // Security check: if running as setuid, get username from real UID and validate env vars
     #[cfg(unix)]
@@ -483,6 +491,7 @@ pub fn public_envs_path() -> PathBuf {
 ///
 /// This helper function walks the "bottom" directory level, calling the callback
 /// for each subdirectory found with (env_path, owner_opt).
+#[cfg(unix)]
 pub fn walk_bottom_dir<F>(parent_path: &Path, owner_opt: Option<&str>, callback: &mut F) -> Result<()>
 where
     F: FnMut(&Path, Option<&str>) -> Result<()>,
@@ -508,6 +517,7 @@ where
 
 /// Walk all public environments under /opt/epkg/envs/*/*
 /// Calls the callback for each environment found with (env_path, Some(owner)).
+#[cfg(unix)]
 fn walk_public_envs<F>(callback: &mut F) -> Result<()>
 where
     F: FnMut(&Path, Option<&str>) -> Result<()>,
@@ -540,6 +550,7 @@ where
 ///
 /// Calls the callback for each environment found with (env_path, owner_opt).
 /// owner_opt is Some(owner) for shared_store, None for private.
+#[cfg(unix)]
 pub fn walk_environments<F>(mut callback: F) -> Result<()>
 where
     F: FnMut(&Path, Option<&str>) -> Result<()>,

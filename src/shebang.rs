@@ -4,6 +4,7 @@
 //! used across different parts of epkg (conda linking, package exposure, etc.)
 
 use std::path::Path;
+#[cfg(unix)]
 use std::borrow::Cow;
 use regex::Regex;
 use lazy_static::lazy_static;
@@ -38,6 +39,7 @@ lazy_static! {
 }
 
 /// Check if shebang length is valid for the current platform
+#[cfg(unix)]
 pub fn is_valid_shebang_length(_shebang: &str) -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -58,6 +60,7 @@ pub fn is_valid_shebang_length(_shebang: &str) -> bool {
 /// This is useful for long shebangs or shebangs with spaces.
 ///
 /// For Python interpreters, uses a special exec wrapper format.
+#[cfg(unix)]
 pub fn convert_shebang_to_env(shebang: Cow<'_, str>) -> Cow<'_, str> {
     if let Some(captures) = SHEBANG_REGEX.captures(&shebang) {
         let path = captures.get(2).map(|m| m.as_str()).unwrap_or("");
