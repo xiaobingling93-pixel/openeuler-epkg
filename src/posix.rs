@@ -21,6 +21,7 @@ use std::os::unix::io::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::io;
+#[cfg(target_os = "linux")]
 use nix::unistd;
 use users::{get_user_by_name, get_group_by_name};
 
@@ -48,6 +49,7 @@ impl From<nix::Error> for PosixError {
 
 // Round 1: Basic file operations
 // Note: access needs special handling for optional mode, so we don't use #[posix_bind] here
+#[cfg(target_os = "linux")]
 pub fn posix_access(path: &str, mode: &str) -> PosixResult<bool> {
     let path = Path::new(path);
     let mut access_mode = 0;
@@ -307,6 +309,7 @@ pub fn resolve_user_group_ids(user: Option<&str>, group: Option<&str>) -> (Optio
     (uid, gid)
 }
 
+#[cfg(target_os = "linux")]
 pub fn posix_chown(path: &str, user: Option<&str>, group: Option<&str>) -> PosixResult<()> {
     let (uid, gid) = resolve_user_group_ids(user, group);
     let path = Path::new(path);
@@ -418,6 +421,7 @@ pub fn posix_stat(path: &str) -> PosixResult<PosixStat> {
     })
 }
 
+#[cfg(target_os = "linux")]
 pub fn posix_umask(mask: Option<&str>) -> PosixResult<String> {
     // Get current umask (umask returns the complement)
     let current_umask = unsafe { libc::umask(0) };
@@ -456,6 +460,7 @@ where
 
 /// Helper function to wrap libc::mkdir as Result<(), Error>
 /// Used by Lua bindings to match C++ pushresult behavior
+#[cfg(target_os = "linux")]
 pub fn posix_mkdir(path: &str) -> io::Result<()> {
     call_libc_path_mode(path, 0o777, |p, m| unsafe { libc::mkdir(p, m) })
 }
@@ -494,6 +499,7 @@ pub fn posix_uname() -> PosixResult<PosixUname> {
 
 /// Helper function to wrap libc::ttyname as Option<String>
 /// Used by Lua bindings to match C++ behavior (returns string or nil)
+#[cfg(target_os = "linux")]
 pub fn posix_ttyname(fd: i32) -> Option<String> {
     let tty_name = unsafe { libc::ttyname(fd) };
     if tty_name.is_null() {
@@ -515,14 +521,9 @@ pub fn posix_ctermid() -> String {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
-pub fn posix_ctermid() -> String {
-    // Stub for non-Linux platforms
-    String::new()
-}
-
 /// Helper function to wrap libc::getlogin as Option<String>
 /// Used by Lua bindings to match C++ behavior (returns string or nil)
+#[cfg(target_os = "linux")]
 pub fn posix_getlogin() -> Option<String> {
     let login_name = unsafe { libc::getlogin() };
     if login_name.is_null() {
@@ -532,6 +533,7 @@ pub fn posix_getlogin() -> Option<String> {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub fn posix_dir(path: &str) -> PosixResult<Vec<String>> {
     let dir = fs::read_dir(path)?;
     let mut entries = Vec::new();
@@ -642,12 +644,17 @@ pub fn posix_utime(path: impl AsRef<Path>, mtime: Option<u64>, atime: Option<u64
 
 #[derive(Debug, Clone)]
 pub struct PosixPasswd {
+    #[allow(dead_code)]
     pub name: String,
     pub uid: u32,
     pub gid: u32,
+    #[allow(dead_code)]
     pub dir: String,
+    #[allow(dead_code)]
     pub shell: String,
+    #[allow(dead_code)]
     pub gecos: String,
+    #[allow(dead_code)]
     pub passwd: String,
 }
 
@@ -684,8 +691,10 @@ pub fn posix_getpasswd(name: Option<&str>, uid: Option<u32>) -> PosixResult<Posi
 
 #[derive(Debug, Clone)]
 pub struct PosixGroup {
+    #[allow(dead_code)]
     pub name: String,
     pub gid: u32,
+    #[allow(dead_code)]
     pub members: Vec<String>,
 }
 
@@ -724,6 +733,7 @@ pub fn posix_getgroup(name: Option<&str>, gid: Option<u32>) -> PosixResult<Posix
 }
 
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Clone)]
 pub struct PosixTimes {
     pub utime: f64,
@@ -733,6 +743,7 @@ pub struct PosixTimes {
     pub elapsed: f64,
 }
 
+#[cfg(target_os = "linux")]
 pub fn posix_times() -> PosixResult<PosixTimes> {
     let mut tms = std::mem::MaybeUninit::<libc::tms>::uninit();
     let elapsed = unsafe { libc::times(tms.as_mut_ptr()) };
@@ -755,6 +766,7 @@ pub fn posix_times() -> PosixResult<PosixTimes> {
     })
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Clone)]
 pub struct PosixPathconf {
     pub link_max: i64,
@@ -768,6 +780,7 @@ pub struct PosixPathconf {
     pub vdisable: i64,
 }
 
+#[cfg(target_os = "linux")]
 pub fn posix_pathconf(path: &str) -> PosixResult<PosixPathconf> {
     use std::ffi::CString;
     let path_cstr = CString::new(path)
@@ -786,6 +799,7 @@ pub fn posix_pathconf(path: &str) -> PosixResult<PosixPathconf> {
     })
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Clone)]
 pub struct PosixSysconf {
     pub arg_max: i64,
@@ -800,6 +814,7 @@ pub struct PosixSysconf {
     pub version: i64,
 }
 
+#[cfg(target_os = "linux")]
 pub fn posix_sysconf() -> PosixResult<PosixSysconf> {
     Ok(PosixSysconf {
         arg_max:        unsafe { libc::sysconf(libc::_SC_ARG_MAX) },
@@ -815,14 +830,17 @@ pub fn posix_sysconf() -> PosixResult<PosixSysconf> {
     })
 }
 
+#[cfg(target_os = "linux")]
 pub fn posix_getuid_by_name(name: &str) -> Option<u32> {
     get_user_by_name(name).map(|u| u.uid())
 }
 
+#[cfg(target_os = "linux")]
 pub fn posix_getgid_by_name(name: &str) -> Option<u32> {
     get_group_by_name(name).map(|g| g.gid())
 }
 
+#[cfg(target_os = "linux")]
 pub fn posix_setuid(uid: u32) -> PosixResult<()> {
     match unsafe { libc::setuid(uid) } {
         0 => Ok(()),
@@ -830,6 +848,7 @@ pub fn posix_setuid(uid: u32) -> PosixResult<()> {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub fn posix_setgid(gid: u32) -> PosixResult<()> {
     match unsafe { libc::setgid(gid) } {
         0 => Ok(()),

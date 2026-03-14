@@ -12,6 +12,7 @@ use color_eyre::eyre::{self, WrapErr};
 use log;
 
 /// Maximum shebang length on Linux (127 characters)
+#[cfg(target_os = "linux")]
 pub const MAX_SHEBANG_LENGTH_LINUX: usize = 127;
 
 /// Information extracted from a shebang line for creating wrappers
@@ -178,6 +179,7 @@ pub fn parse_shebang_for_wrapper(first_line: &str) -> Result<ShebangInfo> {
 
 /// Strip shebang line from the beginning of a script if present.
 /// Returns the script without the shebang line, preserving the rest of the content.
+#[cfg(target_os = "linux")]
 pub fn strip_shebang(script: &str) -> &str {
     let mut lines = script.lines();
     if let Some(first_line) = lines.next() {

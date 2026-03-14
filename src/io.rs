@@ -364,7 +364,7 @@ fn load_system_repositories(channel_configs: &mut Vec<ChannelConfig>, env_root: 
     let main_config = channel_configs.first().cloned();
 
     // Load Deb system repositories
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
         if let Ok(system_channel_configs) = crate::deb_sources::load_deb_system_repos(env_root, &config().common.arch) {
             update_system_channel_configs(system_channel_configs, channel_configs, main_config.as_ref())?;
@@ -372,7 +372,7 @@ fn load_system_repositories(channel_configs: &mut Vec<ChannelConfig>, env_root: 
     }
 
     // Load RPM system repositories
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
         if let Ok(system_channel_configs) = crate::rpm_sources::load_rpm_system_repos(env_root) {
             update_system_channel_configs(system_channel_configs, channel_configs, main_config.as_ref())?;

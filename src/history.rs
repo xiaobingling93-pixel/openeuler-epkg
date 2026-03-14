@@ -1,4 +1,3 @@
-#![cfg(unix)]
 use std::fs;
 use crate::lfs;
 use std::path::{Path, PathBuf};

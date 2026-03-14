@@ -338,15 +338,15 @@ fn general_unpack_package<P: AsRef<Path>>(package_file: P, store_tmp_dir: P, pkg
         .wrap_err_with(|| format!("Failed to detect package format for: {}", package_file.display()))?;
 
     match format {
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         PackageFormat::Deb => {
             crate::deb_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         PackageFormat::Rpm => {
             crate::rpm_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         PackageFormat::Apk => {
             crate::apk_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
@@ -356,7 +356,7 @@ fn general_unpack_package<P: AsRef<Path>>(package_file: P, store_tmp_dir: P, pkg
         PackageFormat::Conda => {
             crate::conda_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         PackageFormat::Epkg => {
             // Handle existing .epkg format
             crate::epkg::unpack_package(package_file, store_tmp_dir)?

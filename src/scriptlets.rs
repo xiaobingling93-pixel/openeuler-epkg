@@ -1,9 +1,9 @@
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use crate::deb_triggers::setup_deb_env_vars;
 use crate::models::{InstalledPackageInfo, PackageFormat};
 use crate::package;
 use crate::plan::InstallationPlan;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use crate::rpm_triggers::setup_rpm_env_vars;
 use crate::lfs;
 use color_eyre::eyre::{eyre, Result};
@@ -548,13 +548,13 @@ pub fn run_scriptlet(
                     .or_insert("/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string());
 
                 // Add environment variables for package scripts based on format
-                #[cfg(unix)]
+                #[cfg(target_os = "linux")]
                 if package_format == PackageFormat::Deb {
                     setup_deb_env_vars(&mut env_vars, pkgkey, package_info, scriptlet_type, env_root);
                 } else if package_format == PackageFormat::Rpm {
                     setup_rpm_env_vars(&mut env_vars, pkgkey, package_info, store_root);
                 }
-                #[cfg(unix)]
+                #[cfg(target_os = "linux")]
                 if package_format == PackageFormat::Apk {
                     setup_apk_env_vars(&mut env_vars, pkgkey, package_info, scriptlet_type);
                 }
@@ -562,63 +562,80 @@ pub fn run_scriptlet(
                     setup_conda_env_vars(&mut env_vars, pkgkey, package_info, store_root, env_root);
                 }
 
-                let run_options = crate::run::RunOptions {
-                    command: interpreter_path.to_string_lossy().to_string(),
-                    args: script_args,
-                    env_vars,
-                    no_exit: true,           // Don't exit on scriptlet failures, just warn
-                    chdir_to_env_root: true, // Scriptlets should run relative to environment root
-                    timeout: 60,             // 60 second timeout for scriptlets
-                    ..Default::default()
-                };
+                // Execute scriptlet - Unix uses fork_and_execute for namespace isolation
+                // Windows uses std::process::Command directly
+                #[cfg(unix)]
+                {
+                    let run_options = crate::run::RunOptions {
+                        command: interpreter_path.to_string_lossy().to_string(),
+                        args: script_args,
+                        env_vars,
+                        no_exit: true,           // Don't exit on scriptlet failures, just warn
+                        chdir_to_env_root: true, // Scriptlets should run relative to environment root
+                        timeout: 60,             // 60 second timeout for scriptlets
+                        ..Default::default()
+                    };
 
-                // Execute the scriptlet using fork_and_execute for namespace isolation
-                match crate::run::fork_and_execute(env_root, &run_options) {
-                    Ok(None) => {
-                        log::debug!(
-                            "{:?} scriptlet completed successfully for package {} using {}",
-                            scriptlet_type,
-                            pkgkey,
-                            interpreter
-                        );
-                        script_executed = true;
-                        break; // Successfully executed, break out of paths loop
-                    }
-                    Ok(Some(_)) => {
-                        unreachable!("Foreground process should not return PID")
-                    }
-                    Err(e) => {
-                        // Check if this is a diversion conflict or other known recoverable error
-                        let error_msg = format!("{}", e);
-                        if error_msg.contains("dpkg-divert") && error_msg.contains("clashes") {
-                            log::warn!(
-                                "Diversion conflict in {:?} scriptlet for package {}: {}. Continuing installation.",
-                                scriptlet_type,
-                                pkgkey,
-                                e
-                            );
-                            script_executed = true;
-                            break; // Treat diversion conflicts as non-fatal
-                        } else if should_ignore_scriptlet_error(&error_msg, scriptlet_type) {
-                            log::warn!(
-                                "Ignoring recoverable error in {:?} scriptlet for package {}: {}",
-                                scriptlet_type,
-                                pkgkey,
-                                e
-                            );
-                            script_executed = true;
-                            break;
-                        } else {
+                    // Execute the scriptlet using fork_and_execute for namespace isolation
+                    match crate::run::fork_and_execute(env_root, &run_options) {
+                        Ok(None) => {
                             log::debug!(
-                                "Failed to execute {:?} scriptlet for package {} using {}: {}, trying next interpreter",
+                                "{:?} scriptlet completed successfully for package {} using {}",
                                 scriptlet_type,
                                 pkgkey,
-                                interpreter,
-                                e
+                                interpreter
                             );
-                            continue; // Try next interpreter
+                            script_executed = true;
+                            break; // Successfully executed, break out of paths loop
+                        }
+                        Ok(Some(_)) => {
+                            unreachable!("Foreground process should not return PID")
+                        }
+                        Err(e) => {
+                            // Check if this is a diversion conflict or other known recoverable error
+                            let error_msg = format!("{}", e);
+                            if error_msg.contains("dpkg-divert") && error_msg.contains("clashes") {
+                                log::warn!(
+                                    "Diversion conflict in {:?} scriptlet for package {}: {}. Continuing installation.",
+                                    scriptlet_type,
+                                    pkgkey,
+                                    e
+                                );
+                                script_executed = true;
+                                break; // Treat diversion conflicts as non-fatal
+                            } else if should_ignore_scriptlet_error(&error_msg, scriptlet_type) {
+                                log::warn!(
+                                    "Ignoring recoverable error in {:?} scriptlet for package {}: {}",
+                                    scriptlet_type,
+                                    pkgkey,
+                                    e
+                                );
+                                script_executed = true;
+                                break;
+                            } else {
+                                log::debug!(
+                                    "Failed to execute {:?} scriptlet for package {} using {}: {}, trying next interpreter",
+                                    scriptlet_type,
+                                    pkgkey,
+                                    interpreter,
+                                    e
+                                );
+                                continue; // Try next interpreter
+                            }
                         }
                     }
+                }
+
+                // Windows stub - scriptlets not fully supported yet
+                #[cfg(not(unix))]
+                {
+                    log::warn!(
+                        "Scriptlet execution not supported on Windows for package {}: {:?}",
+                        pkgkey,
+                        scriptlet_type
+                    );
+                    script_executed = true;
+                    break;
                 }
             }
 

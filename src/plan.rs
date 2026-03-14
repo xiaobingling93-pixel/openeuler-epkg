@@ -11,7 +11,7 @@ use color_eyre::eyre::WrapErr;
 use crate::models::{PACKAGE_CACHE, InstalledPackageInfo, InstalledPackagesMap, LinkType, PackageFormat, channel_config};
 use crate::package;
 use crate::mmio;
-#[cfg(unix)] use crate::aur::is_aur_package;
+#[cfg(target_os = "linux")] use crate::aur::is_aur_package;
 use crate::dirs;
 #[cfg(unix)]
 use crate::hooks::{Hook, HookWhen};
@@ -165,7 +165,7 @@ pub struct InstallationPlan {
     pub deb_activate_triggers_by_name: HashMap<String, Vec<String>>,
 
     /// Desktop integration flags tracking which types occurred during expose operations
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     pub desktop_integration_occurred: crate::xdesktop::DesktopIntegrationFlags,
 }
 
@@ -231,7 +231,7 @@ impl Default for InstallationPlan {
             deb_explicit_triggers_by_name: HashMap::new(),
             deb_activate_triggers_by_pkg: HashMap::new(),
             deb_activate_triggers_by_name: HashMap::new(),
-            #[cfg(unix)]
+            #[cfg(target_os = "linux")]
             desktop_integration_occurred: crate::xdesktop::DesktopIntegrationFlags::default(),
         }
     }
@@ -292,7 +292,7 @@ pub fn calculate_op_flags(
             if !new_pkg_info.pkgline.is_empty() {
                 flags |= op_flags::IN_STORE;
             }
-            #[cfg(unix)]
+            #[cfg(target_os = "linux")]
             if is_aur_package(pkgkey) {
                 flags |= op_flags::IS_AUR;
             }
@@ -699,9 +699,9 @@ pub fn find_upgrade_target(
         Ok(parts) => parts,
         Err(_) => return (false, String::new()),
     };
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
     let is_aur = is_aur_package(new_pkgkey);
-#[cfg(not(unix))]
+#[cfg(not(target_os = "linux"))]
     let is_aur = false;
     for (old_pkgkey, _) in installed.iter() {
         if old_pkgkey == new_pkgkey {

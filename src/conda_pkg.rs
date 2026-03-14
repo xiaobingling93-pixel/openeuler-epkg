@@ -437,8 +437,8 @@ fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
 
 /// Detect glibc version using ldd --version
 /// Returns (family, version) tuple, e.g., ("glibc", "2.35")
+#[cfg(target_os = "linux")]
 pub fn detect_glibc_version() -> Result<Option<(String, String)>> {
-    #[cfg(target_os = "linux")]
     {
         let output = match Command::new("ldd").arg("--version").output() {
             Err(_) => {
@@ -455,13 +455,10 @@ pub fn detect_glibc_version() -> Result<Option<(String, String)>> {
         Ok(None)
     }
 
-    #[cfg(not(target_os = "linux"))]
-    {
-        Ok(None)
-    }
 }
 
 /// Parse glibc version from ldd output
+#[cfg(target_os = "linux")]
 fn parse_glibc_ldd_version(input: &str) -> Result<Option<String>> {
     // Match patterns like "ldd (Ubuntu GLIBC 2.35-0ubuntu3.1) 2.35" or "ldd (GNU libc) 2.31" or
     // "ldd (Debian GLIBC 2.41-12) 2.41"
@@ -505,6 +502,7 @@ pub fn detect_linux_version() -> Result<Option<String>> {
 }
 
 /// Extract Linux version from /proc/version content
+#[cfg(target_os = "linux")]
 fn extract_linux_version_from_proc(proc_version: &str) -> Option<String> {
     // /proc/version format: "Linux version 5.10.102.1-microsoft-standard-WSL2 (buildd@lgw01-amd64-060) (gcc (Ubuntu 9.4.0-1ubuntu1~20.04.1) 9.4.0, GNU ld (GNU Binutils for Ubuntu) 2.34) #1 SMP Thu Mar 17 19:48:32 UTC 2022"
     // We want to extract "5.10.102.1" or at least "5.10.102"
@@ -519,6 +517,7 @@ fn extract_linux_version_from_proc(proc_version: &str) -> Option<String> {
 
 /// Extract first 2-4 version components from Linux version string
 /// Takes "5.10.102.1-microsoft-standard-WSL2" and returns "5.10.102.1"
+#[cfg(target_os = "linux")]
 fn extract_linux_version_part(version_str: &str) -> Option<String> {
     // Match up to 4 version components: major.minor.patch.patch2
     let re = regex::Regex::new(r"^([0-9]+\.[0-9]+(?:\.[0-9]+)?(?:\.[0-9]+)?)").ok()?;

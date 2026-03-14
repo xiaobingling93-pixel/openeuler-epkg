@@ -22,23 +22,19 @@ mod store;
 mod package_cache;
 mod link;
 mod expose;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod xdesktop;
-#[cfg(unix)]
 mod transaction;
 mod world;
 mod utils;
 mod mtree;
 #[cfg(unix)]
 mod posix;
-#[cfg(unix)] mod history;
-#[cfg(unix)]
+mod history;
 mod environment;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod apparmor;
-#[cfg(unix)]
 mod deinit;
-#[cfg(unix)]
 mod init;
 #[cfg(unix)]
 mod path;
@@ -49,25 +45,27 @@ mod location;
 mod package;
 mod packages_stream;
 mod index_html;
-#[cfg(unix)]
+// Linux-only package formats
+#[cfg(target_os = "linux")]
 mod deb_repo;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod deb_pkg;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod deb_sources;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod rpm_repo;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod rpm_pkg;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod rpm_sources;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod apk_repo;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod apk_pkg;
+// Cross-platform package formats (Conda)
 mod arch_repo;
 mod arch_pkg;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod aur;
 mod conda_repo;
 mod conda_pkg;
@@ -79,15 +77,15 @@ mod epkg;
 mod parse_version;
 mod plan;
 mod version_compare;
-#[cfg(unix)]
+// Cross-platform: hooks/scriptlets needed for Conda/Homebrew/msys2
 mod hooks;
 #[cfg(unix)]
 mod userdb;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod deb_triggers;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod dpkg_db;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod rpm_triggers;
 #[cfg(target_os = "linux")]
 mod lua;
@@ -111,13 +109,11 @@ mod busybox;
 mod info;
 mod list;
 mod search;
-#[cfg(unix)]
 mod scriptlets;
-#[cfg(unix)]
 mod gc;
 #[cfg(unix)]
 mod service;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod tool_wrapper;
 
 #[cfg(debug_assertions)]

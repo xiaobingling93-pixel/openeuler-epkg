@@ -21,6 +21,7 @@ use crate::models::dirs;
 use crate::utils;
 use crate::environment::{create_environment, register_environment_for};
 use crate::lfs;
+#[cfg(target_os = "linux")]
 use crate::apparmor;
 
 const GITEE_API_BASE:   &str = &"https://gitee.com/api/v5";
@@ -171,6 +172,7 @@ pub fn install_epkg() -> Result<()> {
 
     // Install AppArmor profile to allow epkg to use namespaces and mounts
     // This is required on Ubuntu and other systems with strict AppArmor policies
+    #[cfg(target_os = "linux")]
     if let Err(e) = apparmor::install_apparmor_profile() {
         log::warn!("Failed to install AppArmor profile: {}", e);
         log::warn!("epkg may not function correctly on systems with strict AppArmor policies");
@@ -178,6 +180,7 @@ pub fn install_epkg() -> Result<()> {
     }
 
     // Setup tool config symlinks for mirror acceleration
+    #[cfg(target_os = "linux")]
     crate::tool_wrapper::setup_tool_config_symlinks()
         .unwrap_or_else(|e| {
             log::warn!("Failed to setup tool config symlinks: {}", e);
