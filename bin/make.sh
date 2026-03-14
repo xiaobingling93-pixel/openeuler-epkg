@@ -1306,7 +1306,7 @@ get_rust_target_for_platform() {
     esac
 }
 
-# Setup environment for cross-compilation
+# Setup environment for cross-compilation (macOS/Windows only, not for Linux)
 setup_cross_env() {
     local target="$1"
     local arch="${target%%-*}"
@@ -1316,7 +1316,8 @@ setup_cross_env() {
     elif [[ "$target" == *"pc-windows-"* ]]; then
         os="windows"
     else
-        os="linux"
+        echo "Error: setup_cross_env only supports macOS and Windows targets, got: $target" >&2
+        exit 1
     fi
 
     # Clear previous environment
@@ -1328,17 +1329,7 @@ setup_cross_env() {
     unset CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER
     unset CARGO_TARGET_AARCH64_PC_WINDOWS_GNU_LINKER
 
-    # Lua is only needed for Linux RPM scriptlets
-    # Do not set Lua variables for macOS/Windows builds
-    case "$os" in
-        linux)
-            export LUA_LINK=dynamic
-            export LUA_NO_PKG_CONFIG=1
-            ;;
-        darwin|windows)
-            # No Lua needed for non-Linux platforms
-            ;;
-    esac
+    # No Lua needed for macOS/Windows (only Linux RPM scriptlets use it)
     export PKG_CONFIG_ALLOW_CROSS=1
 
     case "$os" in
@@ -1396,9 +1387,6 @@ setup_cross_env() {
             else
                 echo "Warning: mingw-w64 not found, using default (may not work)"
             fi
-            ;;
-        linux)
-            # Already handled by build_static
             ;;
     esac
 }
@@ -1489,9 +1477,13 @@ case $cmd in
         echo "  build [<arch>]                       Build static debug binary (default)"
         echo "  release [<arch>]                     Build static release binary"
         echo "  static [<arch>]                      (alias for 'build')"
-        echo "  static-debug [<arch>]                Build static debug binary (explicit)"
+        echo "  static-debug [<arch>]                Build static debug binary (explicit, same with 'static')"
         echo "  static-release [<arch>]              Build static release binary (explicit)"
-        echo "  static-libkrun [<arch>]              Build static debug with libkrun (auto-enabled anyway)"
+        echo "  static-libkrun [<arch>]              Build static debug with libkrun (auto-enabled anyway in some platform/archs)"
+        echo ""
+        echo "Commands (cross-platform builds - Linux x86_64 host only):"
+        echo "  cross-macos [<arch>]                 Cross-compile to macOS (aarch64/x86_64)"
+        echo "  cross-windows [<arch>]               Cross-compile to Windows (x86_64/aarch64)"
         echo ""
         echo "Commands (dynamic linking - LEGACY):"
         echo "  dynamic-build                        Build dynamic debug binary (not recommended)"
@@ -1502,15 +1494,18 @@ case $cmd in
         echo "  dev-depends                          Install development dependencies (current arch only)"
         echo "  crossdev-depends                     Install cross-development dependencies (all arch cross-compilers)"
         echo "  clone-repos                          Clone required repositories (rpm-rs, resolvo, elf-loader)"
-        echo "  cross-macos [<arch>]                 Cross-compile to macOS (aarch64 default, or x86_64)"
-        echo "  cross-windows [<arch>]               Cross-compile to Windows (x86_64 or aarch64)"
         echo "  qemu-pkgs                            Install qemu dependency packages"
         echo "  sandbox-pkgs                         Install sandbox dependency packages"
         echo "  test                                 Run module-level unit tests"
         echo "  clean                                Clean build artifacts"
         echo "  clean_all                            Clean all artifacts and distribution files"
         echo ""
-        echo "Supported architectures: x86_64, aarch64, riscv64, loongarch64"
+        echo "Build types (all from Linux x86_64 host):"
+        echo "  - Native build:      build x86_64 on x86_64 host"
+        echo "  - Cross-arch build:  build aarch64/riscv64/loongarch64 on x86_64 host"
+        echo "  - Cross-platform:    build macOS/Windows binary on x86_64 Linux host"
+        echo ""
+        echo "Architectures: x86_64, aarch64, riscv64, loongarch64"
         echo ""
         echo "libkrun auto-enable matrix:"
         echo "  Linux x86_64/aarch64/riscv64: enabled"
