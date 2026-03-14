@@ -116,11 +116,13 @@ fn check_status(op: &str, status: i32) -> Result<()> {
 
 #[cfg(feature = "libkrun")]
 struct LibkrunConfig {
-    use_vsock: bool,
-    cmd_parts: Vec<String>,
-    kernel_args: String,
-    kernel_path: Option<String>,
-    kernel_format: Option<u32>,
+    use_vsock:           bool,
+    cmd_parts:           Vec<String>,
+    kernel_args:         String,
+    kernel_path:         Option<String>,
+    kernel_format:       Option<u32>,
+    /// Additional virtiofs mounts: (tag, host_path, guest_path, read_only)
+    virtiofs_mounts:     Vec<(String, String, String, bool)>,
 }
 
 #[cfg(feature = "libkrun")]
@@ -174,6 +176,18 @@ fn build_libkrun_config(
         }
     }
 
+    // Add virtiofs mount specs for guest init to mount
+    // Format: epkg.vol_N=tag:guest_path[:ro]
+    let mount_specs = build_virtiofs_mount_specs(env_root, run_options);
+    for (i, (tag, _host_path, guest_path, read_only)) in mount_specs.iter().enumerate() {
+        let spec = if *read_only {
+            format!("{}:{}:ro", tag, guest_path)
+        } else {
+            format!("{}:{}", tag, guest_path)
+        };
+        kernel_args.push_str(&format!(" epkg.vol_{}={}", i, percent_encode(&spec)));
+    }
+
     let kernel_path = if run_options.kernel.is_some() {
         run_options.kernel.clone()
     } else {
@@ -198,7 +212,150 @@ fn build_libkrun_config(
         kernel_args,
         kernel_path,
         kernel_format,
+        virtiofs_mounts: build_virtiofs_mount_specs(env_root, run_options),
     })
+}
+
+/// Build virtiofs mount specs from mount specs.
+/// Returns Vec<(tag, host_path, guest_path, read_only)> for each directory mount.
+/// Skips non-directory sources since virtiofs only supports directory bind mounts.
+#[cfg(feature = "libkrun")]
+fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<(String, String, String, bool)> {
+    use std::fs;
+    use crate::models::dirs;
+
+    let mut mounts = Vec::new();
+    let mut seen_paths = std::collections::HashSet::new();
+
+    // Helper to add a mount if path is a directory and not already seen
+    // guest_path defaults to host_path if not specified
+    let mut try_add_mount = |host_path: &Path, guest_path: Option<&Path>, read_only: bool, try_only: bool| {
+        // Skip if already added
+        let path_str = host_path.to_string_lossy().to_string();
+        if seen_paths.contains(&path_str) {
+            return;
+        }
+
+        // Skip if not a directory (virtiofs only supports directories)
+        match fs::metadata(host_path) {
+            Ok(meta) if meta.is_dir() => {
+                // Generate a unique tag from the path
+                let tag = generate_virtiofs_tag(host_path);
+                let guest = guest_path
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path_str.clone());
+                log::debug!("libkrun: adding virtiofs mount: {} -> {} (guest: {}) ({})",
+                           host_path.display(), tag, guest, if read_only { "ro" } else { "rw" });
+                mounts.push((tag, path_str.clone(), guest, read_only));
+                seen_paths.insert(path_str);
+            }
+            Ok(_) => {
+                log::info!("libkrun: skipping non-directory mount: {}", host_path.display());
+            }
+            Err(e) if !try_only => {
+                log::warn!("libkrun: cannot access mount path {}: {}", host_path.display(), e);
+            }
+            Err(_) => {
+                // try_only=true, silently skip
+            }
+        }
+    };
+
+    // Add epkg system directories (matching add_epkg_mount_spec_strings)
+    // For system dirs, guest_path = host_path
+    try_add_mount(&dirs().home_epkg, None, false, true);
+    try_add_mount(&dirs().home_cache, None, false, true);
+    try_add_mount(&dirs().opt_epkg, None, false, true);
+
+    // Add epkg binary directory if outside env
+    if let Ok(epkg_exe) = std::env::current_exe() {
+        if let Some(epkg_bin_dir) = epkg_exe.parent() {
+            if !epkg_bin_dir.starts_with(&dirs().home_epkg)
+               && !epkg_bin_dir.starts_with(&dirs().opt_epkg) {
+                try_add_mount(epkg_bin_dir, None, true, false);
+            }
+        }
+    }
+
+    // Add /lib/modules if exists (for kernel module loading)
+    try_add_mount(Path::new("/lib/modules"), None, true, true);
+
+    // Add user-provided mount specs from run_options
+    for mount_spec_str in &run_options.effective_sandbox.mount_specs {
+        if let Some((host_path, guest_path, read_only, try_only)) = parse_mount_spec_for_virtiofs(mount_spec_str, env_root) {
+            try_add_mount(&host_path, Some(&guest_path), read_only, try_only);
+        }
+    }
+
+    mounts
+}
+
+/// Parse a mount spec string for virtiofs.
+/// Returns Some((host_path, guest_path, read_only, try_only)) if it's a valid directory mount spec.
+/// Returns None for non-bind mounts or invalid specs.
+#[cfg(feature = "libkrun")]
+fn parse_mount_spec_for_virtiofs(spec_str: &str, env_root: &Path) -> Option<(std::path::PathBuf, std::path::PathBuf, bool, bool)> {
+    // Parse mount spec: [SOURCE:]TARGET[:OPTIONS]
+    // For VM: SOURCE is host_path, TARGET is guest_path
+    let parts: Vec<&str> = spec_str.split(':').collect();
+
+    let (source, target, options) = if parts.len() == 1 {
+        // Just a path, use same path for both host and guest
+        (parts[0], parts[0], "")
+    } else if parts.len() == 2 {
+        // Could be "SOURCE:TARGET" or "PATH:OPTIONS"
+        // Check if second part looks like options (contains commas or known option names)
+        if parts[1].contains(',') || parts[1].starts_with("ro") || parts[1].starts_with("rw") {
+            // PATH:OPTIONS format - same path for host and guest
+            (parts[0], parts[0], parts[1])
+        } else {
+            // SOURCE:TARGET format
+            (parts[0], parts[1], "")
+        }
+    } else if parts.len() >= 3 {
+        // SOURCE:TARGET:OPTIONS
+        (parts[0], parts[1], parts[2])
+    } else {
+        return None;
+    };
+
+    // Handle @ prefix for env_root substitution (only for source)
+    let host_path = if source.starts_with('@') {
+        env_root.join(&source[1..])
+    } else {
+        std::path::PathBuf::from(source)
+    };
+
+    // Guest path is the target (may also have @ prefix)
+    let guest_path = if target.starts_with('@') {
+        env_root.join(&target[1..])
+    } else {
+        std::path::PathBuf::from(target)
+    };
+
+    // Parse options for read_only and try flags
+    let read_only = options.contains("ro");
+    let try_only = options.contains("try");
+
+    Some((host_path, guest_path, read_only, try_only))
+}
+
+/// Generate a unique virtiofs tag from a path.
+/// The tag is used as the mount point identifier in the guest.
+#[cfg(feature = "libkrun")]
+fn generate_virtiofs_tag(path: &Path) -> String {
+    // Use the last component of the path as the tag, or the full path if root
+    let tag = path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("root");
+
+    // Make tag unique by using a simple hash of the full path
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    format!("{}_{}", tag, hash % 10000)
 }
 
 #[cfg(feature = "libkrun")]
@@ -250,6 +407,13 @@ fn create_and_configure_vm(
 
         ctx.set_root(env_root.to_str().unwrap())?;
         log::debug!("libkrun: rootfs configured via virtiofs: {:?}", env_root);
+
+        // Add additional virtiofs mounts
+        for (tag, host_path, guest_path, read_only) in &config.virtiofs_mounts {
+            ctx.add_virtiofs(tag, host_path)?;
+            log::debug!("libkrun: added virtiofs mount: {} -> {} (guest: {}) ({})",
+                       host_path, tag, guest_path, if *read_only { "ro" } else { "rw" });
+        }
 
         check_status("krun_split_irqchip",
             krun_split_irqchip(ctx.ctx_id, true)

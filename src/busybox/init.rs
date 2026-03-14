@@ -88,6 +88,13 @@ fn run_init() -> Result<()> {
         log::debug!("init: setup_mounts failed: {}", e);
         return Err(e).wrap_err("init: setup_mounts failed");
     }
+
+    // Mount user virtiofs volumes from kernel cmdline (epkg.vol_N=tag:guest_path[:ro])
+    if let Err(e) = mount_virtiofs_volumes() {
+        log::debug!("init: mount_virtiofs_volumes failed: {}", e);
+        // Non-fatal: continue even if some volumes fail to mount
+    }
+
     if let Some(ref r) = pwd {
         if let Err(e) = std::env::set_current_dir(r) {
             log::debug!("init: chdir {} failed: {}", r, e);
@@ -293,6 +300,75 @@ fn setup_mounts() -> Result<()> {
 
     log::debug!("init: ensure_minimal_dev (symlinks, nodes, devpts)");
     ensure_minimal_dev().wrap_err("init: ensure_minimal_dev")?;
+    Ok(())
+}
+
+/// Mount user virtiofs volumes from kernel cmdline.
+/// Format: epkg.vol_N=tag:guest_path[:ro]
+#[cfg(target_os = "linux")]
+fn mount_virtiofs_volumes() -> Result<()> {
+    // Collect all epkg.vol_* parameters from cmdline
+    let cmdline = CMDLINE.get_or_init(parse_cmdline);
+    let mut vol_specs: Vec<(&String, &String)> = cmdline
+        .iter()
+        .filter(|(k, _)| k.starts_with("epkg.vol_"))
+        .collect();
+    // Sort by key to ensure consistent ordering
+    vol_specs.sort_by_key(|(k, _)| *k);
+
+    if vol_specs.is_empty() {
+        log::debug!("init: no virtiofs volumes to mount");
+        return Ok(());
+    }
+
+    log::debug!("init: mounting {} virtiofs volume(s)", vol_specs.len());
+
+    for (key, spec) in vol_specs {
+        // Decode percent-encoded spec
+        let spec = percent_decode(spec);
+        log::debug!("init: {} = {}", key, spec);
+
+        // Parse spec: tag:guest_path[:ro]
+        let parts: Vec<&str> = spec.split(':').collect();
+        if parts.len() < 2 {
+            log::warn!("init: invalid virtiofs spec '{}': expected tag:guest_path[:ro]", spec);
+            continue;
+        }
+
+        let tag = parts[0];
+        let guest_path = parts[1];
+        let read_only = parts.get(2).map(|&m| m == "ro").unwrap_or(false);
+
+        // Ensure mount point exists
+        if let Err(e) = fs_create_dir_if_missing(guest_path) {
+            log::warn!("init: cannot create mount point {}: {}", guest_path, e);
+            continue;
+        }
+
+        // Mount virtiofs
+        let flags = if read_only {
+            nix::mount::MsFlags::MS_RDONLY
+        } else {
+            nix::mount::MsFlags::empty()
+        };
+
+        match nix::mount::mount(
+            Some(tag),
+            Path::new(guest_path),
+            Some("virtiofs"),
+            flags,
+            None::<&str>,
+        ) {
+            Ok(()) => {
+                log::debug!("init: mounted virtiofs {} on {} ({})", tag, guest_path,
+                           if read_only { "ro" } else { "rw" });
+            }
+            Err(e) => {
+                log::warn!("init: failed to mount virtiofs {} on {}: {}", tag, guest_path, e);
+            }
+        }
+    }
+
     Ok(())
 }
 
