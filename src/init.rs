@@ -284,7 +284,8 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
     {
         if let (Some(ref vmlinux_path), Some(ref version)) = (&init_plan.vmlinux_path, &init_plan.vmlinux_version) {
             if vmlinux_path.exists() {
-                install_vmlinux(vmlinux_path, init_plan.vmlinux_config_path.as_deref(), version)?;
+                let arch = &config().common.arch;
+                install_vmlinux(vmlinux_path, init_plan.vmlinux_config_path.as_deref(), version, arch)?;
             }
         }
     }
@@ -918,21 +919,21 @@ fn get_vmlinux_url() -> Result<Option<(String, String, String, String)>> {
 
 /// Install vmlinux from downloaded .zst file to self/boot directory.
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
-fn install_vmlinux(zst_path: &Path, config_path: Option<&Path>, version: &str) -> Result<()> {
+fn install_vmlinux(zst_path: &Path, config_path: Option<&Path>, version: &str, arch: &str) -> Result<()> {
     let self_env_root = dirs().user_envs.join(SELF_ENV);
     let boot_dir = self_env_root.join("boot");
     lfs::create_dir_all(&boot_dir)?;
 
     // Decompress .zst file
-    println!("  Decompressing vmlinux-{}...", version);
+    println!("  Decompressing vmlinux-{}-{}...", version, arch);
     let kernel_data = zstd_decompress_file(zst_path)?;
 
-    // Write to vmlinux-$version
-    let vmlinux_name = format!("vmlinux-{}", version);
+    // Write to vmlinux-$version-$arch
+    let vmlinux_name = format!("vmlinux-{}-{}", version, arch);
     let vmlinux_path = boot_dir.join(&vmlinux_name);
     lfs::write(&vmlinux_path, &kernel_data)?;
 
-    // Create symlink vmlinux -> vmlinux-$version
+    // Create symlink vmlinux -> vmlinux-$version-$arch
     let vmlinux_link = boot_dir.join("vmlinux");
     if vmlinux_link.exists() || vmlinux_link.is_symlink() {
         lfs::remove_file(&vmlinux_link)?;
@@ -945,7 +946,7 @@ fn install_vmlinux(zst_path: &Path, config_path: Option<&Path>, version: &str) -
     // Install config file
     if let Some(cfg_path) = config_path {
         if cfg_path.exists() {
-            let config_name = format!("config-{}", version);
+            let config_name = format!("config-{}-{}", version, arch);
             let config_dest = boot_dir.join(&config_name);
             lfs::copy(cfg_path, &config_dest)?;
             println!("  Installed config: {}", config_dest.display());
