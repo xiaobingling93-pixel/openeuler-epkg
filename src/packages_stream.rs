@@ -8,7 +8,9 @@ use std::io::BufWriter;
 use std::io::Write;
 use color_eyre::eyre::{eyre, Result};
 use color_eyre::eyre::WrapErr;
-use sha2::{Sha256, Sha512, Digest};
+use sha2::{Sha256, Digest};
+#[cfg(target_os = "linux")]
+use sha2::Sha512;
 use hex;
 use crate::models::*;
 use crate::parse_provides::parse_provides;
@@ -79,6 +81,7 @@ impl ReceiverHasher {
         }
     }
 
+    #[cfg(target_os = "linux")]
     pub fn new_with_hash_type(receiver: Receiver<Vec<u8>>, expected_hash: String, expected_size: u64, hash_type: String) -> Self {
         let effective_size = if expected_size > 0 { Some(expected_size) } else { None };
         log::debug!("ReceiverHasher::new_with_hash_type: expected_size={}, effective_size={:?}, hash_type={}", expected_size, effective_size, hash_type);
@@ -232,14 +235,16 @@ pub struct PackagesStreamline {
     pub output_offset: usize,
     pub package_begin_offset: usize,
     pub writer: BufWriter<File>,
+    #[cfg(target_os = "linux")]
     pub partial_line: String,
+    #[cfg(target_os = "linux")]
     pub process_line: fn(line: &str, derived_files: &mut PackagesStreamline) -> Result<()>,
 }
 
 impl PackagesStreamline {
     pub fn new(revise: &RepoReleaseItem,
                 repo_dir: &PathBuf,
-                process_line_fn: fn(&str, &mut PackagesStreamline) -> Result<()>) -> Result<Self> {
+                #[allow(unused)] process_line_fn: fn(&str, &mut PackagesStreamline) -> Result<()>) -> Result<Self> {
         let output_path = &revise.output_path;
         let filename = output_path.file_name()
             .ok_or_else(|| eyre!("Invalid output path: no filename component"))
@@ -287,7 +292,9 @@ impl PackagesStreamline {
             output_offset: 0,
             package_begin_offset: 0,
             writer,
+            #[cfg(target_os = "linux")]
             partial_line: String::new(),
+            #[cfg(target_os = "linux")]
             process_line: process_line_fn,
         })
     }
@@ -311,6 +318,7 @@ impl PackagesStreamline {
         self.current_pkgname.push_str(value);
     }
 
+    #[cfg(target_os = "linux")]
     pub fn on_essential(&mut self, pkgname: String) {
         self.essential_pkgnames.insert(pkgname);
     }
@@ -372,6 +380,7 @@ impl PackagesStreamline {
         .wrap_err_with(|| format!("[PackagesStreamline::on_finish] Failed to save file metadata to {:?}", self.json_path))
     }
 
+    #[cfg(target_os = "linux")]
     pub fn handle_chunk(&mut self, result: std::io::Result<usize>, unpack_buf: &[u8]) -> Result<bool> {
         match result {
             Ok(0) => {

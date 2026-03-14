@@ -598,6 +598,7 @@ fn delete_shadow_entry(name: &str, root: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 pub fn remove_user_from_group(
     user: &str,
     group: &str,

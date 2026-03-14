@@ -17,7 +17,7 @@ use crate::plan::pkgkey2pkgline;
 use crate::parse_requires::VersionConstraint;
 #[cfg(target_os = "linux")]
 use crate::rpm_triggers::{parse_rpm_trigger_condition, RPMTRIGGER_DEFAULT_PRIORITY};
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use crate::run::{fork_and_execute, RunOptions};
 use shlex;
 use glob::Pattern;
@@ -1069,7 +1069,7 @@ u nobody     65534:65534 - /nonexistent         /usr/sbin/nologin"#;
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn run_in_env(env_root: &Path, cmd: &str, args: &[&str])
 {
     let run_options = RunOptions {
@@ -1376,6 +1376,7 @@ fn add_matching_pkgname(
     plan: &InstallationPlan,
     matched: &mut Vec<String>,
 ) {
+    #[cfg(target_os = "linux")]
     if plan.package_format == PackageFormat::Deb {
         // For deb packages, match trigger-name instead of pkgname
         if let Some(trigger_names) = plan.deb_activate_triggers_by_pkg.get(pkgkey) {
@@ -1385,13 +1386,13 @@ fn add_matching_pkgname(
                 }
             }
         }
-    } else {
-        // For non-deb packages, match pkgname as before
-        if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
-            // matches_patterns() now handles positive_packages uniformly
-            if matches_patterns(&pkgname, trigger, pkgkey, plan) {
-                matched.push(pkgname);
-            }
+        return;
+    }
+    // For non-deb packages, match pkgname as before
+    if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
+        // matches_patterns() now handles positive_packages uniformly
+        if matches_patterns(&pkgname, trigger, pkgkey, plan) {
+            matched.push(pkgname);
         }
     }
 }

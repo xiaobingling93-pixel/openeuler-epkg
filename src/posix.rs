@@ -444,6 +444,7 @@ pub fn posix_umask(mask: Option<&str>) -> PosixResult<String> {
 
 /// Helper function to call a libc function that takes (path, mode) and returns i32
 /// Used by Lua bindings to match C++ pushresult behavior
+#[cfg(target_os = "linux")]
 fn call_libc_path_mode<F>(path: &str, mode: libc::mode_t, f: F) -> io::Result<()>
 where
     F: FnOnce(*const libc::c_char, libc::mode_t) -> libc::c_int,
@@ -467,6 +468,7 @@ pub fn posix_mkdir(path: &str) -> io::Result<()> {
 
 /// Helper function to wrap libc::mkfifo as Result<(), Error>
 /// Used by Lua bindings to match C++ pushresult behavior
+#[cfg(target_os = "linux")]
 pub fn posix_mkfifo(path: &str) -> io::Result<()> {
     call_libc_path_mode(path, 0o777, |p, m| unsafe { libc::mkfifo(p, m) })
 }
@@ -643,6 +645,7 @@ pub fn posix_utime(path: impl AsRef<Path>, mtime: Option<u64>, atime: Option<u64
 }
 
 #[derive(Debug, Clone)]
+#[cfg(target_os = "linux")]
 pub struct PosixPasswd {
     #[allow(dead_code)]
     pub name: String,
@@ -658,6 +661,7 @@ pub struct PosixPasswd {
     pub passwd: String,
 }
 
+#[cfg(target_os = "linux")]
 pub fn posix_getpasswd(name: Option<&str>, uid: Option<u32>) -> PosixResult<PosixPasswd> {
     use std::ffi::CString;
     use libc::{getpwnam, getpwuid, geteuid};
@@ -690,6 +694,7 @@ pub fn posix_getpasswd(name: Option<&str>, uid: Option<u32>) -> PosixResult<Posi
 }
 
 #[derive(Debug, Clone)]
+#[cfg(target_os = "linux")]
 pub struct PosixGroup {
     #[allow(dead_code)]
     pub name: String,
@@ -698,6 +703,7 @@ pub struct PosixGroup {
     pub members: Vec<String>,
 }
 
+#[cfg(target_os = "linux")]
 pub fn posix_getgroup(name: Option<&str>, gid: Option<u32>) -> PosixResult<PosixGroup> {
     use std::ffi::CString;
     use libc::{getgrnam, getgrgid};

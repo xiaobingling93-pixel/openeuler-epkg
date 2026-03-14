@@ -155,13 +155,17 @@ pub struct InstallationPlan {
     /// Debian explicit trigger interests (non-file triggers)
     /// - deb_explicit_triggers_by_pkg: pkgkey -> trigger names this package is interested in
     /// - deb_explicit_triggers_by_name: trigger name -> pkgkeys interested in it
+    #[cfg(target_os = "linux")]
     pub deb_explicit_triggers_by_pkg: HashMap<String, Vec<String>>,
+    #[cfg(target_os = "linux")]
     pub deb_explicit_triggers_by_name: HashMap<String, Vec<String>>,
 
     /// Debian activate triggers (triggers that packages activate)
     /// - deb_activate_triggers_by_pkg: pkgkey -> trigger names this package activates
     /// - deb_activate_triggers_by_name: trigger name -> pkgkeys that activate it
+    #[cfg(target_os = "linux")]
     pub deb_activate_triggers_by_pkg: HashMap<String, Vec<String>>,
+    #[cfg(target_os = "linux")]
     pub deb_activate_triggers_by_name: HashMap<String, Vec<String>>,
 
     /// Desktop integration flags tracking which types occurred during expose operations
@@ -227,9 +231,13 @@ impl Default for InstallationPlan {
             #[cfg(unix)]
             hooks_by_name: HashMap::new(),
             installed: HashSet::new(),
+            #[cfg(target_os = "linux")]
             deb_explicit_triggers_by_pkg: HashMap::new(),
+            #[cfg(target_os = "linux")]
             deb_explicit_triggers_by_name: HashMap::new(),
+            #[cfg(target_os = "linux")]
             deb_activate_triggers_by_pkg: HashMap::new(),
+            #[cfg(target_os = "linux")]
             deb_activate_triggers_by_name: HashMap::new(),
             #[cfg(target_os = "linux")]
             desktop_integration_occurred: crate::xdesktop::DesktopIntegrationFlags::default(),

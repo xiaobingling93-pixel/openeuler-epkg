@@ -126,6 +126,7 @@ pub fn list_package_files_with_info(package_fs_dir: &str) -> Result<Vec<MtreeFil
 }
 
 /// Normalize a file path from package filelist: remove leading '.' and trailing '/'
+#[cfg(target_os = "linux")]
 pub fn normalize_file_path(path: &str) -> &str {
     let normalized = if path.starts_with('.') {
         &path[1..]
@@ -137,6 +138,7 @@ pub fn normalize_file_path(path: &str) -> &str {
 
 /// Get normalized file paths for a package store directory (package root).
 /// Reads info/filelist.txt via the "fs" subdir convention.
+#[cfg(target_os = "linux")]
 pub fn list_package_file_paths_normalized(store_root: &Path) -> Result<Vec<String>> {
     let fs_dir = store_root.join("fs");
     let fs_dir_str = fs_dir
@@ -150,6 +152,7 @@ pub fn list_package_file_paths_normalized(store_root: &Path) -> Result<Vec<Strin
 }
 
 /// Truncate a string for display, appending "..." if longer than max_len.
+#[cfg(target_os = "linux")]
 pub fn truncate_display(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
@@ -714,6 +717,7 @@ pub fn to_absolute_path(dir: &str) -> String {
 /// 3. If it's a directory, return success
 /// 4. If it's something else (symlink, etc.), remove it first
 /// 5. Create the directory with all parent directories
+#[cfg(target_os = "linux")]
 pub fn safe_mkdir_p(path: &Path) -> Result<()> {
     // Check if path already exists and handle it appropriately
     if lfs::exists_or_any_symlink(path) {
@@ -1101,6 +1105,7 @@ pub fn copy_scriptlet_file<P: AsRef<Path>>(source: P, target: P) -> Result<()> {
 
 /// Write scriptlet content to a file and make it executable
 /// This is used by rpm_pkg when writing scriptlet content directly (not from files)
+#[cfg(target_os = "linux")]
 pub fn write_scriptlet_content<P: AsRef<Path>>(target: P, content: &[u8]) -> Result<()> {
     let target = target.as_ref();
 

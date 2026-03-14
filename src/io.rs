@@ -290,6 +290,7 @@ fn resolve_channel_distro_version(cc: &mut ChannelConfig, main_config: Option<&C
 /// Merge channel-level default URLs into repo configs where missing
 pub fn merge_channel_defaults_into_repos(cc: &mut ChannelConfig) {
     for (_, repo_config) in &mut cc.repos {
+        #[cfg(target_os = "linux")]
         if repo_config.components.is_empty() {
             repo_config.components = cc.components.clone();
         }
@@ -342,6 +343,7 @@ pub fn deserialize_channel_config() -> Result<Vec<ChannelConfig>> {
 }
 
 /// Update system channel configs with inherited settings and proper naming
+#[cfg(target_os = "linux")]
 fn update_system_channel_configs(
     system_channel_configs: Vec<ChannelConfig>,
     channel_configs: &mut Vec<ChannelConfig>,
@@ -358,13 +360,12 @@ fn update_system_channel_configs(
 }
 
 /// Load system repository configurations as separate ChannelConfig instances
+#[cfg(target_os = "linux")]
 fn load_system_repositories(channel_configs: &mut Vec<ChannelConfig>, env_root: &Path) -> Result<()> {
     // Get the main channel config to inherit common settings
-    #[allow(unused)]
     let main_config = channel_configs.first().cloned();
 
     // Load Deb system repositories
-    #[cfg(target_os = "linux")]
     {
         if let Ok(system_channel_configs) = crate::deb_sources::load_deb_system_repos(env_root, &config().common.arch) {
             update_system_channel_configs(system_channel_configs, channel_configs, main_config.as_ref())?;
@@ -372,13 +373,18 @@ fn load_system_repositories(channel_configs: &mut Vec<ChannelConfig>, env_root: 
     }
 
     // Load RPM system repositories
-    #[cfg(target_os = "linux")]
     {
         if let Ok(system_channel_configs) = crate::rpm_sources::load_rpm_system_repos(env_root) {
             update_system_channel_configs(system_channel_configs, channel_configs, main_config.as_ref())?;
         }
     }
 
+    Ok(())
+}
+
+/// Load system repository configurations as separate ChannelConfig instances (stub for non-Linux)
+#[cfg(not(target_os = "linux"))]
+fn load_system_repositories(_channel_configs: &mut Vec<ChannelConfig>, _env_root: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -640,6 +646,7 @@ pub fn save_pending_packages(packages: &InstalledPackagesMap) -> Result<()> {
 
 /// Load pending packages from pending-packages.json
 /// Returns an empty map if the file doesn't exist
+#[cfg(target_os = "linux")]
 pub fn load_pending_packages() -> Result<HashMap<String, InstalledPackageInfo>> {
     let file_path = get_pending_packages_path()?;
     if !lfs::exists_on_host(&file_path) {
@@ -662,6 +669,7 @@ pub fn remove_pending_packages() -> Result<()> {
 /// Load installed packages including pending packages from the current transaction
 /// This is used by dpkg-query to see packages being installed.
 /// Updates PACKAGE_CACHE.installed_packages with pending packages merged in.
+#[cfg(target_os = "linux")]
 pub fn load_installed_packages_with_pending() -> Result<()> {
     // First load installed packages
     load_installed_packages()?;

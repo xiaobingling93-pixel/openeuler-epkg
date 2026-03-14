@@ -319,6 +319,7 @@ impl ScriptletType {
 /// - APK_PACKAGE: Package name (package scripts only)
 /// - APK_SCRIPT: Set to one of the package script types
 /// Reference: apk_ipkg_run_script() and apk_script_types[] in /c/package-managers/apk-tools/src/package.c
+#[cfg(target_os = "linux")]
 pub fn setup_apk_env_vars(
     env_vars: &mut std::collections::HashMap<String, String>,
     pkgkey: &str,

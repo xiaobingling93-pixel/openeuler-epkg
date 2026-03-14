@@ -498,7 +498,10 @@ fn fork_and_execute_raw(env_root: &Path, run_options: &RunOptions) -> Result<Opt
     }
 }
 
+// Note: fork_and_execute_raw is only called on Linux.
+// This stub exists for completeness but is never used on non-Linux platforms.
 #[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
 fn fork_and_execute_raw(_env_root: &Path, _run_options: &RunOptions) -> Result<Option<i32>> {
     use color_eyre::eyre;
     Err(eyre::eyre!("fork_and_execute_raw not implemented for this platform"))

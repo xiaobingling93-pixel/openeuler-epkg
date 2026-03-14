@@ -76,12 +76,14 @@ pub fn pkgkey2version(pkgkey: &str) -> Result<String> {
     parse_pkgkey_parts(pkgkey).map(|(_, version, _)| version.to_string())
 }
 
+#[cfg(target_os = "linux")]
 pub fn pkgkey2arch(pkgkey: &str) -> Result<String> {
     parse_pkgkey_parts(pkgkey).map(|(_, _, arch)| arch.to_string())
 }
 
 /// Name, version, and architecture from a package spec (e.g. name or name:arch).
 /// Used by dpkg-query and rpm-style query applets.
+#[cfg(target_os = "linux")]
 #[derive(Debug, Clone)]
 pub struct PackageNVRA {
     pub name: String,

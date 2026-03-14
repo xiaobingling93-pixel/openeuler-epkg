@@ -70,7 +70,9 @@ pub struct RealpathOptions {
     pub files: Vec<String>,
     pub canonicalize: bool,
     pub quiet: bool,
+    #[cfg(target_os = "linux")]
     pub root: Option<String>,
+    #[cfg(target_os = "linux")]
     pub admindir: Option<String>,
 }
 
@@ -90,7 +92,9 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<RealpathOptions> {
         files,
         canonicalize,
         quiet,
+        #[cfg(target_os = "linux")]
         root: None,
+        #[cfg(target_os = "linux")]
         admindir: None,
     })
 }

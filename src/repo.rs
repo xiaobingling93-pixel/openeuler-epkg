@@ -39,6 +39,7 @@ pub struct RepoRevise {
     pub repo_name: String,
     pub repodata_name: String,
     pub index_url: String,
+    #[cfg(target_os = "linux")]
     pub components: Vec<String>, // DEB specific: filter components from Release file
 }
 
@@ -152,6 +153,7 @@ fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
             repodata_name: repo_name.clone(),
             // Channel defaults have already been merged by merge_channel_defaults_into_repos()
             index_url: repo_config.index_url.clone(),
+            #[cfg(target_os = "linux")]
             components: repo_config.components.clone(),
         });
 
@@ -168,6 +170,7 @@ fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
                 repo_name: repo_name.clone(),
                 repodata_name: format!("{}-{}", repo_name, repodata_suffix),
                 index_url: url.clone(),
+                #[cfg(target_os = "linux")]
                 components: repo_config.components.clone(),
             });
         }
