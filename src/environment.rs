@@ -3,6 +3,7 @@ use std::env;
 use std::path::Path;
 use std::path::PathBuf;
 use std::collections::{HashSet, HashMap};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
@@ -12,17 +13,20 @@ use color_eyre::eyre;
 use color_eyre::eyre::WrapErr;
 use serde_json;
 use serde_yaml;
+#[cfg(unix)]
 use nix::unistd::chown;
 use glob;
 use crate::models::*;
 use crate::dirs::*;
 use crate::repo::sync_channel_metadata;
-use crate::utils::{self, force_symlink};
+use crate::utils::force_symlink;
 use crate::deinit::force_remove_dir_all;
+#[cfg(target_os = "linux")]
 use crate::deb_triggers::ensure_triggers_dir;
 use crate::plan::prepare_installation_plan;
 use crate::install::execute_installation_plan;
 use crate::history::record_history;
+#[cfg(unix)]
 use crate::path::update_path;
 use crate::io;
 use crate::lfs;
@@ -122,11 +126,20 @@ pub fn get_all_env_names() -> Result<Vec<(String, bool)>> {
             } else {
                 // Environments from shared store (owner=Some) may be public or private
                 // Use symlink_metadata to avoid following symlinks in env context
-                let mode = lfs::symlink_metadata(env_path)?
-                    .permissions()
-                    .mode() & 0o777;
-                let is_private = mode == 0o700;
-                !is_private
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = lfs::symlink_metadata(env_path)?
+                        .permissions()
+                        .mode() & 0o777;
+                    let is_private = mode == 0o700;
+                    !is_private
+                }
+                #[cfg(not(unix))]
+                {
+                    // On Windows, all environments are considered public
+                    true
+                }
             };
 
             // Decide ownership: any env under the personal store (owner == None)
@@ -346,7 +359,8 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
         lfs::create_dir_all(env_root.join("usr/sbin"))?;
     }
 
-    // Debian-specific setup
+    // Debian-specific setup (Linux only)
+    #[cfg(target_os = "linux")]
     if pkg_format == &PackageFormat::Deb {
         ensure_triggers_dir(env_root)?;
     }
@@ -355,6 +369,7 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
     create_applet_symlinks(env_root, pkg_format)?;
 
     // Set owner and permissions if environment is private (public = false)
+    #[cfg(unix)]
     if !env_config.public {
         // Get current user's UID and GID (effective, handles suid)
         let uid = nix::unistd::geteuid();
@@ -365,7 +380,7 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
             .wrap_err_with(|| format!("Failed to set owner for {}", env_root.display()))?;
 
         // Set mode to 700 (rwx------)
-        utils::set_permissions_from_mode(env_root, 0o700)
+        crate::utils::set_permissions_from_mode(env_root, 0o700)
             .wrap_err_with(|| format!("Failed to set permissions for {}", env_root.display()))?;
     }
 
@@ -757,7 +772,8 @@ pub fn activate_environment(name: &str) -> Result<()> {
         push_env_var(&mut script, key, Some(value.clone()), original_value);
     }
 
-    // Update PATH
+    // Update PATH (Unix only for now)
+    #[cfg(unix)]
     update_path()?;
 
     // Action 2: Create deactivate shell script
@@ -815,6 +831,7 @@ pub fn deactivate_environment() -> Result<()> {
     // Update environment variables EPKG_ACTIVE_ENV and PATH
     // For eval by caller shell.
     println!("# Deactivate environment '{}'", deactivated_env);
+    #[cfg(unix)]
     update_path()?;
     Ok(())
 }
@@ -845,6 +862,7 @@ pub fn register_environment_for(name: &str, mut env_config: EnvConfig) -> Result
     env_config.register_path_order = path_order;
     io::serialize_env_config(env_config)?;
 
+    #[cfg(unix)]
     update_path()?;
     Ok(())
 }
@@ -867,6 +885,7 @@ pub fn unregister_environment(name: &str) -> Result<()> {
     env_config.register_path_order = 0;
     io::serialize_env_config(env_config)?;
 
+    #[cfg(unix)]
     update_path()?;
     println!("# Environment '{}' has been unregistered.", name);
     Ok(())
@@ -1057,9 +1076,19 @@ pub fn registered_env_configs() -> Vec<EnvConfig> {
             // Environments from shared store (owner=Some) may be public or private
             match lfs::symlink_metadata(env_path) {
                 Ok(metadata) => {
-                    let mode = metadata.permissions().mode() & 0o777;
-                    let is_private = mode == 0o700;
-                    !is_private
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let mode = metadata.permissions().mode() & 0o777;
+                        let is_private = mode == 0o700;
+                        !is_private
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        // Windows: all environments considered public
+                        let _ = metadata;
+                        true
+                    }
                 }
                 Err(_) => false,
             }

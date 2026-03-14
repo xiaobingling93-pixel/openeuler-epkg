@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
+#[cfg(unix)]
 use std::sync::Arc;
 use color_eyre::eyre::{Result, Context};
 use crate::models::PackageFormat;
@@ -8,12 +11,20 @@ use crate::package::{pkgkey2pkgname, pkgkey2version};
 use crate::models::PACKAGE_CACHE;
 use crate::version_constraint::check_version_constraint;
 use crate::package_cache::map_pkgline2filelist;
-use crate::plan::{InstallationPlan, pkgkey2pkgline};
+use crate::plan::InstallationPlan;
+#[cfg(unix)]
+use crate::plan::pkgkey2pkgline;
 use crate::parse_requires::VersionConstraint;
+#[cfg(target_os = "linux")]
 use crate::rpm_triggers::{parse_rpm_trigger_condition, RPMTRIGGER_DEFAULT_PRIORITY};
+#[cfg(unix)]
 use crate::run::{fork_and_execute, RunOptions};
 use shlex;
 use glob::Pattern;
+
+// Default priority for hooks on non-Linux platforms
+#[cfg(not(target_os = "linux"))]
+const RPMTRIGGER_DEFAULT_PRIORITY: u32 = 1000000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -408,12 +419,22 @@ fn populate_trigger_cache(trigger: &mut HookTrigger) {
                         log::warn!("Failed to compile pattern '{}' for Package trigger: {}", target, e);
                     }
                 }
-            } else { // RPM, DEB and some Archlinux targets are suitable for quick hash lookup in matches_any_package()
-                let packages = parse_rpm_trigger_condition(target);
-                for (pkg_name, constraints) in packages {
-                    // Merge constraints if package already exists
-                    let entry = trigger.positive_packages.entry(pkg_name.clone()).or_insert_with(Vec::new);
-                    entry.extend(constraints);
+            } else {
+                // RPM/DEB style package triggers - Linux only
+                #[cfg(target_os = "linux")]
+                {
+                    // RPM, DEB and some Archlinux targets are suitable for quick hash lookup in matches_any_package()
+                    let packages = parse_rpm_trigger_condition(target);
+                    for (pkg_name, constraints) in packages {
+                        // Merge constraints if package already exists
+                        let entry = trigger.positive_packages.entry(pkg_name.clone()).or_insert_with(Vec::new);
+                        entry.extend(constraints);
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    // Non-Linux: store as simple package name target
+                    trigger.positive_targets.push(target.clone());
                 }
             }
         }
@@ -579,6 +600,7 @@ fn read_hook_directory_entries(hook_dir: &Path) -> Option<Vec<fs::DirEntry>> {
 
 /// Update an existing global hook with a package pkgkey
 /// Returns true if the hook was updated (and caller should return early), false otherwise
+#[cfg(unix)]
 fn update_existing_hook_pkgkey(
     hook_name: &str,
     pkgkey: &str,
@@ -608,6 +630,7 @@ fn update_existing_hook_pkgkey(
 
 /// Register a hook to the plan structures
 /// Only adds to hooks_by_name. Other indices (hooks_by_when, hooks_by_pkgkey) are built later.
+#[cfg(unix)]
 fn register_hook_to_plan(
     mut hook: Hook,
     hook_name: String,
@@ -625,6 +648,7 @@ fn register_hook_to_plan(
 }
 
 /// Build hooks_by_when and hooks_by_pkgkey indices from hooks_by_name
+#[cfg(unix)]
 fn build_hook_indices(plan: &mut InstallationPlan) {
     plan.hooks_by_when.clear();
     plan.hooks_by_pkgkey.clear();
@@ -647,6 +671,7 @@ fn build_hook_indices(plan: &mut InstallationPlan) {
 }
 
 /// Process a single hook file path and save it to plan structures
+#[cfg(unix)]
 fn load_hook_file(
     path: &Path,
     plan: &mut InstallationPlan,
@@ -700,6 +725,7 @@ fn load_hook_file(
 
 /// Load hooks from a hook directory
 /// Processes all .hook files in the given directory and adds them to the plan
+#[cfg(unix)]
 fn load_hooks_from_directory(
     plan: &mut InstallationPlan,
     hook_dir: &Path,
@@ -725,6 +751,7 @@ fn load_hooks_from_directory(
 /// Scans the appropriate per-package hook directory for hooks.
 /// - Pacman: $store_root/$pkgline/fs/usr/share/libalpm/hooks/
 /// - Other formats (Rpm/Deb/etc): $store_root/$pkgline/info/install/
+#[cfg(unix)]
 fn load_package_hooks(plan: &mut InstallationPlan, pkgkey: &str) -> Result<()> {
     let pkgline = pkgkey2pkgline(plan, pkgkey);
 
@@ -753,6 +780,7 @@ fn load_package_hooks(plan: &mut InstallationPlan, pkgkey: &str) -> Result<()> {
 /// Load initial hooks (from installed packages and etc/pacman.d/hooks/)
 /// Note: We load global hooks first, then package hooks. Package hooks can override global hooks
 /// by updating the pkgkey on the existing hook.
+#[cfg(unix)]
 pub fn load_initial_hooks(plan: &mut InstallationPlan) -> Result<()> {
     // Global hooks from etc/pacman.d/hooks/ are only for Pacman format
     if plan.package_format == PackageFormat::Pacman {
@@ -781,6 +809,12 @@ pub fn load_initial_hooks(plan: &mut InstallationPlan) -> Result<()> {
     // Build hooks_by_when and hooks_by_pkgkey indices from hooks_by_name
     build_hook_indices(plan);
 
+    Ok(())
+}
+
+/// No-op stub for non-Unix platforms
+#[cfg(not(unix))]
+pub fn load_initial_hooks(_plan: &mut InstallationPlan) -> Result<()> {
     Ok(())
 }
 
@@ -877,6 +911,7 @@ fn is_systemd_in_no_install() -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(unix)]
 fn add_systemd_hooks_if_needed(plan: &mut InstallationPlan) -> Result<()> {
 
     if is_systemd_installed() {
@@ -898,6 +933,7 @@ fn add_systemd_hooks_if_needed(plan: &mut InstallationPlan) -> Result<()> {
 
     log::debug!("systemd is in no-install list, adding systemd hooks");
 
+    #[cfg(target_os = "linux")]
     create_deb_sysusers(plan);
 
     // Create sysusers hook
@@ -926,6 +962,7 @@ fn add_systemd_hooks_if_needed(plan: &mut InstallationPlan) -> Result<()> {
 }
 
 // Helper to create and register a systemd hook
+#[cfg(unix)]
 fn create_systemd_hook(
     target_pattern: &str,
     description: &str,
@@ -963,6 +1000,7 @@ fn create_systemd_hook(
 
 // When skipped installing systemd package, we need provide its
 // usr/lib/sysusers.d/basic.conf file to create system users.
+#[cfg(target_os = "linux")]
 fn create_deb_sysusers(plan: &InstallationPlan)
 {
     if plan.package_format != crate::models::PackageFormat::Deb {
@@ -1031,6 +1069,7 @@ u nobody     65534:65534 - /nonexistent         /usr/sbin/nologin"#;
     }
 }
 
+#[cfg(unix)]
 fn run_in_env(env_root: &Path, cmd: &str, args: &[&str])
 {
     let run_options = RunOptions {
@@ -1047,6 +1086,7 @@ fn run_in_env(env_root: &Path, cmd: &str, args: &[&str])
 }
 
 /// Load hooks for packages in the current batch
+#[cfg(unix)]
 pub fn load_batch_hooks(plan: &mut InstallationPlan) -> Result<()> {
     let pkgkeys: Vec<String> = plan.batch.new_pkgkeys.iter().cloned().collect();
     for pkgkey in pkgkeys {
@@ -1058,6 +1098,12 @@ pub fn load_batch_hooks(plan: &mut InstallationPlan) -> Result<()> {
 
     log::trace!("hooks after batch load: {:#?}", plan.hooks_by_name);
 
+    Ok(())
+}
+
+/// No-op stub for non-Unix platforms
+#[cfg(not(unix))]
+pub fn load_batch_hooks(_plan: &mut InstallationPlan) -> Result<()> {
     Ok(())
 }
 
@@ -1525,6 +1571,7 @@ fn parse_hook_exec(hook: &Hook) -> Result<(String, Vec<String>)> {
 ///     `/bin/sh -c 'killall -q -s USR1 gvfsd || true'`
 /// - Commands with quoted arguments:
 ///     `/usr/bin/vim -es --cmd ":helptags /usr/share/vim/vimfiles/doc" --cmd ":q"`
+#[cfg(unix)]
 pub fn execute_hook(
     hook: &Hook,
     plan: &InstallationPlan,
@@ -1588,8 +1635,20 @@ pub fn execute_hook(
     }
 }
 
+/// Windows stub for execute_hook - hooks not yet supported on Windows
+#[cfg(not(unix))]
+pub fn execute_hook(
+    hook: &Hook,
+    _plan: &InstallationPlan,
+    _matched_targets: &[String],
+) -> Result<()> {
+    log::warn!("Hook execution not supported on Windows: {}", hook.file_path);
+    Ok(())
+}
+
 /// Check if a hook trigger matches the transaction
 /// For DEB trigger hooks, matched_targets contains trigger names instead of file paths/package names
+#[cfg(unix)]
 fn check_trigger_match(
     trigger: &HookTrigger,
     plan: &InstallationPlan,
@@ -1620,6 +1679,7 @@ fn check_trigger_match(
 
 /// Sort triggered hooks by hook name (reference: _alpm_hook_cmp)
 /// For RPM format, sort by priority first (lower priority = earlier execution)
+#[cfg(unix)]
 fn sort_triggered_hooks(
     triggered_hooks: &mut [(&Arc<Hook>, Vec<String>)],
     package_format: PackageFormat,
@@ -1643,6 +1703,7 @@ fn sort_triggered_hooks(
 /// Find all triggered hooks for the transaction
 /// Returns a vector of (hook, matched_targets) tuples
 /// Sorts triggered hooks before returning
+#[cfg(unix)]
 fn find_triggered_hooks<'a>(
     relevant_hooks: &'a [Arc<Hook>],
     plan: &InstallationPlan,
@@ -1696,6 +1757,7 @@ fn find_triggered_hooks<'a>(
 }
 
 /// Execute all triggered hooks
+#[cfg(unix)]
 fn execute_triggered_hooks(
     triggered_hooks: Vec<(&Arc<Hook>, Vec<String>)>,
     plan: &InstallationPlan,
@@ -1723,6 +1785,7 @@ fn execute_triggered_hooks(
     Ok(())
 }
 
+#[cfg(unix)]
 pub fn run_hooks(
     plan: &InstallationPlan,
     when: HookWhen,
@@ -1737,8 +1800,15 @@ pub fn run_hooks(
     Ok(())
 }
 
+/// No-op stub for non-Unix platforms
+#[cfg(not(unix))]
+pub fn run_hooks(_plan: &InstallationPlan, _when: HookWhen) -> Result<()> {
+    Ok(())
+}
+
 /// Run hooks for a transaction
 /// Reference: _alpm_hook_run
+#[cfg(unix)]
 fn run_trans_hooks(
     plan: &InstallationPlan,
     when: HookWhen,
@@ -1760,6 +1830,7 @@ fn run_trans_hooks(
 }
 
 /// Filter hooks by when timing and clone them
+#[cfg(unix)]
 fn filter_hooks_by_when(hooks: &[Arc<Hook>], when: &HookWhen) -> Vec<Arc<Hook>> {
     hooks
         .iter()
@@ -1769,6 +1840,7 @@ fn filter_hooks_by_when(hooks: &[Arc<Hook>], when: &HookWhen) -> Vec<Arc<Hook>> 
 }
 
 /// Run hooks belonging to a specific pkgkey over all packages.
+#[cfg(unix)]
 fn run_pkgkey_hooks(
     plan: &InstallationPlan,
     when: &HookWhen,
@@ -1789,6 +1861,7 @@ fn run_pkgkey_hooks(
 }
 
 /// Run all hooks on a specific pkgkey, restricting trigger evaluation to that pkgkey.
+#[cfg(unix)]
 fn run_hooks_on_pkgkey(
     plan: &InstallationPlan,
     when: &HookWhen,
@@ -1810,6 +1883,7 @@ fn run_hooks_on_pkgkey(
 /// Run both:
 /// - hooks belonging to `pkgkey` over all packages (`run_pkgkey_hooks`)
 /// - all hooks on `pkgkey` with triggers restricted to that pkg (`run_hooks_on_pkgkey`)
+#[cfg(unix)]
 pub fn run_pkgkey_hooks_pair(
     plan: &InstallationPlan,
     when: HookWhen,
@@ -1817,5 +1891,11 @@ pub fn run_pkgkey_hooks_pair(
 ) -> Result<()> {
     run_pkgkey_hooks(plan, &when, pkgkey)?;
     run_hooks_on_pkgkey(plan, &when, pkgkey)?;
+    Ok(())
+}
+
+/// No-op stub for non-Unix platforms
+#[cfg(not(unix))]
+pub fn run_pkgkey_hooks_pair(_plan: &InstallationPlan, _when: HookWhen, _pkgkey: &str) -> Result<()> {
     Ok(())
 }

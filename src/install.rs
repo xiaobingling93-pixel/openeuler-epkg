@@ -20,16 +20,16 @@ use crate::repo::sync_channel_metadata;
 use crate::world::{apply_no_install_changes, apply_delta_world, add_essential_packages_to_delta_world, create_delta_world_from_specs};
 use crate::depends::resolve_and_install_packages;
 use crate::plan::prompt_and_confirm_install_plan;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[allow(unused_imports)]
 use crate::{risks, deb_triggers};
 #[cfg(unix)]
 use crate::history::{create_new_generation_with_root, record_history, update_current_generation_symlink_with_root};
 #[cfg(unix)]
 use crate::transaction::run_transaction_batch;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use crate::aur::is_aur_package;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use crate::aur::build_and_install_aur_packages;
 use crate::download::{enqueue_package_downloads, get_package_file_path};
 use crate::lfs;
@@ -295,6 +295,7 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
 
         // Generate dpkg database for Debian/Ubuntu environments
         // This allows the real dpkg/dpkg-query commands to see installed packages
+        #[cfg(target_os = "linux")]
         if plan.package_format == crate::models::PackageFormat::Deb {
             if let Err(e) = crate::dpkg_db::generate_dpkg_database() {
                 log::warn!("Failed to generate dpkg database: {}", e);
@@ -351,7 +352,7 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
     // Note: setup_tool_wrappers is now called in run_transaction_batch after build_batch_file_union
 
     // Build trigger indices used by hooks/trigger mapping.
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
         crate::deb_triggers::load_initial_deb_triggers(plan)?;
     }
@@ -376,6 +377,7 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
 
         // Generate dpkg database for Debian/Ubuntu environments before running scriptlets
         // This allows maintainer scripts to query packages being installed
+        #[cfg(target_os = "linux")]
         if plan.package_format == crate::models::PackageFormat::Deb {
             // First generate status for already installed packages
             if let Err(e) = crate::dpkg_db::generate_dpkg_status() {
@@ -394,7 +396,7 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
     }
 
     // Step 4: Build and install AUR packages (build with makepkg)
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
         if !aur_packages.is_empty() {
             // Will call run_transaction_batch() once for each round of build
@@ -409,7 +411,7 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
     }
 
     // Step 6: update X11 desktop database
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     crate::xdesktop::update_desktop_databases(&plan.env_root, &plan.desktop_integration_occurred);
 
     Ok(())
@@ -609,9 +611,9 @@ fn wait_downloads_and_unpack(
                     let pkgkey = pkgkey.clone();
 
                     // Check if this is an AUR package
-                    #[cfg(unix)]
+                    #[cfg(target_os = "linux")]
                     let is_aur = is_aur_package(&pkgkey);
-                    #[cfg(not(unix))]
+                    #[cfg(not(target_os = "linux"))]
                     let is_aur = false;
 
                     if is_aur {

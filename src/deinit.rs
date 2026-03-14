@@ -1,14 +1,17 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::exit;
 
 use color_eyre::eyre::{self, WrapErr};
 use color_eyre::Result;
+#[cfg(unix)]
 use nix::unistd;
 
 use crate::dirs::*;
 use crate::models::*;
+#[cfg(unix)]
 use crate::utils;
 use crate::lfs;
 
@@ -36,11 +39,15 @@ impl DeinitPlan {
 }
 
 pub fn deinit_epkg(scope: &str) -> Result<()> {
+    #[cfg(target_os = "linux")]
     crate::apparmor::remove_apparmor_profile()?;
 
     let plan = match scope {
         "personal" => collect_user_personal_plan()?,
+        #[cfg(unix)]
         "global" => collect_global_deinit_plan()?,
+        #[cfg(not(unix))]
+        "global" => return Err(eyre::eyre!("Global deinitialization is not supported on this platform")),
         _ => return Err(eyre::eyre!("Invalid scope: {}. Must be 'personal' or 'global'", scope)),
     };
 
@@ -67,6 +74,7 @@ fn execute_deinit_with_plan(plan: DeinitPlan, scope: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn collect_global_deinit_plan() -> Result<DeinitPlan> {
     // We'll deinit every user! So check if running by root (effective UID)
     if !unistd::geteuid().is_root() {
@@ -270,6 +278,7 @@ pub fn remove_epkg_from_rc_file(rc_file_path: &str) -> Result<String> {
 ///
 /// Uses eprintln! for informational messages to avoid interfering with shell eval
 /// when called from commands like `epkg env remove`.
+#[cfg(unix)]
 pub fn force_remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
     let path = path.as_ref();
 
@@ -316,7 +325,15 @@ pub fn force_remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
     }
 }
 
+/// Simple version for non-Unix platforms (Windows)
+#[cfg(not(unix))]
+pub fn force_remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
+    lfs::remove_dir_all(path.as_ref())
+        .map_err(|e| eyre::eyre!("Failed to remove directory: {}", e))
+}
+
 /// Finds all read-only directories within the given path
+#[cfg(unix)]
 pub fn find_readonly_dirs<P: AsRef<Path>>(root: P) -> Result<Vec<PathBuf>> {
     let mut readonly_dirs = Vec::new();
     let mut dir_stack = vec![root.as_ref().to_path_buf()];

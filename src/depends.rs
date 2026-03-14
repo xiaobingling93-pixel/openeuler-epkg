@@ -6,7 +6,7 @@ use crate::models::*;
 use crate::models::PACKAGE_CACHE;
 use crate::resolve::provider::GenericDependencyProvider;
 use crate::resolve::types::{DependFieldFlags, NameType, SolverMatchSpec};
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use crate::aur::is_aur_package;
 use crate::world::{remove_from_no_install, get_no_install_set};
 use crate::io::load_installed_packages;
@@ -499,7 +499,7 @@ fn resolve_dependencies_adding_makepkg_deps(
     let mut has_aur_packages = false;
     #[allow(unused_mut)]
     let mut has_git_aur = false;
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
         for pkgkey in all_packages_for_session.keys() {
             if is_aur_package(pkgkey) {

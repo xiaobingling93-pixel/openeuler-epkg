@@ -1,30 +1,38 @@
 #![cfg(unix)]
 use std::env;
+#[cfg(target_os = "linux")]
 use std::fs;
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
+#[cfg(target_os = "linux")]
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
 
 use crate::models::*;
 #[cfg(target_os = "linux")]
 use crate::namespace::{determine_process_config, build_unified_context, create_process_with_namespaces};
 use crate::lfs;
+#[cfg(target_os = "linux")]
 use crate::utils::is_suid;
 use color_eyre::eyre;
 use color_eyre::Result;
-use log::{debug, trace, warn};
+use log::{debug, trace};
 #[cfg(target_os = "linux")]
-use log::info;
+use log::{info, warn};
 #[cfg(target_os = "linux")]
 use nix::errno::Errno;
+#[cfg(target_os = "linux")]
 use nix::sys::signal::{self, Signal};
 #[cfg(target_os = "linux")]
-use nix::unistd::{close, pipe, setuid, write, Uid};
-#[cfg(not(target_os = "linux"))]
-use nix::unistd::{pipe, setuid, Uid};
+use nix::unistd::{close, pipe, write};
+#[cfg(target_os = "linux")]
+use nix::unistd::setuid;
+#[cfg(target_os = "linux")]
+use nix::unistd::Uid;
+#[cfg(target_os = "linux")]
 use users::get_current_uid;
 
 #[derive(Debug, Clone, Default)]
@@ -90,6 +98,7 @@ pub struct RunOptions {
 ///
 /// This function is used by the package manager to temporarily ignore SIGPIPE
 /// while performing pipe operations, then restore the previous handler.
+#[cfg(target_os = "linux")]
 pub(crate) fn with_sigpipe_handler<F, R>(handler: usize, f: F) -> R
 where
     F: FnOnce() -> R,
@@ -163,6 +172,7 @@ pub fn round_up_vm_memory_for_libkrun(requested_mib: u32, kernel_path: &str) -> 
     std::cmp::max(requested_mib, min_mib)
 }
 
+#[cfg(target_os = "linux")]
 #[allow(dead_code)]
 pub fn privdrop_on_suid() {
     if is_suid() {
@@ -171,6 +181,7 @@ pub fn privdrop_on_suid() {
 }
 
 /// Kill child process when timeout occurs
+#[cfg(target_os = "linux")]
 fn kill_child_on_timeout(child: nix::unistd::Pid, cmd_path: &Path, timeout: u64) -> Result<()> {
     warn!("Command '{}' timed out after {} seconds, killing child process", cmd_path.display(), timeout);
     // Send SIGTERM first (graceful shutdown)
@@ -200,6 +211,7 @@ fn kill_child_on_timeout(child: nix::unistd::Pid, cmd_path: &Path, timeout: u64)
 }
 
 /// Handle wait status result and process exit codes
+#[cfg(target_os = "linux")]
 fn handle_wait_status(wait_status: nix::sys::wait::WaitStatus, cmd_path: &Path, run_options: &RunOptions) -> Result<()> {
     use nix::sys::wait::WaitStatus;
     match wait_status {
@@ -234,6 +246,7 @@ fn handle_wait_status(wait_status: nix::sys::wait::WaitStatus, cmd_path: &Path, 
 }
 
 /// Wait for child process with timeout using polling
+#[cfg(target_os = "linux")]
 fn wait_for_child_with_timeout_polling(child: nix::unistd::Pid, cmd_path: &Path, run_options: &RunOptions, timeout_duration: Duration) -> Result<()> {
     let start_time = Instant::now();
 
@@ -272,6 +285,7 @@ fn wait_for_child_with_timeout_polling(child: nix::unistd::Pid, cmd_path: &Path,
 }
 
 /// Wait for child process to complete, with optional timeout
+#[cfg(target_os = "linux")]
 fn wait_for_child_with_timeout(child: nix::unistd::Pid, cmd_path: &Path, run_options: &RunOptions) -> Result<()> {
     trace!("Parent process waiting for child {} (cmd: {})", child, cmd_path.display());
 
@@ -384,8 +398,12 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
 
 #[cfg(not(target_os = "linux"))]
 pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Option<i32>> {
+    // Prepare options (merge sandbox settings)
+    let mut prepared_opts = run_options.clone();
+    prepare_run_options_for_command(env_root, &mut prepared_opts);
+
     // Non-Linux platforms only support VM sandbox mode
-    let sandbox_mode = run_options.effective_sandbox.sandbox_mode
+    let sandbox_mode = prepared_opts.effective_sandbox.sandbox_mode
         .unwrap_or(SandboxMode::Env);
 
     match sandbox_mode {
@@ -393,7 +411,7 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
             // VM sandbox mode - supported via libkrun
             #[cfg(feature = "libkrun")]
             {
-                let cmd_path = resolve_command_path(env_root, run_options)?;
+                let cmd_path = resolve_command_path(env_root, &prepared_opts)?;
 
                 // Convert host path to guest path (strip env_root prefix if inside)
                 let guest_cmd_path = if let Ok(stripped) = cmd_path.strip_prefix(env_root) {
@@ -406,7 +424,7 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
                 debug!("Guest command path: {}", guest_cmd_path.display());
 
                 // Note: run_command_in_krun never returns on success
-                crate::libkrun::run_command_in_krun(env_root, run_options, &guest_cmd_path)?;
+                crate::libkrun::run_command_in_krun(env_root, &prepared_opts, &guest_cmd_path)?;
                 Ok(None) // unreachable, but needed for type consistency
             }
             #[cfg(not(feature = "libkrun"))]
@@ -579,6 +597,7 @@ pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathB
 
 /// Check if the host OS uses traditional directory layout (dirs) or usr-merge layout (symlinks).
 /// Returns true if the host uses traditional layout (e.g., Alpine < 3.22), false if usr-merge.
+#[cfg(target_os = "linux")]
 pub fn host_uses_traditional_layout() -> bool {
     // Check if /lib is a directory (traditional) or symlink (usr-merge)
     let lib_path = Path::new("/lib");
@@ -665,6 +684,7 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
     }
 }
 
+#[cfg(target_os = "linux")]
 fn create_stdin_pipe_if_needed(run_options: &RunOptions) -> Result<(Option<OwnedFd>, Option<OwnedFd>)> {
     if let Some(_) = &run_options.stdin {
         let (read_fd, write_fd) = pipe()

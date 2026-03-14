@@ -350,6 +350,7 @@ pub fn handle_applet_invocation() -> Result<Option<()>> {
     // dpkg-maintscript-helper is called from maintscripts as: helper rm_conffile ... -- "$1" "$2" ...
     // Clap treats "--" as end of options and drops following args for the positional, so script
     // args (e.g. "install") would be lost. Run from raw argv so "--" and script args are preserved.
+    #[cfg(target_os = "linux")]
     if applet_name == "dpkg-maintscript-helper" {
         let options = crate::busybox::dpkg_maintscript_helper::options_from_raw_args(&args[1..]);
         crate::busybox::dpkg_maintscript_helper::run(options)?;

@@ -47,12 +47,16 @@
 //! - `process_single_package_upgrade()` - Replaced by `run_action()` with integrated triggers
 //! - `process_fresh_installs()` - Replaced by `process_package_operation()` with integrated triggers
 
+#[cfg(unix)]
 use std::path::Path;
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::time::SystemTime;
 use color_eyre::Result;
 use std::sync::Arc;
+#[cfg(unix)]
 use color_eyre::eyre::WrapErr;
+#[cfg(unix)]
 use crate::lfs;
 use crate::models::{PackageFormat, InstalledPackageInfo};
 use crate::models::PACKAGE_CACHE;
@@ -60,6 +64,7 @@ use crate::plan::{InstallationPlan, PackageOperation, OperationType, remove_pack
 use crate::hooks;
 use crate::hooks::{run_hooks, run_pkgkey_hooks_pair, HookWhen};
 use crate::scriptlets::{run_scriptlet, run_trans_scriptlets, ScriptletType};
+#[cfg(unix)]
 use crate::run;
 use crate::remove::unlink_package;
 use log;
@@ -127,6 +132,7 @@ fn run_action(
             run_pkgkey_hooks_pair(plan, HookWhen::PostInstall2, pkgkey)?;
 
             // DEB trigger processing: noawait triggers from Unincorp (immediate, per-package processing)
+            #[cfg(target_os = "linux")]
             crate::deb_triggers::run_debian_unincorp_triggers(plan, HookWhen::PostInstall)?;
         }
 
@@ -217,6 +223,7 @@ fn end_transaction(
     run_hooks(plan, HookWhen::PostTransaction)?;
 
     // DEB trigger processing: await triggers from Unincorp (batched, after all packages are processed)
+    #[cfg(target_os = "linux")]
     crate::deb_triggers::run_debian_unincorp_triggers(plan, HookWhen::PostTransaction)?;
 
     Ok(())
@@ -290,7 +297,7 @@ pub fn run_transaction_batch(
     build_batch_file_union(plan)?;
 
     // Setup tool wrappers for newly installed tools (after new_files is populated)
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     crate::tool_wrapper::setup_tool_wrappers(plan)?;
 
     // Execute transaction scriptlets at transaction boundaries (RPM behavior)
@@ -300,6 +307,7 @@ pub fn run_transaction_batch(
     hooks::load_batch_hooks(plan)?;
 
     // Load Debian triggers for batch packages (incremental loading)
+    #[cfg(target_os = "linux")]
     crate::deb_triggers::load_batch_deb_triggers(plan)?;
 
     // Run PreTransaction hooks
@@ -311,7 +319,8 @@ pub fn run_transaction_batch(
     // Run PostTransaction hooks
     run_hooks(plan, HookWhen::PostTransaction)?;
 
-    // Run ldconfig if needed (after all package operations complete)
+    // Run ldconfig if needed (after all package operations complete) - Unix only
+    #[cfg(unix)]
     run_ldconfig_if_needed(&plan.env_root)?;
 
     // Execute transaction scriptlets: %posttrans of packages being installed/upgraded
@@ -451,6 +460,7 @@ pub fn process_package_operation(
                     run_action(plan, PackageAction::PreRemove,        pkgkey, &pkg_info, None, None)?;
                     run_action(plan, PackageAction::UnlinkFiles,      pkgkey, &pkg_info, None, None)?;
                     run_action(plan, PackageAction::PostRemove,       pkgkey, &pkg_info, None, None)?;
+                    #[cfg(target_os = "linux")]
                     crate::deb_triggers::run_debian_unincorp_triggers(plan, HookWhen::PostInstall)?;
                 }
             }
@@ -461,6 +471,7 @@ pub fn process_package_operation(
 
 /// Run ldconfig if the library cache needs updating
 /// Called after all package operations complete
+#[cfg(unix)]
 fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
     let ld_so_cache = env_root.join("etc/ld.so.cache");
     let lib_dirs = [

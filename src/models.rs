@@ -8,11 +8,11 @@ use std::sync::Mutex;
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use nix::sched::CloneFlags;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use nix::unistd::{Uid, Gid};
 #[cfg(target_os = "linux")]
 use nix::mount::MsFlags;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::os::fd::OwnedFd;
 #[cfg(not(test))]
 use crate::parse_cmdline;
@@ -472,23 +472,26 @@ impl SandboxOptions {
 }
 
 /// Configuration for unified process creation flow.
+/// Only used on Linux for namespace-based sandboxing.
+#[cfg(target_os = "linux")]
 #[derive(Debug, Clone)]
 pub struct ProcessCreationConfig {
     pub namespace_strategy: NamespaceStrategy,
     pub sandbox_mode: SandboxMode,
     /// Namespace flags for clone() or unshare()
-    #[cfg(target_os = "linux")]
     pub namespace_flags: CloneFlags,
     pub needs_uid_mapping: bool,
     pub mount_spec_strings: Vec<String>,
 }
 
 /// Unified context for all child processes.
+/// Only used on Linux for namespace-based sandboxing.
+#[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub struct UnifiedChildContext {
     // Common fields
     pub env_root: PathBuf,
-    #[cfg(unix)] pub run_options: RunOptions,
+    pub run_options: RunOptions,
     pub command: PathBuf,
     pub args: Vec<String>,
     #[allow(dead_code)]
@@ -500,20 +503,15 @@ pub struct UnifiedChildContext {
     // Sync pipe for parent-child coordination
     // Note: This is the read end for the child to wait on mapping completion.
     // The write end is owned by the parent.
-    #[cfg(unix)]
     pub sync_read_fd: Option<OwnedFd>,
 
     // Mount specifications (pre-parsed)
     #[allow(dead_code)]
-    #[cfg(target_os = "linux")]
     pub mount_specs: Vec<MountSpec>,
 
     // UID/GID mapping info
-    #[cfg(unix)]
     pub uid: Uid,
-    #[cfg(unix)]
     pub gid: Gid,
-    #[cfg(unix)]
     pub euid: Uid,
     pub user: Option<String>,
 
@@ -1169,7 +1167,11 @@ pub struct ServiceOptions {
 pub struct EPKGDirs {
     // Base directories
     pub opt_epkg: PathBuf,
+    /// Used on Unix for namespace isolation and VM sandbox mounts
+    #[allow(dead_code)]
     pub home_epkg: PathBuf,
+    /// Used on Unix for namespace isolation and VM sandbox mounts
+    #[allow(dead_code)]
     pub home_cache: PathBuf,
 
     // Subdirectories
@@ -1180,6 +1182,8 @@ pub struct EPKGDirs {
     pub user_envs: PathBuf,
     // - If  shared_store:  /opt/epkg/cache/aur_builds/$USER
     // - If !shared_store:  $HOME/.cache/epkg/aur_builds
+    /// AUR build directory, only used on Unix (Arch Linux)
+    #[allow(dead_code)]
     pub user_aur_builds: PathBuf,
 
     pub epkg_store: PathBuf,
