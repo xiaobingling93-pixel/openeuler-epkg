@@ -13,7 +13,7 @@ set -e
 # Dynamic Linking (Legacy):
 #   - Only retained for potential corner case usage
 #   - NOT recommended for production or deployment
-#   - Commands: `build`, `release` (without static prefix)
+#   - Commands: `dynamic-build`, `dynamic-release`
 #
 # libkrun Feature Auto-Enable Matrix:
 #   Platform     | Architecture      | libkrun
@@ -1063,7 +1063,7 @@ build_release() {
 }
 
 # Cross-compilation to macOS
-# Note: Lua is only needed for Linux RPM scriptlets, so dynamic linking is fine here
+# Note: Lua is only needed for Linux RPM scriptlets (disabled for macOS)
 cross-macos() {
     local arch="${1:-aarch64}"
     local target=""
@@ -1081,10 +1081,6 @@ cross-macos() {
 
     # Setup cross-compilation environment
     setup_cross_env "$target"
-
-    # Lua dynamic linking
-    export LUA_LINK=dynamic
-    unset LUA_NO_PKG_CONFIG 2>/dev/null || true
 
     # Auto-enable libkrun for macOS if not explicitly set
     # Note: empty string (EPKG_CARGO_FEATURES="") means user explicitly wants no features
@@ -1105,7 +1101,7 @@ cross-macos() {
 }
 
 # Cross-compilation to Windows
-# Note: Lua is only needed for Linux RPM scriptlets, so dynamic linking is fine here
+# Note: Lua is only needed for Linux RPM scriptlets (disabled for Windows)
 cross-windows() {
     local arch="${1:-x86_64}"
     local target=""
@@ -1121,9 +1117,6 @@ cross-windows() {
     fi
 
     setup_cross_env "$target"
-
-    export LUA_LINK=dynamic
-    unset LUA_NO_PKG_CONFIG 2>/dev/null || true
 
     # libkrun is not supported on Windows
     local cargo_features="${EPKG_CARGO_FEATURES:-}"
@@ -1327,7 +1320,7 @@ setup_cross_env() {
     fi
 
     # Clear previous environment
-    unset CC CFLAGS LUA_LIB LUA_LINK LUA_NO_PKG_CONFIG RUSTFLAGS
+    unset CC CFLAGS LUA_LIB LUA_LIB_NAME LUA_LINK LUA_NO_PKG_CONFIG RUSTFLAGS
     unset CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER
     unset CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER
     unset CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER
@@ -1335,9 +1328,17 @@ setup_cross_env() {
     unset CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER
     unset CARGO_TARGET_AARCH64_PC_WINDOWS_GNU_LINKER
 
-    # Common for all targets
-    export LUA_LINK=dynamic
-    export LUA_NO_PKG_CONFIG=1
+    # Lua is only needed for Linux RPM scriptlets
+    # Do not set Lua variables for macOS/Windows builds
+    case "$os" in
+        linux)
+            export LUA_LINK=dynamic
+            export LUA_NO_PKG_CONFIG=1
+            ;;
+        darwin|windows)
+            # No Lua needed for non-Linux platforms
+            ;;
+    esac
     export PKG_CONFIG_ALLOW_CROSS=1
 
     case "$os" in
@@ -1408,7 +1409,16 @@ case $cmd in
     lua|build_lua_lib)
         build_lua_lib "$2"
         ;;
-    static-debug|static)  # default in Makefile
+    build)
+        # Default: static debug build (recommended)
+        build_static "$2" debug
+        ;;
+    release)
+        # Default: static release build (recommended)
+        build_static "$2" release
+        ;;
+    static|static-debug)
+        # Explicit static debug build
         build_static "$2" debug
         ;;
     static-libkrun)
@@ -1425,10 +1435,12 @@ case $cmd in
     static-release)
         build_static "$2" release
         ;;
-    build)
+    dynamic-build)
+        # Legacy: dynamic linking (not recommended)
         build
         ;;
-    release)  # not used in Makefile
+    dynamic-release)
+        # Legacy: dynamic linking (not recommended)
         build_release
         ;;
     dev-depends)
@@ -1473,14 +1485,20 @@ case $cmd in
     *)
         echo "Usage: $0 [command] [options...]"
         echo ""
-        echo "Commands:"
-        echo "  build                                Build development binary (default)"
-        echo "  lua [<arch>]                         Build Lua library for architecture (auto-detects if not specified)"
-        echo "  release                              Build release binary (dynamic linking)"
-        echo "  static [<arch>]                      Build static debug binary (auto-detects arch if not specified)"
-        echo "  static-debug [<arch>]                Build static debug binary"
-        echo "  static-release [<arch>]              Build static release binary"
-        echo "  static-libkrun [<arch>]              Build static debug binary with libkrun (now auto-enabled for supported platforms)"
+        echo "Commands (static linking - DEFAULT):"
+        echo "  build [<arch>]                       Build static debug binary (default)"
+        echo "  release [<arch>]                     Build static release binary"
+        echo "  static [<arch>]                      (alias for 'build')"
+        echo "  static-debug [<arch>]                Build static debug binary (explicit)"
+        echo "  static-release [<arch>]              Build static release binary (explicit)"
+        echo "  static-libkrun [<arch>]              Build static debug with libkrun (auto-enabled anyway)"
+        echo ""
+        echo "Commands (dynamic linking - LEGACY):"
+        echo "  dynamic-build                        Build dynamic debug binary (not recommended)"
+        echo "  dynamic-release                      Build dynamic release binary (not recommended)"
+        echo ""
+        echo "Other commands:"
+        echo "  lua [<arch>]                         Build Lua library for architecture"
         echo "  dev-depends                          Install development dependencies (current arch only)"
         echo "  crossdev-depends                     Install cross-development dependencies (all arch cross-compilers)"
         echo "  clone-repos                          Clone required repositories (rpm-rs, resolvo, elf-loader)"
