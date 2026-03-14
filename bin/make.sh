@@ -753,6 +753,65 @@ add_musl_compat_to_mlua() {
     return 0
 }
 
+# Check if libkrun feature should be enabled by default for a given platform
+# Returns 0 (true) if libkrun should be enabled, 1 (false) otherwise
+should_enable_libkrun() {
+    local arch="$1"
+    local os="$2"  # linux, darwin, windows
+
+    case "$os" in
+        linux)
+            case "$arch" in
+                x86_64|aarch64|riscv64)
+                    return 0  # libkrun supported
+                    ;;
+                loongarch64)
+                    return 1  # libkrun not available
+                    ;;
+                *)
+                    return 1
+                    ;;
+            esac
+            ;;
+        darwin)
+            # libkrun supported on all macOS architectures
+            return 0
+            ;;
+        windows)
+            # libkrun not supported on Windows
+            return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# Get default Cargo features for a given architecture and OS
+# Returns feature string (e.g., "libkrun" or "")
+get_default_cargo_features() {
+    local arch="$1"
+    local os="$2"
+
+    if should_enable_libkrun "$arch" "$os"; then
+        echo "libkrun"
+    else
+        echo ""
+    fi
+}
+
+# Detect OS from Rust target triple
+detect_os_from_target() {
+    local target="$1"
+    if [[ "$target" == *"apple-darwin"* ]]; then
+        echo "darwin"
+    elif [[ "$target" == *"pc-windows-"* ]]; then
+        echo "windows"
+    else
+        echo "linux"
+    fi
+}
+
 # Build static binary for a specific architecture with mode (debug/release)
 # Usage: build_static <arch> <mode>
 build_static() {
@@ -761,6 +820,18 @@ build_static() {
     local rust_target=$(get_rust_target "$arch")
     local rustflags=$(get_rustflags "$arch")
     local cargo_features="${EPKG_CARGO_FEATURES:-}"
+
+    # Auto-enable libkrun if EPKG_CARGO_FEATURES is not set and platform supports it
+    # Note: empty string (EPKG_CARGO_FEATURES="") means user explicitly wants no features
+    if [[ ! -v EPKG_CARGO_FEATURES ]] && should_enable_libkrun "$arch" "linux"; then
+        cargo_features="libkrun"
+        echo "Auto-enabling libkrun feature for $arch Linux"
+    fi
+
+    # Warn if user tries to force libkrun on unsupported platform
+    if [[ "$cargo_features" == *"libkrun"* ]] && ! should_enable_libkrun "$arch" "linux"; then
+        echo "Warning: libkrun is not supported on $arch Linux, build may fail"
+    fi
 
     echo "Building $arch binary ($mode)..."
 
@@ -899,7 +970,21 @@ build() {
         unset LUA_NO_PKG_CONFIG 2>/dev/null || true
     fi
 
-    cargo build --ignore-rust-version
+    # Auto-enable libkrun for supported platforms
+    # Note: empty string (EPKG_CARGO_FEATURES="") means user explicitly wants no features
+    local cargo_features="${EPKG_CARGO_FEATURES:-}"
+    local current_arch=$(detect_native_arch)
+    if [[ ! -v EPKG_CARGO_FEATURES ]] && should_enable_libkrun "$current_arch" "$OS_FAMILY"; then
+        cargo_features="libkrun"
+        echo "Auto-enabling libkrun feature for $OS_FAMILY $current_arch"
+    fi
+
+    local cargo_feature_args=()
+    if [[ -n "$cargo_features" ]]; then
+        cargo_feature_args=(--features "$cargo_features")
+    fi
+
+    cargo build --ignore-rust-version "${cargo_feature_args[@]}"
 
     echo "Development build completed. Binary is in $PROJECT_ROOT/target/debug/$BINARY_NAME"
 
@@ -921,7 +1006,21 @@ build_release() {
         unset LUA_NO_PKG_CONFIG 2>/dev/null || true
     fi
 
-    cargo build --release --ignore-rust-version
+    # Auto-enable libkrun for supported platforms
+    # Note: empty string (EPKG_CARGO_FEATURES="") means user explicitly wants no features
+    local cargo_features="${EPKG_CARGO_FEATURES:-}"
+    local current_arch=$(detect_native_arch)
+    if [[ ! -v EPKG_CARGO_FEATURES ]] && should_enable_libkrun "$current_arch" "$OS_FAMILY"; then
+        cargo_features="libkrun"
+        echo "Auto-enabling libkrun feature for $OS_FAMILY $current_arch"
+    fi
+
+    local cargo_feature_args=()
+    if [[ -n "$cargo_features" ]]; then
+        cargo_feature_args=(--features "$cargo_features")
+    fi
+
+    cargo build --release --ignore-rust-version "${cargo_feature_args[@]}"
 
     echo "Release build completed. Binary is in $PROJECT_ROOT/target/release/$BINARY_NAME"
 
@@ -951,7 +1050,20 @@ cross-macos() {
     export LUA_LINK=dynamic
     unset LUA_NO_PKG_CONFIG 2>/dev/null || true
 
-    cargo build --release --target "$target" --ignore-rust-version
+    # Auto-enable libkrun for macOS if not explicitly set
+    # Note: empty string (EPKG_CARGO_FEATURES="") means user explicitly wants no features
+    local cargo_features="${EPKG_CARGO_FEATURES:-}"
+    if [[ ! -v EPKG_CARGO_FEATURES ]] && should_enable_libkrun "$arch" "darwin"; then
+        cargo_features="libkrun"
+        echo "Auto-enabling libkrun feature for macOS $arch"
+    fi
+
+    local cargo_feature_args=()
+    if [[ -n "$cargo_features" ]]; then
+        cargo_feature_args=(--features "$cargo_features")
+    fi
+
+    cargo build --release --target "$target" --ignore-rust-version "${cargo_feature_args[@]}"
 
     echo "Cross-compilation to macOS completed. Binary is in target/$target/release/$BINARY_NAME"
 }
@@ -976,7 +1088,22 @@ cross-windows() {
     export LUA_LINK=dynamic
     unset LUA_NO_PKG_CONFIG 2>/dev/null || true
 
-    cargo build --release --target "$target" --ignore-rust-version
+    # libkrun is not supported on Windows
+    local cargo_features="${EPKG_CARGO_FEATURES:-}"
+    if [[ "$cargo_features" == *"libkrun"* ]]; then
+        echo "Warning: libkrun is not supported on Windows, ignoring libkrun feature"
+        cargo_features="${cargo_features//libkrun/}"
+        cargo_features="${cargo_features//,,/,}"  # Remove double commas
+        cargo_features="${cargo_features#,}"      # Remove leading comma
+        cargo_features="${cargo_features%,}"      # Remove trailing comma
+    fi
+
+    local cargo_feature_args=()
+    if [[ -n "$cargo_features" ]]; then
+        cargo_feature_args=(--features "$cargo_features")
+    fi
+
+    cargo build --release --target "$target" --ignore-rust-version "${cargo_feature_args[@]}"
 
     echo "Cross-compilation to Windows completed. Binary is in target/$target/release/$BINARY_NAME"
 }
@@ -1248,8 +1375,10 @@ case $cmd in
         build_static "$2" debug
         ;;
     static-libkrun)
-        # Build static debug binary with libkrun integrated. Additional
-        # features can be supplied via EPKG_CARGO_FEATURES if needed.
+        # Build static debug binary with libkrun integrated.
+        # Note: libkrun is now auto-enabled for supported platforms,
+        # so this command is mainly for explicit usage documentation.
+        # Additional features can be supplied via EPKG_CARGO_FEATURES.
         arch=$(get_arch "$2")
         if [[ -z "$EPKG_CARGO_FEATURES" ]]; then
             EPKG_CARGO_FEATURES="libkrun"
@@ -1314,7 +1443,7 @@ case $cmd in
         echo "  static [<arch>]                      Build static debug binary (auto-detects arch if not specified)"
         echo "  static-debug [<arch>]                Build static debug binary"
         echo "  static-release [<arch>]              Build static release binary"
-        echo "  static-libkrun [<arch>]              Build static debug binary with --features libkrun and vmlinux build by sandbox-kernel"
+        echo "  static-libkrun [<arch>]              Build static debug binary with libkrun (now auto-enabled for supported platforms)"
         echo "  dev-depends                          Install development dependencies (current arch only)"
         echo "  crossdev-depends                     Install cross-development dependencies (all arch cross-compilers)"
         echo "  clone-repos                          Clone required repositories (rpm-rs, resolvo, elf-loader)"
@@ -1327,6 +1456,14 @@ case $cmd in
         echo "  clean_all                            Clean all artifacts and distribution files"
         echo ""
         echo "Supported architectures: x86_64, aarch64, riscv64, loongarch64"
+        echo ""
+        echo "libkrun auto-enable matrix:"
+        echo "  Linux x86_64/aarch64/riscv64: enabled"
+        echo "  macOS (all archs):            enabled"
+        echo "  Linux loongarch64:            disabled (not supported)"
+        echo "  Windows:                      disabled (not supported)"
+        echo ""
+        echo "Set EPKG_CARGO_FEATURES to override default features."
         exit 1
         ;;
 esac
