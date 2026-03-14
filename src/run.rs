@@ -102,25 +102,6 @@ where
     }
 }
 
-/// Resolve kernel path for VM backends (libkrun, qemu). Order: run_options.kernel, then
-/// default (envs/self/boot/kernel from `epkg self install`), then host /boot auto-detect.
-pub fn resolve_vm_kernel_path(run_options: &RunOptions) -> Result<String> {
-    let kernel = run_options
-        .kernel
-        .clone()
-        .or_else(crate::init::default_kernel_path_if_exists)
-        .or_else(|| find_kernel_image().ok())
-        .ok_or_else(|| {
-            eyre::eyre!(
-                "No kernel image for VM. Use '--kernel /path/to/kernel', run 'epkg self install', or ensure a kernel exists in /boot."
-            )
-        })?;
-    if !lfs::exists_on_host(Path::new(&kernel)) {
-        return Err(eyre::eyre!("Kernel image not found at {}", kernel));
-    }
-    Ok(kernel)
-}
-
 /// Resolve vCPU count for VM backends.
 ///
 /// Source precedence:
@@ -180,35 +161,6 @@ pub fn round_up_vm_memory_for_libkrun(requested_mib: u32, kernel_path: &str) -> 
         .saturating_add(kernel_size_mib)
         .saturating_add(LIBKRUN_MEMORY_SLACK_MIB);
     std::cmp::max(requested_mib, min_mib)
-}
-
-/// Try to find a kernel image in common /boot locations.
-fn find_kernel_image() -> Result<String> {
-    let uname = crate::posix::posix_uname()
-        .map_err(|e| eyre::eyre!("Failed to get kernel release: {:?}", e))?;
-    let release = uname.release;
-    let candidates = [
-        format!("/boot/vmlinuz-{}", release),
-        "/boot/vmlinuz".to_string(),
-        format!("/boot/kernel-{}", release),
-        "/boot/kernel".to_string(),
-        format!("/boot/bzImage-{}", release),
-        "/boot/bzImage".to_string(),
-        format!("/boot/Image-{}", release),
-        "/boot/Image".to_string(),
-        format!("/boot/vmlinux-{}", release),
-        "/boot/vmlinux".to_string(),
-    ];
-    for candidate in &candidates {
-        if lfs::metadata_on_host(candidate).is_ok() {
-            return Ok(candidate.clone());
-        }
-    }
-    Err(eyre::eyre!(
-        "No kernel image found in /boot/. Tried: {}. \
-         Use '--kernel /path/to/kernel' to specify a guest kernel image.",
-        candidates.join(", ")
-    ))
 }
 
 #[allow(dead_code)]
