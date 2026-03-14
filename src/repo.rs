@@ -453,8 +453,10 @@ fn sync_from_release_metadata(repo: &RepoRevise, release_path: &PathBuf) -> Resu
         .with_context(|| format!("Failed to refresh release file for repository: {}", repo.repo_name))?;
 
     // Parse Release file
+    #[allow(unused)]
     let release_content = fs::read_to_string(&release_path)
         .with_context(|| format!("Failed to read Release file: {}", release_path.display()))?;
+    #[allow(unused)]
     let release_items =
         match repo.format {
             #[cfg(unix)]
@@ -464,6 +466,7 @@ fn sync_from_release_metadata(repo: &RepoRevise, release_path: &PathBuf) -> Resu
             _ => return Err(eyre::eyre!("Unsupported package format: {:?}", repo.format)),
         };
 
+    #[allow(unreachable_code)]
     Ok(release_items)
 }
 

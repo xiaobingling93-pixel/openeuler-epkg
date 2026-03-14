@@ -248,6 +248,7 @@ pub fn unpack_mv_package(
         .wrap_err_with(|| format!("Failed to unpack package {} to {}", package_file, store_tmp_dir.display()))?;
 
     // Calculate content-addressable hash
+    #[allow(unused)]
     let store_tmp_dir_str = store_tmp_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid UTF-8 in temporary directory path: {}", store_tmp_dir.display()))?;
     #[cfg(unix)]
     let ca_hash_real = crate::hash::epkg_store_hash(store_tmp_dir_str)

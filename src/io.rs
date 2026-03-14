@@ -360,6 +360,7 @@ fn update_system_channel_configs(
 /// Load system repository configurations as separate ChannelConfig instances
 fn load_system_repositories(channel_configs: &mut Vec<ChannelConfig>, env_root: &Path) -> Result<()> {
     // Get the main channel config to inherit common settings
+    #[allow(unused)]
     let main_config = channel_configs.first().cloned();
 
     // Load Deb system repositories

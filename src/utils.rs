@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::collections::HashMap;
 use std::fs;
 use std::io;
@@ -1423,14 +1424,14 @@ pub fn rename_or_copy_dir(src: &Path, dst: &Path) -> Result<()> {
                 cp_options.compute_derived();
                 crate::busybox::cp::copy_directory_recursive(src, dst, &cp_options)
                     .wrap_err_with(|| format!("Failed to copy directory from {} to {}", src.display(), dst.display()))?;
+                lfs::remove_dir_all(src)?;
+                log::debug!("Successfully copied and removed directory {} -> {}", src.display(), dst.display());
+                Ok(())
             }
             #[cfg(not(unix))]
             {
-                return Err(eyre::eyre!("Cross-device move not supported on this platform"));
+                Err(eyre::eyre!("Cross-device move not supported on this platform"))
             }
-            lfs::remove_dir_all(src)?;
-            log::debug!("Successfully copied and removed directory {} -> {}", src.display(), dst.display());
-            Ok(())
         }
         Err(e) => {
             Err(eyre::eyre!("Failed to rename directory from {} to {}: {}",

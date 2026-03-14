@@ -134,6 +134,7 @@ use time::macros::format_description;
 use crate::models::*;
 use crate::dirs::*;
 #[cfg(unix)] use crate::environment::*;
+#[cfg(unix)]
 use crate::io::edit_environment_config;
 use crate::io::load_installed_packages;
 use crate::io::read_yaml_file;
@@ -141,6 +142,7 @@ use crate::io::read_yaml_file;
 use crate::path::update_path;
 #[cfg(unix)]
 use crate::repo::sync_channel_metadata;
+#[cfg(unix)]
 use crate::list::list_packages_with_scope;
 #[cfg(unix)]
 use crate::install::install_packages;
@@ -150,8 +152,7 @@ use crate::remove::remove_packages;
 use crate::history::{print_history, rollback_history};
 #[cfg(unix)] use crate::init::{install_epkg, try_light_init, light_init, upgrade_epkg};
 #[cfg(unix)]
-#[cfg(unix)]
-use crate::run::{command_run, command_busybox, RunOptions};
+use crate::run::{command_run, command_busybox};
 use color_eyre::Result;
 use color_eyre::eyre;
 use color_eyre::eyre::WrapErr;
@@ -1914,20 +1915,28 @@ fn command_env(sub_matches: &clap::ArgMatches) -> Result<()> {
 
 fn command_list(sub_matches: &clap::ArgMatches) -> Result<()> {
     // Determine scope - only one should be true, with installed as default
+    #[allow(unused)]
     let scope = if sub_matches.get_flag("all")   {  ListScope::All
     } else if sub_matches.get_flag("available")  {  ListScope::Available
     } else if sub_matches.get_flag("upgradable") {  ListScope::Upgradable
     } else                                       {  ListScope::Installed // default
     };
 
+    #[allow(unused)]
     let pattern = sub_matches.get_one::<String>("GLOB_PATTERN")
         .map(|s| s.as_str())
         .unwrap_or("");
 
     #[cfg(unix)]
-    sync_channel_metadata()?;
-    list_packages_with_scope(scope, pattern)?;
-    Ok(())
+    {
+        sync_channel_metadata()?;
+        list_packages_with_scope(scope, pattern)?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        Err(color_eyre::eyre::eyre!("List command not supported on this platform"))
+    }
 }
 
 fn command_info(sub_matches: &clap::ArgMatches) -> Result<()> {
@@ -1964,9 +1973,9 @@ fn command_info(sub_matches: &clap::ArgMatches) -> Result<()> {
 
 fn command_install(sub_matches: &clap::ArgMatches) -> Result<()> {
     if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
-        let packages_vec: Vec<String> = package_specs.cloned().collect();
+        let _packages_vec: Vec<String> = package_specs.cloned().collect();
         #[cfg(unix)]
-        install_packages(packages_vec).map(|_| ())?;
+        install_packages(_packages_vec).map(|_| ())?;
         #[cfg(not(unix))]
         return Err(color_eyre::eyre::eyre!("Install command not supported on this platform"));
     }
@@ -2151,9 +2160,9 @@ fn command_self(sub_matches: &clap::ArgMatches) -> Result<()> {
             upgrade_epkg()?;
         }
         Some(("remove", sub_matches)) => {
-            if let Some(scope) = sub_matches.get_one::<String>("scope") {
+            if let Some(_scope) = sub_matches.get_one::<String>("scope") {
                 #[cfg(unix)]
-                deinit::deinit_epkg(scope)?;
+                deinit::deinit_epkg(_scope)?;
             }
         }
         _ => {}

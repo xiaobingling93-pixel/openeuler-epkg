@@ -4,6 +4,7 @@
 //! file conflict detection, and config file handling.
 
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use color_eyre::Result;

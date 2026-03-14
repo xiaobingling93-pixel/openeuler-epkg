@@ -500,6 +500,7 @@ fn copy_replace_textual_placeholder(
 
     let old_prefix = prefix_placeholder.as_bytes();
     let new_prefix = target_prefix.as_bytes();
+    #[allow(unused_mut)]
     let mut source_bytes = source_bytes.as_slice();
 
     // Check if we have a shebang. We need to handle it differently because it has a maximum length

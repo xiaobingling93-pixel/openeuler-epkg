@@ -687,6 +687,7 @@ fn set_wrapper_permissions(ebin_path: &Path) -> Result<()> {
 }
 
 /// Handle unexpose operations for a single package
+#[allow(unused)]
 pub fn unexpose_package(plan: &mut InstallationPlan, env_root: &Path, pkgkey: &str) -> Result<()> {
     // First unexpose ebin wrappers
     unexpose_package_ebin(env_root, pkgkey)?;
@@ -729,6 +730,7 @@ pub fn expose_package(plan: &mut InstallationPlan, store_fs_dir: &Path, pkgkey: 
 
     // Get filelist for desktop integration
     let store_root = store_fs_dir.parent().unwrap().parent().unwrap(); // /opt/epkg/store from /opt/epkg/store/$pkgline/fs
+    #[allow(unused)]
     let filelist = map_pkgline2filelist(store_root, &installed_pkg_info.pkgline)?;
 
     // Expose ebin wrappers

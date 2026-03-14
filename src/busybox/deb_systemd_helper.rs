@@ -308,10 +308,10 @@ pub fn run(options: DebSystemdHelperOptions) -> Result<()> {
                     if let Some(parent) = link_full.parent() {
                         lfs::create_dir_all(parent)?;
                     }
-                    let target = Path::new(&link.dest);
+                    let _target = Path::new(&link.dest);
                     #[cfg(unix)]
                     {
-                        lfs::symlink(target, &link_full)?;
+                        lfs::symlink(_target, &link_full)?;
                     }
                     #[cfg(not(unix))]
                     {

@@ -225,9 +225,9 @@ fn apply_alternative(
         lfs::remove_file(&alt_name_path)?;
     }
     // Compute target path relative to root, then make it relative to symlink location
-    let relative_target = make_relative_target(root, choice_path, &alt_name_path);
+    let _relative_target = make_relative_target(root, choice_path, &alt_name_path);
     #[cfg(unix)]
-    lfs::symlink(&relative_target, &alt_name_path)?;
+    lfs::symlink(&_relative_target, &alt_name_path)?;
 
     let master_link_full = root_join(root, &a.master_link);
     if lfs::exists_or_any_symlink(&master_link_full) {

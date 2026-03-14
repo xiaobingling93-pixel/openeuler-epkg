@@ -52,10 +52,11 @@ pub fn run(options: MkfifoOptions) -> Result<()> {
                 return Err(eyre!("mkfifo: cannot create fifo '{}': {}", file, std::io::Error::last_os_error()));
             }
         }
+        Ok(())
     }
     #[cfg(not(unix))]
     {
-        return Err(eyre!("mkfifo: not supported on this platform"));
+        let _ = options;
+        Err(eyre!("mkfifo: not supported on this platform"))
     }
-    Ok(())
 }

@@ -12,13 +12,19 @@
 // - Integration with the broader download system
 // ============================================================================
 
+#[cfg(unix)]
 use std::path::PathBuf;
 
-use color_eyre::eyre::{eyre, Result, WrapErr};
+#[cfg(unix)]
+use color_eyre::eyre::eyre;
+#[cfg(unix)]
+use color_eyre::eyre::{Result, WrapErr};
 
+#[cfg(unix)]
 use crate::dirs;
 #[cfg(unix)]
 use crate::run;
+#[cfg(unix)]
 use crate::utils;
 
 /// AUR base URL for package downloads

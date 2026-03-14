@@ -7,6 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use crate::models::*;
 use crate::repo::RepoRevise;
+#[cfg(unix)]
 use crate::utils;
 #[cfg(unix)]
 use crate::userdb;

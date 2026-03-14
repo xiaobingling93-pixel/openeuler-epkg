@@ -31,6 +31,7 @@ use crate::models::*;
 use crate::mirror;
 
 // Import AUR functions and constants
+#[cfg(unix)]
 use super::aur::*;
 
 // Import types and constants from the types module

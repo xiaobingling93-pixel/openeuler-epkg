@@ -236,12 +236,12 @@ pub fn format_applet_list_compact(width: usize) -> String {
 /// This is used by chgrp, chmod, and chown applets to implement
 /// the `--reference RFILE` flag. Returns an error if the file
 /// cannot be accessed or metadata cannot be retrieved.
-pub fn extract_reference_metadata(ref_path: &Path) -> Result<(u32, u32, u32)> {
+pub fn extract_reference_metadata(_ref_path: &Path) -> Result<(u32, u32, u32)> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let metadata = std::fs::metadata(ref_path)
-            .map_err(|e| eyre!("cannot stat '{}': {}", ref_path.display(), e))?;
+        let metadata = std::fs::metadata(_ref_path)
+            .map_err(|e| eyre!("cannot stat '{}': {}", _ref_path.display(), e))?;
         let uid = metadata.uid();
         let gid = metadata.gid();
         let mode = metadata.mode() & 0o7777;

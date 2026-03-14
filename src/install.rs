@@ -13,7 +13,9 @@ use crate::download;
 use crate::plan::InstallationPlan;
 use crate::models::PACKAGE_CACHE;
 use crate::link::compute_link_type_and_reflink;
-use crate::io::{load_world, save_installed_packages, save_world, save_pending_packages, remove_pending_packages};
+use crate::io::load_world;
+#[cfg(unix)]
+use crate::io::{save_installed_packages, save_world, save_pending_packages, remove_pending_packages};
 use crate::repo::sync_channel_metadata;
 use crate::world::{apply_no_install_changes, apply_delta_world, add_essential_packages_to_delta_world, create_delta_world_from_specs};
 use crate::depends::resolve_and_install_packages;
@@ -327,6 +329,7 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
 
     // Step 1: Download and unpack packages (but do not link yet)
     // This populates plan.batch.new_pkgkeys with packages ready to link
+    #[allow(unused)]
     let aur_packages = download_and_unpack_packages(plan)?;
 
     // Step 2a: Check risks for all packages before linking

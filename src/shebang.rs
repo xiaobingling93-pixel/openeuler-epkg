@@ -37,14 +37,14 @@ lazy_static! {
 }
 
 /// Check if shebang length is valid for the current platform
-pub fn is_valid_shebang_length(shebang: &str) -> bool {
+pub fn is_valid_shebang_length(_shebang: &str) -> bool {
     #[cfg(target_os = "linux")]
     {
-        shebang.len() <= MAX_SHEBANG_LENGTH_LINUX
+        _shebang.len() <= MAX_SHEBANG_LENGTH_LINUX
     }
     #[cfg(target_os = "macos")]
     {
-        shebang.len() <= 512
+        _shebang.len() <= 512
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {

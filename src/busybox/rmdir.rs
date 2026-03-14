@@ -3,6 +3,7 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use std::fs;
 use std::path::Path;
+#[cfg(unix)]
 use libc;
 
 #[cfg(unix)]

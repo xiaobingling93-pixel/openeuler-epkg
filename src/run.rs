@@ -1,7 +1,9 @@
 #![cfg(unix)]
 use std::env;
 use std::fs;
-use std::os::fd::{AsRawFd, OwnedFd};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -13,10 +15,16 @@ use crate::lfs;
 use crate::utils::is_suid;
 use color_eyre::eyre;
 use color_eyre::Result;
-use log::{debug, info, trace, warn};
+use log::{debug, trace, warn};
+#[cfg(target_os = "linux")]
+use log::info;
+#[cfg(target_os = "linux")]
 use nix::errno::Errno;
 use nix::sys::signal::{self, Signal};
+#[cfg(target_os = "linux")]
 use nix::unistd::{close, pipe, setuid, write, Uid};
+#[cfg(not(target_os = "linux"))]
+use nix::unistd::{pipe, setuid, Uid};
 use users::get_current_uid;
 
 #[derive(Debug, Clone, Default)]
@@ -423,7 +431,7 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Option<i32>> {
+pub fn fork_and_execute(_env_root: &Path, _run_options: &RunOptions) -> Result<Option<i32>> {
     use color_eyre::eyre;
     // Tier 2: Simple fork+exec without namespace isolation
     // For now, just return an error
@@ -479,7 +487,7 @@ fn fork_and_execute_raw(env_root: &Path, run_options: &RunOptions) -> Result<Opt
 }
 
 #[cfg(not(target_os = "linux"))]
-fn fork_and_execute_raw(env_root: &Path, run_options: &RunOptions) -> Result<Option<i32>> {
+fn fork_and_execute_raw(_env_root: &Path, _run_options: &RunOptions) -> Result<Option<i32>> {
     use color_eyre::eyre;
     Err(eyre::eyre!("fork_and_execute_raw not implemented for this platform"))
 }

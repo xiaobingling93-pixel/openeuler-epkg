@@ -495,7 +495,9 @@ fn resolve_dependencies_adding_makepkg_deps(
     }
 
     // Check if any resolved package is an AUR package and whether any of them is a *-git package
+    #[allow(unused_mut)]
     let mut has_aur_packages = false;
+    #[allow(unused_mut)]
     let mut has_git_aur = false;
     #[cfg(unix)]
     {
