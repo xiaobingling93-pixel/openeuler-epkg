@@ -24,7 +24,7 @@ set -e
 #   Windows      | all architectures | disabled (not supported)
 #
 # User Override:
-#   - FEATURES unset    : use default (auto-enable for supported)
+#   - FEATURES="auto"   : auto-enable libkrun for supported platforms (default)
 #   - FEATURES=""       : disable all features (no libkrun)
 #   - FEATURES="libkrun": explicitly enable libkrun
 #   - FEATURES="..."    : custom features (comma-separated)
@@ -854,9 +854,9 @@ build_static() {
     local rustflags=$(get_rustflags "$arch")
     local cargo_features="${FEATURES:-}"
 
-    # Auto-enable libkrun if FEATURES is not set and platform supports it
-    # Note: empty string (FEATURES="") means user explicitly wants no features
-    if [[ ! -v FEATURES ]] && should_enable_libkrun "$arch" "linux"; then
+    # Auto-enable libkrun if FEATURES="auto" and platform supports it
+    # Note: FEATURES="" means user explicitly wants no features
+    if [[ "$FEATURES" == "auto" ]] && should_enable_libkrun "$arch" "linux"; then
         cargo_features="libkrun"
         echo "Auto-enabling libkrun feature for $arch Linux"
     fi
@@ -1005,10 +1005,10 @@ build() {
     fi
 
     # Auto-enable libkrun for supported platforms
-    # Note: empty string (FEATURES="") means user explicitly wants no features
+    # Note: FEATURES="" means user explicitly wants no features
     local cargo_features="${FEATURES:-}"
     local current_arch=$(detect_native_arch)
-    if [[ ! -v FEATURES ]] && should_enable_libkrun "$current_arch" "$OS_FAMILY"; then
+    if [[ "$FEATURES" == "auto" ]] && should_enable_libkrun "$current_arch" "$OS_FAMILY"; then
         cargo_features="libkrun"
         echo "Auto-enabling libkrun feature for $OS_FAMILY $current_arch"
     fi
@@ -1042,10 +1042,10 @@ build_release() {
     fi
 
     # Auto-enable libkrun for supported platforms
-    # Note: empty string (FEATURES="") means user explicitly wants no features
+    # Note: FEATURES="" means user explicitly wants no features
     local cargo_features="${FEATURES:-}"
     local current_arch=$(detect_native_arch)
-    if [[ ! -v FEATURES ]] && should_enable_libkrun "$current_arch" "$OS_FAMILY"; then
+    if [[ "$FEATURES" == "auto" ]] && should_enable_libkrun "$current_arch" "$OS_FAMILY"; then
         cargo_features="libkrun"
         echo "Auto-enabling libkrun feature for $OS_FAMILY $current_arch"
     fi
@@ -1083,9 +1083,9 @@ cross-macos() {
     setup_cross_env "$target"
 
     # Auto-enable libkrun for macOS if not explicitly set
-    # Note: empty string (FEATURES="") means user explicitly wants no features
+    # Note: FEATURES="" means user explicitly wants no features
     local cargo_features="${FEATURES:-}"
-    if [[ ! -v FEATURES ]] && should_enable_libkrun "$arch" "darwin"; then
+    if [[ "$FEATURES" == "auto" ]] && should_enable_libkrun "$arch" "darwin"; then
         cargo_features="libkrun"
         echo "Auto-enabling libkrun feature for macOS $arch"
     fi
@@ -1416,7 +1416,10 @@ case $cmd in
         # so this command is mainly for explicit usage documentation.
         # Additional features can be supplied via FEATURES.
         arch=$(get_arch "$2")
-        if [[ -z "$FEATURES" ]]; then
+        # Append libkrun to FEATURES (whether or not it's empty)
+        if [[ -n "$FEATURES" && "$FEATURES" != "auto" ]]; then
+            FEATURES="libkrun,$FEATURES"
+        else
             FEATURES="libkrun"
         fi
         build_static "$arch" debug

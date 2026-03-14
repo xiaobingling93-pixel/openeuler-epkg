@@ -3,9 +3,12 @@
 # Variables
 OUTPUT_DIR := dist
 
-# Export FEATURES so it's available to make.sh as environment variable
-# Use: make FEATURES=xxx to set custom cargo features
-#      make FEATURES="" to disable auto-enable of libkrun
+# FEATURES variable for cargo features:
+#   - unset or "auto": auto-enable libkrun for supported platforms (default)
+#   - ""            : disable all features
+#   - "libkrun"     : explicitly enable libkrun
+#   - "..."         : custom features (comma-separated)
+FEATURES ?= auto
 export FEATURES
 
 # Detect Makefile location and adjust paths
@@ -37,11 +40,7 @@ static: $(PROJECT_ROOT)/target/lua-musl-$(HOST_ARCH)/liblua.a
 # Note: libkrun is auto-enabled for supported platforms, this target is
 # kept for explicit usage documentation and appending extra features.
 static-libkrun: $(PROJECT_ROOT)/target/lua-musl-$(HOST_ARCH)/liblua.a
-	@if [ -n "$(FEATURES)" ]; then \
-		FEATURES="libkrun,$(FEATURES)" $(PROJECT_ROOT)/bin/make.sh static-debug $(HOST_ARCH); \
-	else \
-		FEATURES="libkrun" $(PROJECT_ROOT)/bin/make.sh static-debug $(HOST_ARCH); \
-	fi
+	@$(PROJECT_ROOT)/bin/make.sh static-libkrun $(HOST_ARCH)
 
 # Release build target
 # Note: libkrun auto-enabled for supported platforms (see make.sh)
