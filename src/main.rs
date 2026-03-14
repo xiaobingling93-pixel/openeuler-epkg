@@ -95,9 +95,9 @@ mod lua;
 mod risks;
 #[cfg(unix)]
 mod run;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod namespace;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod idmap;
 #[cfg(target_os = "linux")]
 mod mount;
