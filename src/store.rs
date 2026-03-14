@@ -6,8 +6,8 @@ use crate::lfs;
 use std::io::{self, Read};
 use std::path::Path;
 #[cfg(unix)] use std::os::unix::fs::{PermissionsExt, FileTypeExt, MetadataExt};
-use tar::Archive;
-use zstd::stream::Decoder;
+#[cfg(unix)] use tar::Archive;
+#[cfg(unix)] use zstd::stream::Decoder;
 #[cfg(unix)] use nix::unistd;
 use color_eyre::Result;
 use color_eyre::eyre::{self, eyre, WrapErr};
@@ -50,6 +50,7 @@ pub fn unpack_package(
 
 /// Unpacks multiple packages and moves them to the store
 /// Returns a vector of paths to the final directories where packages were unpacked
+#[cfg(unix)]
 pub fn unpack_packages(package_files: Vec<String>) -> Result<Vec<std::path::PathBuf>> {
     let mut final_dirs = Vec::new();
     for package_file in package_files {
@@ -611,6 +612,7 @@ pub fn save_package_txt<P: AsRef<Path>>(mut package_fields: HashMap<String, Stri
 
 /// Legacy functions for existing .epkg format support
 
+#[cfg(unix)]
 pub fn untar_zst(file_path: &str, output_dir: &str, package_flag: bool) -> Result<()> {
     if package_flag && lfs::exists_on_host(Path::new(output_dir)) {
         return Ok(());

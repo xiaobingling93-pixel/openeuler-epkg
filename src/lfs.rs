@@ -362,6 +362,7 @@ pub fn is_symlink(path: &Path) -> bool {
 /// Check if path itself exists (does NOT follow symlinks)
 /// Returns true for regular files, directories, AND symlinks (even broken ones)
 /// Use case: Check if symlink file itself exists before removing
+#[cfg(unix)]
 pub fn exists_no_follow<P: AsRef<Path>>(path: P) -> bool {
     symlink_metadata(path.as_ref()).is_ok()
 }

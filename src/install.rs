@@ -253,7 +253,7 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     {
         plan.env_root_fs = crate::risks::get_filesystem_info(&env_root);
     }
-    #[cfg(unix)]
+    #[cfg(not(unix))]
     let _ = env_root; // suppress unused warning on non-Unix platforms
     #[cfg(unix)]
     {

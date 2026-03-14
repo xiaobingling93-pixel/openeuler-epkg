@@ -2,7 +2,9 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::io::{BufRead, BufReader, Read, Write, Seek, SeekFrom, ErrorKind};
+use std::io::{BufRead, BufReader, Read, Write, Seek, SeekFrom};
+#[cfg(unix)]
+use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 use color_eyre::Result;
@@ -13,6 +15,7 @@ use base64::Engine;
 use sha1::Sha1;
 use sha2::digest::Digest;
 use sha2::Sha256;
+#[cfg(unix)]
 use tar::Archive;
 use flate2::read::GzDecoder;
 use liblzma;
@@ -284,6 +287,7 @@ pub fn normalize_sha1(base64_or_hex: &str) -> Result<String> {
 /// # Returns
 /// * `Ok(())` if the checksum matches
 /// * `Err` if the checksum doesn't match or there are any I/O errors
+#[cfg(unix)]
 pub fn verify_sha256sum(checksum_file: &Path) -> Result<()> {
     let file_path = checksum_file.with_extension("");
 
@@ -330,6 +334,7 @@ pub fn verify_sha256sum(checksum_file: &Path) -> Result<()> {
 /// # Returns
 /// * `Ok(())` if extraction succeeds
 /// * `Err` if there are any I/O errors or the archive is invalid
+#[cfg(unix)]
 pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
     // Verify tar file exists and is readable
     if !lfs::exists_on_host(tar_path) {
@@ -468,6 +473,7 @@ pub fn is_suid() -> bool {
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)]
 pub fn is_suid() -> bool {
     false
 }
@@ -482,6 +488,7 @@ pub fn get_username_from_uid() -> Result<String> {
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)]
 pub fn get_username_from_uid() -> Result<String> {
     Err(color_eyre::eyre::eyre!("get_username_from_uid() not supported on this platform"))
 }
@@ -496,6 +503,7 @@ pub fn get_home_from_uid() -> Result<String> {
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)]
 pub fn get_home_from_uid() -> Result<String> {
     Err(color_eyre::eyre::eyre!("get_home_from_uid() not supported on this platform"))
 }
@@ -843,6 +851,7 @@ pub fn fixup_file_permissions(_target_path: &Path) {
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)]
 fn ensure_owner_permissions(_target_path: &Path, _required_mask: u32, _file_type: &str) {
     // No-op on non-Unix systems
 }
@@ -1081,6 +1090,7 @@ pub fn set_permissions_from_mode<P: AsRef<Path>>(path: P, mode: u32) -> Result<(
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)]
 pub fn set_permissions_from_mode<P: AsRef<Path>>(_path: P, _mode: u32) -> Result<()> {
     // No-op on non-Unix systems
     Ok(())
@@ -1287,6 +1297,7 @@ pub fn kill_process(pid: i32, signal: Signal, command_name: &str) -> Result<()> 
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)]
 pub fn kill_process(_pid: i32, _signal: i32, command_name: &str) -> Result<()> {
     Err(color_eyre::eyre::eyre!("kill_process() not supported on this platform: {}", command_name))
 }
@@ -1312,6 +1323,7 @@ pub fn get_process_name(pid: u32) -> Option<String> {
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)]
 pub fn get_process_name(_pid: u32) -> Option<String> {
     None
 }
@@ -1336,6 +1348,7 @@ pub fn get_process_cmdline(pid: u32) -> Option<String> {
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)]
 pub fn get_process_cmdline(_pid: u32) -> Option<String> {
     None
 }
@@ -1352,6 +1365,7 @@ pub fn get_process_exe(pid: u32) -> Option<String> {
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)]
 pub fn get_process_exe(_pid: u32) -> Option<String> {
     None
 }
@@ -1363,6 +1377,7 @@ pub fn process_exists(pid: u32) -> bool {
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)]
 pub fn process_exists(_pid: u32) -> bool {
     false
 }
@@ -1395,6 +1410,7 @@ pub fn iterate_processes() -> Result<impl Iterator<Item = Result<u32>>> {
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)]
 pub fn iterate_processes() -> Result<impl Iterator<Item = Result<u32>>> {
     Ok(std::iter::empty())
 }

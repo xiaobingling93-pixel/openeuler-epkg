@@ -9,7 +9,9 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
-use crate::models::{LinkType, InstalledPackageInfo, PackageFormat};
+use crate::models::{LinkType, PackageFormat};
+#[cfg(unix)]
+use crate::models::InstalledPackageInfo;
 use crate::plan::InstallationPlan;
 use crate::utils;
 use crate::lfs;
@@ -178,6 +180,7 @@ pub fn link_package_generic(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> 
 /// Unlink files that are in old_package but not in new_package
 /// This implements the Set(old_pkg - new_pkg) logic
 /// If old_pkgkey or old_package_info is None, this is a no-op
+#[cfg(unix)]
 pub fn unlink_package_diff(
     old_pkgkey: Option<&str>,
     old_package_info: Option<&std::sync::Arc<InstalledPackageInfo>>,
