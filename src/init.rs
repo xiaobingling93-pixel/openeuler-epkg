@@ -27,7 +27,7 @@ const GITEE_API_BASE:   &str = &"https://gitee.com/api/v5";
 const GITEE_OWNER:      &str = &"wu_fengguang";
 const REPO_EPKG:        &str = &"epkg";
 const REPO_ELF_LOADER:  &str = &"elf-loader";
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 const REPO_VMLINUX:     &str = &"sandbox-kernel";
 
 fn print_banner() {
@@ -222,7 +222,7 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
     }
 
     // Download vmlinux if built with libkrun feature
-    #[cfg(all(feature = "libkrun", target_os = "linux"))]
+    #[cfg(feature = "libkrun")]
     {
         if let Some(ref vmlinux_url) = init_plan.vmlinux_url {
             println!("Downloading vmlinux from {}", vmlinux_url);
@@ -247,7 +247,7 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
         init_plan.elf_loader_sha_path.clone(),
         init_plan.epkg_binary_sha_path.clone(),
     ];
-    #[cfg(all(feature = "libkrun", target_os = "linux"))]
+    #[cfg(feature = "libkrun")]
     if let Some(ref sha_path) = init_plan.vmlinux_path {
         sha256_files_to_delete.push(sha_path.with_extension("zst.sha256"));
     }
@@ -280,7 +280,7 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
     }
 
     // Install vmlinux if downloaded
-    #[cfg(all(feature = "libkrun", target_os = "linux"))]
+    #[cfg(feature = "libkrun")]
     {
         if let (Some(ref vmlinux_path), Some(ref version)) = (&init_plan.vmlinux_path, &init_plan.vmlinux_version) {
             if vmlinux_path.exists() {
@@ -871,7 +871,7 @@ pub fn default_kernel_path_if_exists() -> Option<String> {
 
 /// Get vmlinux download URL for the current architecture from Gitee releases.
 /// Returns (url, sha256_url, config_url, version) tuple.
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 fn get_vmlinux_url() -> Result<Option<(String, String, String, String)>> {
     let arch = &config().common.arch;
 
@@ -918,7 +918,7 @@ fn get_vmlinux_url() -> Result<Option<(String, String, String, String)>> {
 }
 
 /// Install vmlinux from downloaded .zst file to self/boot directory.
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 fn install_vmlinux(zst_path: &Path, config_path: Option<&Path>, version: &str, arch: &str) -> Result<()> {
     let self_env_root = dirs().user_envs.join(SELF_ENV);
     let boot_dir = self_env_root.join("boot");
@@ -957,7 +957,7 @@ fn install_vmlinux(zst_path: &Path, config_path: Option<&Path>, version: &str, a
 }
 
 /// Decompress a .zst file and return the decompressed data.
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 fn zstd_decompress_file(path: &Path) -> Result<Vec<u8>> {
     use std::io::Read;
     use zstd::stream::Decoder;
@@ -1034,7 +1034,7 @@ fn check_for_updates() -> Result<InitPlan> {
     let need_download_elf_loader = !has_local_elf_loader;
 
     // Get vmlinux URL and path if built with libkrun feature
-    #[cfg(all(feature = "libkrun", target_os = "linux"))]
+    #[cfg(feature = "libkrun")]
     let (vmlinux_url, vmlinux_sha_url, vmlinux_config_url, vmlinux_version, vmlinux_path, vmlinux_config_path) = {
         match get_vmlinux_url() {
             Ok(Some((url, sha_url, config_url, version))) => {
@@ -1050,7 +1050,7 @@ fn check_for_updates() -> Result<InitPlan> {
         }
     };
 
-    #[cfg(not(all(feature = "libkrun", target_os = "linux")))]
+    #[cfg(not(feature = "libkrun"))]
     let (vmlinux_url, vmlinux_sha_url, vmlinux_config_url, vmlinux_version, vmlinux_path, vmlinux_config_path) = (None, None, None, None, None, None);
 
     Ok(InitPlan {

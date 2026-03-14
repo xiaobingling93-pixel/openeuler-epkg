@@ -103,7 +103,7 @@ mod idmap;
 mod mount;
 #[cfg(target_os = "linux")]
 mod qemu;
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 mod libkrun;
 #[cfg(target_os = "linux")]
 mod vm_client;

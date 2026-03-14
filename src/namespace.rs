@@ -614,7 +614,7 @@ fn determine_vmm_backend_order(vmm_order: &[String]) -> Vec<String> {
         vmm_order.to_vec()
     } else {
         let mut default_order = Vec::new();
-        #[cfg(all(feature = "libkrun", target_os = "linux"))]
+        #[cfg(feature = "libkrun")]
         {
             default_order.push("libkrun".to_string());
         }
@@ -668,7 +668,7 @@ fn try_vmm_backends(order: &[String], context: &UnifiedChildContext, guest_comma
 }
 
 fn try_krun_backend(context: &UnifiedChildContext, guest_command: &Path) -> Result<()> {
-    #[cfg(all(feature = "libkrun", target_os = "linux"))]
+    #[cfg(feature = "libkrun")]
     {
         log::debug!("Trying VMM backend: libkrun");
         match crate::libkrun::run_command_in_krun(
@@ -689,7 +689,7 @@ fn try_krun_backend(context: &UnifiedChildContext, guest_command: &Path) -> Resu
             }
         }
     }
-    #[cfg(not(all(feature = "libkrun", target_os = "linux")))]
+    #[cfg(not(feature = "libkrun"))]
     {
         let _ = (context, guest_command);
         log::debug!("VMM backend 'libkrun' requested but libkrun feature is disabled; skipping");

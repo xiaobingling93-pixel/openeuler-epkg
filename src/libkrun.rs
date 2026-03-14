@@ -1,5 +1,6 @@
 use std::ffi::CString;
-use std::os::unix::io::AsRawFd;
+use std::io::{Read, Write};
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 use std::path::Path;
 use std::ptr;
 use std::thread;
@@ -9,14 +10,12 @@ use color_eyre::Result;
 
 use crate::lfs;
 use crate::run::RunOptions;
-use crate::qemu;
-use crate::vm_client;
 
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 extern crate krun as krun_crate;
 
 // FFI for statically linked libkrun (C API from libkrun crate built as staticlib).
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 #[allow(dead_code)]
 unsafe extern "C" {
     fn krun_create_ctx() -> i32;
@@ -73,13 +72,13 @@ unsafe extern "C" {
 
 
 // Force the staticlib to be linked when we only reference it via extern "C".
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 fn ensure_libkrun_linked() {
     krun_crate::ensure_linked();
 }
 
 /// Check if kernel is ELF format by reading magic bytes.
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 fn is_elf_kernel(kernel_path: &str) -> Result<bool> {
     use std::fs::File;
     use std::io::Read;
@@ -96,7 +95,7 @@ fn is_elf_kernel(kernel_path: &str) -> Result<bool> {
 
 /// Detect kernel format for libkrun's krun_set_kernel().
 /// Returns: 1=ELF (vmlinux), error for non-ELF
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 #[allow(dead_code)]
 fn detect_kernel_format_for_libkrun(kernel_path: &str) -> Result<u32> {
     if is_elf_kernel(kernel_path)? {
@@ -106,7 +105,7 @@ fn detect_kernel_format_for_libkrun(kernel_path: &str) -> Result<u32> {
     }
 }
 
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 fn check_status(op: &str, status: i32) -> Result<()> {
     if status < 0 {
         Err(eyre::eyre!("{} failed with status {}", op, status))
@@ -115,7 +114,7 @@ fn check_status(op: &str, status: i32) -> Result<()> {
     }
 }
 
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 struct LibkrunConfig {
     use_vsock: bool,
     cmd_parts: Vec<String>,
@@ -124,7 +123,7 @@ struct LibkrunConfig {
     kernel_format: Option<u32>,
 }
 
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 fn build_libkrun_config(
     env_root: &Path,
     run_options: &RunOptions,
@@ -147,7 +146,7 @@ fn build_libkrun_config(
         })
         .unwrap_or_else(|_| guest_cmd_path.to_string_lossy().to_string());
 
-    let (cmd_parts, init_cmd) = qemu::build_guest_command(Path::new(&guest_exec_path), &run_options.args)
+    let (cmd_parts, init_cmd) = build_guest_command(Path::new(&guest_exec_path), &run_options.args)
         .map_err(|e| eyre::eyre!("Failed to build guest command: {}", e))?;
 
     let base_cmdline = "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 earlyprintk=hvc0 \
@@ -165,13 +164,13 @@ fn build_libkrun_config(
 
     if let Ok(rust_log) = std::env::var("RUST_LOG") {
         if !rust_log.is_empty() {
-            kernel_args.push_str(&format!(" epkg.rust_log={}", qemu::percent_encode(&rust_log)));
+            kernel_args.push_str(&format!(" epkg.rust_log={}", percent_encode(&rust_log)));
         }
     }
 
     if let Ok(pwd) = std::env::var("PWD") {
         if !pwd.is_empty() && pwd != "/" {
-            kernel_args.push_str(&format!(" epkg.init_pwd={}", qemu::percent_encode(&pwd)));
+            kernel_args.push_str(&format!(" epkg.init_pwd={}", percent_encode(&pwd)));
         }
     }
 
@@ -202,14 +201,14 @@ fn build_libkrun_config(
     })
 }
 
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 struct VmContext {
     ctx: KrunContext,
     shutdown_fd: i32,
     vsock_sock_path: Option<std::path::PathBuf>,
 }
 
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 fn create_and_configure_vm(
     env_root: &Path,
     run_options: &RunOptions,
@@ -306,7 +305,7 @@ fn create_and_configure_vm(
     Ok(VmContext { ctx, shutdown_fd, vsock_sock_path: None })
 }
 
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 fn setup_vsock_ready_listener() -> Result<Option<std::os::unix::net::UnixListener>> {
     let vmm_logs_dir = crate::models::dirs().epkg_cache.join("vmm-logs");
     if let Ok(entries) = std::fs::read_dir(&vmm_logs_dir) {
@@ -338,7 +337,7 @@ fn setup_vsock_ready_listener() -> Result<Option<std::os::unix::net::UnixListene
     Ok(Some(listener))
 }
 
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 fn start_libkrun_vm(ctx: KrunContext) -> std::thread::JoinHandle<i32> {
     thread::spawn(move || {
         unsafe {
@@ -354,15 +353,15 @@ fn start_libkrun_vm(ctx: KrunContext) -> std::thread::JoinHandle<i32> {
 }
 
 /// Thin wrapper that owns a libkrun context.
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 struct KrunContext {
     ctx_id: u32,
 }
 
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 unsafe impl Send for KrunContext {}
 
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 impl KrunContext {
 
     /// Create a new libkrun context.
@@ -474,7 +473,7 @@ impl KrunContext {
     }
 }
 
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 impl Drop for KrunContext {
     fn drop(&mut self) {
         unsafe {
@@ -489,7 +488,7 @@ impl Drop for KrunContext {
 /// guest's exit code, similar to the QEMU backend.
 ///
 /// The kernel is provided by sandbox-kernel as an ELF vmlinux file.
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 pub fn run_command_in_krun(
     env_root: &Path,
     run_options: &RunOptions,
@@ -539,13 +538,12 @@ pub fn run_command_in_krun(
             }
         }
 
-        let exit_code = vm_client::send_command_via_vsock(
+        let exit_code = send_command_via_unix_socket(
             &config.cmd_parts,
             run_options.use_pty,
-            10000,
-            vm_ctx.vsock_sock_path.as_deref(),
+            vm_ctx.vsock_sock_path.as_deref().unwrap(),
         )
-        .map_err(|e| eyre::eyre!("Failed to send command via vsock: {}", e))?;
+        .map_err(|e| eyre::eyre!("Failed to send command via Unix socket: {}", e))?;
         log::debug!("libkrun: vsock command completed with exit code {}", exit_code);
 
         log::debug!("libkrun: triggering VM shutdown via eventfd...");
@@ -645,5 +643,279 @@ fn setup_console_output(ctx_id: u32) -> Result<()> {
     }
 
     Ok(())
+}
+
+// ============================================================================
+// Cross-platform helper functions (shared with qemu.rs)
+// ============================================================================
+
+/// Build guest command string and percent-encode it for kernel command line.
+/// Returns (cmd_parts for vsock, init_cmd for kernel cmdline).
+fn build_guest_command(cmd_path: &Path, args: &[String]) -> Result<(Vec<String>, String)> {
+    let mut cmd_parts: Vec<String> = Vec::new();
+    cmd_parts.push(cmd_path.to_string_lossy().to_string());
+    cmd_parts.extend(args.iter().cloned());
+    // Use shlex-style quoting to survive kernel cmdline parsing
+    let raw_cmd = shlex::try_join(cmd_parts.iter().map(|s| s.as_str()))
+        .map_err(|e| eyre::eyre!("Failed to join command parts: {}", e))?;
+    let init_cmd = percent_encode(&raw_cmd);
+    Ok((cmd_parts, init_cmd))
+}
+
+/// Percent-encode special characters for kernel command line.
+/// Spaces -> %20, = -> %3D, " -> %22, ' -> %27, \ -> %5C, % -> %25
+/// Keeps slashes and most other characters readable.
+fn percent_encode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            ' ' => result.push_str("%20"),
+            '=' => result.push_str("%3D"),
+            '"' => result.push_str("%22"),
+            '\'' => result.push_str("%27"),
+            '\\' => result.push_str("%5C"),
+            '%' => result.push_str("%25"),
+            c => result.push(c),
+        }
+    }
+    result
+}
+
+// ============================================================================
+// Unix socket vsock emulation (for libkrun on macOS/Linux)
+// ============================================================================
+
+use std::io::BufRead;
+use std::time::Duration;
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
+use console::Term;
+use lazy_static::lazy_static;
+use nix::sys::signal::{signal, Signal, SigHandler};
+use nix::sys::termios;
+use serde::{Deserialize, Serialize};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
+
+lazy_static! {
+    static ref RESIZE_PENDING: AtomicBool = AtomicBool::new(false);
+}
+
+extern "C" fn handle_sigwinch(_: i32) {
+    RESIZE_PENDING.store(true, Ordering::SeqCst);
+}
+
+/// Streaming message types for interactive/TUI modes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum StreamMessage {
+    #[serde(rename = "stdin")]
+    Stdin { data: String, seq: u64 },
+    #[serde(rename = "stdout")]
+    Stdout { data: String, seq: u64 },
+    #[serde(rename = "stderr")]
+    Stderr { data: String, seq: u64 },
+    #[serde(rename = "resize")]
+    Resize { cols: u16, rows: u16 },
+    #[serde(rename = "exit")]
+    Exit { code: i32 },
+    #[serde(rename = "signal")]
+    Signal { sig: i32 },
+    #[serde(rename = "error")]
+    Error { message: String },
+}
+
+/// Build command request for vm-daemon.
+fn build_command_request(cmd_parts: &[String], use_pty: bool) -> serde_json::Value {
+    serde_json::json!({
+        "type": "command",
+        "command": cmd_parts,
+        "pty": use_pty,
+    })
+}
+
+/// Connect to Unix socket with retry logic (for libkrun vsock emulation).
+fn connect_unix_socket_with_retry(sock_path: &Path, max_retries: u32) -> Result<std::net::TcpStream> {
+    let mut retry_count = 0;
+    let mut last_error = None;
+    while retry_count < max_retries {
+        match std::os::unix::net::UnixStream::connect(sock_path) {
+            Ok(unix_stream) => {
+                let raw_fd = unix_stream.into_raw_fd();
+                // SAFETY: raw_fd is a valid, connected Unix stream socket
+                let stream = unsafe { std::net::TcpStream::from_raw_fd(raw_fd) };
+                return Ok(stream);
+            }
+            Err(e) => {
+                last_error = Some(e);
+                retry_count += 1;
+                if retry_count >= max_retries {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+    Err(eyre::eyre!(
+        "Failed to connect to Unix socket {} after {} retries: {}",
+        sock_path.display(),
+        max_retries,
+        last_error.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "connection failed"))
+    ))
+}
+
+/// Resolve use_pty option, auto-detecting if None.
+fn resolve_use_pty(use_pty: Option<bool>) -> bool {
+    use std::io::IsTerminal;
+    use_pty.unwrap_or_else(|| std::io::stdin().is_terminal())
+}
+
+/// Send command via Unix socket (libkrun vsock emulation).
+fn send_command_via_unix_socket(
+    cmd_parts: &[String],
+    use_pty: Option<bool>,
+    sock_path: &Path,
+) -> Result<i32> {
+    let should_use_pty = resolve_use_pty(use_pty);
+    log::debug!("libkrun: use_pty={:?}, should_use_pty={}", use_pty, should_use_pty);
+
+    let mut stream = connect_unix_socket_with_retry(sock_path, 30)?;
+    log::debug!("libkrun: Unix socket connected, sending command {:?}", cmd_parts);
+
+    let request = build_command_request(cmd_parts, should_use_pty);
+    let request_json = serde_json::to_vec(&request)?;
+    stream.write_all(&request_json)?;
+    stream.write_all(b"\n")?;
+    log::debug!("libkrun: request sent ({} bytes)", request_json.len());
+
+    handle_streaming(&mut stream, should_use_pty)
+}
+
+/// Handle streaming I/O for PTY mode.
+fn handle_streaming(stream: &mut std::net::TcpStream, use_pty: bool) -> Result<i32> {
+    if !use_pty {
+        // Simple mode: just read response
+        let mut response = String::new();
+        stream.read_to_string(&mut response)?;
+        let msg: StreamMessage = serde_json::from_str(&response)
+            .unwrap_or_else(|_| StreamMessage::Exit { code: 0 });
+        match msg {
+            StreamMessage::Exit { code } => return Ok(code),
+            StreamMessage::Error { message } => return Err(eyre::eyre!("VM error: {}", message)),
+            _ => return Ok(0),
+        }
+    }
+
+    // PTY mode: streaming I/O
+    let term = Term::stdout();
+    let original_mode = termios::tcgetattr(std::io::stdin())
+        .ok();
+
+    // Set raw mode
+    if let Some(ref orig) = original_mode {
+        let mut raw = orig.clone();
+        termios::cfmakeraw(&mut raw);
+        let _ = termios::tcsetattr(std::io::stdin(), termios::SetArg::TCSANOW, &raw);
+    }
+
+    // Setup signal handlers
+    unsafe {
+        let _ = signal(Signal::SIGWINCH, SigHandler::Handler(handle_sigwinch));
+        let _ = signal(Signal::SIGINT, SigHandler::SigIgn);
+        let _ = signal(Signal::SIGTERM, SigHandler::SigIgn);
+    }
+
+    let stdin_fd = std::io::stdin().as_raw_fd();
+    let stream_clone = stream.try_clone()?;
+    let exit_code = Arc::new(Mutex::new(None));
+    let exit_code_clone = exit_code.clone();
+
+    // Reader thread
+    let reader = thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(&stream_clone);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if let Ok(msg) = serde_json::from_str::<StreamMessage>(&line) {
+                        match msg {
+                            StreamMessage::Stdout { data, .. } => {
+                                if let Ok(decoded) = STANDARD.decode(&data) {
+                                    let _ = std::io::stdout().write_all(&decoded);
+                                    let _ = std::io::stdout().flush();
+                                }
+                            }
+                            StreamMessage::Stderr { data, .. } => {
+                                if let Ok(decoded) = STANDARD.decode(&data) {
+                                    let _ = std::io::stderr().write_all(&decoded);
+                                    let _ = std::io::stderr().flush();
+                                }
+                            }
+                            StreamMessage::Exit { code } => {
+                                *exit_code_clone.lock().unwrap() = Some(code);
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    // Main loop: read stdin and forward to VM
+    let mut seq: u64 = 0;
+    let mut buf = [0u8; 4096];
+    loop {
+        // Check for exit
+        if exit_code.lock().unwrap().is_some() {
+            break;
+        }
+
+        // Check for resize
+        if RESIZE_PENDING.swap(false, Ordering::SeqCst) {
+            let (cols, rows) = term.size();
+            let resize_msg = StreamMessage::Resize { cols, rows };
+            if let Ok(json) = serde_json::to_string(&resize_msg) {
+                let _ = stream.write_all(json.as_bytes());
+                let _ = stream.write_all(b"\n");
+            }
+        }
+
+        // Read stdin with timeout
+        let mut pfd = [libc::pollfd {
+            fd: stdin_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        let ready = unsafe { libc::poll(pfd.as_mut_ptr(), 1, 50) };
+        if ready > 0 && (pfd[0].revents & libc::POLLIN) != 0 {
+            match std::io::stdin().read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let data = STANDARD.encode(&buf[..n]);
+                    let msg = StreamMessage::Stdin { data, seq };
+                    seq += 1;
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = stream.write_all(json.as_bytes());
+                        let _ = stream.write_all(b"\n");
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    reader.join().ok();
+
+    // Restore terminal
+    if let Some(orig) = original_mode {
+        let _ = termios::tcsetattr(std::io::stdin(), termios::SetArg::TCSANOW, &orig);
+    }
+
+    let code = exit_code.lock().unwrap().unwrap_or(0);
+    Ok(code)
 }
 
