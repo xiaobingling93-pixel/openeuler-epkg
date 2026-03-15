@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::fs;
 use crate::lfs;
-use std::io::{self, Read};
+use std::io::Read;
+#[cfg(unix)]
+use std::io::{self};
 use std::path::Path;
 #[cfg(unix)] use std::os::unix::fs::{PermissionsExt, FileTypeExt, MetadataExt};
 #[cfg(unix)] use tar::Archive;

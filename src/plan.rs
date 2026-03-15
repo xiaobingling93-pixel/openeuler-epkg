@@ -95,7 +95,9 @@ pub enum OperationType {
 pub struct FilesystemInfo {
     pub path: PathBuf,      // Path used to query filesystem info
     pub fsid: u64,          // Filesystem ID from statvfs.f_fsid (0 if statvfs failed)
+    #[cfg(unix)]
     pub free_space: u64,    // Free space in bytes
+    #[cfg(unix)]
     pub free_inodes: u64,   // Free inodes (u64::MAX if unlimited)
 }
 

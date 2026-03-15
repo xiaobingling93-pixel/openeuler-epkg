@@ -3,9 +3,12 @@ use serde_json::{self, Value};
 use serde_yaml;
 use log;
 use std::fs;
+#[cfg(unix)]
 use std::env;
 use std::path::{Path, PathBuf};
-use std::collections::{HashMap, BTreeMap};
+use std::collections::HashMap;
+#[cfg(unix)]
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use color_eyre::eyre::{self, Result, WrapErr};
 use crate::dirs::*;
@@ -56,6 +59,7 @@ fn installed_packages_from_value(value: Value) -> Result<HashMap<String, Install
 }
 
 /// Convert installed packages map to sorted array of entries
+#[cfg(unix)]
 fn installed_packages_to_array(installed: &InstalledPackagesMap) -> Vec<InstalledPackageEntry> {
     let mut entries: Vec<InstalledPackageEntry> = installed.iter()
         .map(|(pkgkey, info)| InstalledPackageEntry {
@@ -537,6 +541,7 @@ fn map_to_conda_repofile(repo_name: &str) -> String {
 }
 
 /// Save environment configuration to file
+#[cfg(unix)]
 pub fn serialize_env_config(env_config: EnvConfig) -> Result<()> {
     let config_path = get_env_config_path(&env_config.name);
 
@@ -602,6 +607,7 @@ pub fn load_installed_packages() -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 pub fn save_installed_packages(new_generation: &PathBuf) -> Result<()> {
     // Construct the file path
     let file_path = new_generation.join("installed-packages.json");
@@ -624,6 +630,7 @@ pub fn save_installed_packages(new_generation: &PathBuf) -> Result<()> {
 }
 
 /// Get the path to the pending-packages.json file for the current environment
+#[cfg(unix)]
 fn get_pending_packages_path() -> Result<PathBuf> {
     let env_root = crate::dirs::get_env_root(config().common.env_name.clone())?;
     Ok(env_root.join("pending-packages.json"))
@@ -632,6 +639,7 @@ fn get_pending_packages_path() -> Result<PathBuf> {
 /// Save pending packages (packages being installed in the current transaction)
 /// This allows dpkg-query to see packages that are being installed but not yet saved
 /// to installed-packages.json
+#[cfg(unix)]
 pub fn save_pending_packages(packages: &InstalledPackagesMap) -> Result<()> {
     if packages.is_empty() {
         return Ok(());
@@ -657,6 +665,7 @@ pub fn load_pending_packages() -> Result<HashMap<String, InstalledPackageInfo>> 
 }
 
 /// Remove the pending-packages.json file after installation completes
+#[cfg(unix)]
 pub fn remove_pending_packages() -> Result<()> {
     let file_path = get_pending_packages_path()?;
     if lfs::exists_on_host(&file_path) {
@@ -718,6 +727,7 @@ pub fn load_world() -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 pub fn save_world(new_generation: &PathBuf) -> Result<()> {
     // Construct the file path
     let file_path = new_generation.join("world.json");
@@ -740,6 +750,7 @@ pub fn save_world(new_generation: &PathBuf) -> Result<()> {
 }
 
 /// Edit environment configuration file
+#[cfg(unix)]
 pub fn edit_environment_config() -> Result<()> {
     let env_config = crate::models::env_config();
     let config_path = get_env_config_path(&env_config.name);

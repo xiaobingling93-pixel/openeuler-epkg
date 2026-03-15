@@ -30,6 +30,7 @@ use color_eyre::eyre::WrapErr;
 
 pub const SUPPORT_ARCH_LIST: &[&str] = &["aarch64", "x86_64", "riscv64", "loongarch64"];
 pub const PURE_ENV_SUFFIX: char = '!';
+#[cfg(unix)]
 pub const DEFAULT_CHANNEL: &str = &"debian";
 pub const DEFAULT_COMMIT:  &str = &env!("EPKG_VERSION_TAG"); // epkg self install will download this commit from gitee
 
@@ -549,12 +550,14 @@ pub struct EnvConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[cfg(unix)]
 pub struct ExportFile {
     pub path: String, // path in env, no leading '/'
     pub data: String, // file contents
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[cfg(unix)]
 pub struct EnvExport {
     #[serde(default)]
     pub env: EnvConfig,
