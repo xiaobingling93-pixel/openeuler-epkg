@@ -25,6 +25,7 @@ use crate::shebang::{is_valid_shebang_length, convert_shebang_to_env};
 use crate::plan::InstallationPlan;
 use crate::models::LinkType;
 use crate::link::{link_package_generic, mirror_file};
+#[cfg(unix)]
 use crate::utils;
 use crate::lfs;
 use log;
@@ -659,6 +660,7 @@ fn copy_replace_cstring_placeholder(
 /// - Has a shebang pointing to the environment's Python interpreter
 /// - Imports and calls `pip._internal.cli.main.main()`
 /// - Is executable and can be run directly from the command line
+#[cfg(unix)]
 fn create_unix_python_entry_point(
     target_dir: &Path,
     target_prefix: &str,

@@ -239,9 +239,9 @@ pub fn resolve_vm_kernel_path(run_options: &RunOptions) -> Result<String> {
     Ok(kernel)
 }
 
-/// Parse VMM configuration (kernel via run::resolve_vm_kernel_path; initrd from run_options or env, etc.).
+/// Parse VMM configuration (kernel via resolve_vm_kernel_path; initrd from run_options or env, etc.).
 fn parse_vmm_config(run_options: &RunOptions) -> Result<(String, Option<String>, String, Option<String>, String)> {
-    let kernel = crate::run::resolve_vm_kernel_path(run_options)?;
+    let kernel = resolve_vm_kernel_path(run_options)?;
     // Prefer --initrd CLI option, then EPKG_VM_INITRD env var
     let initrd = run_options.initrd.clone().or_else(|| std::env::var("EPKG_VM_INITRD").ok());
     let qemu_bin = match std::env::var("EPKG_VM_QEMU") {

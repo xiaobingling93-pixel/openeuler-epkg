@@ -135,6 +135,7 @@ pub(crate) fn create_pid_file(final_path: &Path) -> Result<PathBuf> {
 }
 
 /// Check if a process is likely an epkg download process
+#[cfg(unix)]
 fn is_epkg_process(pid: u32) -> bool {
     // First try to get executable path (symlink target) - handles symlinked binaries like 'wget' -> 'epkg'
     if let Some(exe) = utils::get_process_exe(pid) {

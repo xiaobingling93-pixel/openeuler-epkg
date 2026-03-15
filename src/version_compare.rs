@@ -21,6 +21,7 @@ use crate::parse_version::PackageVersion;
 
 impl PackageVersion {
     /// Compare two package versions according to Debian/RPM rules
+    #[allow(dead_code)]
     pub fn compare(&self, other: &PackageVersion) -> Ordering {
         self.compare_with_format(other, None)
     }
@@ -442,6 +443,7 @@ impl PackageVersion {
     }
 }
 
+#[allow(dead_code)]
 pub fn is_version_newer(new_version: &str, current_version: &str) -> bool {
     match (PackageVersion::parse(new_version), PackageVersion::parse(current_version)) {
         (Ok(new_ver), Ok(current_ver)) => {

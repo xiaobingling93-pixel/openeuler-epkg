@@ -116,6 +116,7 @@ pub struct InstallationPlan {
 
     pub store_root_fs:      FilesystemInfo,
     pub env_root_fs:        FilesystemInfo,
+    #[allow(dead_code)]
     pub download_cache_fs:  FilesystemInfo,
 
     pub store_pkglines_by_pkgname: std::collections::HashMap<String, Vec<String>>,
@@ -132,9 +133,13 @@ pub struct InstallationPlan {
     pub installed:      HashSet<String>,
 
     // Cache fields for ordered_operations (pkgkey sets)
+    #[allow(dead_code)]
     pub fresh_installs: HashSet<String>,
+    #[allow(dead_code)]
     pub old_removes:    HashSet<String>,
+    #[allow(dead_code)]
     pub upgrades_new:   HashSet<String>,
+    #[allow(dead_code)]
     pub upgrades_old:   HashSet<String>,
     pub upgrade_map_old_to_new: HashMap<String, String>,
 
@@ -178,11 +183,16 @@ pub struct InstallationPlan {
 #[derive(Debug, Clone)]
 pub struct InstallBatch {
     pub new_pkgkeys:    HashSet<String>,
+    #[allow(dead_code)]
     pub fresh_installs: HashSet<String>,
+    #[allow(dead_code)]
     pub upgrades_new:   HashSet<String>,
+    #[allow(dead_code)]
     pub upgrades_old:   HashSet<String>,
+    #[allow(dead_code)]
     pub old_removes:    HashSet<String>,
     pub is_first:       bool,
+    #[allow(dead_code)]
     pub new_files:      HashSet<PathBuf>,
 }
 
@@ -265,6 +275,7 @@ pub fn pkgkey2installed_pkg_info(pkgkey: &str) -> Option<Arc<InstalledPackageInf
 /// Get InstalledPackageInfo for a package key (fallback lookup)
 /// First looks up in plan.new_pkgs, then falls back to PACKAGE_CACHE.installed_packages
 /// Use this only when you don't know which source the package comes from
+#[cfg(unix)]
 pub fn pkgkey2installinfo(plan: &InstallationPlan, pkgkey: &str) -> Option<Arc<InstalledPackageInfo>> {
     // First try plan.new_pkgs (new packages being installed)
     if let Some(info) = plan.new_pkgs.get(pkgkey) {
@@ -276,6 +287,7 @@ pub fn pkgkey2installinfo(plan: &InstallationPlan, pkgkey: &str) -> Option<Arc<I
 
 /// Get pkgline for a package key
 /// Uses pkgkey2installinfo() to find the package info
+#[cfg(unix)]
 pub fn pkgkey2pkgline(plan: &InstallationPlan, pkgkey: &str) -> String {
     pkgkey2installinfo(plan, pkgkey)
         .map(|info| info.pkgline.clone())
@@ -937,6 +949,7 @@ pub fn build_all_pkgs_from_operations(plan: &mut InstallationPlan) {
 /// # Arguments
 /// * `pkgkey` - Package key to remove
 /// * `pkg_info` - Package info containing the depends list
+#[cfg(unix)]
 pub fn remove_package_from_cache(pkgkey: &str, pkg_info: &InstalledPackageInfo) {
     PACKAGE_CACHE.installed_packages.write().unwrap().remove(pkgkey);
     PACKAGE_CACHE.pkgline2installed.write().unwrap().remove(&pkg_info.pkgline);

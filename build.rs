@@ -49,6 +49,7 @@ const UNIX_ONLY: &[&str] = &[
     "logname",
     "ls",
     "mkdir",
+    "mkfifo",
     "mktemp",
     "mv",
     "nice",

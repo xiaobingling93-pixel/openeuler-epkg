@@ -30,6 +30,7 @@ use crate::utils;
 /// AUR base URL for package downloads
 pub const AUR_BASE_URL: &str = "https://aur.archlinux.org/cgit/aur.git/snapshot/";
 /// AUR domain for git operations
+#[cfg(unix)]
 pub const AUR_DOMAIN: &str = "aur.archlinux.org";
 
 /// Handles AUR package downloads using git clone/fetch
