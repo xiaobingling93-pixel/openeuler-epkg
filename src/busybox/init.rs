@@ -271,7 +271,7 @@ fn setup_mounts() -> Result<()> {
     crate::mount::mount_spec_strings(
         &init_specs,
         Path::new("/"),
-        crate::models::SandboxMode::Vm,
+        crate::models::IsolateMode::Vm,
     ).wrap_err_with(|| format!("init: mount_spec_strings failed (specs: {:?})", init_specs))?;
 
     if Path::new("/dev").exists() && Path::new("/dev/null").exists() {

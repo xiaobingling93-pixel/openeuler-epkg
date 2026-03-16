@@ -15,7 +15,7 @@ use std::panic::Location;
 
 use crate::dirs;
 use crate::mount::*;
-use crate::models::{SandboxMode, ProcessCreationConfig, UnifiedChildContext, NamespaceStrategy};
+use crate::models::{IsolateMode, ProcessCreationConfig, UnifiedChildContext, NamespaceStrategy};
 use crate::run::RunOptions;
 use crate::idmap::{IdMapSync, execute_idmap_for_parent, check_user_namespace_support, wait_for_idmap_sync};
 
@@ -260,9 +260,9 @@ fn needs_uid_mapping(namespace_flags: CloneFlags) -> bool {
 
 /// Determine unified process creation configuration from run options.
 pub fn determine_process_config(env_root: &Path, run_options: &RunOptions) -> ProcessCreationConfig {
-    use crate::models::{SandboxMode, NamespaceStrategy, ProcessCreationConfig};
+    use crate::models::{IsolateMode, NamespaceStrategy, ProcessCreationConfig};
 
-    let sandbox_mode = run_options.effective_sandbox.sandbox_mode.unwrap_or(SandboxMode::Env);
+    let isolate_mode = run_options.effective_sandbox.isolate_mode.unwrap_or(IsolateMode::Env);
     let namespace_strategy = if run_options.skip_namespace_isolation {
         NamespaceStrategy::Unshare
     } else {
@@ -273,8 +273,8 @@ pub fn determine_process_config(env_root: &Path, run_options: &RunOptions) -> Pr
         // No namespaces when isolation is skipped
         CloneFlags::empty()
     } else {
-        match (sandbox_mode, namespace_strategy) {
-            (SandboxMode::Fs, NamespaceStrategy::Clone) => {
+        match (isolate_mode, namespace_strategy) {
+            (IsolateMode::Fs, NamespaceStrategy::Clone) => {
                 // Fs mode uses clone with all namespaces at once
                 full_namespace_flags()
             }
@@ -296,10 +296,10 @@ pub fn determine_process_config(env_root: &Path, run_options: &RunOptions) -> Pr
 
     if !run_options.skip_namespace_isolation {
         // Add sandbox-mode specific mount specifications (skip when no isolation)
-        match sandbox_mode {
-            SandboxMode::Env => mount_spec_strings.extend(env_mount_spec_strings(env_root, run_options)),
-            SandboxMode::Fs => mount_spec_strings.extend(fs_mount_spec_strings()),
-            SandboxMode::Vm => mount_spec_strings.extend(vm_mount_spec_strings()),
+        match isolate_mode {
+            IsolateMode::Env => mount_spec_strings.extend(env_mount_spec_strings(env_root, run_options)),
+            IsolateMode::Fs => mount_spec_strings.extend(fs_mount_spec_strings()),
+            IsolateMode::Vm => mount_spec_strings.extend(vm_mount_spec_strings()),
         }
 
         // Add user-provided mount specifications
@@ -308,7 +308,7 @@ pub fn determine_process_config(env_root: &Path, run_options: &RunOptions) -> Pr
 
     ProcessCreationConfig {
         namespace_strategy,
-        sandbox_mode,
+        isolate_mode,
         namespace_flags,
         needs_uid_mapping,
         mount_spec_strings,
@@ -340,7 +340,7 @@ pub fn build_unified_context(
         command,
         args,
         stdin_read_fd,
-        sandbox_mode: config.sandbox_mode,
+        isolate_mode: config.isolate_mode,
         sync_read_fd: None, // will be set later if needed
         mount_specs,
         uid,
@@ -445,7 +445,7 @@ fn create_process_via_clone(
         if let Some(ref mut sync) = id_sync {
             // Update sync target to actual child PID
             sync.set_target_pid(child_pid);
-            let allow_setgroups = config.sandbox_mode == SandboxMode::Vm;
+            let allow_setgroups = config.isolate_mode == IsolateMode::Vm;
             sync.perform_mapping_and_signal(uid, gid, &user, allow_setgroups)?;
         }
 
@@ -471,7 +471,7 @@ fn create_process_via_unshare(
 
     let clone_flags = config.namespace_flags;
     if !clone_flags.is_empty() {
-        let allow_setgroups = config.sandbox_mode == SandboxMode::Vm;
+        let allow_setgroups = config.isolate_mode == IsolateMode::Vm;
         unshare_namespaces_with_idmap(clone_flags, context.uid, context.gid, &context.user, allow_setgroups)?;
     }
 
@@ -574,8 +574,8 @@ fn child_mount_and_exec(mut context: Box<UnifiedChildContext>) -> Result<()> {
     ensure_mount_propagation_private()?;
 
     // Mount all specifications
-    crate::mount::mount_batch_specs(&context.mount_specs, &context.env_root, context.sandbox_mode)?;
-    setup_sandbox_mode(&mut context)?;
+    crate::mount::mount_batch_specs(&context.mount_specs, &context.env_root, context.isolate_mode)?;
+    setup_isolate_mode(&mut context)?;
     prepare_and_execute_command(
         &context.command,
         &context.args,
@@ -584,11 +584,11 @@ fn child_mount_and_exec(mut context: Box<UnifiedChildContext>) -> Result<()> {
     )
 }
 
-fn setup_sandbox_mode(context: &mut UnifiedChildContext) -> Result<()> {
-    match context.sandbox_mode {
-        SandboxMode::Env => Ok(()),
-        SandboxMode::Fs => setup_fs_sandbox(context),
-        SandboxMode::Vm => setup_vm_sandbox(context),
+fn setup_isolate_mode(context: &mut UnifiedChildContext) -> Result<()> {
+    match context.isolate_mode {
+        IsolateMode::Env => Ok(()),
+        IsolateMode::Fs => setup_fs_sandbox(context),
+        IsolateMode::Vm => setup_vm_sandbox(context),
     }
 }
 

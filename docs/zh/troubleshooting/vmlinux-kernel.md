@@ -242,7 +242,7 @@ VM 启动时间从 ~0.3s 增加到 ~0.6s 或更长。
 
 ```bash
 # 使用 QEMU 模式（日志更完整）
-epkg run --sandbox=vm --vmm=qemu \
+epkg run --isolate=vm --vmm=qemu \
   --kernel=/c/epkg/git/sandbox-kernel/linux-stable/vmlinux \
   --kernel-args='initcall_debug=1 ignore_loglevel printk.time=1' \
   ls /
@@ -348,7 +348,7 @@ make olddefconfig
 make vmlinux
 
 # 测试启动时间
-time epkg run --sandbox=vm --vmm=qemu \
+time epkg run --isolate=vm --vmm=qemu \
   --kernel=/c/epkg/git/sandbox-kernel/linux-stable/vmlinux \
   ls /
 ```

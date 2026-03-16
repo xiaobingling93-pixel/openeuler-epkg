@@ -245,20 +245,20 @@ epkg restore 2        # Rollback to generation 2
 epkg restore -1       # Rollback one version
 ```
 
-### 4.5 Sandbox Modes
+### 4.5 Isolate Modes
 
 ```bash
 # Default: namespace isolation (env mode)
 epkg -e myenv run bash
 
 # Filesystem isolation (pivot_root)
-epkg -e myenv run --sandbox=fs bash
+epkg -e myenv run --isolate=fs bash
 
 # Virtual machine isolation (most secure)
-epkg -e myenv run --sandbox=vm bash
+epkg -e myenv run --isolate=vm bash
 
 # Choose VMM backend
-epkg -e myenv run --sandbox=vm --vmm=libkrun,qemu bash
+epkg -e myenv run --isolate=vm --vmm=libkrun,qemu bash
 ```
 
 ---
@@ -332,8 +332,8 @@ epkg env path
 # Output: export PATH="/home/user/.epkg/envs/main/ebin:..."
 
 # Environment config
-epkg env config get sandbox.sandbox_mode
-epkg env config set sandbox.sandbox_mode fs
+epkg env config get sandbox.isolate_mode
+epkg env config set sandbox.isolate_mode fs
 ```
 
 ### 5.4 Running Commands
@@ -411,7 +411,7 @@ epkg busybox sha256sum file.txt
 
 ## 7. Advanced Features
 
-### 7.1 Sandbox Mode Comparison
+### 7.1 Isolate Mode Comparison
 
 | Mode | Isolation Level | Performance | Use Case |
 |------|----------------|-------------|----------|

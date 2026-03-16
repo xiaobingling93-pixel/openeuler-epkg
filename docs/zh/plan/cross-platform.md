@@ -50,7 +50,7 @@
 ### 1.3 macOS VM Sandbox 工作流程
 
 ```
-'epkg install -e linux-env --sandbox=vm PKGS'
+'epkg install -e linux-env --isolate=vm PKGS'
 
 [macOS epkg]                      [VM sandbox]
      │                                  │
@@ -58,7 +58,7 @@
      │    (native, 全程运行)            │
      │                                  │
      │ 2. fork_and_execute()            │
-     │    with Sandbox::Vm              │
+     │    with IsolateMode::Vm          │
      ├─────────────────────────────────>│
      │                                  │ 3. 执行 postinst
      │                                  │    scriptlet/hook
@@ -74,7 +74,7 @@
 **优化点**：
 - native resolve/download/file ops（高效）
 - VM sandbox 复用，服务后续 `fork_and_execute()` 调用
-- 无需新建通信协议，复用现有 `Sandbox::Vm` 机制
+- 无需新建通信协议，复用现有 `IsolateMode::Vm` 机制
 
 ---
 
@@ -113,10 +113,10 @@
 | 文件系统 | 大小写敏感 | 默认不敏感 | 注意路径处理 |
 | pivot_root | 支持 | 不支持 | 见下文 |
 
-**SandboxMode 限制**：
-- `SandboxMode::Fs`：需要 pivot_root，macOS 不支持，不实现
-- `SandboxMode::Vm`：使用 libkrun，macOS 支持
-- `SandboxMode::None`：Conda/Homebrew/msys2 使用
+**IsolateMode 限制**：
+- `IsolateMode::Fs`：需要 pivot_root，macOS 不支持，不实现
+- `IsolateMode::Vm`：使用 libkrun，macOS 支持
+- `IsolateMode::None`：Conda/Homebrew/msys2 使用
   - 对应 `run_options.skip_namespace_isolation` flag
   - 跳过 namespace 隔离，直接在主机环境执行
 
@@ -492,9 +492,9 @@ prefix/
    - macOS 原生 epkg: `~/.epkg/envs/self/usr/bin/epkg`
    - Linux ELF epkg: `~/.epkg/envs/self/usr/bin/epkg-linux`
 
-2. **复用现有 Sandbox::Vm 机制**
+2. **复用现有 IsolateMode::Vm 机制**
    - 无需新建通信协议
-   - `fork_and_execute()` 设置 `Sandbox::Vm` 选项
+   - `fork_and_execute()` 设置 `IsolateMode::Vm` 选项
    - VM sandbox 复用优化
 
 ---

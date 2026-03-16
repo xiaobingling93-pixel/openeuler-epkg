@@ -165,22 +165,22 @@ epkg --root /tmp/myproject/.eenv run jq --version
 可按命令选择沙箱模式：
 
 ```bash
-epkg -e mydebian run --sandbox=env  bash
-epkg -e mydebian run --sandbox=fs   python3 script.py
-epkg -e mydebian run --sandbox=vm   bash
+epkg -e mydebian run --isolate=env  bash
+epkg -e mydebian run --isolate=fs   python3 script.py
+epkg -e mydebian run --isolate=vm   bash
 ```
 
 也可在 `env_root/etc/epkg/env.yaml` 中为该环境设置**默认沙箱**：
 
 ```bash
 # 将此环境的默认沙箱设为 fs
-epkg -e mydebian env config set sandbox.sandbox_mode fs
+epkg -e mydebian env config set sandbox.isolate_mode fs
 
-# 之后，直接执行 `epkg -e mydebian run <cmd>` 将使用 fs，除非用 --sandbox 覆盖
+# 之后，直接执行 `epkg -e mydebian run <cmd>` 将使用 fs，除非用 --isolate 覆盖
 epkg -e mydebian run bash
 ```
 
-用户级默认值可在 `~/.epkg/config/options.yaml` 中设置（同样使用 `sandbox.sandbox_mode`）。命令行 `--sandbox` 会覆盖上述两者。
+用户级默认值可在 `~/.epkg/config/options.yaml` 中设置（同样使用 `sandbox.isolate_mode`）。命令行 `--isolate` 会覆盖上述两者。
 
 沙箱依赖宿主机上的用户命名空间及 `newuidmap`/`newgidmap`，可安装最小依赖集：
 
@@ -193,15 +193,15 @@ cd /c/epkg
 
 ### 选择 VMM 后端（`--vmm`）
 
-当使用 `--sandbox=vm` 时，epkg 可以按顺序尝试多个 VMM 后端。通过
+当使用 `--isolate=vm` 时，epkg 可以按顺序尝试多个 VMM 后端。通过
 `epkg run` 的 `--vmm` 选项传入逗号分隔的优先级列表：
 
 ```bash
 # 优先使用 libkrun，失败时回退到 QEMU
-epkg -e myenv run --sandbox=vm --vmm=libkrun,qemu bash
+epkg -e myenv run --isolate=vm --vmm=libkrun,qemu bash
 
 # 即使已编译 libkrun 支持，也强制只使用 QEMU
-epkg -e myenv run --sandbox=vm --vmm=qemu bash
+epkg -e myenv run --isolate=vm --vmm=qemu bash
 ```
 
 后端名称：

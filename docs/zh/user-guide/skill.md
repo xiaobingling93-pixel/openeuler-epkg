@@ -252,13 +252,13 @@ epkg restore -1       # 回滚一个版本
 epkg -e myenv run bash
 
 # 文件系统隔离 (pivot_root)
-epkg -e myenv run --sandbox=fs bash
+epkg -e myenv run --isolate=fs bash
 
 # 虚拟机隔离 (最安全)
-epkg -e myenv run --sandbox=vm bash
+epkg -e myenv run --isolate=vm bash
 
 # 选择 VMM 后端
-epkg -e myenv run --sandbox=vm --vmm=libkrun,qemu bash
+epkg -e myenv run --isolate=vm --vmm=libkrun,qemu bash
 ```
 
 ---
@@ -332,8 +332,8 @@ epkg env path
 # 输出: export PATH="/home/user/.epkg/envs/main/ebin:..."
 
 # 环境配置
-epkg env config get sandbox.sandbox_mode
-epkg env config set sandbox.sandbox_mode fs
+epkg env config get sandbox.isolate_mode
+epkg env config set sandbox.isolate_mode fs
 ```
 
 ### 5.4 运行命令

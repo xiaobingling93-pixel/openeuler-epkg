@@ -1024,9 +1024,9 @@ pub fn set_environment_config(name: &str, value: &str) -> Result<()> {
             config.env_vars.insert((*key).to_string(), value.to_string());
         }
 
-        // Sandbox options: sandbox.sandbox_mode
-        ["sandbox", "sandbox_mode"] => {
-            config.sandbox.sandbox_mode = Some(value.parse()?);
+        // Sandbox options: sandbox.isolate_mode
+        ["sandbox", "isolate_mode"] => {
+            config.sandbox.isolate_mode = Some(value.parse()?);
         }
 
         // Unknown or unsupported keys

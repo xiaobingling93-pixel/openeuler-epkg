@@ -364,7 +364,7 @@ fn start_virtiofsd_at(
         // Use file handles when permitted so guest caches by inode/handle (avoids ENFILE when available).
         // mandatory requires DAC_READ_SEARCH; "prefer" tries handles and falls back to fds if EPERM.
         .arg("--inode-file-handles=prefer")
-        .arg("--sandbox").arg("none")
+        .arg("--isolate").arg("none")
         // 0 = leave RLIMIT_NOFILE unchanged; avoids WARN when hard limit < 1000000
         .arg("--rlimit-nofile").arg("0");
 

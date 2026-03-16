@@ -13,7 +13,7 @@
 //! ## Connection Model
 //! - Single connection per VM lifetime: daemon accepts exactly one TCP connection
 //! - After processing the command, the daemon powers off the guest (graceful shutdown)
-//! - This matches the "one command per VM invocation" semantic of `epkg run --sandbox=vm`
+//! - This matches the "one command per VM invocation" semantic of `epkg run --isolate=vm`
 //! - Note: vm-daemon is forked from init.rs (PID 1), not running as PID 1 itself
 //!
 //! ## Message Format
@@ -75,9 +75,9 @@
 //! # Expected Behavior
 //! ## Debug Commands (for testing)
 //! ```bash
-//! epkg run --sandbox=vm [--tty] bash /
-//! timeout 10 epkg run --sandbox=vm [--tty|--no-tty] ls /
-//! file_list=$(timeout 10 epkg run --sandbox=vm [--no-tty] ls /)
+//! epkg run --isolate=vm [--tty] bash /
+//! timeout 10 epkg run --isolate=vm [--tty|--no-tty] ls /
+//! file_list=$(timeout 10 epkg run --isolate=vm [--no-tty] ls /)
 //! ```
 //!
 //! ## Success Criteria
@@ -99,7 +99,7 @@
 //! - Check network connectivity in VM: verify virtio_net module is loaded
 //! - On verifying a bug, always run epkg with timeout 10 to avoid being blocked.
 //!
-//! - With debug logs (RUST_LOG=debug epkg run --sandbox=vm --tty bash):
+//! - With debug logs (RUST_LOG=debug epkg run --isolate=vm --tty bash):
 //!   debug log lines will be misaligned because env_logger writes directly to stderr while
 //!   the terminal is raw (bypasses our translation). This is expected and harmless.
 //!

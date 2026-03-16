@@ -14,9 +14,9 @@
 //! - **Absolute Paths Only**: Mount specification paths must start with '/' (absolute host path) or '@' (env_root substitution). Relative paths are not allowed.
 //!
 //! The system supports three mount modes:
-//! - `SandboxMode::Env`: Overlay mounts for namespace sandbox (environment→host)
-//! - `SandboxMode::Fs`: pivot_root into environment root; proc, tmpfs, and dev mounts under it (env as root)
-//! - `SandboxMode::Vm`: Virtual machine mounts via virtiofs (host→guest environment)
+//! - `IsolateMode::Env`: Overlay mounts for namespace sandbox (environment→host)
+//! - `IsolateMode::Fs`: pivot_root into environment root; proc, tmpfs, and dev mounts under it (env as root)
+//! - `IsolateMode::Vm`: Virtual machine mounts via virtiofs (host→guest environment)
 //!
 //! See `models.rs` for `MountSpec` structure and `namespace.rs` for integration with
 //! sandbox modes.
@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 
 use crate::busybox::mount::parse_mount_options;
 use crate::dirs;
-use crate::models::{config, MountSpec, SandboxMode};
+use crate::models::{config, MountSpec, IsolateMode};
 use crate::run::RunOptions;
 use crate::utils;
 
@@ -108,7 +108,7 @@ fn strip_at_prefix(s: &str) -> &str {
     s.strip_prefix('@').unwrap_or(s)
 }
 
-/// Returns the pseudo-fs mount specification strings for SandboxMode::Fs
+/// Returns the pseudo-fs mount specification strings for IsolateMode::Fs
 pub(crate) fn pseudo_fs_mount_spec_strings() -> Vec<&'static str> {
     let mut specs = Vec::new();
     specs.extend_from_slice(MOUNT_SPECS_FS);
@@ -137,10 +137,10 @@ pub(crate) fn vmm_init_mount_spec_strings() -> Vec<&'static str> {
 pub(crate) fn mount_spec_strings(
     spec_strings: &[&str],
     env_root: &Path,
-    sandbox_mode: SandboxMode,
+    isolate_mode: IsolateMode,
 ) -> Result<()> {
     let mounts = parse_mount_specs(spec_strings);
-    mount_batch_specs(&mounts, env_root, sandbox_mode)
+    mount_batch_specs(&mounts, env_root, isolate_mode)
 }
 
 /// Create /dev/shm and standard I/O symlinks (shared by setup_sandbox_dev_tree and VMM init).
@@ -221,7 +221,7 @@ pub(crate) fn ensure_devpts_mount(dev_root: &Path) -> Result<()> {
     let _ = mount_spec_strings(
         &[MOUNT_SPEC_VMM_INIT_DEVPTS],
         dev_root,
-        SandboxMode::Vm,
+        IsolateMode::Vm,
     );
     Ok(())
 }
@@ -262,7 +262,7 @@ fn resolve_mount_paths(spec: &MountSpec, env_root: &Path) -> (PathBuf, PathBuf) 
 }
 
 /// Unified mount function for MountSpec
-pub(crate) fn mount_spec(spec: &MountSpec, env_root: &Path, sandbox_mode: SandboxMode) -> Result<()> {
+pub(crate) fn mount_spec(spec: &MountSpec, env_root: &Path, isolate_mode: IsolateMode) -> Result<()> {
     let (source, target) = resolve_mount_paths(spec, env_root);
 
     // Bind mount with source: check existence once and handle try vs required
@@ -287,9 +287,9 @@ pub(crate) fn mount_spec(spec: &MountSpec, env_root: &Path, sandbox_mode: Sandbo
 
     // Determine filesystem type: empty string indicates bind/remount operations
     let result = if spec.fs_type.is_empty() {
-        mount_bind_remount_propagation(spec, source, target, flags, options, sandbox_mode)
+        mount_bind_remount_propagation(spec, source, target, flags, options, isolate_mode)
     } else {
-        mount_filesystem_type(spec, target, flags, options, sandbox_mode)
+        mount_filesystem_type(spec, target, flags, options, isolate_mode)
     };
 
     match result {
@@ -332,12 +332,12 @@ fn bind_mount_source_exists(spec: &MountSpec, source: &PathBuf) -> Option<bool> 
 
 /// Ensure target path exists for a bind mount, creating a placeholder if needed.
 /// Only creates placeholders in Tmpfs/Vmm modes, plus self-bind case in Env mode (see below).
-fn ensure_bind_target_exists(source: &PathBuf, target: &Path, sandbox_mode: SandboxMode) -> Result<()> {
+fn ensure_bind_target_exists(source: &PathBuf, target: &Path, isolate_mode: IsolateMode) -> Result<()> {
     use std::fs;
 
     // If target already exists, nothing to do
     // For Fs/Vm modes, target is in env_root; for Env mode, we return early
-    if sandbox_mode == SandboxMode::Fs || sandbox_mode == SandboxMode::Vm {
+    if isolate_mode == IsolateMode::Fs || isolate_mode == IsolateMode::Vm {
         if lfs::exists_or_any_symlink(target) {
             return Ok(());
         }
@@ -362,9 +362,9 @@ fn ensure_bind_target_exists(source: &PathBuf, target: &Path, sandbox_mode: Sand
     }
 
     // Only create placeholders in sandbox environments (Fs/Vm); don't create in host root for Env
-    match sandbox_mode {
-        SandboxMode::Fs | SandboxMode::Vm => (),
-        SandboxMode::Env => return Ok(()), // Don't create files in host root
+    match isolate_mode {
+        IsolateMode::Fs | IsolateMode::Vm => (),
+        IsolateMode::Env => return Ok(()), // Don't create files in host root
     }
 
     // If source doesn't exist, cannot determine type (may be try_only mount)
@@ -405,11 +405,11 @@ fn ensure_bind_target_exists(source: &PathBuf, target: &Path, sandbox_mode: Sand
 
 /// Ensure target path exists for a filesystem mount, creating directory if needed.
 /// Only creates directories for Tmpfs and Vmm mount modes (sandbox environments).
-fn ensure_mount_target_exists(target: &Path, sandbox_mode: SandboxMode) -> Result<()> {
+fn ensure_mount_target_exists(target: &Path, isolate_mode: IsolateMode) -> Result<()> {
     // Only create directories in sandbox environments
-    match sandbox_mode {
-        SandboxMode::Fs | SandboxMode::Vm => (),
-        SandboxMode::Env => return Ok(()), // Don't create directories in host root
+    match isolate_mode {
+        IsolateMode::Fs | IsolateMode::Vm => (),
+        IsolateMode::Env => return Ok(()), // Don't create directories in host root
     }
 
     // If target already exists, nothing to do
@@ -438,7 +438,7 @@ fn mount_bind_remount_propagation(
     target: PathBuf,
     flags: MsFlags,
     options: Option<&str>,
-    sandbox_mode: SandboxMode,
+    isolate_mode: IsolateMode,
 ) -> Result<()> {
     let raw_flags = spec.flags;
     let propagation_mask = libc::MS_SHARED as i32 | libc::MS_SLAVE as i32 | libc::MS_PRIVATE as i32 | libc::MS_UNBINDABLE as i32;
@@ -450,7 +450,7 @@ fn mount_bind_remount_propagation(
         // Remount operation (may also have MS_BIND for bind mount remount)
         mount_remount_ro(&target, flags, options)
     } else if flags.contains(MsFlags::MS_BIND) {
-        ensure_bind_target_exists(&source, &target, sandbox_mode)?;
+        ensure_bind_target_exists(&source, &target, isolate_mode)?;
         if flags.contains(MsFlags::MS_RDONLY) {
             // Linux kernel ignores MS_RDONLY when passed with MS_BIND; the mount inherits
             // the read-write/read-only state from the source. To guarantee a read-only
@@ -476,7 +476,7 @@ fn mount_filesystem_type(
     target: PathBuf,
     flags: MsFlags,
     options: Option<&str>,
-    sandbox_mode: SandboxMode,
+    isolate_mode: IsolateMode,
 ) -> Result<()> {
     let fstype = spec.fs_type.as_str();
     let mut final_flags = flags;
@@ -490,7 +490,7 @@ fn mount_filesystem_type(
         }
         _ => {}
     }
-    ensure_mount_target_exists(&target, sandbox_mode)?;
+    ensure_mount_target_exists(&target, isolate_mode)?;
     mount_filesystem(fstype, &target, fstype, final_flags, options)
 }
 
@@ -846,12 +846,12 @@ pub(crate) fn pivot_to_sandbox(new_root_base: &Path, oldroot: &Path) -> Result<(
 }
 
 /// Batch mount flexible mounts from MountSpec vector
-pub(crate) fn mount_batch_specs(mount_specs: &[MountSpec], env_root: &Path, sandbox_mode: SandboxMode) -> Result<()> {
+pub(crate) fn mount_batch_specs(mount_specs: &[MountSpec], env_root: &Path, isolate_mode: IsolateMode) -> Result<()> {
     debug!("mount_batch_specs: starting batch of {} mount specs", mount_specs.len());
     for (i, spec) in mount_specs.iter().enumerate() {
         trace!("mount_batch_specs: [{}/{}] mounting spec: source={:?}, target={:?}, fs_type={:?}, flags={:?}, try_only={}",
                i+1, mount_specs.len(), spec.source, spec.target, spec.fs_type, spec.flags, spec.try_only);
-        mount_spec(spec, env_root, sandbox_mode)?;
+        mount_spec(spec, env_root, isolate_mode)?;
     }
     debug!("mount_batch_specs: completed successfully");
     Ok(())
@@ -863,14 +863,14 @@ pub(crate) fn collect_and_mount_specs(
     spec_strings: &[&str],
     env_root: &Path,
     run_options: &RunOptions,
-    sandbox_mode: SandboxMode,
+    isolate_mode: IsolateMode,
 ) -> Result<()> {
     let mut mounts = parse_mount_specs(spec_strings);
     for spec_str in &run_options.effective_sandbox.mount_specs {
         let spec = parse_mount_spec(spec_str)?;
         mounts.push(spec);
     }
-    mount_batch_specs(&mounts, env_root, sandbox_mode)
+    mount_batch_specs(&mounts, env_root, isolate_mode)
 }
 
 fn parse_mount_flag_from_kv(k: &str, v: &str) -> (u64, bool) {

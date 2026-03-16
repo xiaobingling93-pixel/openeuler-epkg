@@ -1,6 +1,6 @@
-# VMM sandbox mode (`--sandbox=vm`)
+# VMM sandbox mode (`--isolate=vm`)
 
-When you use `epkg run --sandbox=vm`, epkg runs the command inside a lightweight VM. The environment root is shared into the guest via **virtiofs**; the guest sees it as its root filesystem. This document describes the design, execution paths, dependencies, and configuration.
+When you use `epkg run --isolate=vm`, epkg runs the command inside a lightweight VM. The environment root is shared into the guest via **virtiofs**; the guest sees it as its root filesystem. This document describes the design, execution paths, dependencies, and configuration.
 
 ## Contents
 
@@ -53,7 +53,7 @@ flowchart LR
 ### Host side
 
 1. **Namespace (same effect as sandbox=fs mode)**: The VM path runs in a **child process** that is created with user/mount namespace setup similar to the **fs** sandbox mode. That is: epkg creates the namespaces (via clone or unshare), applies the same UID/GID mapping (using `newuidmap`/`newgidmap` when available, or a simple idmap), and applies the mode-specific mount specs. One difference for VM mode is that **setgroups** is allowed when writing `gid_map` (so that virtiofsd, which runs inside this same namespace, can operate correctly; see virtio-fs/virtiofsd#36). **virtiofsd is then started inside this same user/mount namespace** — i.e. it is spawned as a child after the namespace and uidmap are in place, so it sees the same view of the filesystem and the same UID/GID mapping as the the **fs** sandbox. QEMU is also started in this same namespace.
-2. **virtiofsd**: epkg spawns **virtiofsd** (inside the namespace described above) with `--shared-dir <env_root>`, `--socket-path <tmpdir>/vhostqemu.sock`, `--cache auto`, `--inode-file-handles=prefer`, `--sandbox none`. The daemon's stdout/stderr are redirected to a log file under the epkg cache.
+2. **virtiofsd**: epkg spawns **virtiofsd** (inside the namespace described above) with `--shared-dir <env_root>`, `--socket-path <tmpdir>/vhostqemu.sock`, `--cache auto`, `--inode-file-handles=prefer`, `--isolate none`. The daemon's stdout/stderr are redirected to a log file under the epkg cache.
 3. **QEMU**: epkg builds a QEMU command line that:
    - Uses `-kernel` (and optionally `-initrd`) from `EPKG_VM_KERNEL` / `EPKG_VM_INITRD`, or a kernel found under `/boot`.
    - Passes `-enable-kvm`, `-cpu host`, `-m` (memory from `EPKG_VM_MEMORY` or `--memory`, default 2048 MiB; libkrun auto round-up so kernel fits), `-smp`, `-no-reboot`, `-nographic`.
@@ -111,8 +111,8 @@ flowchart LR
 
 | Mode              | Command from host      | Guest init                | Guest runs           | Host gets exit code from   |
 |-------------------|------------------------|---------------------------|----------------------|----------------------------|
-| Control-channel   | `epkg run --sandbox=vm …` | No cmd in cmdline         | vm-daemon → command  | TCP/vsock `exit` message   |
-| Cmdline           | `EPKG_VM_NO_DAEMON=1 epkg run --sandbox=vm …` | `epkg.init_cmd=...` in cmdline | Command directly     | QEMU process exit code     |
+| Control-channel   | `epkg run --isolate=vm …` | No cmd in cmdline         | vm-daemon → command  | TCP/vsock `exit` message   |
+| Cmdline           | `EPKG_VM_NO_DAEMON=1 epkg run --isolate=vm …` | `epkg.init_cmd=...` in cmdline | Command directly     | QEMU process exit code     |
 
 Control-channel mode supports interactive use (PTY) and streaming output; cmdline mode avoids network setup in the guest and is simpler for single-shot commands when cmdline length is acceptable.
 
@@ -128,7 +128,7 @@ sequenceDiagram
   participant D as vm-daemon
   participant C as user command
 
-  U->>H: epkg run --sandbox=vm bash
+  U->>H: epkg run --isolate=vm bash
   H->>V: spawn (shared-dir=env_root)
   H->>Q: spawn (kernel, virtiofs, hostfwd 10000)
   Q->>I: boot, init=/bin/init
@@ -154,7 +154,7 @@ sequenceDiagram
   participant I as init (guest)
   participant C as user command
 
-  U->>H: EPKG_VM_NO_DAEMON=1 epkg run --sandbox=vm ls /
+  U->>H: EPKG_VM_NO_DAEMON=1 epkg run --isolate=vm ls /
   H->>V: spawn
   H->>Q: spawn (kernel + epkg.init_cmd=...)
   Q->>I: boot, init=/bin/init
@@ -172,16 +172,16 @@ sequenceDiagram
 
 | Goal | Command |
 |------|---------|
-| Interactive shell (PTY) | `epkg -e myenv run --sandbox=vm --tty bash` |
-| Run one command, see output | `epkg -e myenv run --sandbox=vm ls /` |
-| Capture output in a variable | `out=$(epkg -e myenv run --sandbox=vm --no-tty cat /etc/os-release)` |
-| Cmdline (no guest network) | `EPKG_VM_NO_DAEMON=1 epkg -e myenv run --sandbox=vm ls /` |
-| With timeout (avoid hang) | `timeout 30 epkg -e myenv run --sandbox=vm python3 script.py` |
-| Debug host and guest | `RUST_LOG=debug epkg -e myenv run --sandbox=vm --tty bash` |
+| Interactive shell (PTY) | `epkg -e myenv run --isolate=vm --tty bash` |
+| Run one command, see output | `epkg -e myenv run --isolate=vm ls /` |
+| Capture output in a variable | `out=$(epkg -e myenv run --isolate=vm --no-tty cat /etc/os-release)` |
+| Cmdline (no guest network) | `EPKG_VM_NO_DAEMON=1 epkg -e myenv run --isolate=vm ls /` |
+| With timeout (avoid hang) | `timeout 30 epkg -e myenv run --isolate=vm python3 script.py` |
+| Debug host and guest | `RUST_LOG=debug epkg -e myenv run --isolate=vm --tty bash` |
 
 ### Selecting the VMM backend (`--vmm`)
 
-When `--sandbox=vm` is used, epkg can try multiple VMM backends in order. The
+When `--isolate=vm` is used, epkg can try multiple VMM backends in order. The
 `--vmm` option takes a comma-separated list of backend names:
 
 - `libkrun` — libkrun-based microVM backend (available when epkg is built with the
@@ -192,10 +192,10 @@ Examples:
 
 ```bash
 # Prefer libkrun, fall back to QEMU if libkrun is unavailable or fails
-epkg -e myenv run --sandbox=vm --vmm=libkrun,qemu bash
+epkg -e myenv run --isolate=vm --vmm=libkrun,qemu bash
 
 # Force QEMU even if epkg was built with libkrun support
-epkg -e myenv run --sandbox=vm --vmm=qemu bash
+epkg -e myenv run --isolate=vm --vmm=qemu bash
 ```
 
 If `--vmm` is not specified:
@@ -273,8 +273,8 @@ ls -la ~/.cache/epkg/vmm-logs/*.stdout.log ~/.cache/epkg/vmm-logs/*.stderr.log
 
 - **VMM logs**: Under `{epkg_cache}/vmm-logs/` (e.g. `~/.cache/epkg/vmm-logs/`). PID-based files: `qemu-<pid>.log`, `virtiofsd-<pid>.log`; symlinks `latest-qemu.log`, `latest-virtiofsd.log` point to the most recent run. When `RUST_LOG` is at debug or trace, QEMU stdout/stderr are also written to `*.stdout.log` and `*.stderr.log`.
 - **Serial**: QEMU serial output is written to the same path as the QEMU log (serial log path is the qemu log path in the current implementation).
-- **Debug**: Run with `RUST_LOG=debug epkg run --sandbox=vm --tty bash` to see host and guest logs. In PTY mode, `env_logger` writes to stderr and may look misaligned with raw terminal output; that's expected.
-- **Timeouts**: Use `timeout 10 epkg run --sandbox=vm ...` to avoid hanging if the guest never connects or never exits.
+- **Debug**: Run with `RUST_LOG=debug epkg run --isolate=vm --tty bash` to see host and guest logs. In PTY mode, `env_logger` writes to stderr and may look misaligned with raw terminal output; that's expected.
+- **Timeouts**: Use `timeout 10 epkg run --isolate=vm ...` to avoid hanging if the guest never connects or never exits.
 
 ## Optional and future work
 

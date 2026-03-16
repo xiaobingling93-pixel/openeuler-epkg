@@ -133,7 +133,7 @@ grep -E "^CONFIG_(KVM_GUEST|VIRTIO_PCI|SERIAL_8250|ACPI)=" \
 
 ```bash
 # libkrun 模式
-epkg run --sandbox=vm --vmm=libkrun \
+epkg run --isolate=vm --vmm=libkrun \
   --kernel=git/sandbox-kernel/linux-stable/vmlinux ls /
 ```
 

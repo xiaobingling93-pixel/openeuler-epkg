@@ -77,7 +77,7 @@ pub struct RunOptions {
     pub sandbox: crate::models::SandboxOptions,
     /// Effective sandbox options (merged from all configuration levels)
     pub effective_sandbox: crate::models::SandboxOptions,
-    /// Preferred VMM backend order for SandboxMode::Vm.
+    /// Preferred VMM backend order for IsolateMode::Vm.
     /// Example: ["libkrun", "qemu"] or ["qemu"].
     pub vmm_order: Vec<String>,
 }
@@ -403,11 +403,11 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
     prepare_run_options_for_command(env_root, &mut prepared_opts);
 
     // Non-Linux platforms only support VM sandbox mode
-    let sandbox_mode = prepared_opts.effective_sandbox.sandbox_mode
-        .unwrap_or(SandboxMode::Env);
+    let isolate_mode = prepared_opts.effective_sandbox.isolate_mode
+        .unwrap_or(IsolateMode::Env);
 
-    match sandbox_mode {
-        SandboxMode::Vm => {
+    match isolate_mode {
+        IsolateMode::Vm => {
             // VM sandbox mode - supported via libkrun
             #[cfg(feature = "libkrun")]
             {
@@ -431,18 +431,18 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
             {
                 Err(eyre::eyre!(
                     "VM sandbox requires libkrun feature. \
-                     Recompile epkg with libkrun support for --sandbox=vm"
+                     Recompile epkg with libkrun support for --isolate=vm"
                 ))
             }
         }
-        SandboxMode::Env | SandboxMode::Fs => {
+        IsolateMode::Env | IsolateMode::Fs => {
             Err(eyre::eyre!(
-                "Sandbox mode '{}' is not supported on this platform. \
-                 Only --sandbox=vm is available on macOS. \
+                "Isolate mode '{}' is not supported on this platform. \
+                 Only --isolate=vm is available on macOS. \
                  Use Linux for other sandbox modes.",
-                match sandbox_mode {
-                    SandboxMode::Env => "env",
-                    SandboxMode::Fs => "fs",
+                match isolate_mode {
+                    IsolateMode::Env => "env",
+                    IsolateMode::Fs => "fs",
                     _ => unreachable!(),
                 }
             ))
@@ -621,22 +621,22 @@ pub fn host_uses_traditional_layout() -> bool {
 /// 3. EnvConfig.sandbox - Environment defaults from env_root/etc/epkg/env.yaml (lowest priority)
 ///
 /// # Merging Behavior:
-/// - sandbox_mode: Override - higher priority completely replaces lower priority
+/// - isolate_mode: Override - higher priority completely replaces lower priority
 /// - mount_specs: Additive - directories from all sources are combined
 ///
 /// # Example:
-/// If user defaults have sandbox_mode=Env and mount_specs=["/home"],
-/// env defaults have sandbox_mode=Fs and mount_specs=["/tmp"],
+/// If user defaults have isolate_mode=Env and mount_specs=["/home"],
+/// env defaults have isolate_mode=Fs and mount_specs=["/tmp"],
 /// and CLI specifies mount_specs=["/data"], the result will be:
-/// sandbox_mode=Fs (from env), mount_specs=["/home", "/tmp", "/data"] (combined)
+/// isolate_mode=Fs (from env), mount_specs=["/home", "/tmp", "/data"] (combined)
 fn merge_sandbox_options(sources: &[&crate::models::SandboxOptions]) -> crate::models::SandboxOptions {
     let mut result = crate::models::SandboxOptions::default();
 
     // Process sources in reverse order (lowest to highest priority)
     // so higher priority can override lower priority
     for source in sources.iter().rev() {
-        if let Some(mode) = source.sandbox_mode {
-            result.sandbox_mode = Some(mode);
+        if let Some(mode) = source.isolate_mode {
+            result.isolate_mode = Some(mode);
         }
         if let Some(strategy) = source.namespace_strategy {
             result.namespace_strategy = Some(strategy);
@@ -664,8 +664,8 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
     run_options.effective_sandbox = merge_sandbox_options(&sources);
 
     // Set default sandbox mode if none specified
-    if run_options.effective_sandbox.sandbox_mode.is_none() {
-        run_options.effective_sandbox.sandbox_mode = Some(crate::models::SandboxMode::Env);
+    if run_options.effective_sandbox.isolate_mode.is_none() {
+        run_options.effective_sandbox.isolate_mode = Some(crate::models::IsolateMode::Env);
     }
 
     // Normalise skip_namespace_isolation based on channel and environment context.
@@ -853,8 +853,8 @@ pub fn parse_options_run(options: &mut EPKGConfig, sub_matches: &clap::ArgMatche
     if command.starts_with('-') {
         return Err(eyre::eyre!(
             "Command looks like an option ('{}'). Put the command after options, e.g. \
-             epkg run --sandbox=vm --vmm=qemu --no-tty -- whoami \
-             or epkg run whoami --sandbox=vm --vmm=qemu --no-tty",
+             epkg run --isolate=vm --vmm=qemu --no-tty -- whoami \
+             or epkg run whoami --isolate=vm --vmm=qemu --no-tty",
             command
         ));
     }
@@ -921,9 +921,9 @@ pub fn parse_options_run(options: &mut EPKGConfig, sub_matches: &clap::ArgMatche
         })
         .unwrap_or_default();
 
-    let sandbox_mode = sub_matches
-        .get_one::<String>("sandbox")
-        .map(|s| s.parse::<crate::models::SandboxMode>().expect("clap validates env|fs|vm"));
+    let isolate_mode = sub_matches
+        .get_one::<String>("isolate")
+        .map(|s| s.parse::<crate::models::IsolateMode>().expect("clap validates env|fs|vm"));
 
     let namespace_strategy = sub_matches
         .get_one::<String>("namespace-strategy")
@@ -943,7 +943,7 @@ pub fn parse_options_run(options: &mut EPKGConfig, sub_matches: &clap::ArgMatche
 
     // Create sandbox options from CLI inputs
     let sandbox = crate::models::SandboxOptions {
-        sandbox_mode,
+        isolate_mode,
         namespace_strategy,
         mount_specs,
     };

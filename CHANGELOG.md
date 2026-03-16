@@ -68,10 +68,10 @@
 
 #### Sandbox System
 - **Comprehensive sandbox architecture** – Three isolation levels (env/fs/vm) with unified process creation framework.
-- **Filesystem sandbox (`--sandbox=fs`)** – Full container isolation via pivot_root into tmpfs-based root; proc, sysfs, tmpfs, devtmpfs/devpts, mqueue; capability dropping.
-- **Virtual machine sandbox (`--sandbox=vm`)** – QEMU-based hardware virtualization with virtiofs shared filesystem; JSON command protocol (host vm_client ↔ guest vm_daemon); PTY and non-PTY execution modes.
+- **Filesystem sandbox (`--isolate=fs`)** – Full container isolation via pivot_root into tmpfs-based root; proc, sysfs, tmpfs, devtmpfs/devpts, mqueue; capability dropping.
+- **Virtual machine sandbox (`--isolate=vm`)** – QEMU-based hardware virtualization with virtiofs shared filesystem; JSON command protocol (host vm_client ↔ guest vm_daemon); PTY and non-PTY execution modes.
 - **Flexible mount specification** – Docker-like syntax `[HOST|FS_TYPE:]SANDBOX_DIR[:OPTIONS]` (bind, tmpfs, proc, remount, `@` `env_root` substitution); automatic source existence checking with `try` fallback.
-- **Configuration hierarchy** – CLI `--sandbox` > `~/.config/epkg/options.yaml` > `$env_root/etc/epkg/env.yaml`; mount specs additive across levels.
+- **Configuration hierarchy** – CLI `--isolate` > `~/.config/epkg/options.yaml` > `$env_root/etc/epkg/env.yaml`; mount specs additive across levels.
 - **Guest init and vm_daemon** – PID 1 init: mounts, network (10.0.2.15/24), kernel cmdline parsing, command/vm_daemon fork; vm_daemon: TCP server, JSON Lines protocol, PTY/pipes, Base64 binary, auto poweroff.
 - **Kernel module applets** – `insmod` (finit_module/init_module, compressed .ko); `modprobe` (modules.dep parsing, recursive deps, fs glob fallback) for VM guest `virtio_net`.
 - **Build targets** – `make.sh` `qemu-pkgs` (QEMU+virtiofsd), `sandbox-pkgs` (newuidmap/newgidmap); per-mode package lists for major distros.
@@ -127,7 +127,7 @@
 - **Shared store logic** – Simplified; no executable-path rules; root + envs dir existence only; debug logging.
 - **E2E** – build-from-source-test skipped in test-all.sh; test-dev.sh runs it; clone to /opt/epkg/build-xxx, git safe.directory; dev-pkgs/crossdev-pkgs split.
 - **docs** – Search vs list output stability note (search may vary, list sorted); package-operations en/zh.
-- **environment** – curl needs e2fsprogs in openEuler (libcom_err); nested config key support (env_vars.FOO, sandbox.sandbox_mode); dirs.rs home_cache, find_nearest_dot_eenv.
+- **environment** – curl needs e2fsprogs in openEuler (libcom_err); nested config key support (env_vars.FOO, sandbox.isolate_mode); dirs.rs home_cache, find_nearest_dot_eenv.
 - **systemd_tmpfiles** – Removed namespace setup (responsibility separation).
 - **main.rs** – Early logging for init applet; improved Ctrl-C handler.
 
@@ -150,8 +150,8 @@
 - **Environment SSL from host** – Reverted "populate /etc/ssl/certs from host"; each distro installs its own SSL certs (ca-certificates scriptlet fix used instead).
 
 ### Design / Architecture
-- **models.rs** – SandboxMode, NamespaceStrategy, MountSpec, SandboxOptions, ProcessCreationConfig, UnifiedChildContext; ENV_CONFIG for in-env config cache.
-- **Unified process creation** – fork_and_execute() → prepare_run_options_for_command, determine_process_config(), build_unified_context(), create_process_with_namespaces(); NamespaceStrategy × SandboxMode; IdMapSync pipe; child_setup_with_namespaces, child_mount_and_exec, mount_batch_specs(); Vm path via qemu::run_command_in_qemu().
+- **models.rs** – IsolateMode, NamespaceStrategy, MountSpec, SandboxOptions, ProcessCreationConfig, UnifiedChildContext; ENV_CONFIG for in-env config cache.
+- **Unified process creation** – fork_and_execute() → prepare_run_options_for_command, determine_process_config(), build_unified_context(), create_process_with_namespaces(); NamespaceStrategy × IsolateMode; IdMapSync pipe; child_setup_with_namespaces, child_mount_and_exec, mount_batch_specs(); Vm path via qemu::run_command_in_qemu().
 - **New modules** – src/mount.rs (MountSpec, parse_mount_spec), src/namespace.rs, src/idmap.rs, src/qemu.rs, src/vm_client.rs, src/utils.rs (size parsing, resolve_symlink_in_env); applets: init.rs, vm_daemon.rs, insmod, modprobe, df, mount, umount, mountpoint, ifconfig, route, uname, deb_systemd_helper, update_alternatives, dpkg_realpath, mktemp; dpkg, dpkg_divert, dpkg_statoverride, dpkg_maintscript_helper.
 - **dirs.rs** – get_env_config_path() in_env_root branch; get_env_base_path() public; home_cache, find_nearest_dot_eenv.
 

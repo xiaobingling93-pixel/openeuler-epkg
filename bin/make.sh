@@ -1472,7 +1472,7 @@ case $cmd in
         install_packages crossdev
         ;;
     qemu-pkgs)
-        # Install VMM (QEMU + virtiofsd) host dependencies for --sandbox=vm
+        # Install VMM (QEMU + virtiofsd) host dependencies for --isolate=vm
         install_packages qemu
         ;;
     sandbox-pkgs)

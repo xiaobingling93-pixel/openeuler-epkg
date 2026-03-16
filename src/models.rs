@@ -370,7 +370,7 @@ pub struct GenerationCommand {
 /// Sandbox mode for `epkg run`: env (environment overlay, no security), fs (filesystem/container isolation), or vm (virtual machine isolation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum SandboxMode {
+pub enum IsolateMode {
     #[default]
     Env,
     Fs,
@@ -390,13 +390,13 @@ pub enum NamespaceStrategy {
     Clone,
 }
 
-impl std::str::FromStr for SandboxMode {
+impl std::str::FromStr for IsolateMode {
     type Err = eyre::Report;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "env" => Ok(SandboxMode::Env),
-            "fs" => Ok(SandboxMode::Fs),
-            "vm" => Ok(SandboxMode::Vm),
+            "env" => Ok(IsolateMode::Env),
+            "fs" => Ok(IsolateMode::Fs),
+            "vm" => Ok(IsolateMode::Vm),
             _ => Err(eyre::eyre!("Invalid sandbox mode '{}', expected env, fs, or vm", s)),
         }
     }
@@ -448,12 +448,12 @@ impl MountSpec {
 /// 3. EnvConfig.sandbox - Environment defaults (env_root/etc/epkg/env.yaml)
 ///
 /// Merging behavior:
-/// - sandbox_mode: Override (higher priority wins)
+/// - isolate_mode: Override (higher priority wins)
 /// - mount_specs: Additive (combined from all levels)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SandboxOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sandbox_mode: Option<SandboxMode>,
+    pub isolate_mode: Option<IsolateMode>,
 
     /// Optional strategy for namespace creation. When None, a mode-specific
     /// default is used (currently `clone` for most callers).
@@ -466,7 +466,7 @@ pub struct SandboxOptions {
 
 impl SandboxOptions {
     fn is_empty(&self) -> bool {
-        self.sandbox_mode.is_none()
+        self.isolate_mode.is_none()
             && self.namespace_strategy.is_none()
             && self.mount_specs.is_empty()
     }
@@ -478,7 +478,7 @@ impl SandboxOptions {
 #[derive(Debug, Clone)]
 pub struct ProcessCreationConfig {
     pub namespace_strategy: NamespaceStrategy,
-    pub sandbox_mode: SandboxMode,
+    pub isolate_mode: IsolateMode,
     /// Namespace flags for clone() or unshare()
     pub namespace_flags: CloneFlags,
     pub needs_uid_mapping: bool,
@@ -499,7 +499,7 @@ pub struct UnifiedChildContext {
     pub stdin_read_fd: Option<i32>,
 
     // Mode-specific configuration
-    pub sandbox_mode: SandboxMode,
+    pub isolate_mode: IsolateMode,
 
     // Sync pipe for parent-child coordination
     // Note: This is the read end for the child to wait on mapping completion.

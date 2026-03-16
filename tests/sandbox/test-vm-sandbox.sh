@@ -215,26 +215,26 @@ if [ -d "$ENV_ROOT" ] && [ -f "$ENV_ROOT/etc/passwd" ] && ! grep -q "^root:" "$E
 fi
 
 # epkg binary dir is auto-mounted into env for VM mode (when epkg is outside env)
-log "Running echo test with --sandbox=vm"
-output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --sandbox=vm --no-tty echo "hello from vm")
+log "Running echo test with --isolate=vm"
+output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --no-tty echo "hello from vm")
 if [ "$output" != "hello from vm" ]; then
     error "Expected 'hello from vm', got '$output'"
 fi
 
 # Manual test:
-# % epkg run --sandbox=vm --no-tty whoami|xxd
+# % epkg run --isolate=vm --no-tty whoami|xxd
 # 00000000: 726f 6f74 0a                             root.
 log "Running whoami with --no-tty"
-output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --sandbox=vm --no-tty whoami)
+output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --no-tty whoami)
 if [ "$output" != "root" ]; then
     error "Expected whoami output 'root', got '$output'"
 fi
 
-log "Running ls / with --sandbox=vm"
-run_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --sandbox=vm --no-tty ls /
+log "Running ls / with --isolate=vm"
+run_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --no-tty ls /
 
 log "Checking ls / directory layout"
-output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --sandbox=vm --no-tty ls /)
+output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --no-tty ls /)
 # Check for expected directories in root filesystem
 for dir in bin etc home proc root sys tmp usr var; do
     if ! echo "$output" | grep -q "\b$dir\b"; then

@@ -845,13 +845,13 @@ fn add_run_subcommand(cmd: Command) -> Command {
                 .arg_required_else_help(true)
                 .arg(arg!(-m --mount <SPEC> "Mount specification (JSON or Docker-like: [HOST_DIR|FS_TYPE:]SANDBOX_DIR[:OPTIONS])").value_name("SPEC").action(ArgAction::Append))
                 .arg(arg!(-u --user <USER> "Run as specified user (username or UID)"))
-                .arg(arg!(--sandbox <MODE> "Sandbox mode: env (default), fs, or vm").value_parser(["env", "fs", "vm"]))
+                .arg(arg!(--isolate <MODE> "Sandbox mode: env (default), fs, or vm").value_parser(["env", "fs", "vm"]))
                 .arg(
                     arg!(--"namespace-strategy" <STRATEGY> "Namespace creation strategy: clone (default) or unshare (no extra child)")
                         .value_parser(["clone", "unshare"])
                 )
                 .arg(
-                    arg!(--vmm <ORDER> "Preferred VMM backend order for --sandbox=vm (comma-separated, e.g. 'libkrun,qemu' or 'qemu')")
+                    arg!(--vmm <ORDER> "Preferred VMM backend order for --isolate=vm (comma-separated, e.g. 'libkrun,qemu' or 'qemu')")
                         .value_parser(clap::value_parser!(String))
                 )
                 .arg(
@@ -867,11 +867,11 @@ fn add_run_subcommand(cmd: Command) -> Command {
                         .value_parser(clap::value_parser!(String))
                 )
                 .arg(
-                    arg!(--cpus <CPUS> "Number of virtual CPUs for --sandbox=vm")
+                    arg!(--cpus <CPUS> "Number of virtual CPUs for --isolate=vm")
                         .value_parser(clap::value_parser!(String))
                 )
                 .arg(
-                    arg!(--memory <SIZE> "Virtual memory size for --sandbox=vm (e.g. 2048M, 2G)")
+                    arg!(--memory <SIZE> "Virtual memory size for --isolate=vm (e.g. 2048M, 2G)")
                         .value_parser(clap::value_parser!(String))
                 )
                 .arg(arg!(--timeout <SECONDS> "Timeout in seconds (0 = no timeout)").value_parser(clap::value_parser!(String)))

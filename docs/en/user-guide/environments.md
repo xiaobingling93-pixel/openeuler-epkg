@@ -154,7 +154,7 @@ epkg -e alpine run htop --version
 epkg --root /tmp/myproject/.eenv run jq --version
 ```
 
-## Sandbox modes and VMM selection for `epkg run`
+## Isolate modes and VMM selection for `epkg run`
 
 When you run commands inside an environment, epkg can add extra isolation on top of the per‑env root filesystem:
 
@@ -165,22 +165,22 @@ When you run commands inside an environment, epkg can add extra isolation on top
 You select the sandbox mode per command:
 
 ```bash
-epkg -e mydebian run --sandbox=env bash
-epkg -e mydebian run --sandbox=fs  python3 script.py
-epkg -e mydebian run --sandbox=vm  bash
+epkg -e mydebian run --isolate=env bash
+epkg -e mydebian run --isolate=fs  python3 script.py
+epkg -e mydebian run --isolate=vm  bash
 ```
 
 Or set a **per‑env default** in `env_root/etc/epkg/env.yaml` via:
 
 ```bash
 # Make fs the default sandbox for this env
-epkg -e mydebian env config set sandbox.sandbox_mode fs
+epkg -e mydebian env config set sandbox.isolate_mode fs
 
-# After that, plain `epkg -e mydebian run <cmd>` uses fs unless you override --sandbox
+# After that, plain `epkg -e mydebian run <cmd>` uses fs unless you override --isolate
 epkg -e mydebian run bash
 ```
 
-User-level defaults can be set in `~/.epkg/config/options.yaml` (same `sandbox.sandbox_mode` key). CLI `--sandbox` overrides both.
+User-level defaults can be set in `~/.epkg/config/options.yaml` (same `sandbox.isolate_mode` key). CLI `--isolate` overrides both.
 
 For the host‑side tools that sandboxing relies on (user namespaces and `newuidmap`/`newgidmap`), install a minimal set with:
 
@@ -193,15 +193,15 @@ This pulls in the appropriate `uidmap`/`shadow`/`shadow-uidmap` package for your
 
 ### Choosing a VMM backend (`--vmm`)
 
-When you use `--sandbox=vm`, epkg can try multiple VMM backends in order. Use
+When you use `--isolate=vm`, epkg can try multiple VMM backends in order. Use
 the `--vmm` option on `epkg run` to specify a comma-separated preference list:
 
 ```bash
 # Prefer libkrun, fall back to QEMU
-epkg -e myenv run --sandbox=vm --vmm=libkrun,qemu bash
+epkg -e myenv run --isolate=vm --vmm=libkrun,qemu bash
 
 # Force QEMU even if libkrun support is compiled in
-epkg -e myenv run --sandbox=vm --vmm=qemu bash
+epkg -e myenv run --isolate=vm --vmm=qemu bash
 ```
 
 Backend names:
