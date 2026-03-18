@@ -25,10 +25,36 @@ pub struct BrewFormula {
     #[serde(rename = "build_dependencies")]
     pub build_dependencies: Vec<String>,
     #[serde(default)]
+    #[serde(rename = "test_dependencies")]
+    pub test_dependencies: Vec<String>,
+    #[serde(default)]
     #[serde(rename = "runtime_dependencies")]
     pub runtime_dependencies: Vec<String>,
     #[serde(default)]
+    #[serde(rename = "recommended_dependencies")]
+    pub recommended_dependencies: Vec<String>,
+    #[serde(default)]
+    #[serde(rename = "optional_dependencies")]
+    pub optional_dependencies: Vec<String>,
+    #[serde(default)]
+    pub conflicts_with: Vec<String>,
+    #[serde(default)]
     pub bottle: Option<BrewBottle>,
+    #[serde(default)]
+    pub variations: HashMap<String, BrewVariation>,
+}
+
+/// Variation for specific platform/OS version
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BrewVariation {
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    #[serde(default)]
+    #[serde(rename = "build_dependencies")]
+    pub build_dependencies: Vec<String>,
+    #[serde(default)]
+    #[serde(rename = "test_dependencies")]
+    pub test_dependencies: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -66,9 +92,30 @@ impl BrewFormula {
 
         let version = self.versions.stable.clone()?;
 
-        // Combine runtime and regular dependencies
+        // Start with base dependencies
         let mut deps = self.runtime_dependencies.clone();
         deps.extend(self.dependencies.clone());
+
+        let mut build_deps = self.build_dependencies.clone();
+        let mut test_deps = self.test_dependencies.clone();
+        let recommended = self.recommended_dependencies.clone();
+        let optional = self.optional_dependencies.clone();
+
+        // Apply variations for this bottle_tag if present
+        // bottle_tag can be: sonoma, arm64_sonoma, x86_64_linux, arm64_linux, etc.
+        // variations keys can be: sequoia, monterey, arm64_monterey, x86_64_linux, etc.
+        if let Some(variation) = self.variations.get(bottle_tag) {
+            // Variation dependencies replace (not extend) the base dependencies
+            if !variation.dependencies.is_empty() {
+                deps = variation.dependencies.clone();
+            }
+            if !variation.build_dependencies.is_empty() {
+                build_deps = variation.build_dependencies.clone();
+            }
+            if !variation.test_dependencies.is_empty() {
+                test_deps = variation.test_dependencies.clone();
+            }
+        }
 
         // Construct bottle filename: {name}-{version}[_{revision}].{tag}.bottle.tar.gz
         let bottle_filename = if self.revision > 0 {
@@ -86,20 +133,35 @@ impl BrewFormula {
             bottle_file.url.clone()
         };
 
+        // Extract actual arch from bottle_tag
+        // bottle_tag formats: sonoma, arm64_sonoma, ventura, arm64_ventura, x86_64_linux, arm64_linux
+        // arm64 is prefixed for Apple Silicon, x86_64 is implicit for Intel macOS
+        // Linux has explicit arch prefix: x86_64_linux, arm64_linux
+        let arch = if bottle_tag.starts_with("arm64_") {
+            "arm64"
+        } else {
+            "x86_64"
+        };
+
         Some(Package {
             pkgname: self.name.clone(),
             version: format!("{}_{}", version, self.revision),
-            arch: bottle_tag.to_string(),
-            size: 0, // Will be filled in during download
-            installed_size: 0,
-            build_time: None,
+            arch: arch.to_string(),
             location,
             sha256sum: Some(bottle_file.sha256.clone()),
             requires: deps,
+            build_requires: build_deps,
+            check_requires: test_deps,
+            recommends: recommended,
+            suggests: optional,
+            conflicts: self.conflicts_with.clone(),
             provides: vec![self.name.clone()],
             summary: self.desc.clone().unwrap_or_default(),
             description: self.desc.clone(),
             homepage: self.homepage.clone().unwrap_or_default(),
+            license: self.license.clone(),
+            // Store bottle_tag (platform info like sonoma, x86_64_linux) in tag field
+            tag: Some(bottle_tag.to_string()),
             format: PackageFormat::Brew,
             ..Default::default()
         })
@@ -319,17 +381,48 @@ fn process_brew_formulas(repo_dir: &PathBuf, revise: &RepoReleaseItem, formulas:
             let package_begin = current_offset;
 
             // Write package entry in packages.txt format
-            let pkg_block = format!(
-                "pkgname: {}\nversion: {}\narch: {}\nlocation: {}\nsize: {}\n{}{}{}\n",
-                package.pkgname,
-                package.version,
-                package.arch,
-                package.location,
-                package.size,
-                package.sha256sum.as_ref().map(|s| format!("sha256: {}\n", s)).unwrap_or_default(),
-                if package.requires.is_empty() { String::new() } else { format!("requires: {}\n", package.requires.join(", ")) },
-                if package.summary.is_empty() { String::new() } else { format!("summary: {}\n", package.summary) }
-            );
+            // Build the output string with all available fields
+            let mut lines = Vec::new();
+            lines.push(format!("pkgname: {}", package.pkgname));
+            lines.push(format!("version: {}", package.version));
+            lines.push(format!("arch: {}", package.arch));
+            if let Some(ref tag) = package.tag {
+                lines.push(format!("tag: {}", tag));
+            }
+            lines.push(format!("location: {}", package.location));
+            if let Some(ref sha256) = package.sha256sum {
+                lines.push(format!("sha256: {}", sha256));
+            }
+            if !package.requires.is_empty() {
+                lines.push(format!("requires: {}", package.requires.join(", ")));
+            }
+            if !package.build_requires.is_empty() {
+                lines.push(format!("buildRequires: {}", package.build_requires.join(", ")));
+            }
+            if !package.check_requires.is_empty() {
+                lines.push(format!("checkRequires: {}", package.check_requires.join(", ")));
+            }
+            if !package.recommends.is_empty() {
+                lines.push(format!("recommends: {}", package.recommends.join(", ")));
+            }
+            if !package.suggests.is_empty() {
+                lines.push(format!("suggests: {}", package.suggests.join(", ")));
+            }
+            if !package.conflicts.is_empty() {
+                lines.push(format!("conflicts: {}", package.conflicts.join(", ")));
+            }
+            if !package.summary.is_empty() {
+                lines.push(format!("summary: {}", package.summary));
+            }
+            if !package.homepage.is_empty() {
+                lines.push(format!("homepage: {}", package.homepage));
+            }
+            if let Some(ref license) = package.license {
+                lines.push(format!("license: {}", license));
+            }
+            lines.push(String::new()); // Empty line between packages
+
+            let pkg_block = lines.join("\n");
 
             file.write_all(pkg_block.as_bytes())
                 .with_context(|| format!("Failed to write package: {}", package.pkgname))?;
