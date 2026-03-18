@@ -80,7 +80,7 @@ export LOG_DIR="${LOG_DIR:-/tmp}"
 export SKIP_CLEANUP="${KEEP_ENV}"
 
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
+    echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
 }
 
 # Detect host OS
