@@ -701,13 +701,117 @@ fn needs_hard_link_or_copy(fhs_file: &Path) -> Option<bool> {
     None
 }
 
-// Copy symlink as-is without shortcutting
+/// Usr-merge symlinks that need relative path adjustment
+/// Format: (symlink_name, symlink_target, path_prefix_to_strip)
+/// When a relative symlink is placed under one of these directories,
+/// the path needs adjustment because the directory is a symlink.
+const USR_MERGE_SYMLINKS: &[(&str, &str)] = &[
+    ("bin", "usr/bin"),
+    ("sbin", "usr/sbin"),
+    ("lib", "usr/lib"),
+    ("lib64", "usr/lib64"),
+];
+
+/// Adjust relative symlink target for usr-merge layout.
+///
+/// When a package has a relative symlink like `bin/go -> ../go/bin/go`,
+/// and the environment uses usr-merge layout where `bin -> usr/bin`,
+/// the symlink would be created at `usr/bin/go -> ../go/bin/go`,
+/// which resolves to `usr/go/bin/go` instead of `go/bin/go`.
+///
+/// This function detects this case and adjusts the path:
+/// - `../go/bin/go` becomes `../../go/bin/go`
+fn adjust_symlink_target_for_usr_merge(
+    link_target: &Path,
+    target_path: &Path,
+    env_root: &Path,
+) -> PathBuf {
+    // Only adjust relative paths starting with ../
+    let link_target_str = match link_target.to_str() {
+        Some(s) if s.starts_with("../") => s,
+        _ => return link_target.to_path_buf(),
+    };
+
+    // Check if target_path is under a usr-merge symlink directory
+    // Get the relative path from env_root
+    let rel_path = match target_path.strip_prefix(env_root) {
+        Ok(p) => p,
+        Err(_) => return link_target.to_path_buf(),
+    };
+
+    // Get the first component (should be bin, sbin, lib, or lib64)
+    let first_component = match rel_path.components().next() {
+        Some(c) => c.as_os_str().to_string_lossy().to_string(),
+        None => return link_target.to_path_buf(),
+    };
+
+    // Check if this is a usr-merge symlink
+    for &(symlink_name, _symlink_target) in USR_MERGE_SYMLINKS {
+        if first_component == symlink_name {
+            // Check if the directory in env is actually a symlink
+            let symlink_path = env_root.join(symlink_name);
+            if lfs::is_symlink(&symlink_path) {
+                // The symlink is in a usr-merge directory
+                // Need to add one more "../" to account for the extra level
+                // For example: ../go/bin/go -> ../../go/bin/go
+                log::debug!(
+                    "Adjusting symlink target for usr-merge: {} -> ../../{}",
+                    link_target_str,
+                    &link_target_str[3..]  // Skip the "../" prefix
+                );
+                return PathBuf::from(format!("../../{}", &link_target_str[3..]));
+            }
+        }
+    }
+
+    link_target.to_path_buf()
+}
+
+// Copy symlink, adjusting relative paths for usr-merge layout
 fn copy_symlink(fs_file: &Path, target_path: &Path) -> Result<()> {
     let link_target = fs::read_link(fs_file)
         .with_context(|| format!("Failed to read symlink target for {}", fs_file.display()))?;
     log::trace!("copy_symlink: fs_file={}, link_target={:?}", fs_file.display(), link_target);
-    lfs::symlink(&link_target, target_path)
-        .with_context(|| format!("Failed to create symlink {} -> {}", target_path.display(), link_target.display()))?;
+
+    // Try to get env_root from target_path (assume it's 2 levels up from bin/ or similar)
+    // target_path is like /path/to/env/bin/go or /path/to/env/usr/bin/go
+    // We need to find the env_root to check for usr-merge symlinks
+    let adjusted_target = if link_target.is_relative() && link_target.starts_with("..") {
+        // Try to find env_root by looking for the bin/sbin/lib symlinks
+        if let Some(parent) = target_path.parent() {
+            if let Some(env_root) = find_env_root_from_path(parent) {
+                adjust_symlink_target_for_usr_merge(&link_target, target_path, &env_root)
+            } else {
+                link_target
+            }
+        } else {
+            link_target
+        }
+    } else {
+        link_target
+    };
+
+    lfs::symlink(&adjusted_target, target_path)
+        .with_context(|| format!("Failed to create symlink {} -> {}", target_path.display(), adjusted_target.display()))?;
     Ok(())
+}
+
+/// Find env_root from a path by looking for usr-merge symlinks (bin, sbin, lib, lib64)
+fn find_env_root_from_path(path: &Path) -> Option<PathBuf> {
+    // Walk up the path to find a directory containing usr-merge symlinks
+    let mut current = path;
+    while let Some(parent) = current.parent() {
+        // Check if this could be an env root by looking for typical structure
+        if parent.join("usr").is_dir() {
+            // Check for usr-merge symlinks
+            let has_bin_symlink = lfs::is_symlink(&parent.join("bin"));
+            let has_usr_bin = parent.join("usr/bin").is_dir();
+            if has_bin_symlink && has_usr_bin {
+                return Some(parent.to_path_buf());
+            }
+        }
+        current = parent;
+    }
+    None
 }
 
