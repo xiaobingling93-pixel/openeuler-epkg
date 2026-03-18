@@ -509,8 +509,8 @@ pub fn get_home_from_uid() -> Result<String> {
 }
 
 /// Check if a command exists in PATH
-/// Only used on Linux (idmap) or in debug builds (rpm_verify)
-#[cfg(any(target_os = "linux", debug_assertions))]
+/// Only used on Linux (idmap, rpm_verify)
+#[cfg(target_os = "linux")]
 pub fn command_exists(command_name: &str) -> bool {
     find_command_in_paths(command_name).is_some()
 }

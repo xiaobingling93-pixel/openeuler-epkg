@@ -857,12 +857,14 @@ fn get_current_epkg_version_info() -> Result<EpkgVersionInfo> {
 
 /// Path to the default VM kernel image (from vmlinux release, written during `epkg self install`).
 /// Shared by libkrun and qemu.
+#[cfg(any(feature = "libkrun", target_os = "linux"))]
 fn default_kernel_path() -> PathBuf {
     dirs().user_envs.join(SELF_ENV).join("boot").join("vmlinux")
 }
 
 /// Returns the default kernel path as a string if the file exists; otherwise None.
 /// Used by libkrun and qemu.
+#[cfg(any(feature = "libkrun", target_os = "linux"))]
 pub fn default_kernel_path_if_exists() -> Option<String> {
     let default = default_kernel_path();
     if default.exists() {
