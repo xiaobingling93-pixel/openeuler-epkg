@@ -759,6 +759,11 @@ fn match_package_with_store(
             Ok(store_package) => {
                 // Compare Package fields
                 if packages_match(repodata_package, &store_package) {
+                    // Validate store integrity before accepting match
+                    if !validate_store_integrity(store_pkgline) {
+                        log::warn!("Store package {} failed integrity check, skipping", store_pkgline);
+                        continue;
+                    }
                     log::trace!("match_package_with_store: found match at candidate {}: {}", i+1, store_pkgline);
                     return Ok(Some(store_pkgline.clone()));
                 }
@@ -772,6 +777,81 @@ fn match_package_with_store(
 
     log::trace!("match_package_with_store: no match found after checking {} candidates", store_pkglines.len());
     Ok(None)
+}
+
+/// Validate store package integrity by checking if key files exist
+/// Returns true if the store appears valid, false if corrupted
+fn validate_store_integrity(pkgline: &str) -> bool {
+    let store_path = dirs().epkg_store.join(pkgline);
+    let fs_dir = store_path.join("fs");
+
+    // Check that fs directory exists
+    if !lfs::exists_on_host(&fs_dir) {
+        log::debug!("validate_store_integrity: fs directory missing for {}", pkgline);
+        return false;
+    }
+
+    // Check filelist.txt exists and has content
+    let filelist_path = store_path.join("info/filelist.txt");
+    if !lfs::exists_on_host(&filelist_path) {
+        log::debug!("validate_store_integrity: filelist.txt missing for {}", pkgline);
+        return false;
+    }
+
+    // Read filelist.txt and verify at least some files exist
+    let filelist_content = match std::fs::read_to_string(&filelist_path) {
+        Ok(content) => content,
+        Err(e) => {
+            log::debug!("validate_store_integrity: failed to read filelist.txt for {}: {}", pkgline, e);
+            return false;
+        }
+    };
+
+    // Check if any regular files are listed (not just directories)
+    let has_listed_files = filelist_content.lines().any(|line| {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.is_empty() {
+            return false;
+        }
+        let path = parts[0];
+        // Check if it's a file entry (has type=file or no type means file)
+        let is_file = parts.iter().any(|p| p.starts_with("type=file"))
+            || (!parts.iter().any(|p| p.starts_with("type=")));
+        is_file && !path.ends_with('/')
+    });
+
+    if !has_listed_files {
+        log::debug!("validate_store_integrity: no files listed in filelist.txt for {}", pkgline);
+        return false;
+    }
+
+    // Sample check: verify a few files from filelist actually exist
+    let mut checked = 0;
+    let mut missing = 0;
+    for line in filelist_content.lines().take(10) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.is_empty() {
+            continue;
+        }
+        let path = parts[0];
+        if path.ends_with('/') {
+            continue; // Skip directories
+        }
+        let file_path = fs_dir.join(path);
+        if !lfs::exists_on_host(&file_path) {
+            missing += 1;
+            log::trace!("validate_store_integrity: file missing in {}: {}", pkgline, path);
+        }
+        checked += 1;
+    }
+
+    // If more than half of sampled files are missing, consider store corrupted
+    if checked > 0 && missing * 2 > checked {
+        log::debug!("validate_store_integrity: {} of {} sampled files missing for {}", missing, checked, pkgline);
+        return false;
+    }
+
+    true
 }
 
 /// Helper function to parse u32 from HashMap value
