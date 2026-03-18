@@ -82,6 +82,7 @@ pub fn unpack_package<P: AsRef<Path>>(bottle_file: P, store_tmp_dir: P, pkgkey: 
     // Brew bottles have a top-level directory like "package_name/version/"
     // We need to strip this prefix and extract contents directly to fs/
     let mut entries_processed = 0;
+    let mut hard_links: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
 
     for entry_result in archive.entries()? {
         let mut entry = entry_result?;
@@ -133,6 +134,30 @@ pub fn unpack_package<P: AsRef<Path>>(bottle_file: P, store_tmp_dir: P, pkgkey: 
             )
         };
 
+        // Check if this is a hard link entry
+        let header = entry.header();
+        let is_hard_link = matches!(header.entry_type(), tar::EntryType::Link);
+
+        if is_hard_link {
+            // For hard links, get the link target and convert to our stripped path
+            if let Ok(Some(link_path)) = entry.link_name() {
+                // link_path is the original path in tar, e.g., "perl/5.42.1_1/bin/perl"
+                // We need to strip the first two components to get "bin/perl"
+                let link_components: Vec<_> = link_path.components().collect();
+                if link_components.len() >= 3 {
+                    let stripped_link_components: Vec<_> = link_components.iter().skip(2).collect();
+                    let source_path = stripped_link_components.iter().fold(
+                        store_tmp_dir.join("fs"),
+                        |acc, comp| acc.join(comp.as_os_str())
+                    );
+                    log::trace!("Queued hard link: {} -> {}",
+                        target_path.display(), source_path.display());
+                    hard_links.push((source_path, target_path));
+                }
+                continue;
+            }
+        }
+
         // Ensure parent directory exists
         if let Some(parent) = target_path.parent() {
             lfs::create_dir_all(parent)?;
@@ -141,6 +166,36 @@ pub fn unpack_package<P: AsRef<Path>>(bottle_file: P, store_tmp_dir: P, pkgkey: 
         // Extract the file
         entry.unpack(&target_path)?;
         utils::fixup_file_permissions(&target_path);
+    }
+
+    // Now create all hard links after all files have been extracted
+    for (source_path, target_path) in hard_links {
+        // Ensure parent directory exists for the hard link target
+        if let Some(parent) = target_path.parent() {
+            if let Err(e) = lfs::create_dir_all(parent) {
+                log::warn!("Failed to create directory {} for hard link: {}", parent.display(), e);
+                continue;
+            }
+        }
+
+        // Create the hard link if the source file exists
+        if lfs::exists_on_host(&source_path) {
+            // Remove existing file if present (in case of re-extraction)
+            if lfs::exists_on_host(&target_path) {
+                if let Err(e) = lfs::remove_file(&target_path) {
+                    log::warn!("Failed to remove existing file {}: {}", target_path.display(), e);
+                }
+            }
+            if let Err(e) = fs::hard_link(&source_path, &target_path) {
+                log::warn!("Failed to create hard link from {} to {}: {}",
+                    source_path.display(), target_path.display(), e);
+            } else {
+                log::trace!("Created hard link: {} -> {}", target_path.display(), source_path.display());
+            }
+        } else {
+            log::warn!("Cannot create hard link {}: source file {} does not exist",
+                target_path.display(), source_path.display());
+        }
     }
 
     log::debug!("Successfully unpacked Brew bottle with {} entries", entries_processed);
