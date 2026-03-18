@@ -328,11 +328,22 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
     } else if run_options.command.contains('/') {
         Ok(PathBuf::from(&run_options.command))
     } else {
-        // For relative commands, search in env's usr/bin
-        let cmd_in_env = env_root.join("usr/bin").join(&run_options.command);
-        if cmd_in_env.exists() {
-            Ok(cmd_in_env)
-        } else if lfs::exists_on_host(Path::new(&run_options.command)) {
+        // For relative commands, search in env's bin/ then usr/bin/
+        // Prefer bin/ over usr/bin/ because some programs (like cmake) calculate
+        // their installation prefix based on the binary path.
+        // bin/cmake -> looks for ../share/cmake (correct)
+        // usr/bin/cmake -> looks for usr/share/cmake (wrong, should be ../../share/cmake)
+        let cmd_in_bin = env_root.join("bin").join(&run_options.command);
+        if cmd_in_bin.exists() {
+            return Ok(cmd_in_bin);
+        }
+
+        let cmd_in_usr_bin = env_root.join("usr/bin").join(&run_options.command);
+        if cmd_in_usr_bin.exists() {
+            return Ok(cmd_in_usr_bin);
+        }
+
+        if lfs::exists_on_host(Path::new(&run_options.command)) {
             Ok(PathBuf::from(&run_options.command))
         } else {
             Err(eyre::eyre!("Command '{}' not found in {}", run_options.command, env_root.display()))
