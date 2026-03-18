@@ -544,6 +544,9 @@ install_os_packages() {
     local SUDO
     if [[ $(id -u) -eq 0 ]]; then
         SUDO=""
+    elif [[ "$PKG_MANAGER" == "brew" ]]; then
+        # Homebrew doesn't use sudo for installs
+        SUDO=""
     else
         SUDO="sudo"
     fi
