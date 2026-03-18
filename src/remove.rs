@@ -57,7 +57,7 @@ pub fn unlink_package(
         let target_path = env_root.join(&fs_file_info.path);
 
         // Skip symlinks for top-level directories, some are manually created in create_environment_dirs_early()
-        if matches!(fs_file_info.path.as_str(), "sbin" | "bin" | "lib" | "lib64" | "lib32" | "share" | "include" | "usr/sbin" | "usr/lib64") {
+        if matches!(fs_file_info.path.as_str(), "sbin" | "bin" | "lib" | "lib64" | "lib32" | "share" | "include" | "usr/sbin" | "usr/lib64" | "usr/libexec") {
             continue;
         }
 

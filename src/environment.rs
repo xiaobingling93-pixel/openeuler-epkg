@@ -283,6 +283,9 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     force_symlink("usr/lib", env_root.join("lib"))?;
     force_symlink("usr/share", env_root.join("share"))?;
     force_symlink("usr/include", env_root.join("include"))?;
+    // libexec is used by some packages (e.g., brew's go: bin/go -> ../libexec/bin/go)
+    // Create usr/libexec symlink so relative symlinks from usr/bin work correctly
+    force_symlink("../libexec", env_root.join("usr/libexec"))?;
 
     // Ensure usr/bin/epkg exists, pointing to a stable epkg binary (e.g., in self environment)
     create_epkg_symlink(env_root)?;
