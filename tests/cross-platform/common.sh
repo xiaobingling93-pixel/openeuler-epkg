@@ -1,9 +1,9 @@
 #!/bin/sh
 # Common functions for cross-platform package manager tests (conda, homebrew, msys2, etc.)
-# Sourced by platforms/*.sh test scripts
+# Sourced by channels/*.sh test scripts
 #
 # Usage:
-#   ENV_NAME=test-conda EPKG_BIN=/path/to/epkg ./platforms/conda.sh
+#   ENV_NAME=test-conda EPKG_BIN=/path/to/epkg ./channels/conda.sh
 #
 # Or via run.sh:
 #   ./run.sh -c conda    # run conda channel tests only

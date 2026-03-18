@@ -100,7 +100,7 @@ log "EPKG binary: $EPKG_BIN"
 
 # List available channel tests
 list_channel_tests() {
-    for script in "$SCRIPT_DIR/platforms/"*.sh; do
+    for script in "$SCRIPT_DIR/channels/"*.sh; do
         [ -f "$script" ] && basename "$script" .sh
     done
 }
@@ -140,7 +140,7 @@ should_run_channel() {
 # Run channel test
 run_channel_test() {
     local channel="$1"
-    local script="$SCRIPT_DIR/platforms/${channel}.sh"
+    local script="$SCRIPT_DIR/channels/${channel}.sh"
 
     if [ ! -x "$script" ]; then
         log "${YELLOW}Channel test script not found: $script${NC}"
