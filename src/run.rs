@@ -817,10 +817,11 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
     }
 
     // Normalise skip_namespace_isolation based on channel and environment context.
-    let is_conda =
-        crate::models::channel_config().format == crate::models::PackageFormat::Conda;
-    if is_conda {
-        // conda ELF binary has RPATH
+    let channel_format = crate::models::channel_config().format;
+    let is_conda = channel_format == crate::models::PackageFormat::Conda;
+    let is_brew = channel_format == crate::models::PackageFormat::Brew;
+    if is_conda || is_brew {
+        // conda ELF binary has RPATH; brew bottles are native macOS binaries
         run_options.skip_namespace_isolation = true;
     }
 
