@@ -88,7 +88,14 @@ impl BrewFormula {
     /// Convert to epkg's internal Package format
     pub fn to_package(&self, bottle_tag: &str) -> Option<Package> {
         let bottle = self.bottle.as_ref()?.stable.as_ref()?;
-        let bottle_file = bottle.files.get(bottle_tag)?;
+
+        // Try the specific bottle_tag first, then fall back to "all" for noarch packages
+        let bottle_file = bottle.files.get(bottle_tag)
+            .or_else(|| bottle.files.get("all"))?;
+
+        // Determine if this is a noarch package
+        let is_noarch = bottle.files.contains_key("all") && !bottle.files.contains_key(bottle_tag);
+        let actual_tag = if is_noarch { "all" } else { bottle_tag };
 
         let version = self.versions.stable.clone()?;
 
@@ -139,19 +146,21 @@ impl BrewFormula {
             version.clone()
         };
         let bottle_filename = if bottle.rebuild > 0 {
-            format!("{}-{}.{}.bottle.{}.tar.gz", self.name, pkg_version, bottle_tag, bottle.rebuild)
+            format!("{}-{}.{}.bottle.{}.tar.gz", self.name, pkg_version, actual_tag, bottle.rebuild)
         } else {
-            format!("{}-{}.{}.bottle.tar.gz", self.name, pkg_version, bottle_tag)
+            format!("{}-{}.{}.bottle.tar.gz", self.name, pkg_version, actual_tag)
         };
 
         // Location is just the filename; baseurl is set separately
         let location = bottle_filename;
 
-        // Extract actual arch from bottle_tag
+        // Determine arch: "all" for noarch packages, otherwise extract from bottle_tag
         // bottle_tag formats: sonoma, arm64_sonoma, ventura, arm64_ventura, x86_64_linux, arm64_linux
         // arm64 is prefixed for Apple Silicon, x86_64 is implicit for Intel macOS
         // Linux has explicit arch prefix: x86_64_linux, arm64_linux
-        let arch = if bottle_tag.starts_with("arm64_") {
+        let arch = if is_noarch {
+            "all"
+        } else if bottle_tag.starts_with("arm64_") {
             "arm64"
         } else {
             "x86_64"
@@ -174,8 +183,8 @@ impl BrewFormula {
             description: self.desc.clone(),
             homepage: self.homepage.clone().unwrap_or_default(),
             license: self.license.clone(),
-            // Store bottle_tag (platform info like sonoma, x86_64_linux) in tag field
-            tag: Some(bottle_tag.to_string()),
+            // Store bottle_tag (platform info like sonoma, x86_64_linux, or "all") in tag field
+            tag: Some(actual_tag.to_string()),
             format: PackageFormat::Brew,
             ..Default::default()
         })
