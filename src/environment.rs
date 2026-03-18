@@ -286,6 +286,11 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     // libexec is used by some packages (e.g., brew's go: bin/go -> ../libexec/bin/go)
     // Create usr/libexec symlink so relative symlinks from usr/bin work correctly
     force_symlink("../libexec", env_root.join("usr/libexec"))?;
+    // macOS brew packages may have Frameworks, opt, and .app bundles at root level
+    // Create symlinks so relative symlinks from usr/bin work correctly
+    // e.g., bin/python3.12 -> ../Frameworks/Python.framework/...
+    force_symlink("../Frameworks", env_root.join("usr/Frameworks"))?;
+    force_symlink("../opt", env_root.join("usr/opt"))?;
 
     // Ensure usr/bin/epkg exists, pointing to a stable epkg binary (e.g., in self environment)
     create_epkg_symlink(env_root)?;

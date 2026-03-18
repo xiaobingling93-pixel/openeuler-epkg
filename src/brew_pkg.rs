@@ -320,6 +320,17 @@ pub fn rewrite_dylib_paths_for_env(env_root: &Path) -> Result<()> {
         }
     }
 
+    // Scan Frameworks/ directory (macOS Python framework, etc.)
+    let frameworks_dir = env_root.join("Frameworks");
+    if frameworks_dir.exists() {
+        for entry in walkdir::WalkDir::new(&frameworks_dir).into_iter().filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.is_file() && is_mach_o_file(path) {
+                mach_o_files.push(path.to_path_buf());
+            }
+        }
+    }
+
     if mach_o_files.is_empty() {
         log::debug!("No Mach-O files found in {}", env_root.display());
         return Ok(());
@@ -461,13 +472,22 @@ fn resolve_homebrew_dylib_path_for_env(placeholder_path: &str, prefix: &str, env
 }
 
 /// Extract library path and resolve under env_root.
-/// Handles paths like /lib/libfoo.dylib, /opt/pkgname/lib/libfoo.dylib
+/// Handles paths like /lib/libfoo.dylib, /opt/pkgname/lib/libfoo.dylib, /Frameworks/...
 #[cfg(target_os = "macos")]
 fn extract_lib_path_and_resolve(rest: &str, env_root: &Path) -> Option<String> {
     // Try to find lib/ in the path
     if let Some(lib_pos) = rest.find("/lib/") {
         let lib_path = &rest[lib_pos + 1..]; // Skip the leading slash, get "lib/foo.dylib"
         let full_path = env_root.join(lib_path);
+        if full_path.exists() {
+            return Some(full_path.display().to_string());
+        }
+    }
+
+    // Try to find Frameworks/ in the path (for macOS Python framework, etc.)
+    if let Some(fw_pos) = rest.find("/Frameworks/") {
+        let fw_path = &rest[fw_pos + 1..]; // Get "Frameworks/..."
+        let full_path = env_root.join(fw_path);
         if full_path.exists() {
             return Some(full_path.display().to_string());
         }
@@ -486,6 +506,13 @@ fn extract_lib_path_and_resolve(rest: &str, env_root: &Path) -> Option<String> {
         let lib_pos = rest.find("/lib/").unwrap();
         let lib_path = &rest[lib_pos + 1..];
         return Some(env_root.join(lib_path).display().to_string());
+    }
+
+    // Same for Frameworks - return expected path even if doesn't exist yet
+    if rest.contains("/Frameworks/") {
+        let fw_pos = rest.find("/Frameworks/").unwrap();
+        let fw_path = &rest[fw_pos + 1..];
+        return Some(env_root.join(fw_path).display().to_string());
     }
 
     None

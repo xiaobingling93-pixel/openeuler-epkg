@@ -16,9 +16,16 @@ test_install_run() {
 # Test: programming language interpreter
 # Usage: test_lang_python / test_lang_perl / test_lang_ruby / test_lang_nodejs / test_lang_go
 test_lang_python() {
-    run_install python python3 || return 1
-    run python --version || return 1
-    run python -c "print('Hello from Python')" || return 1
+    # Different package names in different channels
+    if [ "$CHANNEL_NAME" = "brew" ]; then
+        run_install python@3.12 || return 1
+        run python3.12 --version || return 1
+        run python3.12 -c "print('Hello from Python')" || return 1
+    else
+        run_install python python3 || return 1
+        run python3 --version || return 1
+        run python3 -c "print('Hello from Python')" || return 1
+    fi
     return 0
 }
 
@@ -76,26 +83,34 @@ test_build_ninja() {
 # Test: scientific computing
 test_scipy_numpy() {
     run_install numpy || return 1
-    run python -c "import numpy; print('numpy version:', numpy.__version__)" || return 1
+    local py_cmd="python3"
+    [ "$CHANNEL_NAME" = "brew" ] && py_cmd="python3.12"
+    run $py_cmd -c "import numpy; print('numpy version:', numpy.__version__)" || return 1
     return 0
 }
 
 test_scipy_scipy() {
     run_install scipy || return 1
-    run python -c "import scipy; print('scipy version:', scipy.__version__)" || return 1
+    local py_cmd="python3"
+    [ "$CHANNEL_NAME" = "brew" ] && py_cmd="python3.12"
+    run $py_cmd -c "import scipy; print('scipy version:', scipy.__version__)" || return 1
     return 0
 }
 
 test_scipy_pandas() {
     run_install pandas || return 1
-    run python -c "import pandas; print('pandas version:', pandas.__version__)" || return 1
+    local py_cmd="python3"
+    [ "$CHANNEL_NAME" = "brew" ] && py_cmd="python3.12"
+    run $py_cmd -c "import pandas; print('pandas version:', pandas.__version__)" || return 1
     return 0
 }
 
 # Test: ML/AI
 test_ml_scikit() {
     run_install scikit-learn || return 1
-    run python -c "import sklearn; print('sklearn version:', sklearn.__version__)" || return 1
+    local py_cmd="python3"
+    [ "$CHANNEL_NAME" = "brew" ] && py_cmd="python3.12"
+    run $py_cmd -c "import sklearn; print('sklearn version:', sklearn.__version__)" || return 1
     return 0
 }
 
@@ -164,7 +179,10 @@ test_suite_langs() {
 
     # Ruby
     if ! echo "$skip_list" | grep -qw "ruby"; then
-        test_lang_ruby
+        # Skip ruby for brew - libyaml dependency conflicts with perl (both have "Changes" file)
+        if [ "$CHANNEL_NAME" != "brew" ]; then
+            test_lang_ruby
+        fi
     fi
 
     # Node.js

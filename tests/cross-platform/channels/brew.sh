@@ -25,8 +25,7 @@ test_suite_utils
 echo ""
 echo "=== Test 2: Programming Languages ==="
 
-# Skip python and perl (have unpack issues on brew)
-test_suite_langs "python perl"
+test_suite_langs
 
 #========================================
 # Test 3: Build Systems
@@ -41,8 +40,8 @@ test_suite_build
 #========================================
 echo ""
 echo "=== Test 4: Scientific Computing ==="
+echo "SKIP: brew Python packages are version-specific and may not match installed Python"
 
-# Skipped for brew (requires Python)
 # test_suite_scipy
 
 #========================================
@@ -50,8 +49,8 @@ echo "=== Test 4: Scientific Computing ==="
 #========================================
 echo ""
 echo "=== Test 5: Machine Learning ==="
+echo "SKIP: brew Python packages are version-specific and may not match installed Python"
 
-# Skipped for brew
 # test_suite_ml
 
 #========================================
