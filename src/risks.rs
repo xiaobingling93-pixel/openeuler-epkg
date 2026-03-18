@@ -4,7 +4,7 @@
 //! file conflict detection, and config file handling.
 
 use std::collections::HashMap;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use color_eyre::Result;
@@ -36,17 +36,7 @@ pub fn calculate_plan_sizes(plan: &mut InstallationPlan) -> Result<()> {
 /// Returns FilesystemInfo with filesystem ID, free space, and free inodes
 /// Always returns a FilesystemInfo struct, fsid=0 if statvfs failed
 pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
-    #[cfg(not(target_os = "linux"))]
-    {
-        // Non-Linux platforms: return default struct with fsid=0
-        FilesystemInfo {
-            path: mount_point.to_path_buf(),
-            fsid: 0,
-            free_space: u64::MAX,
-            free_inodes: u64::MAX,
-        }
-    }
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         use std::ffi::CString;
 
@@ -79,10 +69,20 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
         }
 
         // Get filesystem ID from statvfs
-        // f_fsid may be u64 or a struct depending on the system
-        // Convert to bytes using native endianness
-        let fsid_bytes = u64::to_ne_bytes(statvfs_buf.f_fsid);
-        info.fsid = u64::from_ne_bytes(fsid_bytes);
+        // On Linux, f_fsid is a u64 or struct depending on architecture
+        // On macOS, f_fsid is typically u32 (f_fsid_val[2])
+        // We create a unique ID by combining f_fsid and f_fsid (on Linux) or use dev_t
+        #[cfg(target_os = "linux")]
+        {
+            let fsid_bytes = u64::to_ne_bytes(statvfs_buf.f_fsid);
+            info.fsid = u64::from_ne_bytes(fsid_bytes);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // On macOS, use f_fsid as part of the filesystem ID
+            // f_fsid is actually u32 on macOS, combine with f_fsid for uniqueness
+            info.fsid = (statvfs_buf.f_fsid as u64) | ((statvfs_buf.f_fsid as u64) << 32);
+        }
 
         let bsize = statvfs_buf.f_bsize as u64;
         let bavail = if (statvfs_buf.f_flag & libc::ST_RDONLY) != 0 {
@@ -101,6 +101,16 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
         };
 
         info
+    }
+    #[cfg(not(unix))]
+    {
+        // Non-Unix platforms: return default struct with fsid=0
+        FilesystemInfo {
+            path: mount_point.to_path_buf(),
+            fsid: 0,
+            free_space: u64::MAX,
+            free_inodes: u64::MAX,
+        }
     }
 }
 

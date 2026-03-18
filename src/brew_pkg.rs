@@ -22,6 +22,7 @@ const BREW_META_FILES: &[&str] = &[
     "ChangeLog",
     "CHANGES",
     "COPYING",
+    "HISTORY",
     "LICENSE",
     "NEWS",
     "NEWS.md",
@@ -143,6 +144,10 @@ pub fn unpack_package<P: AsRef<Path>>(bottle_file: P, store_tmp_dir: P, pkgkey: 
 
     log::debug!("Successfully unpacked Brew bottle with {} entries", entries_processed);
 
+    // Note: Dylib path rewriting is done at link time (for Move link type)
+    // because paths need to be absolute and point to the specific environment.
+    // The store files retain the original placeholder paths until linking.
+
     // Create package.txt from pkgkey
     // pkgkey format: {pkgname}__{version}__{arch}
     if let Some(key) = pkgkey {
@@ -187,21 +192,25 @@ fn create_package_txt_from_pkgkey<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: &str
     Ok(())
 }
 
-/// Rewrites Homebrew placeholder dylib paths in Mach-O binaries.
+/// Rewrites Homebrew placeholder dylib paths in Mach-O binaries after linking.
 ///
 /// Homebrew bottles contain placeholder paths like:
 /// - @@HOMEBREW_CELLAR@@/pkgname/version/lib/libfoo.dylib
 /// - @@HOMEBREW_PREFIX@@/opt/dependency/lib/libbar.dylib
 ///
-/// These need to be rewritten to actual store paths for binaries to work.
-/// This function scans all Mach-O files in fs/bin and fs/lib and rewrites paths.
+/// These are rewritten to absolute paths under the environment root:
+/// - @@HOMEBREW_PREFIX@@/opt/pkgname/lib/libfoo.dylib -> env_root/lib/libfoo.dylib
+/// - @@HOMEBREW_CELLAR@@/pkgname/version/lib/libfoo.dylib -> env_root/lib/libfoo.dylib
+///
+/// This function is called after files are moved to the environment (LinkType::Move).
+/// Each environment gets its own copy with paths specific to that environment.
 #[cfg(target_os = "macos")]
-pub fn rewrite_dylib_paths(store_fs_dir: &Path, env_root: &Path) -> Result<()> {
+pub fn rewrite_dylib_paths_for_env(env_root: &Path) -> Result<()> {
     // Collect all potential Mach-O files (binaries and dylibs)
     let mut mach_o_files: Vec<std::path::PathBuf> = Vec::new();
 
     // Scan bin/ directory
-    let bin_dir = store_fs_dir.join("bin");
+    let bin_dir = env_root.join("bin");
     if bin_dir.exists() {
         for entry in walkdir::WalkDir::new(&bin_dir).into_iter().filter_map(|e| e.ok()) {
             let path = entry.path();
@@ -212,7 +221,7 @@ pub fn rewrite_dylib_paths(store_fs_dir: &Path, env_root: &Path) -> Result<()> {
     }
 
     // Scan lib/ directory
-    let lib_dir = store_fs_dir.join("lib");
+    let lib_dir = env_root.join("lib");
     if lib_dir.exists() {
         for entry in walkdir::WalkDir::new(&lib_dir).into_iter().filter_map(|e| e.ok()) {
             let path = entry.path();
@@ -223,18 +232,14 @@ pub fn rewrite_dylib_paths(store_fs_dir: &Path, env_root: &Path) -> Result<()> {
     }
 
     if mach_o_files.is_empty() {
-        log::debug!("No Mach-O files found in {}", store_fs_dir.display());
+        log::debug!("No Mach-O files found in {}", env_root.display());
         return Ok(());
     }
 
-    log::info!("Rewriting dylib paths in {} Mach-O files", mach_o_files.len());
-
-    // Build mapping from pkgname to env lib path
-    // e.g., "oniguruma" -> env_root/lib (where libonig.5.dylib is linked)
-    let env_lib = env_root.join("lib");
+    log::info!("Rewriting dylib paths in {} Mach-O files for env {}", mach_o_files.len(), env_root.display());
 
     for mach_o_path in &mach_o_files {
-        if let Err(e) = rewrite_dylib_paths_for_file(mach_o_path, &env_lib) {
+        if let Err(e) = rewrite_dylib_paths_for_file_in_env(mach_o_path, env_root) {
             log::warn!("Failed to rewrite dylib paths for {}: {}", mach_o_path.display(), e);
         }
     }
@@ -274,7 +279,7 @@ fn is_mach_o_file(path: &Path) -> bool {
 
 /// Rewrite dylib paths for a single Mach-O file using install_name_tool
 #[cfg(target_os = "macos")]
-fn rewrite_dylib_paths_for_file(mach_o_path: &Path, env_lib: &Path) -> Result<()> {
+fn rewrite_dylib_paths_for_file_in_env(mach_o_path: &Path, env_root: &Path) -> Result<()> {
     use std::process::Command;
 
     // Get current dylib paths using otool -L
@@ -303,10 +308,7 @@ fn rewrite_dylib_paths_for_file(mach_o_path: &Path, env_lib: &Path) -> Result<()
             // Check if this is a Homebrew placeholder path
             for prefix in HOMEBREW_PLACEHOLDER_PREFIXES {
                 if dylib_path.starts_with(prefix) {
-                    // Extract the dependency name from the path
-                    // @@HOMEBREW_PREFIX@@/opt/oniguruma/lib/libonig.5.dylib -> oniguruma
-                    // @@HOMEBREW_CELLAR@@/jq/1.8.1/lib/libjq.1.dylib -> jq (self-reference)
-                    if let Some(new_path) = resolve_homebrew_dylib_path(dylib_path, prefix, env_lib) {
+                    if let Some(new_path) = resolve_homebrew_dylib_path_for_env(dylib_path, prefix, env_root) {
                         log::debug!("Rewriting: {} -> {}", dylib_path, new_path);
                         changes.push((dylib_path.to_string(), new_path));
                     }
@@ -321,11 +323,11 @@ fn rewrite_dylib_paths_for_file(mach_o_path: &Path, env_lib: &Path) -> Result<()
     }
 
     // Apply changes using install_name_tool
-    for (old_path, new_path) in changes {
+    for (old_path, new_path) in &changes {
         let status = Command::new("install_name_tool")
             .arg("-change")
-            .arg(&old_path)
-            .arg(&new_path)
+            .arg(old_path)
+            .arg(new_path)
             .arg(mach_o_path)
             .status()
             .wrap_err_with(|| format!("Failed to run install_name_tool on {}", mach_o_path.display()))?;
@@ -339,25 +341,63 @@ fn rewrite_dylib_paths_for_file(mach_o_path: &Path, env_lib: &Path) -> Result<()
     Ok(())
 }
 
-/// Resolve a Homebrew placeholder dylib path to the actual path in the environment.
+/// Resolve a Homebrew placeholder dylib path to an absolute path under env_root.
 #[cfg(target_os = "macos")]
-fn resolve_homebrew_dylib_path(placeholder_path: &str, prefix: &str, _env_lib: &Path) -> Option<String> {
-    // Extract the library name (last component of the path)
+fn resolve_homebrew_dylib_path_for_env(placeholder_path: &str, prefix: &str, env_root: &Path) -> Option<String> {
+    // Extract the path after the placeholder prefix
     let rest = &placeholder_path[prefix.len()..];
-    let lib_name = rest.rsplit('/').next()?;
 
     match prefix {
         "@@HOMEBREW_PREFIX@@" => {
             // Format: /opt/pkgname/lib/libfoo.dylib or /lib/libfoo.dylib
-            // Use @loader_path relative path for portability across environments
-            Some(format!("@loader_path/../lib/{}", lib_name))
+            // The path after prefix may start with /opt/<pkgname>/ or directly /lib/
+            // We want to extract the lib/foo.dylib part and resolve under env_root/lib/
+            extract_lib_path_and_resolve(rest, env_root)
         }
         "@@HOMEBREW_CELLAR@@" => {
             // Format: /pkgname/version/lib/libfoo.dylib
-            // This is usually a self-reference (the package's own library)
-            // Use @loader_path relative path
-            Some(format!("@loader_path/../lib/{}", lib_name))
+            // Skip /pkgname/version/ part and find the actual path
+            // The path structure is: /<pkgname>/<version>/<actual_path>
+            let parts: Vec<&str> = rest.splitn(4, '/').collect();
+            if parts.len() >= 4 {
+                // parts[0] is empty (before first /), parts[1] is pkgname, parts[2] is version
+                // parts[3] is the rest of the path like "lib/libfoo.dylib"
+                extract_lib_path_and_resolve(&format!("/{}", parts[3]), env_root)
+            } else {
+                None
+            }
         }
         _ => None,
     }
+}
+
+/// Extract library path and resolve under env_root.
+/// Handles paths like /lib/libfoo.dylib, /opt/pkgname/lib/libfoo.dylib
+#[cfg(target_os = "macos")]
+fn extract_lib_path_and_resolve(rest: &str, env_root: &Path) -> Option<String> {
+    // Try to find lib/ in the path
+    if let Some(lib_pos) = rest.find("/lib/") {
+        let lib_path = &rest[lib_pos + 1..]; // Skip the leading slash, get "lib/foo.dylib"
+        let full_path = env_root.join(lib_path);
+        if full_path.exists() {
+            return Some(full_path.display().to_string());
+        }
+    }
+
+    // Fallback: try lib directly under env_root with just the library name
+    let lib_name = rest.rsplit('/').next()?;
+    let lib_path = env_root.join("lib").join(lib_name);
+    if lib_path.exists() {
+        return Some(lib_path.display().to_string());
+    }
+
+    // If the library doesn't exist yet, still return the expected path
+    // (it might be from another package being installed in the same batch)
+    if rest.contains("/lib/") {
+        let lib_pos = rest.find("/lib/").unwrap();
+        let lib_path = &rest[lib_pos + 1..];
+        return Some(env_root.join(lib_path).display().to_string());
+    }
+
+    None
 }

@@ -694,9 +694,21 @@ fn collect_store_pkglines() -> Result<(std::collections::HashMap<String, Vec<Str
             let package_path = entry.path();
             if package_path.is_dir() {
                 let fs_dir = package_path.join("fs");
+                // Check if fs directory exists and has actual files
+                // (for Move link type, files are moved to env leaving empty fs)
                 if !lfs::exists_on_host(&fs_dir) {
-                    // on LinkType::Move, files were moved into env
                     log::debug!("Skipping package {} - 'fs' directory does not exist", package_path.display());
+                    skipped_missing_fs += 1;
+                    continue;
+                }
+
+                // Check if fs directory has any regular files (not just empty dirs)
+                let has_files = walkdir::WalkDir::new(&fs_dir)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                    .any(|e| e.file_type().is_file());
+                if !has_files {
+                    log::debug!("Skipping package {} - 'fs' directory is empty (files moved to env)", package_path.display());
                     skipped_missing_fs += 1;
                     continue;
                 }

@@ -504,22 +504,8 @@ fn fork_and_execute_direct(env_root: &Path, run_options: &RunOptions) -> Result<
         env_vars.insert("CONDA_PREFIX".to_string(), env_root.display().to_string());
     }
 
-    // For Brew packages on macOS, set DYLD_LIBRARY_PATH to find dependent libraries
-    // Brew binaries use @loader_path/../lib/ for relative paths, but dependencies
-    // from other packages are linked in env/lib, not in each package's fs/lib
-    #[cfg(target_os = "macos")]
-    if channel_format == crate::models::PackageFormat::Brew {
-        let env_lib = env_root.join("lib");
-        if env_lib.exists() {
-            let existing = std::env::var("DYLD_LIBRARY_PATH").unwrap_or_default();
-            let new_path = if existing.is_empty() {
-                env_lib.display().to_string()
-            } else {
-                format!("{}:{}", env_lib.display(), existing)
-            };
-            env_vars.insert("DYLD_LIBRARY_PATH".to_string(), new_path);
-        }
-    }
+    // Note: Brew packages use absolute paths rewritten at link time (LinkType::Move),
+    // so no DYLD_LIBRARY_PATH is needed.
 
     // Apply environment variables
     for (key, value) in &env_vars {

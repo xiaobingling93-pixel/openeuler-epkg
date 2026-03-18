@@ -150,11 +150,12 @@ pub fn link_package(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> Result<(
     }
     link_package_generic(plan, store_fs_dir)?;
 
-    // For Brew packages on macOS, rewrite dylib placeholder paths
+    // For brew packages with Move, rewrite dylib paths to use absolute paths pointing to this env
     #[cfg(target_os = "macos")]
-    if plan.package_format == PackageFormat::Brew {
-        if let Err(e) = crate::brew_pkg::rewrite_dylib_paths(store_fs_dir, &plan.env_root) {
-            log::warn!("Failed to rewrite dylib paths for brew package: {}", e);
+    if plan.package_format == PackageFormat::Brew && plan.link == LinkType::Move {
+        log::info!("Rewriting brew dylib paths for env: {}", plan.env_root.display());
+        if let Err(e) = crate::brew_pkg::rewrite_dylib_paths_for_env(&plan.env_root) {
+            log::warn!("Failed to rewrite brew dylib paths: {}", e);
         }
     }
 
@@ -289,6 +290,14 @@ pub fn compute_link_type_and_reflink(
     use crate::models::env_config;
     let mut link_type = env_config().link;
     let mut can_reflink = false;
+
+    // Brew packages require Move link type because dylib paths are rewritten
+    // to use absolute paths pointing to the specific environment.
+    // This makes store sharing impossible, so each env gets its own copy.
+    if plan.package_format == PackageFormat::Brew {
+        link_type = LinkType::Move;
+        log::debug!("Forcing LinkType::Move for Brew packages");
+    }
 
     // Use stored filesystem info from plan
     let same_fs = same_filesystem(
