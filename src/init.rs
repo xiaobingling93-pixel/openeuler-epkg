@@ -27,6 +27,7 @@ use crate::apparmor;
 const GITEE_API_BASE:   &str = &"https://gitee.com/api/v5";
 const GITEE_OWNER:      &str = &"wu_fengguang";
 const REPO_EPKG:        &str = &"epkg";
+#[cfg(target_os = "linux")]
 const REPO_ELF_LOADER:  &str = &"elf-loader";
 #[cfg(feature = "libkrun")]
 const REPO_VMLINUX:     &str = &"sandbox-kernel";
@@ -133,8 +134,12 @@ pub fn upgrade_epkg() -> Result<()> {
     match check_for_updates() {
         Ok(init_plan) => {
             // Check if upgrade is needed
-            if init_plan.new.epkg_version != init_plan.current.epkg_version ||
-                init_plan.new.elf_loader_version != init_plan.current.elf_loader_version {
+            #[cfg(target_os = "linux")]
+            let need_upgrade = init_plan.new.epkg_version != init_plan.current.epkg_version ||
+                init_plan.new.elf_loader_version != init_plan.current.elf_loader_version;
+            #[cfg(not(target_os = "linux"))]
+            let need_upgrade = init_plan.new.epkg_version != init_plan.current.epkg_version;
+            if need_upgrade {
                 println!("Upgrading epkg installation...");
                 download_setup_files(&init_plan)?;
             } else {
@@ -208,20 +213,23 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
         ]);
     }
 
-    // Check for local elf-loader
-    if let Some(ref local_loader) = init_plan.local_elf_loader_path {
-        // Ensure parent directory exists before copying
-        if let Some(parent) = init_plan.elf_loader_path.parent() {
-            lfs::create_dir_all(parent)?;
+    // Check for local elf-loader (Linux only)
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(ref local_loader) = init_plan.local_elf_loader_path {
+            // Ensure parent directory exists before copying
+            if let Some(parent) = init_plan.elf_loader_path.parent() {
+                lfs::create_dir_all(parent)?;
+            }
+            lfs::copy(local_loader, &init_plan.elf_loader_path)?;
+            println!("Using local elf-loader from {}", local_loader.display());
+        } else if init_plan.need_download_elf_loader {
+            println!("Downloading elf-loader from {}", init_plan.elf_loader_url);
+            urls.extend(vec![
+                init_plan.elf_loader_url.clone(),
+                init_plan.elf_loader_sha_url.clone()
+            ]);
         }
-        lfs::copy(local_loader, &init_plan.elf_loader_path)?;
-        println!("Using local elf-loader from {}", local_loader.display());
-    } else if init_plan.need_download_elf_loader {
-        println!("Downloading elf-loader from {}", init_plan.elf_loader_url);
-        urls.extend(vec![
-            init_plan.elf_loader_url.clone(),
-            init_plan.elf_loader_sha_url.clone()
-        ]);
     }
 
     // Download vmlinux if built with libkrun feature
@@ -247,9 +255,10 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
     // so download.rs would think "File unchanged" based on file size matching.
     #[allow(unused_mut)]
     let mut sha256_files_to_delete: Vec<std::path::PathBuf> = vec![
-        init_plan.elf_loader_sha_path.clone(),
         init_plan.epkg_binary_sha_path.clone(),
     ];
+    #[cfg(target_os = "linux")]
+    sha256_files_to_delete.push(init_plan.elf_loader_sha_path.clone());
     #[cfg(feature = "libkrun")]
     if let Some(ref sha_path) = init_plan.vmlinux_path {
         sha256_files_to_delete.push(sha_path.with_extension("zst.sha256"));
@@ -268,9 +277,12 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
     }
 
     // Verify checksums
-    if init_plan.local_elf_loader_path.is_none() && init_plan.need_download_elf_loader {
-        utils::verify_sha256sum(&init_plan.elf_loader_sha_path)
-            .context("Failed to verify elf-loader checksum")?;
+    #[cfg(target_os = "linux")]
+    {
+        if init_plan.local_elf_loader_path.is_none() && init_plan.need_download_elf_loader {
+            utils::verify_sha256sum(&init_plan.elf_loader_sha_path)
+                .context("Failed to verify elf-loader checksum")?;
+        }
     }
 
     if init_plan.need_download_epkg_binary {
@@ -379,9 +391,12 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     // Copy epkg binary using atomic operation
     copy_epkg_binary_atomically(&epkg_source, &target_epkg, true)?;
 
-    // Copy elf-loader binary using atomic operation
-    let elf_loader_target = usr_bin.join("elf-loader");
-    copy_epkg_binary_atomically(&init_plan.elf_loader_path, &elf_loader_target, false)?;
+    // Copy elf-loader binary using atomic operation (Linux only)
+    #[cfg(target_os = "linux")]
+    {
+        let elf_loader_target = usr_bin.join("elf-loader");
+        copy_epkg_binary_atomically(&init_plan.elf_loader_path, &elf_loader_target, false)?;
+    }
 
     // Create symlink to epkg binary in the first valid PATH component
     create_epkg_symlink(&target_epkg)
@@ -688,6 +703,7 @@ impl GiteeRelease {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EpkgVersionInfo {
     epkg_version: String,
+    #[cfg(target_os = "linux")]
     elf_loader_version: String,
 }
 
@@ -699,20 +715,26 @@ struct InitPlan {
     epkg_binary_url: String,
     epkg_binary_sha_url: String,
     epkg_src_url: String,
+    #[cfg(target_os = "linux")]
     elf_loader_url: String,
+    #[cfg(target_os = "linux")]
     elf_loader_sha_url: String,
     // Local file paths
     epkg_binary_path: std::path::PathBuf,
     epkg_binary_sha_path: std::path::PathBuf,
     epkg_src_path: std::path::PathBuf,
+    #[cfg(target_os = "linux")]
     elf_loader_path: std::path::PathBuf,
+    #[cfg(target_os = "linux")]
     elf_loader_sha_path: std::path::PathBuf,
     // Flags
     need_download_epkg_binary: bool,
     need_download_epkg_src: bool,
+    #[cfg(target_os = "linux")]
     need_download_elf_loader: bool,
     using_local_repo: bool,
     // Local elf-loader info
+    #[cfg(target_os = "linux")]
     local_elf_loader_path: Option<std::path::PathBuf>,
     // vmlinux info for libkrun (only used when built with libkrun feature)
     #[allow(dead_code)]
@@ -811,6 +833,7 @@ fn get_epkg_version() -> Result<String> {
 }
 
 /// Get version from elf-loader binary
+#[cfg(target_os = "linux")]
 fn get_elf_loader_version(elf_loader_path: &Path) -> Result<String> {
     if !elf_loader_path.exists() {
         return Err(eyre::eyre!("elf-loader binary not found"));
@@ -836,22 +859,30 @@ fn get_elf_loader_version(elf_loader_path: &Path) -> Result<String> {
 fn get_current_epkg_version_info() -> Result<EpkgVersionInfo> {
     let epkg_version = get_epkg_version().unwrap_or_else(|_| env!("EPKG_VERSION_TAG").to_string());
 
-    // Try to find elf-loader in common locations
-    let env_root = find_env_root(SELF_ENV);
-    let possible_elf_loader_paths = [
-        env_root.as_ref().map(|root| root.join("usr/bin/elf-loader")).unwrap_or_else(|| PathBuf::new()),
-        dirs().epkg_downloads_cache.join(format!("epkg/elf-loader-{}", &config().common.arch)),
-        PathBuf::from("./elf-loader"),
-    ];
+    #[cfg(target_os = "linux")]
+    {
+        // Try to find elf-loader in common locations
+        let env_root = find_env_root(SELF_ENV);
+        let possible_elf_loader_paths = [
+            env_root.as_ref().map(|root| root.join("usr/bin/elf-loader")).unwrap_or_else(|| PathBuf::new()),
+            dirs().epkg_downloads_cache.join(format!("epkg/elf-loader-{}", &config().common.arch)),
+            PathBuf::from("./elf-loader"),
+        ];
 
-    let elf_loader_version = possible_elf_loader_paths
-        .iter()
-        .find_map(|path| get_elf_loader_version(path).ok())
-        .unwrap_or_else(|| "unknown".to_string());
+        let elf_loader_version = possible_elf_loader_paths
+            .iter()
+            .find_map(|path| get_elf_loader_version(path).ok())
+            .unwrap_or_else(|| "unknown".to_string());
 
+        Ok(EpkgVersionInfo {
+            epkg_version,
+            elf_loader_version,
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
     Ok(EpkgVersionInfo {
         epkg_version,
-        elf_loader_version,
     })
 }
 
@@ -991,12 +1022,16 @@ fn check_for_updates() -> Result<InitPlan> {
     // The download_urls() function uses epkg_downloads_cache directly, so we need to match that
     let epkg_download_dir = &dirs.epkg_downloads_cache;
 
-    // Check for local repo and local elf-loader BEFORE making API calls
+    // Check for local repo BEFORE making API calls
     let repo_root = find_repo_root()?;
     let using_local_repo = is_valid_local_repo(&repo_root);
+
+    #[cfg(target_os = "linux")]
     let local_elf_loader_path = repo_root.join("git/elf-loader/src/loader");
+    #[cfg(target_os = "linux")]
     let has_local_elf_loader = local_elf_loader_path.exists();
 
+    #[cfg(target_os = "linux")]
     let (new_version, epkg_binary_url, epkg_binary_sha_url, elf_loader_url, elf_loader_sha_url) = if using_local_repo && has_local_elf_loader {
         // Local development mode - use current versions and construct placeholder URLs
         let new_version = current_version.clone();
@@ -1019,8 +1054,19 @@ fn check_for_updates() -> Result<InitPlan> {
         (new_version, epkg_binary_url, epkg_binary_sha_url, elf_loader_url, elf_loader_sha_url)
     };
 
+    #[cfg(not(target_os = "linux"))]
+    let (new_version, epkg_binary_url, epkg_binary_sha_url) = {
+        let epkg_release = fetch_latest_release(GITEE_OWNER, REPO_EPKG)?;
+        let new_version = EpkgVersionInfo {
+            epkg_version: epkg_release.tag_name.clone(),
+        };
+        let (epkg_binary_url, epkg_binary_sha_url) = epkg_release.find_asset_urls_for_arch("epkg", arch)?;
+        (new_version, epkg_binary_url, epkg_binary_sha_url)
+    };
+
     // Always show version information
     println!("  epkg: {} → {}", current_version.epkg_version, new_version.epkg_version);
+    #[cfg(target_os = "linux")]
     println!("  elf-loader: {} → {}", current_version.elf_loader_version, new_version.elf_loader_version);
 
     let epkg_src_url = format!("https://gitee.com/{}/{}/repository/archive/{}.tar.gz", GITEE_OWNER, REPO_EPKG, new_version.epkg_version);
@@ -1030,12 +1076,16 @@ fn check_for_updates() -> Result<InitPlan> {
     let epkg_binary_path      = mirror::Mirrors::remote_url_to_path(&epkg_binary_url,       &epkg_download_dir, "epkg")?;
     let epkg_binary_sha_path  = mirror::Mirrors::remote_url_to_path(&epkg_binary_sha_url,   &epkg_download_dir, "epkg")?;
     let epkg_src_path         = mirror::Mirrors::remote_url_to_path(&epkg_src_url,          &epkg_download_dir, "epkg")?;
+
+    #[cfg(target_os = "linux")]
     let elf_loader_path       = mirror::Mirrors::remote_url_to_path(&elf_loader_url,        &epkg_download_dir, "epkg")?;
+    #[cfg(target_os = "linux")]
     let elf_loader_sha_path   = mirror::Mirrors::remote_url_to_path(&elf_loader_sha_url,    &epkg_download_dir, "epkg")?;
 
     // Determine what needs to be downloaded
     let need_download_epkg_binary = is_upgrade;
     let need_download_epkg_src = !using_local_repo;
+    #[cfg(target_os = "linux")]
     let need_download_elf_loader = !has_local_elf_loader;
 
     // Get vmlinux URL and path if built with libkrun feature
@@ -1064,17 +1114,23 @@ fn check_for_updates() -> Result<InitPlan> {
         epkg_binary_url,
         epkg_binary_sha_url,
         epkg_src_url,
+        #[cfg(target_os = "linux")]
         elf_loader_url,
+        #[cfg(target_os = "linux")]
         elf_loader_sha_url,
         epkg_binary_path,
         epkg_binary_sha_path,
         epkg_src_path,
+        #[cfg(target_os = "linux")]
         elf_loader_path,
+        #[cfg(target_os = "linux")]
         elf_loader_sha_path,
         need_download_epkg_binary,
         need_download_epkg_src,
+        #[cfg(target_os = "linux")]
         need_download_elf_loader,
         using_local_repo,
+        #[cfg(target_os = "linux")]
         local_elf_loader_path: if has_local_elf_loader { Some(local_elf_loader_path) } else { None },
         vmlinux_url,
         vmlinux_sha_url,
