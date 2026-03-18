@@ -208,7 +208,7 @@ pub fn parse_requires(package_format: PackageFormat, requires: &str) -> Result<A
         PackageFormat::Conda => parse_conda_requires(requires),
         PackageFormat::Apk => parse_archlinux_requires(requires),
         PackageFormat::Epkg => Err(ParseError::UnsupportedPackageType), // Default case
-        PackageFormat::Brew => Err(ParseError::UnsupportedPackageType), // TODO: Brew dependency parsing
+        PackageFormat::Brew => parse_brew_requires(requires),
     }
 }
 
@@ -586,6 +586,28 @@ pub fn parse_archlinux_requires(requires: &str) -> Result<AndDepends, ParseError
         and_depends.push(vec![PkgDepend {
             capability: name,
             constraints,
+        }]);
+    }
+
+    Ok(and_depends)
+}
+
+/// Parses Brew-style requirements.
+// Example inputs:
+// oniguruma
+// gettext, libunistring
+// Brew dependencies are simple package names (no version constraints in formula.json)
+pub fn parse_brew_requires(requires: &str) -> Result<AndDepends, ParseError> {
+    let mut and_depends = Vec::new();
+
+    for name in requires.split(',') {
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        and_depends.push(vec![PkgDepend {
+            capability: name.to_string(),
+            constraints: Vec::new(),
         }]);
     }
 

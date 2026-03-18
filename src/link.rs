@@ -148,7 +148,17 @@ pub fn link_package(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> Result<(
     if plan.package_format == PackageFormat::Conda {
         return crate::conda_link::link_conda_package(plan, store_fs_dir);
     }
-    link_package_generic(plan, store_fs_dir)
+    link_package_generic(plan, store_fs_dir)?;
+
+    // For Brew packages on macOS, rewrite dylib placeholder paths
+    #[cfg(target_os = "macos")]
+    if plan.package_format == PackageFormat::Brew {
+        if let Err(e) = crate::brew_pkg::rewrite_dylib_paths(store_fs_dir, &plan.env_root) {
+            log::warn!("Failed to rewrite dylib paths for brew package: {}", e);
+        }
+    }
+
+    Ok(())
 }
 
 /// Link package files using generic (non-format-specific) linking

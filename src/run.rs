@@ -495,13 +495,30 @@ fn fork_and_execute_direct(env_root: &Path, run_options: &RunOptions) -> Result<
     cmd.args(&run_options.args);
 
     // Set up environment variables
-    // Conda packages use RPATH for library resolution, so we don't need
-    // to set LD_LIBRARY_PATH or DYLD_LIBRARY_PATH
     let mut env_vars = run_options.env_vars.clone();
 
+    let channel_format = crate::models::channel_config().format;
+
     // Set CONDA_PREFIX if this is a conda environment
-    if crate::models::channel_config().format == crate::models::PackageFormat::Conda {
+    if channel_format == crate::models::PackageFormat::Conda {
         env_vars.insert("CONDA_PREFIX".to_string(), env_root.display().to_string());
+    }
+
+    // For Brew packages on macOS, set DYLD_LIBRARY_PATH to find dependent libraries
+    // Brew binaries use @loader_path/../lib/ for relative paths, but dependencies
+    // from other packages are linked in env/lib, not in each package's fs/lib
+    #[cfg(target_os = "macos")]
+    if channel_format == crate::models::PackageFormat::Brew {
+        let env_lib = env_root.join("lib");
+        if env_lib.exists() {
+            let existing = std::env::var("DYLD_LIBRARY_PATH").unwrap_or_default();
+            let new_path = if existing.is_empty() {
+                env_lib.display().to_string()
+            } else {
+                format!("{}:{}", env_lib.display(), existing)
+            };
+            env_vars.insert("DYLD_LIBRARY_PATH".to_string(), new_path);
+        }
     }
 
     // Apply environment variables
