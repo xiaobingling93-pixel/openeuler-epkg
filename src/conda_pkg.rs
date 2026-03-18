@@ -529,6 +529,71 @@ fn extract_linux_version_part(version_str: &str) -> Option<String> {
     None
 }
 
+/// Detect macOS version using sw_vers or uname
+/// Returns version string, e.g., "14.2.1"
+pub fn detect_osx_version() -> Result<Option<String>> {
+    #[cfg(target_os = "macos")]
+    {
+        // Try sw_vers first (gives macOS version like "14.2.1")
+        if let Ok(output) = Command::new("sw_vers").arg("-productVersion").output() {
+            let version_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !version_str.is_empty() {
+                // Normalize to at least major.minor format
+                return Ok(Some(normalize_osx_version(&version_str)));
+            }
+        }
+
+        // Fallback to uname -r (gives Darwin kernel version like "23.2.0")
+        if let Ok(output) = Command::new("uname").arg("-r").output() {
+            let version_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if let Some(version) = extract_osx_version_from_darwin(&version_str) {
+                return Ok(Some(version));
+            }
+        }
+        Ok(None)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(None)
+    }
+}
+
+/// Normalize macOS version string to standard format
+/// Converts "14" -> "14.0", "14.2" -> "14.2", "14.2.1" -> "14.2.1"
+fn normalize_osx_version(version: &str) -> String {
+    let parts: Vec<&str> = version.split('.').collect();
+    match parts.len() {
+        1 => format!("{}.{}", parts[0], "0"),
+        2 => version.to_string(),
+        _ => parts[..3].join("."), // Take only major.minor.patch
+    }
+}
+
+/// Extract macOS version from Darwin kernel version
+/// Maps Darwin version to macOS version (approximate)
+/// Darwin 23.x -> macOS 14.x (Sonoma)
+fn extract_osx_version_from_darwin(darwin_version: &str) -> Option<String> {
+    // Darwin version format: "23.2.0" (Darwin kernel version)
+    // macOS version = Darwin version - 9 (for Darwin 20+)
+    let re = regex::Regex::new(r"^([0-9]+)").ok()?;
+    if let Some(captures) = re.captures(darwin_version) {
+        if let Some(major_match) = captures.get(1) {
+            let darwin_major: u32 = major_match.as_str().parse().ok()?;
+            // Map Darwin major to macOS version
+            // Darwin 20 -> macOS 11 (Big Sur)
+            // Darwin 21 -> macOS 12 (Monterey)
+            // Darwin 22 -> macOS 13 (Ventura)
+            // Darwin 23 -> macOS 14 (Sonoma)
+            if darwin_major >= 20 {
+                let macos_major = darwin_major - 9;
+                return Some(format!("{}.{}", macos_major, "0"));
+            }
+        }
+    }
+    None
+}
+
 /// Detect CUDA version using nvidia-smi or library detection
 /// Returns version string, e.g., "11.8"
 pub fn detect_cuda_version() -> Result<Option<String>> {
@@ -661,6 +726,15 @@ pub fn detect_conda_virtual_packages() -> Result<Vec<crate::models::Package>> {
     if let Ok(Some(linux_version)) = detect_linux_version() {
         virtual_packages.push(create_virtual_package("__linux", &linux_version, None));
         log::debug!("Detected __linux version: {}", linux_version);
+    }
+
+    // Detect __osx (only on macOS)
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(Some(osx_version)) = detect_osx_version() {
+            virtual_packages.push(create_virtual_package("__osx", &osx_version, None));
+            log::debug!("Detected __osx version: {}", osx_version);
+        }
     }
 
     // Detect __glibc (only on Linux)
