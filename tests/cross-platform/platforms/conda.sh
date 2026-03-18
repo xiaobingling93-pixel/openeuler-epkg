@@ -1,9 +1,9 @@
 #!/bin/sh
-# Conda cross-platform test (Linux/macOS/Windows)
-# Tests basic conda package operations
+# Conda channel test (works on Linux/macOS/Windows)
+# Tests basic conda package operations across platforms
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PLATFORM_NAME="conda"
+CHANNEL_NAME="conda"
 ENV_NAME="${ENV_NAME:-test-conda}"
 
 . "$SCRIPT_DIR/common.sh"
@@ -44,7 +44,7 @@ trap cleanup EXIT
 test_env_create() {
     log_info "=== Test: Environment Creation ==="
     create_test_env "conda"
-    platform_ok "Environment created successfully"
+    channel_ok "Environment created successfully"
 }
 
 # ==============================================================================
@@ -59,7 +59,7 @@ test_package_info() {
         log_warn "Package info for 'pi' may not be available (this is OK if repo not synced)"
     fi
 
-    platform_ok "Package info query works"
+    channel_ok "Package info query works"
 }
 
 # ==============================================================================
@@ -85,7 +85,7 @@ test_install_run_jq() {
         log_info "jq version: $(check_cmd jq --version 2>&1 | head -1)"
     fi
 
-    platform_ok "jq install and run test passed"
+    channel_ok "jq install and run test passed"
 }
 
 # ==============================================================================
@@ -108,7 +108,7 @@ test_install_python() {
         log_warn "Python command not available"
     fi
 
-    platform_ok "Python install test passed"
+    channel_ok "Python install test passed"
 }
 
 # ==============================================================================
@@ -143,7 +143,7 @@ test_virtual_packages() {
     # __archspec based on architecture
     log_info "Architecture: $HOST_ARCH (archspec virtual package active)"
 
-    platform_ok "Virtual packages verified"
+    channel_ok "Virtual packages verified"
 }
 
 # ==============================================================================
@@ -158,7 +158,7 @@ test_remove_packages() {
         remove_packages "jq"
     fi
 
-    platform_ok "Package removal test passed"
+    channel_ok "Package removal test passed"
 }
 
 # ==============================================================================
@@ -177,7 +177,7 @@ main() {
     test_remove_packages
 
     log_info "===================================="
-    platform_ok "All conda tests passed"
+    channel_ok "All conda tests passed"
 }
 
 # Allow selective test execution

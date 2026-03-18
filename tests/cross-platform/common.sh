@@ -6,11 +6,13 @@
 #   ENV_NAME=test-conda EPKG_BIN=/path/to/epkg ./platforms/conda.sh
 #
 # Or via run.sh:
-#   ./run.sh -p conda    # run conda tests only
-#   ./run.sh             # run all platform tests
+#   ./run.sh -c conda    # run conda channel tests only
+#   ./run.sh             # run all channel tests
 
 SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
-PLATFORM_NAME="${PLATFORM_NAME:-$(basename "$0" .sh)}"
+# CHANNEL_NAME is set by test scripts (e.g., conda, homebrew, msys2)
+# These are package manager/channel names, NOT OS platforms
+CHANNEL_NAME="${CHANNEL_NAME:-$(basename "$0" .sh)}"
 
 # Colors for output (can be overridden by run.sh)
 RED='\033[0;31m'
@@ -18,24 +20,24 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-# Log command to stderr with platform prefix
+# Log command to stderr with channel prefix
 _log_cmd() {
-    printf '%b\n' "${GREEN}[${PLATFORM_NAME}]${NC} \$ $*" >&2
+    printf '%b\n' "${GREEN}[${CHANNEL_NAME}]${NC} \$ $*" >&2
 }
 
 # Log info message
 log_info() {
-    printf '%b\n' "${GREEN}[${PLATFORM_NAME}]${NC} $*" >&2
+    printf '%b\n' "${GREEN}[${CHANNEL_NAME}]${NC} $*" >&2
 }
 
 # Log warning
 log_warn() {
-    printf '%b\n' "${YELLOW}[${PLATFORM_NAME}]${NC} WARNING: $*" >&2
+    printf '%b\n' "${YELLOW}[${CHANNEL_NAME}]${NC} WARNING: $*" >&2
 }
 
 # Log error and exit
 log_error() {
-    printf '%b\n' "${RED}[${PLATFORM_NAME}]${NC} ERROR: $*" >&2
+    printf '%b\n' "${RED}[${CHANNEL_NAME}]${NC} ERROR: $*" >&2
     exit 1
 }
 
@@ -116,7 +118,7 @@ run_epkg() {
     RUN_COUNT=$((RUN_COUNT + 1))
     local log_dir
     log_dir=$(_get_log_dir)
-    local log_file="$log_dir/epkg-cross-${PLATFORM_NAME}-${test_name}-${RUN_COUNT}.log"
+    local log_file="$log_dir/epkg-cross-${CHANNEL_NAME}-${test_name}-${RUN_COUNT}.log"
 
     _log_cmd "epkg -e $ENV_NAME $*"
     "$EPKG_BIN" -e "$ENV_NAME" "$@" > "$log_file" 2>&1
@@ -205,14 +207,14 @@ cleanup_test_env() {
 }
 
 # Mark test as skipped
-platform_skip() {
-    printf '%b\n' "${YELLOW}[${PLATFORM_NAME}]${NC} SKIP: $*" >&2
+channel_skip() {
+    printf '%b\n' "${YELLOW}[${CHANNEL_NAME}]${NC} SKIP: $*" >&2
     exit 0
 }
 
 # Mark test as passed
-platform_ok() {
-    printf '%b\n' "${GREEN}[${PLATFORM_NAME}]${NC} OK: $*" >&2
+channel_ok() {
+    printf '%b\n' "${GREEN}[${CHANNEL_NAME}]${NC} OK: $*" >&2
 }
 
 # Verify virtual package is detected

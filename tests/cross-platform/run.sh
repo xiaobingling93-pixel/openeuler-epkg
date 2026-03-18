@@ -1,14 +1,14 @@
 #!/bin/bash
 # Cross-platform package manager test runner
-# Runs tests for conda, homebrew, msys2, etc. based on host platform
+# Runs tests for package channels (conda, homebrew, msys2, etc.) based on host OS
 #
 # Usage:
-#   ./run.sh                    # Run all applicable platform tests
-#   ./run.sh -p conda           # Run conda tests only
-#   ./run.sh -p conda -k        # Keep environment (don't cleanup)
+#   ./run.sh                    # Run all applicable channel tests
+#   ./run.sh -c conda           # Run conda channel tests only
+#   ./run.sh -c conda -k        # Keep environment (don't cleanup)
 #   ./run.sh -d                 # Debug mode (set -x)
 #
-# Supported platforms:
+# Supported channels:
 #   - conda     (Linux, macOS, Windows)
 #   - homebrew  (macOS, Linux) - planned
 #   - msys2     (Windows) - planned
@@ -25,7 +25,7 @@ set_color_names
 # Parse arguments
 DEBUG_FLAG=""
 KEEP_ENV=""
-SELECT_PLATFORM=""
+SELECT_CHANNEL=""
 REMAINING=""
 
 while [ $# -gt 0 ]; do
@@ -34,24 +34,24 @@ while [ $# -gt 0 ]; do
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  -p, --platform PLATFORM   Run tests for specific platform (conda)"
+            echo "  -c, --channel CHANNEL     Run tests for specific channel (conda)"
             echo "  -k, --keep                Keep test environment after tests (no cleanup)"
             echo "  -d, --debug               Enable debug mode (set -x)"
             echo "  -dd                       More verbose debug"
             echo "  -h, --help                Show this help"
             echo ""
-            echo "Platforms:"
-            echo "  conda    - Conda package manager (Linux, macOS, Windows)"
+            echo "Channels:"
+            echo "  conda    - Conda package channel (Linux, macOS, Windows)"
             echo ""
             echo "Examples:"
-            echo "  $0                        # Run all platform tests"
-            echo "  $0 -p conda               # Run conda tests only"
-            echo "  $0 -p conda -k            # Run conda tests, keep environment"
+            echo "  $0                        # Run all channel tests"
+            echo "  $0 -c conda               # Run conda channel tests only"
+            echo "  $0 -c conda -k            # Run conda tests, keep environment"
             exit 0
             ;;
-        -p|--platform)
+        -c|--channel)
             shift
-            SELECT_PLATFORM="$1"
+            SELECT_CHANNEL="$1"
             ;;
         -k|--keep)
             KEEP_ENV="1"
@@ -83,8 +83,9 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
 }
 
-# Detect host platform
-detect_host_platform() {
+# Detect host OS
+# Returns: linux, macos, windows, or unknown
+detect_host_os() {
     case "$(uname -s)" in
         Linux*)     echo "linux" ;;
         Darwin*)    echo "macos" ;;
@@ -93,41 +94,41 @@ detect_host_platform() {
     esac
 }
 
-HOST_PLATFORM=$(detect_host_platform)
-log "Detected host platform: $HOST_PLATFORM"
+HOST_OS=$(detect_host_os)
+log "Detected host OS: $HOST_OS"
 log "EPKG binary: $EPKG_BIN"
 
-# List available platform tests
-list_platform_tests() {
+# List available channel tests
+list_channel_tests() {
     for script in "$SCRIPT_DIR/platforms/"*.sh; do
         [ -f "$script" ] && basename "$script" .sh
     done
 }
 
-# Check if platform test should run
-should_run_platform() {
-    local platform="$1"
+# Check if channel test should run
+should_run_channel() {
+    local channel="$1"
 
-    # If specific platform requested, only run that
-    if [ -n "$SELECT_PLATFORM" ]; then
-        [ "$platform" = "$SELECT_PLATFORM" ]
+    # If specific channel requested, only run that
+    if [ -n "$SELECT_CHANNEL" ]; then
+        [ "$channel" = "$SELECT_CHANNEL" ]
         return $?
     fi
 
-    # Otherwise, check if platform is applicable for this host
-    case "$platform" in
+    # Otherwise, check if channel is applicable for this host OS
+    case "$channel" in
         conda)
-            # Conda works on all platforms
+            # Conda works on all OSes
             return 0
             ;;
         homebrew)
             # Homebrew only on macOS and Linux
-            [ "$HOST_PLATFORM" = "macos" ] || [ "$HOST_PLATFORM" = "linux" ]
+            [ "$HOST_OS" = "macos" ] || [ "$HOST_OS" = "linux" ]
             return $?
             ;;
         msys2)
             # MSYS2 only on Windows
-            [ "$HOST_PLATFORM" = "windows" ]
+            [ "$HOST_OS" = "windows" ]
             return $?
             ;;
         *)
@@ -136,27 +137,27 @@ should_run_platform() {
     esac
 }
 
-# Run platform test
-run_platform_test() {
-    local platform="$1"
-    local script="$SCRIPT_DIR/platforms/${platform}.sh"
+# Run channel test
+run_channel_test() {
+    local channel="$1"
+    local script="$SCRIPT_DIR/platforms/${channel}.sh"
 
     if [ ! -x "$script" ]; then
-        log "${YELLOW}Platform test script not found: $script${NC}"
+        log "${YELLOW}Channel test script not found: $script${NC}"
         return 1
     fi
 
-    log "${GREEN}Running $platform tests...${NC}"
+    log "${GREEN}Running $channel tests...${NC}"
 
-    export ENV_NAME="test-${platform}"
-    export PLATFORM_NAME="$platform"
+    export ENV_NAME="test-${channel}"
+    export CHANNEL_NAME="$channel"
 
     if ! "$script"; then
-        log "${RED}$platform tests failed${NC}"
+        log "${RED}$channel tests failed${NC}"
         return 1
     fi
 
-    log "${GREEN}$platform tests passed${NC}"
+    log "${GREEN}$channel tests passed${NC}"
     return 0
 }
 
@@ -166,27 +167,27 @@ main() {
     log "===================================="
 
     local failed=0
-    local failed_platform=""
+    local failed_channel=""
 
-    for platform in $(list_platform_tests); do
-        if should_run_platform "$platform"; then
-            if ! run_platform_test "$platform"; then
+    for channel in $(list_channel_tests); do
+        if should_run_channel "$channel"; then
+            if ! run_channel_test "$channel"; then
                 failed=$((failed + 1))
-                if [ -z "$failed_platform" ]; then
-                    failed_platform="$platform"
+                if [ -z "$failed_channel" ]; then
+                    failed_channel="$channel"
                 fi
             fi
         else
-            log "${YELLOW}Skipping $platform (not applicable for $HOST_PLATFORM)${NC}"
+            log "${YELLOW}Skipping $channel (not applicable for $HOST_OS)${NC}"
         fi
     done
 
     log "===================================="
 
     if [ $failed -gt 0 ]; then
-        log "${RED}Tests failed for: $failed_platform${NC}"
-        if [ -n "$SELECT_PLATFORM" ]; then
-            log "Reproduce with: $SCRIPT_DIR/run.sh -p $SELECT_PLATFORM"
+        log "${RED}Tests failed for: $failed_channel${NC}"
+        if [ -n "$SELECT_CHANNEL" ]; then
+            log "Reproduce with: $SCRIPT_DIR/run.sh -c $SELECT_CHANNEL"
         fi
         exit 1
     fi
