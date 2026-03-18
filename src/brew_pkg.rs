@@ -14,30 +14,63 @@ const HOMEBREW_PLACEHOLDER_PREFIXES: &[&str] = &[
     "@@HOMEBREW_PREFIX@@",
 ];
 
-/// Common metadata files that brew packages include at root level
+/// Common metadata file prefixes (base names) that brew packages include at root level
 /// These should be moved to info/brew/ to avoid conflicts between packages
-const BREW_META_FILES: &[&str] = &[
+const BREW_META_FILE_PREFIXES: &[&str] = &[
     "AUTHORS",
     "CHANGELOG",
-    "ChangeLog",
     "CHANGES",
     "COPYING",
     "HISTORY",
     "LICENSE",
     "NEWS",
-    "NEWS.md",
     "README",
-    "README.md",
-    "README.txt",
     "RELEASE",
-    "RELEASE_NOTES",
-    "sbom.spdx.json",
     "TODO",
 ];
 
+/// Specific metadata file names to check
+const BREW_META_FILE_NAMES: &[&str] = &[
+    "ChangeLog",
+    "RELEASE_NOTES",
+    "sbom.spdx.json",
+];
+
 /// Check if a path component is a brew metadata file
+/// Matches files at root level with ALL CAPS names (possibly with extensions)
 fn is_brew_meta_file(name: &str) -> bool {
-    BREW_META_FILES.iter().any(|&meta| name == meta)
+    // Check specific file names
+    if BREW_META_FILE_NAMES.iter().any(|&meta| name == meta) {
+        return true;
+    }
+
+    // Check if name starts with one of the known prefixes
+    // Handles: LICENSE, LICENSE.md, README.rst, etc.
+    for prefix in BREW_META_FILE_PREFIXES {
+        if name == *prefix {
+            return true;
+        }
+        // Check with extension: PREFIX.ext (e.g., README.md, CHANGELOG.md)
+        if name.starts_with(prefix) && name.len() > prefix.len() {
+            let rest = &name[prefix.len()..];
+            // Match .ext patterns where ext is lowercase letters
+            if rest.starts_with('.') && rest[1..].chars().all(|c| c.is_ascii_lowercase()) {
+                return true;
+            }
+        }
+    }
+
+    // Check for ALL CAPS names (possibly with extensions)
+    // e.g., AUTHORS, CONTRIBUTORS, PATENTS, etc.
+    let base_name = name.split('.').next().unwrap_or(name);
+    if base_name.chars().all(|c| c.is_ascii_uppercase() || c == '_' || c == '-') && base_name.len() > 2 {
+        // Must have at least some uppercase letters (not just ___ or ---)
+        if base_name.chars().any(|c| c.is_ascii_uppercase()) {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Unpacks a Brew bottle to the specified directory
