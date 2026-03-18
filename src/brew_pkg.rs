@@ -32,6 +32,7 @@ const BREW_META_FILES: &[&str] = &[
     "RELEASE",
     "RELEASE_NOTES",
     "sbom.spdx.json",
+    "TODO",
 ];
 
 /// Check if a path component is a brew metadata file
