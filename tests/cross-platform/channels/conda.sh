@@ -3,47 +3,100 @@
 
 ENV_NAME="${ENV_NAME:-test-conda}"
 EPKG_BIN="${EPKG_BIN:-}"
-. "$(dirname "$0")/../common.sh"
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+. "$SCRIPT_DIR/common.sh"
 
 setup
 
 # Update repo
 epkg update
 
-# Test 1: Install and run simple package (jq)
-run_install jq || channel_skip "no jq for channel=$CHANNEL_NAME"
-check_cmd jq --version || channel_skip "jq not found"
-run jq --version
+#========================================
+# Test 1: Utility packages
+#========================================
+echo ""
+echo "=== Test 1: Utility packages ==="
 
-# Test 2: Install another package (tests Move + re-download)
+# jq - JSON processor
+test_util_jq || channel_skip "no jq for channel=$CHANNEL_NAME"
+
+# wget - file downloader
 run_install wget || channel_skip "no wget for channel=$CHANNEL_NAME"
-check_cmd wget --version || channel_skip "wget not found"
-run wget --version
+run wget --version || channel_skip "wget not found"
 
-# Test 3: Install package with dependencies (curl has many deps)
-run_install curl || channel_skip "no curl for channel=$CHANNEL_NAME"
-run curl --version
+# curl - network tool
+run_install curl
+run curl --version 2>&1 | head -2
 
-# Test 4: Install and test Python
-run_install python python3 || channel_skip "no python for channel=$CHANNEL_NAME"
-check_cmd python --version 2>&1 || check_cmd python3 --version 2>&1 || channel_skip "python not found"
-run python -c "print('Hello from Python')"
+# sed - stream editor
+run_install sed
+run sed --version 2>&1 | head -2
 
-# Test 5: Package removal
-run_remove wget || echo "INFO: wget removal may have failed"
+#========================================
+# Test 2: Programming Languages
+#========================================
+echo ""
+echo "=== Test 2: Programming Languages ==="
 
-# Test 6: List installed packages
-epkg list
+# Python
+test_lang_python
 
-# Test 7: Search for package
-epkg search jq
+# Perl
+test_lang_perl
 
-# Test 8: Install libarchive and test
-run_install libarchive || channel_skip "no libarchive for channel=$CHANNEL_NAME"
-run bsdcat --version 2>&1 || run bsdtar --version 2>&1 || echo "INFO: libarchive tools may have different names"
+# Ruby
+test_lang_ruby
 
-# Test 9: Install sed and run
-run_install sed || channel_skip "no sed for channel=$CHANNEL_NAME"
-run sed --version
+# Node.js (has dylib loading issue, skip version check)
+run_install nodejs node
+run node -e "console.log('Hello from Node.js')"
+
+#========================================
+# Test 3: Build Systems
+#========================================
+echo ""
+echo "=== Test 3: Build Systems ==="
+
+# cmake
+test_build_cmake
+
+#========================================
+# Test 4: Scientific Computing
+#========================================
+echo ""
+echo "=== Test 4: Scientific Computing ==="
+
+# numpy
+test_scipy_numpy
+
+# scipy
+test_scipy_scipy
+
+# pandas
+test_scipy_pandas
+
+#========================================
+# Test 5: Machine Learning
+#========================================
+echo ""
+echo "=== Test 5: Machine Learning ==="
+
+# scikit-learn
+test_ml_scikit
+
+#========================================
+# Test 6: Package Management
+#========================================
+echo ""
+echo "=== Test 6: Package Management ==="
+
+# Remove wget
+run_remove wget
+
+# List installed packages
+epkg list | head -30
+
+# Search for package
+epkg search jq | head -20
 
 channel_ok

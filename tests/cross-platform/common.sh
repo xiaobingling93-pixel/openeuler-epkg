@@ -8,6 +8,9 @@
 SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 CHANNEL_NAME="${CHANNEL_NAME:-$(basename "$0" .sh)}"
 
+# Source shared test functions
+. "$SCRIPT_DIR/lib.sh"
+
 [ -n "$ENV_NAME" ] && [ -n "$EPKG_BIN" ] || {
     echo "[$CHANNEL_NAME] Set ENV_NAME and EPKG_BIN (e.g. ENV_NAME=test-conda EPKG_BIN=/path/to/epkg $0)" >&2
     exit 1

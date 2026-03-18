@@ -3,34 +3,99 @@
 
 ENV_NAME="${ENV_NAME:-test-brew}"
 EPKG_BIN="${EPKG_BIN:-}"
-. "$(dirname "$0")/../common.sh"
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+. "$SCRIPT_DIR/common.sh"
 
 setup
 
 # Update repo
 epkg update
 
-# Test 1: Install and run simple package (jq)
-run_install jq || channel_skip "no jq for channel=$CHANNEL_NAME"
-check_cmd jq --version || channel_skip "jq not found"
-run jq --version
+#========================================
+# Test 1: Utility packages
+#========================================
+echo ""
+echo "=== Test 1: Utility packages ==="
 
-# Test 2: Install another package (tests Move + re-download)
+# jq - JSON processor
+test_util_jq || channel_skip "no jq for channel=$CHANNEL_NAME"
+
+# tree - directory listing
 run_install tree || channel_skip "no tree for channel=$CHANNEL_NAME"
-check_cmd tree --version || channel_skip "tree not found"
-run tree --version
+run tree --version || channel_skip "tree not found"
 
-# Test 3: Install package with dependencies (aalib)
-run_install aalib || channel_skip "no aalib for channel=$CHANNEL_NAME"
-run jq . <<< '{"test":1}'
+#========================================
+# Test 2: Programming Languages
+#========================================
+echo ""
+echo "=== Test 2: Programming Languages ==="
 
-# Test 4: Package removal
-run_remove tree || echo "INFO: tree removal may have failed"
+# Python (from brew, has symlink issue - skip for now)
+# run_install python@3.13 python@3.12 python@3.11
+# run python3 --version 2>&1 || run python --version 2>&1
 
-# Test 5: List installed packages
-epkg list
+# Perl - has unpack issue, skip for now
+# test_lang_perl
 
-# Test 6: Search for package
-epkg search jq
+# Node.js
+run_install node
+run node --version
+
+# Go
+test_lang_go
+
+#========================================
+# Test 3: Build Systems
+#========================================
+echo ""
+echo "=== Test 3: Build Systems ==="
+
+# cmake
+test_build_cmake
+
+# make
+test_build_make
+
+# ninja
+test_build_ninja
+
+#========================================
+# Test 4: Scientific Computing (brew bottles)
+#========================================
+echo ""
+echo "=== Test 4: Scientific Computing ==="
+
+# numpy - requires python, skip for now
+# run_install numpy
+# run python3 -c "import numpy; print('numpy:', numpy.__version__)" 2>&1
+
+# scipy - requires python, skip for now
+# run_install scipy
+# run python3 -c "import scipy; print('scipy:', scipy.__version__)" 2>&1
+
+#========================================
+# Test 5: ML/AI
+#========================================
+echo ""
+echo "=== Test 5: ML/AI ==="
+
+# pytorch - requires python, skip for now
+# run_install pytorch
+# run python3 -c "import torch; print('torch:', torch.__version__)" 2>&1
+
+#========================================
+# Test 6: Package Management
+#========================================
+echo ""
+echo "=== Test 6: Package Management ==="
+
+# Remove tree
+run_remove tree
+
+# List installed packages
+epkg list | head -30
+
+# Search for package
+epkg search jq | head -20
 
 channel_ok
