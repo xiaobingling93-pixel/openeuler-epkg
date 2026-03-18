@@ -359,10 +359,22 @@ build_lua_lib() {
 # Get package manager configuration
 get_package_manager_config() {
     local mode="$1"
-    local common_packages="git wget curl jq tar"
+    local common_packages
     packages=""
     update_cmd=""
     install_cmd=""
+
+    # Set common packages based on package manager
+    case "$PKG_MANAGER" in
+        brew)
+            # macOS: tar is built-in, git/curl/jq often pre-installed or don't need sudo
+            common_packages="wget jq"
+            ;;
+        *)
+            # Linux and others
+            common_packages="git wget curl jq tar"
+            ;;
+    esac
 
     case "$PKG_MANAGER" in
         apt)
