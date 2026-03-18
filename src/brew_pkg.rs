@@ -92,14 +92,28 @@ pub fn unpack_package<P: AsRef<Path>>(bottle_file: P, store_tmp_dir: P, pkgkey: 
         }
 
         // Reconstruct path without first two components (package_name and version)
-        // Check if this is a metadata file at root level (directly under package/version/)
+        // Check if this is a metadata file/directory at root level
         let stripped_components: Vec<_> = components.iter().skip(2).collect();
-        let is_root_meta_file = stripped_components.len() == 1 &&
+
+        // Check for .brew/ directory (contains formula with post_install etc)
+        let is_brew_dir = stripped_components.first()
+            .and_then(|c| c.as_os_str().to_str())
+            .map(|s| s == ".brew")
+            .unwrap_or(false);
+
+        // Check for root-level metadata files
+        let is_root_meta_file = !is_brew_dir && stripped_components.len() == 1 &&
             stripped_components[0].as_os_str().to_str()
                 .map(|s| is_brew_meta_file(s))
                 .unwrap_or(false);
 
-        let target_path = if is_root_meta_file {
+        let target_path = if is_brew_dir {
+            // Move .brew/ directory to info/brew/.brew/ (contains formula with post_install etc)
+            stripped_components.iter().skip(1).fold(
+                store_tmp_dir.join("info/brew/.brew"),
+                |acc, comp| acc.join(comp.as_os_str())
+            )
+        } else if is_root_meta_file {
             // Move metadata files to info/brew/ to avoid conflicts
             store_tmp_dir.join("info/brew").join(
                 stripped_components[0].as_os_str()
