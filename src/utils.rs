@@ -99,21 +99,27 @@ pub fn get_package_files(
 }
 
 // New function that reads from filelist.txt and provides type information
+// Accepts either the store path (containing fs/ and info/) or the fs/ directory path
 pub fn list_package_files_with_info(package_fs_dir: &str) -> Result<Vec<MtreeFileInfo>> {
     let package_fs_path = Path::new(package_fs_dir);
 
-    // Check if the package_fs_dir itself exists first
-    if !lfs::exists_on_host(package_fs_path) {
-        return Err(eyre::eyre!("Package filesystem directory does not exist: {}", package_fs_dir));
-    }
+    // Determine the store_dir: if input is fs/ dir, get parent; otherwise use input directly
+    let store_dir: &Path = if package_fs_path.file_name()
+        .and_then(|n| n.to_str()) == Some("fs") {
+        // Input is the fs/ directory, parent is store_dir
+        package_fs_path.parent()
+            .ok_or_else(|| eyre::eyre!("Cannot get parent directory of {}", package_fs_dir))?
+    } else if package_fs_path.join("fs").exists() {
+        // Input is the store directory, has fs/ subdir
+        package_fs_path
+    } else if package_fs_path.join("info/filelist.txt").exists() {
+        // Input is the store directory, fs/ doesn't exist but filelist.txt does
+        // This happens for consumed stores after LinkType::Move
+        package_fs_path
+    } else {
+        return Err(eyre::eyre!("Cannot determine store directory structure for {}", package_fs_dir));
+    };
 
-    // Check if it's actually a directory
-    if !package_fs_path.is_dir() {
-        return Err(eyre::eyre!("Package filesystem path is not a directory: {}", package_fs_dir));
-    }
-
-    let store_dir = package_fs_path.parent()
-        .ok_or_else(|| eyre::eyre!("Cannot get parent directory of {}", package_fs_dir))?;
     let filelist_path = store_dir.join("info/filelist.txt");
 
     // If filelist.txt doesn't exist, return an error

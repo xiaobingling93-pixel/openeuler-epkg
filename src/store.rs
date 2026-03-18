@@ -779,10 +779,62 @@ fn match_package_with_store(
     Ok(None)
 }
 
-/// Validate store package integrity by checking if key files exist
-/// Returns true if the store appears valid, false if corrupted
+/// Marker file created when a store package is consumed by LinkType::Move
+/// The file is placed in info/consumed.json before files are moved to env.
+/// If this file exists, the store should be skipped as invalid.
+const CONSUMED_MARKER_FILE: &str = "info/consumed.json";
+
+/// Create a consumed marker file for a store package.
+/// This is called before LinkType::Move to mark the store as consumed.
+/// If the move fails partway, the marker ensures the store is not reused.
+pub fn create_consumed_marker(store_path: &Path, _env_name: &str, env_root: &Path) -> Result<()> {
+    let info_dir = store_path.join("info");
+    lfs::create_dir_all(&info_dir)?;
+
+    let marker_path = info_dir.join("consumed.json");
+
+    // Create marker content with metadata
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let content = serde_json::json!({
+        "env_root": env_root.display().to_string(),
+        "consumed_at": timestamp,
+        "link_type": "Move"
+    });
+
+    let content_str = serde_json::to_string_pretty(&content)
+        .wrap_err("Failed to serialize consumed marker")?;
+
+    lfs::write(&marker_path, &content_str)?;
+    log::debug!("Created consumed marker: {}", marker_path.display());
+
+    Ok(())
+}
+
+/// Check if a store package has been consumed by LinkType::Move.
+/// Returns true if the consumed marker exists.
+pub fn is_store_consumed(store_path: &Path) -> bool {
+    let marker_path = store_path.join(CONSUMED_MARKER_FILE);
+    if lfs::exists_on_host(&marker_path) {
+        log::debug!("Store at {} has been consumed (marker exists)", store_path.display());
+        return true;
+    }
+    false
+}
+
+/// Validate store package integrity by checking if consumed marker exists or files are missing.
+/// Returns true if the store appears valid, false if consumed or corrupted.
 fn validate_store_integrity(pkgline: &str) -> bool {
     let store_path = dirs().epkg_store.join(pkgline);
+
+    // First check if consumed marker exists (LinkType::Move was used)
+    if is_store_consumed(&store_path) {
+        log::debug!("validate_store_integrity: store {} is consumed by Move", pkgline);
+        return false;
+    }
+
     let fs_dir = store_path.join("fs");
 
     // Check that fs directory exists

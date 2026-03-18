@@ -165,25 +165,27 @@ pub fn link_package(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> Result<(
 /// Link package files using generic (non-format-specific) linking
 /// This handles standard file linking without format-specific metadata processing
 pub fn link_package_generic(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> Result<()> {
+    // For LinkType::Move, create consumed marker before moving files
+    // This ensures the store is marked as consumed even if the move fails partway
+    if plan.link == LinkType::Move {
+        if let Some(store_path) = store_fs_dir.parent() {
+            // store_fs_dir is like /path/to/store/pkgline/fs
+            // store_path is like /path/to/store/pkgline
+            crate::store::create_consumed_marker(store_path, &plan.env_root.display().to_string(), &plan.env_root)
+                .with_context(|| format!("Failed to create consumed marker for {}", store_path.display()))?;
+        }
+    }
+
     // Standard linking for non-conda packages
     let fs_files = utils::list_package_files_with_info(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path: {}", store_fs_dir.display()))?)
         .with_context(|| format!("Failed to list package files in {}", store_fs_dir.display()))?;
     mirror_dir(&plan.env_root, store_fs_dir, &fs_files, plan.link, plan.can_reflink)
         .with_context(|| format!("Failed to mirror directory from {} to {}", store_fs_dir.display(), plan.env_root.display()))?;
 
-    // For link=move, remove the 'fs' dir after moving all files
-    if plan.link == LinkType::Move {
-        // Remove the fs directory after all files have been moved
-        if lfs::exists_in_env(store_fs_dir) {
-            // Try to remove the directory (should be empty or nearly empty after moves)
-            if let Err(e) = lfs::remove_dir_all(store_fs_dir) {
-                log::warn!("Failed to remove fs directory {} after move: {}", store_fs_dir.display(), e);
-                // Don't fail the entire operation if we can't remove the dir
-            } else {
-                log::debug!("Removed fs directory {} after move", store_fs_dir.display());
-            }
-        }
-    }
+    // Note: We don't remove fs/ directory after Move because:
+    // 1. expose_package() needs to read filelist.txt from info/ and check fs/ structure
+    // 2. The consumed.json marker already indicates the store is consumed
+    // 3. Empty directories in fs/ don't take significant space
 
     Ok(())
 }
@@ -443,7 +445,7 @@ pub fn mirror_file(
     can_reflink: bool,
 ) -> Result<()> {
     if is_link {
-        mirror_symlink_file(fs_file, target_path)
+        mirror_symlink_file(fs_file, target_path, link_type)
             .with_context(|| format!("Failed to handle symlink file {}", fs_file.display()))
     } else if is_config_file_path(fhs_file) {
         mirror_config_file(fs_file, target_path, can_reflink)
@@ -509,10 +511,20 @@ pub fn hard_link_or_copy(source: &Path, target: &Path, preserve_permissions: boo
 /// Parameters:
 /// - fs_file: Path to the symlink in the store
 /// - target_path: Where to create the symlink in the environment
-/// - _fhs_file: Relative path from store_fs_dir (unused, kept for consistency)
-fn mirror_symlink_file(fs_file: &Path, target_path: &Path) -> Result<()> {
+/// - link_type: Link type to use (for Move, symlink is moved instead of copied)
+fn mirror_symlink_file(fs_file: &Path, target_path: &Path, link_type: LinkType) -> Result<()> {
     utils::remove_any_existing_file(target_path, true)?;
-    log::trace!("mirror_symlink_file: fs_file={}, target_path={}", fs_file.display(), target_path.display());
+    log::trace!("mirror_symlink_file: fs_file={}, target_path={}, link_type={:?}", fs_file.display(), target_path.display(), link_type);
+
+    // For Move link type, rename the symlink instead of copying
+    if link_type == LinkType::Move {
+        // Ensure parent directory exists
+        if let Some(parent) = target_path.parent() {
+            lfs::create_dir_all(parent)?;
+        }
+        lfs::rename(fs_file, target_path)?;
+        return Ok(());
+    }
 
     // Handle regular symlink (not pointing to directory)
     copy_symlink(fs_file, target_path)
