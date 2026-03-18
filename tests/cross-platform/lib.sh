@@ -124,3 +124,130 @@ test_util_sed() {
     run sed --version || return 1
     return 0
 }
+
+#========================================
+# Standard Test Suites
+#========================================
+
+# Test Suite 1: Utility packages
+# Usage: test_suite_utils [skip_list]
+# Example: test_suite_utils "curl sed"  # skip curl and sed
+test_suite_utils() {
+    local skip_list="$1"
+
+    # jq - JSON processor (common to most channels)
+    if ! echo "$skip_list" | grep -qw "jq"; then
+        test_util_jq || channel_skip "no jq for channel=$CHANNEL_NAME"
+    fi
+
+    # tree - directory listing
+    if ! echo "$skip_list" | grep -qw "tree"; then
+        run_install tree || channel_skip "no tree for channel=$CHANNEL_NAME"
+        run tree --version || channel_skip "tree not found"
+    fi
+}
+
+# Test Suite 2: Programming Languages
+# Usage: test_suite_langs [skip_list]
+test_suite_langs() {
+    local skip_list="$1"
+
+    # Python
+    if ! echo "$skip_list" | grep -qw "python"; then
+        test_lang_python
+    fi
+
+    # Perl
+    if ! echo "$skip_list" | grep -qw "perl"; then
+        test_lang_perl
+    fi
+
+    # Ruby
+    if ! echo "$skip_list" | grep -qw "ruby"; then
+        test_lang_ruby
+    fi
+
+    # Node.js
+    if ! echo "$skip_list" | grep -qw "nodejs"; then
+        # Different package names in different channels
+        if [ "$CHANNEL_NAME" = "brew" ]; then
+            run_install node
+        else
+            run_install nodejs node
+        fi
+        run node -e "console.log('Hello from Node.js')"
+    fi
+
+    # Go
+    if ! echo "$skip_list" | grep -qw "go"; then
+        test_lang_go
+    fi
+}
+
+# Test Suite 3: Build Systems
+# Usage: test_suite_build [skip_list]
+test_suite_build() {
+    local skip_list="$1"
+
+    # cmake
+    if ! echo "$skip_list" | grep -qw "cmake"; then
+        test_build_cmake
+    fi
+
+    # make
+    if ! echo "$skip_list" | grep -qw "make"; then
+        test_build_make
+    fi
+
+    # ninja
+    if ! echo "$skip_list" | grep -qw "ninja"; then
+        test_build_ninja
+    fi
+}
+
+# Test Suite 4: Scientific Computing
+# Usage: test_suite_scipy [skip_list]
+test_suite_scipy() {
+    local skip_list="$1"
+
+    # numpy
+    if ! echo "$skip_list" | grep -qw "numpy"; then
+        test_scipy_numpy
+    fi
+
+    # scipy
+    if ! echo "$skip_list" | grep -qw "scipy"; then
+        test_scipy_scipy
+    fi
+
+    # pandas
+    if ! echo "$skip_list" | grep -qw "pandas"; then
+        test_scipy_pandas
+    fi
+}
+
+# Test Suite 5: Machine Learning
+# Usage: test_suite_ml [skip_list]
+test_suite_ml() {
+    local skip_list="$1"
+
+    # scikit-learn
+    if ! echo "$skip_list" | grep -qw "scikit"; then
+        test_ml_scikit
+    fi
+}
+
+# Test Suite 6: Package Management
+# Usage: test_suite_pkgmgr <package_to_remove>
+test_suite_pkgmgr() {
+    local pkg_to_remove="${1:-tree}"
+
+    # Remove package
+    run_remove "$pkg_to_remove"
+
+    # List installed packages
+    epkg list | head -30
+
+    # Search for package
+    epkg search jq | head -20
+}

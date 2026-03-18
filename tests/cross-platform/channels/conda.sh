@@ -17,20 +17,13 @@ epkg update
 echo ""
 echo "=== Test 1: Utility packages ==="
 
-# jq - JSON processor
-test_util_jq || channel_skip "no jq for channel=$CHANNEL_NAME"
+# Skip tree on conda (not commonly available)
+test_suite_utils "tree"
 
-# wget - file downloader
-run_install wget || channel_skip "no wget for channel=$CHANNEL_NAME"
-run wget --version || channel_skip "wget not found"
-
-# curl - network tool
-run_install curl
-run curl --version 2>&1 | head -2
-
-# sed - stream editor
-run_install sed
-run sed --version 2>&1 | head -2
+# Additional conda-specific utilities
+test_util_curl
+test_util_wget
+test_util_sed
 
 #========================================
 # Test 2: Programming Languages
@@ -38,18 +31,8 @@ run sed --version 2>&1 | head -2
 echo ""
 echo "=== Test 2: Programming Languages ==="
 
-# Python
-test_lang_python
-
-# Perl
-test_lang_perl
-
-# Ruby
-test_lang_ruby
-
-# Node.js (has dylib loading issue, skip version check)
-run_install nodejs node
-run node -e "console.log('Hello from Node.js')"
+# Skip go on conda (not commonly available)
+test_suite_langs "go"
 
 #========================================
 # Test 3: Build Systems
@@ -57,8 +40,8 @@ run node -e "console.log('Hello from Node.js')"
 echo ""
 echo "=== Test 3: Build Systems ==="
 
-# cmake
-test_build_cmake
+# Only cmake on conda
+test_suite_build "make ninja"
 
 #========================================
 # Test 4: Scientific Computing
@@ -66,14 +49,7 @@ test_build_cmake
 echo ""
 echo "=== Test 4: Scientific Computing ==="
 
-# numpy
-test_scipy_numpy
-
-# scipy
-test_scipy_scipy
-
-# pandas
-test_scipy_pandas
+test_suite_scipy
 
 #========================================
 # Test 5: Machine Learning
@@ -81,8 +57,7 @@ test_scipy_pandas
 echo ""
 echo "=== Test 5: Machine Learning ==="
 
-# scikit-learn
-test_ml_scikit
+test_suite_ml
 
 #========================================
 # Test 6: Package Management
@@ -90,13 +65,7 @@ test_ml_scikit
 echo ""
 echo "=== Test 6: Package Management ==="
 
-# Remove wget
-run_remove wget
-
-# List installed packages
-epkg list | head -30
-
-# Search for package
-epkg search jq | head -20
+# Remove curl (installed in Test 1)
+test_suite_pkgmgr "curl"
 
 channel_ok
