@@ -229,3 +229,65 @@ verify_virtual_package() {
         log_info "Virtual package $pkg may not be directly queryable (expected)"
     fi
 }
+
+# ==============================================================================
+# Test Framework Functions
+# ==============================================================================
+
+# Find epkg binary if not set
+_find_epkg_bin() {
+    if [ -n "${EPKG_BIN:-}" ]; then
+        return 0
+    fi
+
+    if [ -x "$HOME/.epkg/envs/self/usr/bin/epkg" ]; then
+        EPKG_BIN="$HOME/.epkg/envs/self/usr/bin/epkg"
+    elif [ -x "$SCRIPT_DIR/../../target/debug/epkg" ]; then
+        EPKG_BIN="$SCRIPT_DIR/../../target/debug/epkg"
+    elif [ -x "$SCRIPT_DIR/../../target/release/epkg" ]; then
+        EPKG_BIN="$SCRIPT_DIR/../../target/release/epkg"
+    else
+        log_error "EPKG_BIN not set and epkg binary not found"
+    fi
+    export EPKG_BIN
+}
+
+# Setup test environment
+# Args: $1 = channel name for environment creation
+# Sets up: EPKG_BIN, cleanup trap, detects platform
+setup_tests() {
+    local channel="${1:-$CHANNEL_NAME}"
+
+    # Detect platform
+    HOST_OS=$(detect_host_os)
+    HOST_ARCH=$(detect_host_arch)
+    log_info "Detected platform: $HOST_OS/$HOST_ARCH"
+
+    # Find epkg binary
+    _find_epkg_bin
+    log_info "Using epkg: $EPKG_BIN"
+
+    # Setup cleanup trap
+    trap '_cleanup_on_exit' EXIT
+}
+
+# Internal cleanup handler
+_cleanup_on_exit() {
+    if [ "${SKIP_CLEANUP:-}" != "1" ]; then
+        cleanup_test_env
+    fi
+}
+
+# Run a list of test functions
+# Args: $* = test function names to run in sequence
+run_tests() {
+    log_info "Starting $CHANNEL_NAME cross-platform tests"
+    log_info "===================================="
+
+    for test_func in "$@"; do
+        $test_func
+    done
+
+    log_info "===================================="
+    channel_ok "All $CHANNEL_NAME tests passed"
+}
