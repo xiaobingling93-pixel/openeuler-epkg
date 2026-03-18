@@ -117,11 +117,23 @@ impl BrewFormula {
             }
         }
 
-        // Construct bottle filename: {name}-{version}[_{revision}].{tag}.bottle.tar.gz
-        let bottle_filename = if self.revision > 0 {
-            format!("{}-{}_{}.{}.bottle.tar.gz", self.name, version, self.revision, bottle_tag)
+        // Construct bottle filename with revision and rebuild:
+        // - revision > 0: includes _{revision} after version
+        // - rebuild > 0: includes .{rebuild} after .bottle
+        // Examples:
+        //   jq-1.8.1.sonoma.bottle.tar.gz           (revision=0, rebuild=0)
+        //   lz4-1.10.0.sonoma.bottle.1.tar.gz       (revision=0, rebuild=1)
+        //   aalib-1.4rc5_2.sonoma.bottle.tar.gz     (revision=2, rebuild=0)
+        //   pkg-1.0_3.sonoma.bottle.2.tar.gz        (revision=3, rebuild=2)
+        let version_part = if self.revision > 0 {
+            format!("{}_{}", version, self.revision)
         } else {
-            format!("{}-{}.{}.bottle.tar.gz", self.name, version, bottle_tag)
+            version.clone()
+        };
+        let bottle_filename = if bottle.rebuild > 0 {
+            format!("{}-{}.{}.bottle.{}.tar.gz", self.name, version_part, bottle_tag, bottle.rebuild)
+        } else {
+            format!("{}-{}.{}.bottle.tar.gz", self.name, version_part, bottle_tag)
         };
 
         // Location is just the filename; baseurl is set separately
