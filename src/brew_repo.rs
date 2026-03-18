@@ -117,23 +117,31 @@ impl BrewFormula {
             }
         }
 
-        // Construct bottle filename with revision and rebuild:
-        // - revision > 0: includes _{revision} after version
-        // - rebuild > 0: includes .{rebuild} after .bottle
+        // Construct bottle filename following Homebrew's Bottle::Filename format:
+        // Reference: Homebrew/Library/Homebrew/bottle.rb
+        //
+        // Format: {name}-{pkg_version}.{tag}.bottle{.rebuild}.tar.gz
+        //
+        // Where:
+        // - pkg_version = version (when revision == 0) or version_revision (when revision > 0)
+        //   See Homebrew/Library/Homebrew/pkg_version.rb PkgVersion#to_str
+        // - rebuild suffix is only added when rebuild > 0
+        //   See Bottle::Filename#extname: ".#{tag}.bottle#{s}.tar.gz"
+        //   where s = rebuild.positive? ? ".#{rebuild}" : ""
+        //
         // Examples:
-        //   jq-1.8.1.sonoma.bottle.tar.gz           (revision=0, rebuild=0)
-        //   lz4-1.10.0.sonoma.bottle.1.tar.gz       (revision=0, rebuild=1)
-        //   aalib-1.4rc5_2.sonoma.bottle.tar.gz     (revision=2, rebuild=0)
-        //   pkg-1.0_3.sonoma.bottle.2.tar.gz        (revision=3, rebuild=2)
-        let version_part = if self.revision > 0 {
+        //   jq-1.8.1.sonoma.bottle.tar.gz           (version=1.8.1, revision=0, rebuild=0)
+        //   lz4-1.10.0.sonoma.bottle.1.tar.gz       (version=1.10.0, revision=0, rebuild=1)
+        //   aalib-1.4rc5_2.sonoma.bottle.tar.gz     (version=1.4rc5, revision=2, rebuild=0)
+        let pkg_version = if self.revision > 0 {
             format!("{}_{}", version, self.revision)
         } else {
             version.clone()
         };
         let bottle_filename = if bottle.rebuild > 0 {
-            format!("{}-{}.{}.bottle.{}.tar.gz", self.name, version_part, bottle_tag, bottle.rebuild)
+            format!("{}-{}.{}.bottle.{}.tar.gz", self.name, pkg_version, bottle_tag, bottle.rebuild)
         } else {
-            format!("{}-{}.{}.bottle.tar.gz", self.name, version_part, bottle_tag)
+            format!("{}-{}.{}.bottle.tar.gz", self.name, pkg_version, bottle_tag)
         };
 
         // Location is just the filename; baseurl is set separately
