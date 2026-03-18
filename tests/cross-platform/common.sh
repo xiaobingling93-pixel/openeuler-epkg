@@ -50,6 +50,17 @@ detect_host_os() {
     esac
 }
 
+# Get platform-specific run options
+# On macOS without libkrun, this returns empty (direct execution path used)
+_get_run_opts() {
+    local os
+    os=$(detect_host_os)
+    # macOS without libkrun uses direct execution for conda packages
+    # (they have RPATH and work like portable apps)
+    # With libkrun, we could use --isolate=vm here
+    echo ""
+}
+
 # Detect host architecture
 # Returns: x86_64, aarch64, arm64, i686, etc.
 detect_host_arch() {
@@ -127,8 +138,15 @@ run_epkg() {
 }
 
 # Run command in environment
+# On macOS, uses direct execution path (conda packages work like portable apps)
 run_in_env() {
-    run_epkg "run" run -- "$@"
+    local run_opts
+    run_opts=$(_get_run_opts)
+    if [ -n "$run_opts" ]; then
+        run_epkg "run" run "$run_opts" -- "$@"
+    else
+        run_epkg "run" run -- "$@"
+    fi
 }
 
 # Install packages

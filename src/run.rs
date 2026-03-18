@@ -321,6 +321,25 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
     }
 }
 
+#[cfg(not(target_os = "linux"))]
+fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<PathBuf> {
+    if Path::new(&run_options.command).is_absolute() {
+        Ok(PathBuf::from(&run_options.command))
+    } else if run_options.command.contains('/') {
+        Ok(PathBuf::from(&run_options.command))
+    } else {
+        // For relative commands, search in env's usr/bin
+        let cmd_in_env = env_root.join("usr/bin").join(&run_options.command);
+        if cmd_in_env.exists() {
+            Ok(cmd_in_env)
+        } else if lfs::exists_on_host(Path::new(&run_options.command)) {
+            Ok(PathBuf::from(&run_options.command))
+        } else {
+            Err(eyre::eyre!("Command '{}' not found in {}", run_options.command, env_root.display()))
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn prepare_and_create_process(
     env_root: &Path,
@@ -439,17 +458,143 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
             }
         }
         IsolateMode::Env | IsolateMode::Fs => {
-            Err(eyre::eyre!(
-                "Isolate mode '{}' is not supported on this platform. \
-                 Only --isolate=vm is available on macOS. \
-                 Use Linux for other sandbox modes.",
-                match isolate_mode {
-                    IsolateMode::Env => "env",
-                    IsolateMode::Fs => "fs",
-                    _ => unreachable!(),
-                }
-            ))
+            // For conda/homebrew/msys2 packages, they work like portable apps
+            // with their own library paths (RPATH), so we can run them directly
+            // from the host OS without namespace isolation
+            if prepared_opts.skip_namespace_isolation {
+                fork_and_execute_direct(env_root, &prepared_opts)
+            } else {
+                Err(eyre::eyre!(
+                    "Isolate mode '{}' is not supported on this platform. \
+                     Only --isolate=vm is available on macOS. \
+                     Use Linux for other sandbox modes.",
+                    match isolate_mode {
+                        IsolateMode::Env => "env",
+                        IsolateMode::Fs => "fs",
+                        _ => unreachable!(),
+                    }
+                ))
+            }
         }
+    }
+}
+
+/// Execute command directly on the host without namespace isolation.
+/// Used for conda/homebrew/msys2 packages on non-Linux platforms.
+#[cfg(not(target_os = "linux"))]
+fn fork_and_execute_direct(env_root: &Path, run_options: &RunOptions) -> Result<Option<i32>> {
+    use std::process::{Command, Stdio};
+
+    let cmd_path = resolve_command_path(env_root, run_options)?;
+
+    debug!("Running command directly on host: {}", cmd_path.display());
+    debug!("Args: {:?}", run_options.args);
+
+    // Build the command
+    let mut cmd = Command::new(&cmd_path);
+    cmd.args(&run_options.args);
+
+    // Set up environment variables
+    // Conda packages use RPATH for library resolution, so we don't need
+    // to set LD_LIBRARY_PATH or DYLD_LIBRARY_PATH
+    let mut env_vars = run_options.env_vars.clone();
+
+    // Set CONDA_PREFIX if this is a conda environment
+    if crate::models::channel_config().format == crate::models::PackageFormat::Conda {
+        env_vars.insert("CONDA_PREFIX".to_string(), env_root.display().to_string());
+    }
+
+    // Apply environment variables
+    for (key, value) in &env_vars {
+        cmd.env(key, value);
+    }
+
+    // Set working directory if requested
+    if run_options.chdir_to_env_root {
+        cmd.current_dir(env_root);
+    }
+
+    // Handle stdin
+    if run_options.stdin.is_some() {
+        cmd.stdin(Stdio::piped());
+    } else {
+        cmd.stdin(Stdio::inherit());
+    }
+
+    // Handle stdio redirection for background/daemon processes
+    if run_options.redirect_stdio {
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
+    } else {
+        cmd.stdout(Stdio::inherit());
+        cmd.stderr(Stdio::inherit());
+    }
+
+    // Spawn the process
+    let mut child = cmd.spawn()
+        .map_err(|e| eyre::eyre!("Failed to spawn command '{}': {}", cmd_path.display(), e))?;
+
+    // Write stdin if provided
+    if let Some(stdin_data) = &run_options.stdin {
+        use std::io::Write;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(stdin_data)
+                .map_err(|e| eyre::eyre!("Failed to write to stdin: {}", e))?;
+        }
+    }
+
+    if run_options.background {
+        // Return the PID for background processes
+        let pid = child.id() as i32;
+        debug!("Background process started with PID: {}", pid);
+        Ok(Some(pid))
+    } else {
+        // Wait for completion with optional timeout (polling-based)
+        let result = if run_options.timeout > 0 {
+            let timeout_duration = std::time::Duration::from_secs(run_options.timeout);
+            let start_time = std::time::Instant::now();
+            let mut status_opt = None;
+
+            while start_time.elapsed() < timeout_duration {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        status_opt = Some(status);
+                        break;
+                    }
+                    Ok(None) => {
+                        // Child still running, wait a bit and check again
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    Err(e) => {
+                        return Err(eyre::eyre!("Failed to check child status: {}", e));
+                    }
+                }
+            }
+
+            if let Some(status) = status_opt {
+                status
+            } else {
+                // Timeout occurred
+                let _ = child.kill();
+                return Err(eyre::eyre!(
+                    "Command '{}' timed out after {} seconds",
+                    cmd_path.display(),
+                    run_options.timeout
+                ));
+            }
+        } else {
+            child.wait()
+                .map_err(|e| eyre::eyre!("Failed to wait for child: {}", e))?
+        };
+
+        // Handle exit code
+        if let Some(code) = result.code() {
+            if code != 0 && !run_options.no_exit {
+                std::process::exit(code);
+            }
+        }
+
+        Ok(None)
     }
 }
 
