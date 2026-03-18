@@ -8,6 +8,30 @@ use flate2::read::GzDecoder;
 use crate::lfs;
 use crate::utils;
 
+/// Common metadata files that brew packages include at root level
+/// These should be moved to info/brew/ to avoid conflicts between packages
+const BREW_META_FILES: &[&str] = &[
+    "AUTHORS",
+    "CHANGELOG",
+    "ChangeLog",
+    "CHANGES",
+    "COPYING",
+    "LICENSE",
+    "NEWS",
+    "NEWS.md",
+    "README",
+    "README.md",
+    "README.txt",
+    "RELEASE",
+    "RELEASE_NOTES",
+    "sbom.spdx.json",
+];
+
+/// Check if a path component is a brew metadata file
+fn is_brew_meta_file(name: &str) -> bool {
+    BREW_META_FILES.iter().any(|&meta| name == meta)
+}
+
 /// Unpacks a Brew bottle to the specified directory
 ///
 /// Brew bottles are gzipped tar archives containing precompiled binaries.
@@ -68,10 +92,24 @@ pub fn unpack_package<P: AsRef<Path>>(bottle_file: P, store_tmp_dir: P, pkgkey: 
         }
 
         // Reconstruct path without first two components (package_name and version)
-        let target_path = components.iter().skip(2).fold(
-            store_tmp_dir.join("fs"),
-            |acc, comp| acc.join(comp.as_os_str())
-        );
+        // Check if this is a metadata file at root level (directly under package/version/)
+        let stripped_components: Vec<_> = components.iter().skip(2).collect();
+        let is_root_meta_file = stripped_components.len() == 1 &&
+            stripped_components[0].as_os_str().to_str()
+                .map(|s| is_brew_meta_file(s))
+                .unwrap_or(false);
+
+        let target_path = if is_root_meta_file {
+            // Move metadata files to info/brew/ to avoid conflicts
+            store_tmp_dir.join("info/brew").join(
+                stripped_components[0].as_os_str()
+            )
+        } else {
+            stripped_components.iter().fold(
+                store_tmp_dir.join("fs"),
+                |acc, comp| acc.join(comp.as_os_str())
+            )
+        };
 
         // Ensure parent directory exists
         if let Some(parent) = target_path.parent() {

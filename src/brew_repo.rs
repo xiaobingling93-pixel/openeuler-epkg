@@ -124,14 +124,8 @@ impl BrewFormula {
             format!("{}-{}.{}.bottle.tar.gz", self.name, version, bottle_tag)
         };
 
-        // Convert ghcr.io URL to mirror URL
-        // ghcr.io format: https://ghcr.io/v2/homebrew/core/{name}/blobs/sha256:{hash}
-        // mirror format: https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles/bottles/{filename}
-        let location = if bottle_file.url.contains("ghcr.io/v2/homebrew/core") {
-            format!("https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles/bottles/{}", bottle_filename)
-        } else {
-            bottle_file.url.clone()
-        };
+        // Location is just the filename; baseurl is set separately
+        let location = bottle_filename;
 
         // Extract actual arch from bottle_tag
         // bottle_tag formats: sonoma, arm64_sonoma, ventura, arm64_ventura, x86_64_linux, arm64_linux
@@ -251,8 +245,8 @@ pub fn parse_formula_json(repo: &RepoRevise, _release_dir: &PathBuf) -> Result<V
     let url = repo.index_url.clone();
     let location = url.split('/').last().unwrap_or("formula.jws.json.gz").to_string();
 
-    // For brew, location field contains full URL, so baseurl is empty
-    let package_baseurl = String::new();
+    // For brew, use mirror URL as baseurl
+    let package_baseurl = "https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles/bottles".to_string();
 
     let download_path = crate::mirror::Mirrors::url_to_cache_path(&url, &repo.repodata_name)
         .with_context(|| format!("Failed to convert URL to cache path: {}", url))?;
@@ -420,9 +414,8 @@ fn process_brew_formulas(repo_dir: &PathBuf, revise: &RepoReleaseItem, formulas:
             if let Some(ref license) = package.license {
                 lines.push(format!("license: {}", license));
             }
-            lines.push(String::new()); // Empty line between packages
 
-            let pkg_block = lines.join("\n");
+            let pkg_block = lines.join("\n") + "\n\n"; // End with blank line between packages
 
             file.write_all(pkg_block.as_bytes())
                 .with_context(|| format!("Failed to write package: {}", package.pkgname))?;
