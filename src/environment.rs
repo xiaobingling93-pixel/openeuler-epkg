@@ -268,15 +268,21 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     // usr/sbin creation is delayed to create_environment_dirs() (may be symlink on Fedora)
     lfs::create_dir_all(env_root.join("usr/bin"))?;
     lfs::create_dir_all(env_root.join("usr/lib"))?;
+    lfs::create_dir_all(env_root.join("usr/share"))?;
+    lfs::create_dir_all(env_root.join("usr/include"))?;
     lfs::create_dir_all(env_root.join("usr/local/bin"))?;
     lfs::create_dir_all(env_root.join("var"))?;
     lfs::create_dir_all(env_root.join("opt/epkg"))?;
     lfs::create_dir_all(env_root.join("etc/epkg"))?;
 
-    // Create symlinks in generation 1
+    // Create symlinks in generation 1 (usr-merge layout)
+    // This allows brew packages (which have bin/, share/, include/ at root)
+    // to work correctly with Linux namespace isolation that mounts env_root/usr -> /usr
     force_symlink("usr/sbin", env_root.join("sbin"))?;
     force_symlink("usr/bin", env_root.join("bin"))?;
     force_symlink("usr/lib", env_root.join("lib"))?;
+    force_symlink("usr/share", env_root.join("share"))?;
+    force_symlink("usr/include", env_root.join("include"))?;
 
     // Ensure usr/bin/epkg exists, pointing to a stable epkg binary (e.g., in self environment)
     create_epkg_symlink(env_root)?;
