@@ -73,6 +73,8 @@ pub enum PackageFormat {
     Pacman,
     #[serde(rename = "conda")]
     Conda,
+    #[serde(rename = "brew")]
+    Brew,
     #[serde(rename = "python")]
     Python,
 }
@@ -598,6 +600,7 @@ impl PackageFormat {
             PackageFormat::Pacman => "pacman",
             PackageFormat::Conda => "conda",
             PackageFormat::Python => "python",
+            PackageFormat::Brew => "brew",
         }
     }
 
@@ -611,6 +614,7 @@ impl PackageFormat {
             "pacman"    => Ok(PackageFormat::Pacman),
             "conda"     => Ok(PackageFormat::Conda),
             "python"    => Ok(PackageFormat::Python),
+            "brew"      => Ok(PackageFormat::Brew),
             _ => Err(eyre::eyre!("Unknown format: {}", s)),
         }
     }

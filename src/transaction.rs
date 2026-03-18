@@ -439,7 +439,7 @@ pub fn process_package_operation(
                                     run_action(plan, PackageAction::UnlinkFiles,  old_pkgkey, &old_info, Some(new_pkgkey), Some(&new_info))?;
                                     run_action(plan, PackageAction::PostUpgrade,  new_pkgkey, &new_info, Some(old_pkgkey), Some(&old_info))?;
                                 },
-                                PackageFormat::Epkg | PackageFormat::Python => { todo!() },
+                                PackageFormat::Epkg | PackageFormat::Python | PackageFormat::Brew => { todo!() },
                             }
 
                             if op.should_expose() {

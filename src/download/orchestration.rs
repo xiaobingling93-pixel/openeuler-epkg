@@ -538,11 +538,16 @@ pub fn enqueue_package_downloads(
     for pkgkey in packages.keys() {
         let package = crate::package_cache::load_package_info(pkgkey)
             .map_err(|e| eyre!("Failed to load package info for key: {}: {}", pkgkey, e))?;
-        let url = format!(
-            "{}/{}",
-            package.package_baseurl,
-            package.location
-        );
+        // If package_baseurl is empty, location contains full URL (e.g., brew bottles)
+        let url = if package.package_baseurl.is_empty() {
+            package.location.clone()
+        } else {
+            format!(
+                "{}/{}",
+                package.package_baseurl,
+                package.location
+            )
+        };
 
         // Use the larger of compressed size or installed size for download prioritization
         // This helps the download manager prioritize packages that are likely to take longer
@@ -582,11 +587,16 @@ pub fn enqueue_package_downloads(
 pub fn get_package_file_path(pkgkey: &str) -> Result<String> {
     let package = crate::package_cache::load_package_info(pkgkey)
         .map_err(|e| eyre!("Failed to load package info for key: {}: {}", pkgkey, e))?;
-    let url = format!(
-        "{}/{}",
-        package.package_baseurl,
-        package.location
-    );
+    // If package_baseurl is empty, location contains full URL (e.g., brew bottles)
+    let url = if package.package_baseurl.is_empty() {
+        package.location.clone()
+    } else {
+        format!(
+            "{}/{}",
+            package.package_baseurl,
+            package.location
+        )
+    };
 
     // Check if we have a download task for this URL
     let tasks = DOWNLOAD_MANAGER.tasks.lock()

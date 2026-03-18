@@ -1,0 +1,19 @@
+format: brew
+distro: brew
+distro_dirs:
+- homebrew
+versions:
+- "latest"
+repos:
+  core:
+index_url: https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles/api/formula.jws.json
+# XXX: brew repos not in mirrors.json yet, so cannot use $mirror here
+#index_url: $mirror/api/formula.jws.json
+
+# Example URLs:
+# https://mirrors.ustc.edu.cn/homebrew-bottles/api/formula.jws.json.gz
+# https://formulae.brew.sh/api/formula.jws.json
+#
+# Bottle URLs:
+# https://mirrors.ustc.edu.cn/homebrew-bottles/jq-1.7.1.ventura.bottle.tar.gz
+# https://ghcr.io/v2/homebrew/core/jq/blobs/sha256:abc123...

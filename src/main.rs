@@ -75,6 +75,8 @@ mod aur;
 mod conda_repo;
 mod conda_pkg;
 mod conda_link;
+mod brew_repo;
+mod brew_pkg;
 mod shebang;
 mod version_constraint;
 #[cfg(unix)]

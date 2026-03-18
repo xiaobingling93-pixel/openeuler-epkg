@@ -208,6 +208,7 @@ pub fn parse_requires(package_format: PackageFormat, requires: &str) -> Result<A
         PackageFormat::Conda => parse_conda_requires(requires),
         PackageFormat::Apk => parse_archlinux_requires(requires),
         PackageFormat::Epkg => Err(ParseError::UnsupportedPackageType), // Default case
+        PackageFormat::Brew => Err(ParseError::UnsupportedPackageType), // TODO: Brew dependency parsing
     }
 }
 

@@ -633,11 +633,16 @@ fn wait_downloads_and_unpack(
                         // Get the downloaded file path
                         let file_path = get_package_file_path(&pkgkey)?;
 
+                        // Load package info to get the format
+                        let package = crate::package_cache::load_package_info(&pkgkey)
+                            .map_err(|e| eyre!("Failed to load package info for {}: {}", pkgkey, e))?;
+
                         // Unpack the package (without linking)
                         let (_actual_pkgkey, pkgline) = crate::store::unpack_package(
                             &file_path,
                             &pkgkey,
                             &plan.store_pkglines_by_pkgname,
+                            Some(package.format),
                         )?;
 
                         // Update plan.new_pkgs with the updated pkgline so link_packages can find it

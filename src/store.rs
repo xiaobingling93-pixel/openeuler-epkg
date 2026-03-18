@@ -30,9 +30,10 @@ pub fn unpack_package(
     file_path: &str,
     pkgkey: &str,
     store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
+    format_hint: Option<PackageFormat>,
 ) -> Result<(String, String)> {
     // Unpack the package
-    let final_dir = unpack_mv_package(file_path, Some(pkgkey), Some(store_pkglines_by_pkgname))
+    let final_dir = unpack_mv_package_with_format(file_path, Some(pkgkey), Some(store_pkglines_by_pkgname), format_hint)
         .with_context(|| format!("Failed to unpack package: {}", file_path))?;
 
     // Get the pkgline from the directory name
@@ -236,18 +237,20 @@ fn deduplicate_files_by_hardlink(
 
 /// Unpacks a single package and moves it to the final store location
 /// Returns the path to the final directory where the package was unpacked
-pub fn unpack_mv_package(
+/// If format_hint is provided, uses it directly instead of detecting from file extension
+pub fn unpack_mv_package_with_format(
     package_file: &str,
     pkgkey: Option<&str>,
     store_pkglines_by_pkgname: Option<&HashMap<String, Vec<String>>>,
+    format_hint: Option<PackageFormat>,
 ) -> Result<std::path::PathBuf> {
     // Create temporary directory for unpacking
     let temp_name = Uuid::new_v4().to_string();
     let store_tmp_dir = crate::dirs::unpack_basedir().join(&temp_name);
     lfs::create_dir_all(&store_tmp_dir)?;
 
-    // Unpack the package
-    general_unpack_package(Path::new(package_file), &store_tmp_dir, pkgkey)
+    // Unpack the package (with optional format hint)
+    general_unpack_package(Path::new(package_file), &store_tmp_dir, pkgkey, format_hint)
         .wrap_err_with(|| format!("Failed to unpack package {} to {}", package_file, store_tmp_dir.display()))?;
 
     // Calculate content-addressable hash
@@ -331,14 +334,33 @@ pub fn unpack_mv_package(
     Ok(final_dir)
 }
 
+/// Backward-compatible wrapper for unpack_mv_package_with_format
+/// Detects format from file extension
+pub fn unpack_mv_package(
+    package_file: &str,
+    pkgkey: Option<&str>,
+    store_pkglines_by_pkgname: Option<&HashMap<String, Vec<String>>>,
+) -> Result<std::path::PathBuf> {
+    unpack_mv_package_with_format(package_file, pkgkey, store_pkglines_by_pkgname, None)
+}
+
 /// Generic package unpacking function that detects format and delegates to appropriate handler
-fn general_unpack_package<P: AsRef<Path>>(package_file: P, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
+/// If format_hint is provided, uses it directly; otherwise detects from file extension
+fn general_unpack_package<P: AsRef<Path>>(
+    package_file: P,
+    store_tmp_dir: P,
+    pkgkey: Option<&str>,
+    format_hint: Option<PackageFormat>,
+) -> Result<()> {
     let package_file = package_file.as_ref();
     let store_tmp_dir = store_tmp_dir.as_ref();
 
-    // Detect package format from file extension
-    let format = detect_package_format(package_file)
-        .wrap_err_with(|| format!("Failed to detect package format for: {}", package_file.display()))?;
+    // Use provided format hint or detect from file extension
+    let format = match format_hint {
+        Some(fmt) => fmt,
+        None => detect_package_format(package_file)
+            .wrap_err_with(|| format!("Failed to detect package format for: {}", package_file.display()))?,
+    };
 
     match format {
         #[cfg(target_os = "linux")]
@@ -358,6 +380,9 @@ fn general_unpack_package<P: AsRef<Path>>(package_file: P, store_tmp_dir: P, pkg
         }
         PackageFormat::Conda => {
             crate::conda_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
+        }
+        PackageFormat::Brew => {
+            crate::brew_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
         #[cfg(target_os = "linux")]
         PackageFormat::Epkg => {
