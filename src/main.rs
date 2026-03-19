@@ -78,6 +78,7 @@ mod conda_pkg;
 mod conda_link;
 mod brew_repo;
 mod brew_pkg;
+mod brew_service;
 mod shebang;
 mod version_constraint;
 #[cfg(unix)]

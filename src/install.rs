@@ -486,6 +486,20 @@ fn link_packages(plan: &mut InstallationPlan) -> Result<()> {
             if let Err(e) = crate::expose::create_libexec_bin_symlinks(&plan.env_root, &store_fs_dir) {
                 log::debug!("Failed to create libexec bin symlinks for {}: {}", pkgkey, e);
             }
+
+            // Generate service files for brew packages with service definition
+            if plan.package_format == crate::models::PackageFormat::Brew {
+                if let Some(package) = crate::package_cache::load_package_info(&pkgkey).ok() {
+                    if let Some(ref service_json) = package.service_json {
+                        if let Ok(service) = serde_json::from_str::<crate::brew_repo::BrewService>(service_json) {
+                            let pkgname = crate::package::pkgkey2pkgname(&pkgkey).unwrap_or_default();
+                            if let Err(e) = crate::brew_service::generate_service_files(&plan.env_root, &pkgname, &service) {
+                                log::warn!("Failed to generate service files for {}: {}", pkgkey, e);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

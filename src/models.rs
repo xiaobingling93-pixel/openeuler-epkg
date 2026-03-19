@@ -205,6 +205,12 @@ pub struct Package {
     #[serde(rename = "multiArch")]
     pub multi_arch: Option<String>,
 
+    /// Service definition as JSON string (for brew packages with service DSL)
+    /// Contains the BrewService struct serialized as JSON
+    #[serde(default)]
+    #[serde(rename = "serviceJson")]
+    pub service_json: Option<String>,
+
     #[serde(default)]
     pub format: PackageFormat,
 

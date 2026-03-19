@@ -385,6 +385,7 @@ fn process_key_value(package: &mut Package, key: &str, value: &str) -> Result<()
         "files"             => package.files        = value.split(", ").map(|s| s.to_string()).collect(),
         "source"            => package.source       = Some(value.to_string()),
         "originUrl"         => package.origin_url   = Some(value.to_string()),
+        "serviceJson"       => package.service_json = Some(value.to_string()),
         "repo"              => package.repodata_name = value.to_string(),
         _                   => {
             // Unknown field, ignore or log

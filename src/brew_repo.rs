@@ -259,6 +259,10 @@ impl BrewFormula {
         provides.extend(self.aliases.clone());
         provides.extend(self.oldnames.clone());
 
+        // Serialize service to JSON if present
+        let service_json = self.service.as_ref()
+            .and_then(|s| serde_json::to_string(s).ok());
+
         Some(Package {
             pkgname: self.name.clone(),
             version: format!("{}_{}", version, self.revision),
@@ -279,6 +283,7 @@ impl BrewFormula {
             license: self.license.clone(),
             // Store bottle_tag (platform info like sonoma, x86_64_linux, or "all") in tag field
             tag: Some(actual_tag.to_string()),
+            service_json,
             format: PackageFormat::Brew,
             ..Default::default()
         })
@@ -565,6 +570,10 @@ fn process_brew_formulas(repo_dir: &PathBuf, revise: &RepoReleaseItem, formulas:
                     }
                 }).collect();
                 lines.push(caveats_lines.join("\n"));
+            }
+            if let Some(ref service_json) = package.service_json {
+                // Write service definition as single-line JSON
+                lines.push(format!("serviceJson: {}", service_json));
             }
 
             let pkg_block = lines.join("\n") + "\n\n"; // End with blank line between packages
