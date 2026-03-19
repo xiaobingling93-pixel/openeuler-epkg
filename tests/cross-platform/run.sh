@@ -24,8 +24,9 @@ set_color_names
 
 # Parse arguments
 DEBUG_FLAG=""
-KEEP_ENV=""
+CLEANUP_ENV=""
 SELECT_CHANNEL=""
+SELECT_TEST=""
 REMAINING=""
 
 while [ $# -gt 0 ]; do
@@ -34,27 +35,39 @@ while [ $# -gt 0 ]; do
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  -c, --channel CHANNEL     Run tests for specific channel (conda)"
-            echo "  -k, --keep                Keep test environment after tests (no cleanup)"
+            echo "  -c, --channel CHANNEL     Run tests for specific channel (conda, brew)"
+            echo "  -t, --test TEST           Run specific test suite (utils, langs, build, scipy, ml, pkgmgr)"
+            echo "  -r, --remove              Remove test environment after tests (cleanup)"
             echo "  -d, --debug               Enable debug mode (set -x)"
             echo "  -dd                       More verbose debug"
             echo "  -h, --help                Show this help"
             echo ""
             echo "Channels:"
             echo "  conda    - Conda package channel (Linux, macOS, Windows)"
+            echo "  brew     - Homebrew package channel (macOS, Linux)"
+            echo ""
+            echo "Test suites:"
+            echo "  utils    - Utility packages (jq, tree)"
+            echo "  langs    - Programming languages (python, perl, ruby, nodejs, go)"
+            echo "  build    - Build systems (cmake, make, ninja)"
+            echo "  scipy    - Scientific computing (numpy, scipy, pandas)"
+            echo "  ml       - Machine learning (scikit-learn)"
+            echo "  pkgmgr   - Package management operations"
             echo ""
             echo "Examples:"
             echo "  $0                        # Run all channel tests"
             echo "  $0 -c conda               # Run conda channel tests only"
-            echo "  $0 -c conda -k            # Run conda tests, keep environment"
+            echo "  $0 -c brew -t langs       # Run brew languages test only"
+            echo ""
             exit 0
             ;;
         -c|--channel)
             shift
             SELECT_CHANNEL="$1"
             ;;
-        -k|--keep)
-            KEEP_ENV="1"
+        -t|--test)
+            shift
+            SELECT_TEST="$1"
             ;;
         -dd)
             DEBUG_FLAG="-dd"
@@ -151,6 +164,7 @@ run_channel_test() {
 
     export ENV_NAME="test-${channel}"
     export CHANNEL_NAME="$channel"
+    export SELECT_TEST="$SELECT_TEST"
 
     if ! "$script"; then
         log "${RED}$channel tests failed${NC}"

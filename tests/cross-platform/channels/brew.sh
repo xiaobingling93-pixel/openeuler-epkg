@@ -11,6 +11,14 @@ setup
 # Update repo
 epkg update
 
+# If a specific test is requested, run only that test
+if [ -n "$SELECT_TEST" ]; then
+    echo ""
+    run_test_suite "$SELECT_TEST"
+    channel_ok
+    exit 0
+fi
+
 #========================================
 # Test 1: Utility packages
 #========================================

@@ -97,9 +97,48 @@ channel_ok() {
     printf '%b\n' "${GREEN}[$CHANNEL_NAME]${NC} OK"
 }
 
-# Setup: create env and set cleanup trap
+# Setup: remove old env if exists, create new env, leave for debug
+# Following tests/README.md best practices:
+# - Remove env in the beginning, before create, if it already exists
+# - Leave env for human/agent debug (do not remove at end)
 setup() {
     local channel="${1:-$CHANNEL_NAME}"
+    # Clean up old env if exists (idempotent)
+    cleanup_env 2>/dev/null || true
     create_env "$channel"
-    trap cleanup_env EXIT
+}
+
+# Run a specific test suite by name
+run_test_suite() {
+    local suite="$1"
+    case "$suite" in
+        utils)
+            echo "=== Test 1: Utility packages ==="
+            test_suite_utils
+            ;;
+        langs)
+            echo "=== Test 2: Programming Languages ==="
+            test_suite_langs
+            ;;
+        build)
+            echo "=== Test 3: Build Systems ==="
+            test_suite_build
+            ;;
+        scipy)
+            echo "=== Test 4: Scientific Computing ==="
+            test_suite_scipy
+            ;;
+        ml)
+            echo "=== Test 5: Machine Learning ==="
+            test_suite_ml
+            ;;
+        pkgmgr)
+            echo "=== Test 6: Package Management ==="
+            test_suite_pkgmgr
+            ;;
+        *)
+            echo "Unknown test suite: $suite" >&2
+            return 1
+            ;;
+    esac
 }
