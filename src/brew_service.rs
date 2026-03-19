@@ -254,6 +254,7 @@ fn resolve_homebrew_prefix(path: &str, env_root: &Path) -> String {
 }
 
 /// Escape special characters for plist string values
+#[cfg(target_os = "macos")]
 fn escape_plist_string(s: &str) -> String {
     s.replace('&', "&amp;")
      .replace('<', "&lt;")

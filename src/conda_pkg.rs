@@ -512,36 +512,30 @@ fn extract_linux_version_part(version_str: &str) -> Option<String> {
 
 /// Detect macOS version using sw_vers or uname
 /// Returns version string, e.g., "14.2.1"
+#[cfg(target_os = "macos")]
 pub fn detect_osx_version() -> Result<Option<String>> {
-    #[cfg(target_os = "macos")]
-    {
-        // Try sw_vers first (gives macOS version like "14.2.1")
-        if let Ok(output) = Command::new("sw_vers").arg("-productVersion").output() {
-            let version_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !version_str.is_empty() {
-                // Normalize to at least major.minor format
-                return Ok(Some(normalize_osx_version(&version_str)));
-            }
+    // Try sw_vers first (gives macOS version like "14.2.1")
+    if let Ok(output) = Command::new("sw_vers").arg("-productVersion").output() {
+        let version_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !version_str.is_empty() {
+            // Normalize to at least major.minor format
+            return Ok(Some(normalize_osx_version(&version_str)));
         }
-
-        // Fallback to uname -r (gives Darwin kernel version like "23.2.0")
-        if let Ok(output) = Command::new("uname").arg("-r").output() {
-            let version_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if let Some(version) = extract_osx_version_from_darwin(&version_str) {
-                return Ok(Some(version));
-            }
-        }
-        Ok(None)
     }
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        Ok(None)
+    // Fallback to uname -r (gives Darwin kernel version like "23.2.0")
+    if let Ok(output) = Command::new("uname").arg("-r").output() {
+        let version_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if let Some(version) = extract_osx_version_from_darwin(&version_str) {
+            return Ok(Some(version));
+        }
     }
+    Ok(None)
 }
 
 /// Normalize macOS version string to standard format
 /// Converts "14" -> "14.0", "14.2" -> "14.2", "14.2.1" -> "14.2.1"
+#[cfg(target_os = "macos")]
 fn normalize_osx_version(version: &str) -> String {
     let parts: Vec<&str> = version.split('.').collect();
     match parts.len() {
@@ -554,6 +548,7 @@ fn normalize_osx_version(version: &str) -> String {
 /// Extract macOS version from Darwin kernel version
 /// Maps Darwin version to macOS version (approximate)
 /// Darwin 23.x -> macOS 14.x (Sonoma)
+#[cfg(target_os = "macos")]
 fn extract_osx_version_from_darwin(darwin_version: &str) -> Option<String> {
     // Darwin version format: "23.2.0" (Darwin kernel version)
     // macOS version = Darwin version - 9 (for Darwin 20+)

@@ -7,7 +7,6 @@ use flate2::read::MultiGzDecoder;
 use lazy_static::lazy_static;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
-use crate::utils;
 use crate::lfs;
 use crate::tar_extract::{create_package_dirs, ExtractConfig, extract_archive_with_policy};
 

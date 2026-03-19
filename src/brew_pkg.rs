@@ -10,6 +10,7 @@ use crate::lfs;
 use crate::tar_extract::{create_package_dirs, ExtractConfig, extract_archive_with_policy};
 
 /// Homebrew placeholder prefixes that need to be rewritten in dylib paths
+#[cfg(target_os = "macos")]
 const HOMEBREW_PLACEHOLDER_PREFIXES: &[&str] = &[
     "@@HOMEBREW_CELLAR@@",
     "@@HOMEBREW_PREFIX@@",

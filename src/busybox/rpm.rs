@@ -3,7 +3,7 @@ use color_eyre::Result;
 use color_eyre::eyre::WrapErr;
 use std::path::Path;
 use std::collections::{HashMap, HashSet};
-use crate::models::{InstalledPackageInfo, Package, SUPPORT_ARCH_LIST};
+use crate::models::{InstalledPackageInfo, Package, PackageFormat, SUPPORT_ARCH_LIST};
 use std::sync::{Arc, Mutex};
 use crate::mmio;
 use crate::models::dirs;
@@ -272,6 +272,7 @@ fn unpack_rpm_for_query(rpm_path: &str) -> Result<Package> {
                 rpm_path,
                 dummy_pkgkey,
                 &store_pkglines_by_pkgname,
+                Some(PackageFormat::Rpm),
             ).wrap_err_with(|| format!("Failed to unpack RPM file: {}", rpm_path))?;
 
             // Load package from store using pkgline (sets package.pkgline)
