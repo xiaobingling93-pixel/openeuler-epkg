@@ -199,25 +199,30 @@ pub fn get_env_base_path(env_name: &str) -> PathBuf {
     dirs().user_envs.join(env_name)
 }
 
+/// Get the relative path to epkg environment config (etc/epkg/env.yaml)
+fn env_config_relative_path() -> PathBuf {
+    PathBuf::from("etc").join("epkg").join("env.yaml")
+}
+
 /// Get the path to an environment's configuration file
 pub fn get_env_config_path(env_name: &str) -> PathBuf {
     let cfg = crate::config();
     // When env_root is set (e.g. create with --root, install --root), config lives at env_root/etc/epkg/env.yaml.
     // Check before in_env_root so that create with --root writes to the target path, not /etc.
     if !cfg.common.env_root.is_empty() && env_name == cfg.common.env_name {
-        return PathBuf::from(&cfg.common.env_root).join("etc/epkg/env.yaml");
+        return PathBuf::from(&cfg.common.env_root).join(env_config_relative_path());
     }
     // If we're running inside an environment root (chroot/bind mount), the config is at /etc/epkg/env.yaml
     if cfg.common.in_env_root && env_name == cfg.common.env_name {
         return PathBuf::from("/etc/epkg/env.yaml");
     }
-    get_env_base_path(env_name).join("etc/epkg/env.yaml")
+    get_env_base_path(env_name).join(env_config_relative_path())
 }
 
 pub fn find_env_base(env_name: &str) -> Option<PathBuf> {
     // Find environment based on current shared_store setting
     let base = get_env_base_path(env_name);
-    if base.join("etc/epkg/env.yaml").exists() {
+    if base.join(env_config_relative_path()).exists() {
         return Some(base);
     }
     None

@@ -176,11 +176,11 @@ fn collect_env_configs(
     }
 
     // Load env config
-    let env_config_path = env_path.join("etc/epkg/env.yaml");
+    let env_config_path = env_path.join("etc").join("epkg").join("env.yaml");
     if lfs::exists_in_env(&env_config_path) {
         if io::read_yaml_file::<EnvConfig>(&env_config_path).is_ok() {
             // Load installed packages
-            let packages_path = env_path.join("generations/current/installed-packages.json");
+            let packages_path = env_path.join("generations").join("current").join("installed-packages.json");
             if lfs::exists_in_env(&packages_path) {
                 if let Ok(packages_raw) = crate::io::read_json_file::<HashMap<String, InstalledPackageInfo>>(&packages_path) {
                     let packages: InstalledPackagesMap = packages_raw.into_iter().map(|(k, v)| (k, std::sync::Arc::new(v))).collect();

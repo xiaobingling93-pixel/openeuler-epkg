@@ -143,7 +143,6 @@ use crate::io::load_installed_packages;
 use crate::io::read_yaml_file;
 use crate::path::update_path;
 use crate::repo::sync_channel_metadata;
-#[cfg(unix)]
 use crate::list::list_packages_with_scope;
 use crate::install::install_packages;
 use crate::upgrade::upgrade_packages;
@@ -1284,7 +1283,7 @@ fn apply_env_config_from_path(env_root_or_etc: &Path, config: &mut EPKGConfig) -
     let config_path = if env_root_or_etc == Path::new("/") {
         PathBuf::from("/etc/epkg/env.yaml")
     } else {
-        env_root_or_etc.join("etc/epkg/env.yaml")
+        env_root_or_etc.join("etc").join("epkg").join("env.yaml")
     };
     if !config_path.exists() {
         return Err(eyre::eyre!("Environment config not found: {}", config_path.display()));
@@ -1323,7 +1322,7 @@ pub fn resolve_env_root(env_root: &str) -> Result<String> {
         ));
     }
 
-    let config_path = env_root.join("etc/epkg/env.yaml");
+    let config_path = env_root.join("etc").join("epkg").join("env.yaml");
     if !config_path.exists() {
         return Err(eyre::eyre!(
             "Environment not found at path: {}\n  (missing configuration file: {})",
@@ -1908,41 +1907,19 @@ fn command_env(sub_matches: &clap::ArgMatches) -> Result<()> {
 
 fn command_list(sub_matches: &clap::ArgMatches) -> Result<()> {
     // Determine scope - only one should be true, with installed as default
-    #[allow(unused)]
     let scope = if sub_matches.get_flag("all")   {  ListScope::All
     } else if sub_matches.get_flag("available")  {  ListScope::Available
     } else if sub_matches.get_flag("upgradable") {  ListScope::Upgradable
     } else                                       {  ListScope::Installed // default
     };
 
-    #[allow(unused)]
     let pattern = sub_matches.get_one::<String>("GLOB_PATTERN")
         .map(|s| s.as_str())
         .unwrap_or("");
 
-    #[cfg(unix)]
-    {
-        sync_channel_metadata()?;
-        list_packages_with_scope(scope, pattern)?;
-        Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        // Simple implementation for Windows: just list installed packages
-        load_installed_packages()?;
-        let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-        if installed.is_empty() {
-            println!("No packages installed.");
-        } else {
-            println!("{:<60} {:<10}", "Package", "Arch");
-            println!("{:-<60} {:-<10}", "", "");
-            for (pkgkey, info) in installed.iter() {
-                println!("{:<60} {:<10}", pkgkey, info.arch);
-            }
-            println!("\nTotal: {} packages", installed.len());
-        }
-        Ok(())
-    }
+    sync_channel_metadata()?;
+    list_packages_with_scope(scope, pattern)?;
+    Ok(())
 }
 
 fn command_info(sub_matches: &clap::ArgMatches) -> Result<()> {

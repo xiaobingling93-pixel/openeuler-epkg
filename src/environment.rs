@@ -1206,7 +1206,7 @@ pub fn registered_env_configs() -> Vec<EnvConfig> {
         }
 
         // Check if environment has a config file
-        let config_path = env_path.join("etc/epkg/env.yaml");
+        let config_path = env_path.join("etc").join("epkg").join("env.yaml");
         if !lfs::exists_in_env(&config_path) {
             return Ok(());
         }
