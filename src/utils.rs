@@ -675,6 +675,12 @@ pub fn user_prompt_and_confirm() -> Result<bool> {
         return Ok(true);
     }
 
+    // Auto-assume-yes when stdin is not a TTY (e.g., running from script)
+    let stdin_is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) != 0 };
+    if !stdin_is_tty {
+        return Ok(true);
+    }
+
     print!("\nDo you want to continue? [Y/n] ");
     io::stdout().flush()?;
     let mut user_input = String::new();
