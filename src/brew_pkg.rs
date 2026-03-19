@@ -16,6 +16,12 @@ const HOMEBREW_PLACEHOLDER_PREFIXES: &[&str] = &[
     "@@HOMEBREW_PREFIX@@",
 ];
 
+/// Global lock to serialize install_name_tool rewrites.
+/// Parallel package linking can trigger concurrent rewrite passes on the same env files.
+#[cfg(target_os = "macos")]
+static BREW_DYLIB_REWRITE_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+
 /// Common metadata file prefixes (base names) that brew packages include at root level
 /// These should be moved to info/brew/ to avoid conflicts between packages
 const BREW_META_FILE_PREFIXES: &[&str] = &[
@@ -243,6 +249,10 @@ fn create_package_txt_from_pkgkey<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: &str
 /// Each environment gets its own copy with paths specific to that environment.
 #[cfg(target_os = "macos")]
 pub fn rewrite_dylib_paths_for_env(env_root: &Path) -> Result<()> {
+    let _rewrite_guard = BREW_DYLIB_REWRITE_LOCK
+        .lock()
+        .map_err(|e| eyre::eyre!("Failed to acquire brew dylib rewrite lock: {}", e))?;
+
     // Collect all potential Mach-O files (binaries and dylibs)
     let mut mach_o_files: Vec<std::path::PathBuf> = Vec::new();
     let mut seen_real_paths: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
