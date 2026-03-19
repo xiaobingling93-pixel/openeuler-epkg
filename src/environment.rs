@@ -299,8 +299,11 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     force_symlink("usr/share", env_root.join("share"))?;
     force_symlink("usr/include", env_root.join("include"))?;
     // libexec is used by some packages (e.g., brew's go: bin/go -> ../libexec/bin/go)
-    // Create usr/libexec symlink so relative symlinks from usr/bin work correctly
-    force_symlink("../libexec", env_root.join("usr/libexec"))?;
+    // Create top-level libexec directory for brew packages
+    // Note: usr/libexec is NOT a symlink - it's a real directory used by RPM/Debian packages
+    // (e.g., glibc's getconf). The usr-merge pattern applies to bin/lib/sbin/share, but
+    // libexec follows the package's actual directory structure.
+    lfs::create_dir_all(env_root.join("libexec"))?;
     // macOS brew packages may have Frameworks, opt, and .app bundles at root level
     // Create symlinks so relative symlinks from usr/bin work correctly
     // e.g., bin/python3.12 -> ../Frameworks/Python.framework/...
