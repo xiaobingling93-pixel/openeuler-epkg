@@ -561,7 +561,7 @@ fn fork_and_execute_direct(env_root: &Path, run_options: &RunOptions) -> Result<
     if channel_format == crate::models::PackageFormat::Conda {
         env_vars.insert("CONDA_PREFIX".to_string(), env_root.display().to_string());
 
-        // On Windows, add conda Library/bin to PATH so DLLs can be found
+        // On Windows, set up PATH for conda executables
         #[cfg(windows)]
         {
             let library_bin = env_root.join("Library").join("bin");
@@ -570,20 +570,44 @@ fn fork_and_execute_direct(env_root: &Path, run_options: &RunOptions) -> Result<
             let usr_bin = env_root.join("usr").join("bin");
             let bin_dir = env_root.join("bin");
 
-            // Build PATH prefix with conda directories
-            let mut path_prefix = vec![
+            // Build PATH with conda directories first, then Windows system directories
+            // This ensures MSVC binaries (curl, wget, etc.) can find their DLLs
+            // without interference from MSYS2/MinGW runtime DLLs
+            //
+            // Order matters:
+            // 1. env_root - contains vcruntime*.dll from vc/vc14_runtime packages
+            // 2. bin/usr/bin/Scripts - contains symlinks to executables
+            // 3. Library/bin - contains DLLs and MSVC-compiled binaries
+            // 4. Library/mingw-w64/bin - contains mingw-compiled binaries (jq, etc.)
+            // 5. Windows system directories - for system DLLs
+            let mut path_dirs = vec![
+                env_root.display().to_string(), // For vcruntime*.dll at root
                 bin_dir.display().to_string(),
                 usr_bin.display().to_string(),
                 scripts_bin.display().to_string(),
                 library_bin.display().to_string(),
                 mingw_bin.display().to_string(),
+                // Windows system directories for MSVC runtime
+                "C:\\Windows\\System32".to_string(),
+                "C:\\Windows".to_string(),
             ];
 
-            // Prepend to existing PATH
-            if let Ok(existing_path) = std::env::var("PATH") {
-                path_prefix.push(existing_path);
+            // Check if running under MSYS2 (MSYSTEM env var is set)
+            let is_msys2 = std::env::var("MSYSTEM").is_ok();
+
+            // Get original PATH to append at the end
+            let original_path = std::env::var("PATH").unwrap_or_default();
+
+            if is_msys2 {
+                // For MSYS2: we still need MinGW paths at the end for mingw-compiled binaries
+                // (like jq in Library/mingw-w64/bin which depends on libwinpthread-1.dll)
+                // But we put Windows/conda paths first so MSVC binaries find their DLLs
+                path_dirs.push(original_path);
+            } else {
+                // For native Windows: prepend conda paths to existing PATH
+                path_dirs.push(original_path);
             }
-            env_vars.insert("PATH".to_string(), path_prefix.join(";"));
+            env_vars.insert("PATH".to_string(), path_dirs.join(";"));
         }
     }
 
