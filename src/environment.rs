@@ -191,9 +191,10 @@ pub fn list_environments() -> Result<()> {
         .map(|cfg| (cfg.name, cfg.register_path_order))
         .collect();
 
-    // Print table header with new column order: Type, Status, Environment, Root
-    println!("{:<10}  {:<25}  {:<40}  {}", "Type", "Status", "Environment", "Root");
-    println!("{}", "-".repeat(120));
+    // Print table header with columns: Type, Status, Environment, Channel, Version, Root
+    println!("{:<10}  {:<25}  {:<30}  {:<15}  {:<15}  {}",
+             "Type", "Status", "Environment", "Channel", "Version", "Root");
+    println!("{}", "-".repeat(140));
 
     // Print each environment with its status
     for (env, is_public) in all_envs {
@@ -213,16 +214,31 @@ pub fn list_environments() -> Result<()> {
         let env_type = if is_public { "public" } else { "private" };
         let status = status_parts.join(",");
 
-        // Get environment root path
-        let env_root = match get_env_root(env.clone()) {
-            Ok(path) => path.display().to_string(),
-            Err(_) => "N/A".to_string(),
+        // Get environment root path and channel config
+        let (env_root, channel, version) = match get_env_root(env.clone()) {
+            Ok(root) => {
+                let root_str = root.display().to_string();
+                // Try to get channel config for this environment
+                match crate::io::deserialize_channel_config_from_root(&root) {
+                    Ok(configs) => {
+                        if let Some(cc) = configs.first() {
+                            (root_str, cc.channel.clone(), cc.version.clone())
+                        } else {
+                            (root_str, String::new(), String::new())
+                        }
+                    }
+                    Err(_) => (root_str, String::new(), String::new()),
+                }
+            }
+            Err(_) => ("N/A".to_string(), String::new(), String::new()),
         };
 
-        println!("{:<10}  {:<25}  {:<40}  {}",
+        println!("{:<10}  {:<25}  {:<30}  {:<15}  {:<15}  {}",
             env_type,
             status,
             env,
+            channel,
+            version,
             env_root
         );
     }
