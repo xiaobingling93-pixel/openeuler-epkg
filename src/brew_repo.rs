@@ -56,6 +56,8 @@ pub struct BrewFormula {
     pub keg_only: bool,
     #[serde(default, rename = "keg_only_reason")]
     pub keg_only_reason: Option<BrewKegOnlyReason>,
+    #[serde(default)]
+    pub requirements: Vec<BrewRequirement>,
 }
 
 /// Variation for specific platform/OS version
@@ -150,6 +152,24 @@ pub struct BrewKegOnlyReason {
     pub reason: String,
     #[serde(default)]
     pub explanation: String,
+}
+
+/// Requirement from brew formula
+/// Examples: macos, linux, arch, xcode, java, etc.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BrewRequirement {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub cask: Option<String>,
+    #[serde(default)]
+    pub download: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub contexts: Vec<String>,
+    #[serde(default)]
+    pub specs: Vec<String>,
 }
 
 impl BrewFormula {
