@@ -329,7 +329,7 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
         Ok(PathBuf::from(&run_options.command))
     } else {
         // For relative commands, search in multiple locations
-        // Order: bin/ -> usr/bin/ -> Scripts/ -> env_root
+        // Order: bin/ -> usr/bin/ -> Scripts/ -> Library/bin/ -> Library/mingw-w64/bin/ -> env_root
         //
         // Rationale:
         // - bin/ is preferred because some programs (like cmake) calculate
@@ -337,6 +337,8 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
         //   bin/cmake -> looks for ../share/cmake (correct)
         //   usr/bin/cmake -> looks for usr/share/cmake (wrong, should be ../../share/cmake)
         // - Scripts/ is used by conda on Windows for pip-installed scripts
+        // - Library/bin/ is the standard conda location for Windows binaries (curl, etc.)
+        // - Library/mingw-w64/bin/ is used by conda-forge for mingw-w64 packages (jq, etc.)
         // - env_root is used by conda on Windows for main executables (python.exe, etc.)
 
         // On Windows, also try with .exe extension
@@ -367,6 +369,18 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
             let cmd_in_scripts = env_root.join("Scripts").join(cmd_name);
             if cmd_in_scripts.exists() {
                 return Ok(cmd_in_scripts);
+            }
+
+            // Check Library/bin/ (standard conda location on Windows)
+            let cmd_in_library_bin = env_root.join("Library/bin").join(cmd_name);
+            if cmd_in_library_bin.exists() {
+                return Ok(cmd_in_library_bin);
+            }
+
+            // Check Library/mingw-w64/bin/ (conda-forge mingw packages on Windows)
+            let cmd_in_mingw = env_root.join("Library/mingw-w64/bin").join(cmd_name);
+            if cmd_in_mingw.exists() {
+                return Ok(cmd_in_mingw);
             }
 
             // Check env_root directly (conda on Windows places main executables at root)
@@ -546,6 +560,31 @@ fn fork_and_execute_direct(env_root: &Path, run_options: &RunOptions) -> Result<
     // Set CONDA_PREFIX if this is a conda environment
     if channel_format == crate::models::PackageFormat::Conda {
         env_vars.insert("CONDA_PREFIX".to_string(), env_root.display().to_string());
+
+        // On Windows, add conda Library/bin to PATH so DLLs can be found
+        #[cfg(windows)]
+        {
+            let library_bin = env_root.join("Library").join("bin");
+            let mingw_bin = env_root.join("Library").join("mingw-w64").join("bin");
+            let scripts_bin = env_root.join("Scripts");
+            let usr_bin = env_root.join("usr").join("bin");
+            let bin_dir = env_root.join("bin");
+
+            // Build PATH prefix with conda directories
+            let mut path_prefix = vec![
+                bin_dir.display().to_string(),
+                usr_bin.display().to_string(),
+                scripts_bin.display().to_string(),
+                library_bin.display().to_string(),
+                mingw_bin.display().to_string(),
+            ];
+
+            // Prepend to existing PATH
+            if let Ok(existing_path) = std::env::var("PATH") {
+                path_prefix.push(existing_path);
+            }
+            env_vars.insert("PATH".to_string(), path_prefix.join(";"));
+        }
     }
 
     // Note: Brew packages use absolute paths rewritten at link time (LinkType::Move),
