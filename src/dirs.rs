@@ -154,7 +154,6 @@ pub fn get_generations_root(env_name: &str) -> Result<PathBuf> {
     Ok(env_root.join("generations"))
 }
 
-#[cfg(unix)]
 pub fn get_default_generations_root() -> Result<PathBuf> {
     get_generations_root(&config().common.env_name)
 }

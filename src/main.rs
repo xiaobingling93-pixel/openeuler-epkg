@@ -32,7 +32,6 @@ mod utils;
 mod mtree;
 #[cfg(unix)]
 mod posix;
-#[cfg(unix)]
 mod history;
 mod environment;
 mod deinit;
@@ -101,7 +100,6 @@ mod rpm_triggers;
 mod lua;
 #[cfg(unix)]
 mod risks;
-#[cfg(unix)]
 mod run;
 #[cfg(target_os = "linux")]
 mod namespace;
@@ -153,7 +151,6 @@ use crate::remove::remove_packages;
 #[cfg(unix)]
 use crate::history::{print_history, rollback_history};
 use crate::init::{install_epkg, try_light_init, light_init, upgrade_epkg};
-#[cfg(unix)]
 use crate::run::{command_run, command_busybox};
 use color_eyre::Result;
 use color_eyre::eyre;
@@ -264,9 +261,7 @@ fn main() -> Result<()> {
         Some(("unpack",     sub_matches))  =>  command_unpack(&sub_matches)?,
         #[cfg(unix)]
         Some(("convert",    sub_matches))  =>  command_convert(&sub_matches)?,
-        #[cfg(unix)]
         Some(("run",        sub_matches))  =>  command_run(sub_matches)?,
-        #[cfg(unix)]
         Some(("busybox",    sub_matches))  =>  command_busybox(sub_matches)?,
         Some(("search",     sub_matches))  =>  command_search(sub_matches)?,
         #[cfg(unix)]
@@ -1609,7 +1604,6 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
         Some(("build",      sub_matches))  =>  parse_options_build(&mut config, sub_matches).expect("Failed to parse build options"),
         Some(("unpack",     sub_matches))  =>  parse_options_unpack(&mut config, sub_matches).expect("Failed to parse unpack options"),
         Some(("convert",    sub_matches))  =>  parse_options_convert(&mut config, sub_matches).expect("Failed to parse convert options"),
-        #[cfg(unix)]
         Some(("run",        sub_matches))  =>  crate::run::parse_options_run(&mut config, sub_matches).expect("Failed to parse run options"),
         Some(("search",     sub_matches))  =>  parse_options_search(&mut config, sub_matches).expect("Failed to parse search options"),
         Some(("service",    sub_matches))  =>  parse_options_service(&mut config, sub_matches).expect("Failed to parse service options"),
@@ -1934,7 +1928,20 @@ fn command_list(sub_matches: &clap::ArgMatches) -> Result<()> {
     }
     #[cfg(not(unix))]
     {
-        Err(color_eyre::eyre::eyre!("List command not supported on this platform"))
+        // Simple implementation for Windows: just list installed packages
+        load_installed_packages()?;
+        let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+        if installed.is_empty() {
+            println!("No packages installed.");
+        } else {
+            println!("{:<60} {:<10}", "Package", "Arch");
+            println!("{:-<60} {:-<10}", "", "");
+            for (pkgkey, info) in installed.iter() {
+                println!("{:<60} {:<10}", pkgkey, info.arch);
+            }
+            println!("\nTotal: {} packages", installed.len());
+        }
+        Ok(())
     }
 }
 

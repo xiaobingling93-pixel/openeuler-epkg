@@ -16,7 +16,8 @@ use crate::models::PACKAGE_CACHE;
 use crate::link::compute_link_type_and_reflink;
 use crate::io::load_world;
 #[cfg(unix)]
-use crate::io::{save_installed_packages, save_world, save_pending_packages, remove_pending_packages};
+use crate::io::{save_pending_packages, remove_pending_packages};
+use crate::io::{save_installed_packages, save_world};
 use crate::repo::sync_channel_metadata;
 use crate::world::{apply_no_install_changes, apply_delta_world, add_essential_packages_to_delta_world, create_delta_world_from_specs};
 use crate::depends::resolve_and_install_packages;
@@ -24,8 +25,9 @@ use crate::plan::prompt_and_confirm_install_plan;
 #[cfg(target_os = "linux")]
 #[allow(unused_imports)]
 use crate::{risks, deb_triggers};
+use crate::history::{create_new_generation_with_root, update_current_generation_symlink_with_root};
 #[cfg(unix)]
-use crate::history::{create_new_generation_with_root, record_history, update_current_generation_symlink_with_root};
+use crate::history::record_history;
 #[cfg(unix)]
 use crate::transaction::run_transaction_batch;
 #[cfg(target_os = "linux")]
@@ -304,6 +306,15 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
                 log::warn!("Failed to generate dpkg database: {}", e);
             }
         }
+    }
+    #[cfg(not(unix))]
+    {
+        let generations_root = dirs::get_default_generations_root()?;
+        let new_generation = create_new_generation_with_root(&generations_root)?;
+        // record_history is Unix-only, skip on Windows
+        save_installed_packages(&new_generation)?;
+        save_world(&new_generation)?;
+        update_current_generation_symlink_with_root(&generations_root, new_generation)?;
     }
 
     Ok(plan)

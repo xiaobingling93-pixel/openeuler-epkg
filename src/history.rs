@@ -2,7 +2,7 @@ use std::fs;
 use crate::lfs;
 use std::path::{Path, PathBuf};
 use crate::lfs::symlink;
-use color_eyre::eyre::{self, Result, WrapErr};
+use color_eyre::eyre::{self, Result, WrapErr, ContextCompat};
 use time::OffsetDateTime;
 use time::macros::format_description;
 use crate::models::*;
@@ -19,11 +19,12 @@ pub fn get_current_generation_id() -> Result<u32> {
 
     let target = fs::read_link(&current_link)
         .with_context(|| format!("Failed to read symlink: {}", current_link.display()))?;
-    let generation_id = target
-        .to_str()
-        .unwrap()
-        .parse::<u32>()
-        .with_context(|| format!("Failed to parse generation id from '{}'", target.to_str().unwrap()))?;
+    // On Windows, read_link returns the full path; extract just the directory name
+    let target_name = target.file_name()
+        .and_then(|n| n.to_str())
+        .with_context(|| format!("Failed to extract generation name from symlink target '{}'", target.display()))?;
+    let generation_id = target_name.parse::<u32>()
+        .with_context(|| format!("Failed to parse generation id from '{}'", target_name))?;
     Ok(generation_id)
 }
 
@@ -32,8 +33,12 @@ pub fn create_new_generation_with_root(generations_root: &Path) -> Result<PathBu
     let current_link = generations_root.join("current");
     let current_id = if lfs::exists_on_host(&current_link) {
         let target = fs::read_link(&current_link).with_context(|| format!("Failed to read symlink: {}", current_link.display()))?;
-        target.to_str().unwrap().parse::<u32>().with_context(||
-            format!("Failed to parse generation id from '{}'", target.to_str().unwrap()))?
+        // On Windows, read_link returns the full path; extract just the directory name
+        let target_name = target.file_name()
+            .and_then(|n| n.to_str())
+            .with_context(|| format!("Failed to extract generation name from symlink target '{}'", target.display()))?;
+        target_name.parse::<u32>().with_context(||
+            format!("Failed to parse generation id from '{}'", target_name))?
     } else {
         // No current generation exists, start with generation 1
         1

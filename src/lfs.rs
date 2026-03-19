@@ -198,11 +198,31 @@ pub fn rename<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()> {
 }
 
 /// Remove a file.
+#[cfg(not(windows))]
 pub fn remove_file<P: AsRef<Path>>(path: P) -> Result<()> {
     let path = path.as_ref();
     log::trace!("removing file: {}", path.display());
     fs::remove_file(path)
         .wrap_err_with(|| format!("Failed to remove file {}", path.display()))
+}
+
+/// Remove a file or junction on Windows.
+/// On Windows, junctions (directory reparse points) require remove_dir instead of remove_file.
+#[cfg(windows)]
+pub fn remove_file<P: AsRef<Path>>(path: P) -> Result<()> {
+    let path = path.as_ref();
+    log::trace!("removing file: {}", path.display());
+    // First try remove_file for regular files
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.raw_os_error() == Some(5) => {
+            // Access denied - might be a junction, try remove_dir
+            log::trace!("remove_file failed with access denied, trying remove_dir for potential junction: {}", path.display());
+            fs::remove_dir(path)
+                .wrap_err_with(|| format!("Failed to remove file/junction {}", path.display()))
+        }
+        Err(e) => Err(e).wrap_err_with(|| format!("Failed to remove file {}", path.display())),
+    }
 }
 
 /// Remove a directory and all its contents.

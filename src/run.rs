@@ -1,4 +1,3 @@
-#![cfg(unix)]
 use std::env;
 #[cfg(target_os = "linux")]
 use std::fs;
@@ -6,6 +5,7 @@ use std::fs;
 use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
 use std::os::fd::OwnedFd;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
@@ -328,19 +328,52 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
     } else if run_options.command.contains('/') {
         Ok(PathBuf::from(&run_options.command))
     } else {
-        // For relative commands, search in env's bin/ then usr/bin/
-        // Prefer bin/ over usr/bin/ because some programs (like cmake) calculate
-        // their installation prefix based on the binary path.
-        // bin/cmake -> looks for ../share/cmake (correct)
-        // usr/bin/cmake -> looks for usr/share/cmake (wrong, should be ../../share/cmake)
-        let cmd_in_bin = env_root.join("bin").join(&run_options.command);
-        if cmd_in_bin.exists() {
-            return Ok(cmd_in_bin);
-        }
+        // For relative commands, search in multiple locations
+        // Order: bin/ -> usr/bin/ -> Scripts/ -> env_root
+        //
+        // Rationale:
+        // - bin/ is preferred because some programs (like cmake) calculate
+        //   their installation prefix based on the binary path.
+        //   bin/cmake -> looks for ../share/cmake (correct)
+        //   usr/bin/cmake -> looks for usr/share/cmake (wrong, should be ../../share/cmake)
+        // - Scripts/ is used by conda on Windows for pip-installed scripts
+        // - env_root is used by conda on Windows for main executables (python.exe, etc.)
 
-        let cmd_in_usr_bin = env_root.join("usr/bin").join(&run_options.command);
-        if cmd_in_usr_bin.exists() {
-            return Ok(cmd_in_usr_bin);
+        // On Windows, also try with .exe extension
+        #[cfg(windows)]
+        let cmd_with_exe: String;
+        #[cfg(windows)]
+        let cmd_names: Vec<&str> = if run_options.command.ends_with(".exe") {
+            vec![&run_options.command]
+        } else {
+            cmd_with_exe = format!("{}.exe", run_options.command);
+            vec![&run_options.command, &cmd_with_exe]
+        };
+        #[cfg(not(windows))]
+        let cmd_names: Vec<&str> = vec![&run_options.command];
+
+        for cmd_name in cmd_names {
+            let cmd_in_bin = env_root.join("bin").join(cmd_name);
+            if cmd_in_bin.exists() {
+                return Ok(cmd_in_bin);
+            }
+
+            let cmd_in_usr_bin = env_root.join("usr/bin").join(cmd_name);
+            if cmd_in_usr_bin.exists() {
+                return Ok(cmd_in_usr_bin);
+            }
+
+            // Check Scripts/ directory (conda on Windows)
+            let cmd_in_scripts = env_root.join("Scripts").join(cmd_name);
+            if cmd_in_scripts.exists() {
+                return Ok(cmd_in_scripts);
+            }
+
+            // Check env_root directly (conda on Windows places main executables at root)
+            let cmd_in_root = env_root.join(cmd_name);
+            if cmd_in_root.exists() {
+                return Ok(cmd_in_root);
+            }
         }
 
         if lfs::exists_on_host(Path::new(&run_options.command)) {
@@ -670,6 +703,7 @@ fn fork_and_execute_raw(_env_root: &Path, _run_options: &RunOptions) -> Result<O
 }
 
 /// Check if a file is executable
+#[cfg(unix)]
 pub fn is_executable(path: &Path) -> Result<bool> {
     trace!("is_executable checking: {}", path.display());
     let metadata = lfs::symlink_metadata(path)
@@ -685,6 +719,7 @@ pub fn is_executable(path: &Path) -> Result<bool> {
 }
 
 /// Check if a file is executable, handling symlinks that may point to targets within environment root
+#[cfg(unix)]
 fn is_executable_within_env(path: &Path, env_root: &Path) -> Result<bool> {
     trace!("is_executable_within_env checking: {}", path.display());
 
@@ -726,6 +761,7 @@ fn is_executable_within_env(path: &Path, env_root: &Path) -> Result<bool> {
 /// // Guest path: /usr/bin/go (returned)
 /// let guest_path = find_command_in_env_path("go", env_root)?;
 /// ```
+#[cfg(unix)]
 pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathBuf> {
     // Collect non-empty PATH directories; if none, use default system paths
     let path_str = env::var("PATH").unwrap_or_default();

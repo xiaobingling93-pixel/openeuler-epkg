@@ -21,7 +21,7 @@ use crate::parse_cmdline_from;
 use crate::parse_options_common;
 use crate::parse_options_subcommand;
 use crate::search::SearchOptions;
-#[cfg(unix)] use crate::run::RunOptions;
+use crate::run::RunOptions;
 use color_eyre::Result;
 use color_eyre::eyre;
 #[cfg(not(test))]
@@ -966,7 +966,7 @@ pub struct EPKGConfig {
     #[serde(skip)]
     pub service: ServiceOptions,
     #[serde(skip)]
-    #[cfg(unix)] pub run: RunOptions,
+    pub run: RunOptions,
 
     #[serde(skip)]
     pub config_file: String,

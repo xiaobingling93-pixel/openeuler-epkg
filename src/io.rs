@@ -6,7 +6,6 @@ use std::fs;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
-#[cfg(unix)]
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use color_eyre::eyre::{self, Result, WrapErr};
@@ -58,7 +57,6 @@ fn installed_packages_from_value(value: Value) -> Result<HashMap<String, Install
 }
 
 /// Convert installed packages map to sorted array of entries
-#[cfg(unix)]
 fn installed_packages_to_array(installed: &InstalledPackagesMap) -> Vec<InstalledPackageEntry> {
     let mut entries: Vec<InstalledPackageEntry> = installed.iter()
         .map(|(pkgkey, info)| InstalledPackageEntry {
@@ -605,7 +603,6 @@ pub fn load_installed_packages() -> Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
 pub fn save_installed_packages(new_generation: &PathBuf) -> Result<()> {
     // Construct the file path
     let file_path = new_generation.join("installed-packages.json");
@@ -725,7 +722,6 @@ pub fn load_world() -> Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
 pub fn save_world(new_generation: &PathBuf) -> Result<()> {
     // Construct the file path
     let file_path = new_generation.join("world.json");
