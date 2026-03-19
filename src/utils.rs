@@ -825,7 +825,24 @@ pub fn preserve_file_permissions<P: AsRef<Path>>(source: P, target: P) -> Result
     Ok(())
 }
 
-/// Fix up file permissions to ensure files are readable for hash calculation
+/// Fix up file permissions using mode from tar header, avoiding extra disk I/O.
+/// This is the preferred function when mode and entry type are already available.
+#[cfg(unix)]
+pub fn fixup_file_permissions_with_mode(target_path: &Path, mode: u32, is_dir: bool) {
+    let required_mask = if is_dir { 0o700 } else { 0o600 };
+
+    if mode & required_mask != required_mask {
+        let new_mode = mode | required_mask;
+        let perms = std::fs::Permissions::from_mode(new_mode);
+        if let Err(e) = lfs::set_permissions(target_path, perms) {
+            let file_type = if is_dir { "directory" } else { "file" };
+            log::warn!("Failed to set {} permissions for {}: {}", file_type, target_path.display(), e);
+        }
+    }
+}
+
+/// Fix up file permissions by reading metadata from disk.
+/// Prefer fixup_file_permissions_with_mode() when mode is already available.
 #[cfg(unix)]
 pub fn fixup_file_permissions(target_path: &Path) {
     if let Ok(metadata) = lfs::symlink_metadata(target_path) {
@@ -855,6 +872,11 @@ fn ensure_owner_permissions(target_path: &Path, required_mask: u32, file_type: &
             }
         }
     }
+}
+
+#[cfg(not(unix))]
+pub fn fixup_file_permissions_with_mode(_target_path: &Path, _mode: u32, _is_dir: bool) {
+    // No-op on non-Unix systems
 }
 
 #[cfg(not(unix))]

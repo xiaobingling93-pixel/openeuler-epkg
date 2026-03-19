@@ -122,6 +122,8 @@ pub fn extract_archive_with_policy<R: Read>(
         // Check if this is a hard link entry
         let header = entry.header();
         let is_hard_link = matches!(header.entry_type(), tar::EntryType::Link);
+        let mode = header.mode().unwrap_or(0o644);
+        let is_dir = matches!(header.entry_type(), tar::EntryType::Directory);
 
         // Apply path policy
         let target_path = match (path_policy)(&path, is_hard_link, &config.target_dir) {
@@ -155,7 +157,7 @@ pub fn extract_archive_with_policy<R: Read>(
 
         // Extract the file
         entry.unpack(&target_path)?;
-        utils::fixup_file_permissions(&target_path);
+        utils::fixup_file_permissions_with_mode(&target_path, mode, is_dir);
     }
 
     // Create hard links after all files are extracted
@@ -216,11 +218,14 @@ pub fn extract_archive<R: Read>(
         // Calculate the target path
         let target_path = calculate_target_path(&path, config)?;
 
+        // Get header info for hard link detection and permission fixup
+        let header = entry.header();
+        let is_hard_link = matches!(header.entry_type(), tar::EntryType::Link);
+        let mode = header.mode().unwrap_or(0o644);
+        let is_dir = matches!(header.entry_type(), tar::EntryType::Directory);
+
         // Check if this is a hard link entry
         if config.handle_hard_links {
-            let header = entry.header();
-            let is_hard_link = matches!(header.entry_type(), tar::EntryType::Link);
-
             if is_hard_link {
                 if let Ok(Some(link_path)) = entry.link_name() {
                     // Calculate the source path (the file being linked to)
@@ -245,7 +250,7 @@ pub fn extract_archive<R: Read>(
 
         // Extract the file
         entry.unpack(&target_path)?;
-        utils::fixup_file_permissions(&target_path);
+        utils::fixup_file_permissions_with_mode(&target_path, mode, is_dir);
     }
 
     // Now create all hard links after all files have been extracted
