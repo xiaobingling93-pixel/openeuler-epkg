@@ -245,14 +245,21 @@ fn create_package_txt_from_pkgkey<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: &str
 pub fn rewrite_dylib_paths_for_env(env_root: &Path) -> Result<()> {
     // Collect all potential Mach-O files (binaries and dylibs)
     let mut mach_o_files: Vec<std::path::PathBuf> = Vec::new();
+    let mut seen_real_paths: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
 
     // Scan bin/ directory
     let bin_dir = env_root.join("bin");
     if bin_dir.exists() {
         for entry in walkdir::WalkDir::new(&bin_dir).into_iter().filter_map(|e| e.ok()) {
             let path = entry.path();
+            if entry.file_type().is_symlink() {
+                continue;
+            }
             if path.is_file() && is_mach_o_file(path) {
-                mach_o_files.push(path.to_path_buf());
+                let real_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+                if seen_real_paths.insert(real_path.clone()) {
+                    mach_o_files.push(real_path);
+                }
             }
         }
     }
@@ -262,8 +269,14 @@ pub fn rewrite_dylib_paths_for_env(env_root: &Path) -> Result<()> {
     if lib_dir.exists() {
         for entry in walkdir::WalkDir::new(&lib_dir).into_iter().filter_map(|e| e.ok()) {
             let path = entry.path();
+            if entry.file_type().is_symlink() {
+                continue;
+            }
             if path.is_file() && is_mach_o_file(path) {
-                mach_o_files.push(path.to_path_buf());
+                let real_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+                if seen_real_paths.insert(real_path.clone()) {
+                    mach_o_files.push(real_path);
+                }
             }
         }
     }
@@ -273,8 +286,14 @@ pub fn rewrite_dylib_paths_for_env(env_root: &Path) -> Result<()> {
     if frameworks_dir.exists() {
         for entry in walkdir::WalkDir::new(&frameworks_dir).into_iter().filter_map(|e| e.ok()) {
             let path = entry.path();
+            if entry.file_type().is_symlink() {
+                continue;
+            }
             if path.is_file() && is_mach_o_file(path) {
-                mach_o_files.push(path.to_path_buf());
+                let real_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+                if seen_real_paths.insert(real_path.clone()) {
+                    mach_o_files.push(real_path);
+                }
             }
         }
     }
