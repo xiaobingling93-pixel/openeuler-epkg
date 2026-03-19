@@ -41,7 +41,6 @@ mod apparmor;
 #[cfg(unix)]
 mod deinit;
 mod init;
-#[cfg(unix)]
 mod path;
 mod repo;
 mod mmio;
@@ -142,14 +141,11 @@ use time::OffsetDateTime;
 use time::macros::format_description;
 use crate::models::*;
 use crate::dirs::*;
-#[cfg(unix)] use crate::environment::*;
-#[cfg(unix)]
+use crate::environment::*;
 use crate::io::edit_environment_config;
 use crate::io::load_installed_packages;
 use crate::io::read_yaml_file;
-#[cfg(unix)]
 use crate::path::update_path;
-#[cfg(unix)]
 use crate::repo::sync_channel_metadata;
 #[cfg(unix)]
 use crate::list::list_packages_with_scope;
@@ -246,13 +242,11 @@ fn main() -> Result<()> {
 
     log::trace!("Application starting with config: {:#?}", &*config());
 
-    #[cfg(unix)]
     try_light_init()?;
 
     let matches = clap_matches();
     match matches.subcommand() {
         Some(("self",       sub_matches))  =>  command_self(sub_matches)?,
-        #[cfg(unix)]
         Some(("env",        sub_matches))  =>  command_env(sub_matches)?,
         Some(("list",       sub_matches))  =>  command_list(sub_matches)?,
         Some(("info",       sub_matches))  =>  command_info(sub_matches)?,
@@ -1882,7 +1876,6 @@ fn parse_options_service(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches
 }
 
 
-#[cfg(unix)]
 fn command_env(sub_matches: &clap::ArgMatches) -> Result<()> {
     let name = &config().common.env_name;
     match sub_matches.subcommand() {
@@ -2159,7 +2152,6 @@ fn command_self(sub_matches: &clap::ArgMatches) -> Result<()> {
             if let Some(path) = find_env_base(MAIN_ENV) {
                 eprintln!("epkg was already initialized for current user: {:?}", path);
             } else {
-                #[cfg(unix)]
                 light_init()?;
             }
         }

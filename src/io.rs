@@ -3,7 +3,6 @@ use serde_json::{self, Value};
 use serde_yaml;
 use log;
 use std::fs;
-#[cfg(unix)]
 use std::env;
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
@@ -749,7 +748,6 @@ pub fn save_world(new_generation: &PathBuf) -> Result<()> {
 }
 
 /// Edit environment configuration file
-#[cfg(unix)]
 pub fn edit_environment_config() -> Result<()> {
     let env_config = crate::models::env_config();
     let config_path = get_env_config_path(&env_config.name);
