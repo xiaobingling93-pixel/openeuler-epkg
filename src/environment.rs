@@ -298,18 +298,9 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     force_symlink("usr/lib", env_root.join("lib"))?;
     force_symlink("usr/share", env_root.join("share"))?;
     force_symlink("usr/include", env_root.join("include"))?;
-    // libexec is used by brew packages (e.g., go: bin/go -> ../libexec/bin/go)
-    // On macOS: Create usr/libexec as a symlink pointing to ../libexec (top-level libexec dir)
-    // This makes brew packages work because their relative symlinks expect usr/libexec -> ../libexec
-    // NOTE: This code ONLY applies to macOS brew packages. Linux packages use usr/libexec/ directly
-    // as a real directory (not a symlink), and Linux's usr-merge does NOT apply to libexec.
-    #[cfg(target_os = "macos")]
-    force_symlink("../libexec", env_root.join("usr/libexec"))?;
-    // macOS brew packages may have Frameworks, opt, and .app bundles at root level
-    // Create symlinks so relative symlinks from usr/bin work correctly
-    // e.g., bin/python3.12 -> ../Frameworks/Python.framework/...
-    force_symlink("../Frameworks", env_root.join("usr/Frameworks"))?;
-    force_symlink("../opt", env_root.join("usr/opt"))?;
+    // NOTE: usr/libexec, Frameworks, opt symlinks for brew packages are created in
+    // create_environment_dirs() only when pkg_format is Brew.
+    // See the Brew-specific block in create_environment_dirs() for details.
 
     // Ensure usr/bin/epkg exists, pointing to a stable epkg binary (e.g., in self environment)
     create_epkg_symlink(env_root)?;
@@ -383,6 +374,22 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
                 force_symlink("usr/lib32", env_root.join("lib32"))?;
             }
         }
+    }
+
+    // Create usr/libexec symlink for Brew packages (macOS only)
+    // Brew packages like 'go' have symlinks like bin/go -> ../libexec/bin/go
+    // This expects usr/libexec to point to ../libexec (top-level libexec dir)
+    //
+    // Also create Frameworks and opt symlinks for macOS brew packages
+    // e.g., bin/python3.12 -> ../Frameworks/Python.framework/...
+    if *pkg_format == PackageFormat::Brew {
+        #[cfg(target_os = "macos")]
+        {
+            force_symlink("../libexec", env_root.join("usr/libexec"))?;
+            force_symlink("../Frameworks", env_root.join("usr/Frameworks"))?;
+            force_symlink("../opt", env_root.join("usr/opt"))?;
+        }
+        // On Linux, do nothing - packages will create usr/libexec as a real directory if needed
     }
 
     // Fedora: usr/sbin is a symlink to bin (unified /usr/bin and /usr/sbin)

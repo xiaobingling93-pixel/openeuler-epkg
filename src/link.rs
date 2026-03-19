@@ -398,8 +398,9 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::mtree::Mt
         log::trace!("mirror_dir: processing fhs_file={}, is_link={}, is_dir={}", fhs_file, fs_file_info.is_link(), fs_file_info.is_dir());
 
         // No modify top-level directories/symlinks created by create_environment_dirs_early()
-        // NOTE: On macOS, usr/libexec is a symlink (for brew packages), so we skip it.
+        // NOTE: On macOS, usr/libexec is a symlink (only created for Brew packages), so we skip it.
         // On Linux, usr/libexec is a real directory (RPM/Debian), so we DON'T skip it here.
+        // The usr/libexec skip on macOS only affects Brew environments because only Brew creates this symlink.
         #[cfg(target_os = "macos")]
         if matches!(fhs_file.trim_end_matches('/'), "sbin" | "bin" | "lib" | "lib64" | "share" | "include" | "usr/sbin" | "usr/lib64" | "usr/libexec") {
             continue;
