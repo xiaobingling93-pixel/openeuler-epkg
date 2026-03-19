@@ -38,8 +38,6 @@ mod environment;
 mod deinit;
 #[cfg(target_os = "linux")]
 mod apparmor;
-#[cfg(unix)]
-mod deinit;
 mod init;
 mod path;
 mod repo;
@@ -2159,9 +2157,8 @@ fn command_self(sub_matches: &clap::ArgMatches) -> Result<()> {
             upgrade_epkg()?;
         }
         Some(("remove", sub_matches)) => {
-            if let Some(_scope) = sub_matches.get_one::<String>("scope") {
-                #[cfg(unix)]
-                deinit::deinit_epkg(_scope)?;
+            if let Some(scope) = sub_matches.get_one::<String>("scope") {
+                deinit::deinit_epkg(scope)?;
             }
         }
         _ => {}
