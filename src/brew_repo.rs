@@ -52,6 +52,10 @@ pub struct BrewFormula {
     pub post_install_defined: bool,
     #[serde(default)]
     pub service: Option<BrewService>,
+    #[serde(default, rename = "keg_only")]
+    pub keg_only: bool,
+    #[serde(default, rename = "keg_only_reason")]
+    pub keg_only_reason: Option<BrewKegOnlyReason>,
 }
 
 /// Variation for specific platform/OS version
@@ -136,6 +140,16 @@ pub struct BrewServiceName {
     pub macos: Option<String>,
     #[serde(default)]
     pub linux: Option<String>,
+}
+
+/// Keg-only reason from brew formula
+/// Reference: Homebrew/Library/Homebrew/keg_only_reason.rb
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BrewKegOnlyReason {
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub explanation: String,
 }
 
 impl BrewFormula {
