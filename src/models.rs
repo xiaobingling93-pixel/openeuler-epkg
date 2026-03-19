@@ -1041,11 +1041,11 @@ pub struct CommonOptions {
     #[serde(default = "default_nr_parallel_download")]
     pub nr_parallel_download: usize,
 
-    // Default: auto-enabled if nr_cpu >= 4 && memory >= 1G, else auto-disabled
-    // If user specifies nr_parallel <= 1, this gets auto-disabled
-    // Parallel processing speeds up `epkg update` at cost of more memory
+    // Number of parallel processing workers.
+    // 1 means sequential processing.
+    // Defaults to auto value based on system capabilities.
     #[serde(default = "default_parallel_processing")]
-    pub parallel_processing: bool,
+    pub parallel_processing: usize,
 }
 
 // Default function for arch
@@ -1065,13 +1065,9 @@ fn default_nr_parallel_download() -> usize {
     6
 }
 
-// Default function for parallel_processing
-// Auto-enabled if nr_cpu >= 4 && memory >= 1G, else auto-disabled
-fn default_parallel_processing() -> bool {
-    // Default nr_parallel is 6, so we don't need to check it here
-    // as it will be checked at runtime in setup_parallel_params
-
-    // Check CPU count
+// Default function for parallel_processing workers.
+// Auto-enable multi-worker mode if nr_cpu >= 4 && memory >= 1G, else run sequentially.
+fn default_parallel_processing() -> usize {
     let num_cpus = num_cpus::get();
     let has_enough_cpus = num_cpus >= 4;
 
@@ -1084,7 +1080,11 @@ fn default_parallel_processing() -> bool {
         Err(_) => false, // If we can't determine memory, assume not enough
     };
 
-    has_enough_cpus && has_enough_memory
+    if has_enough_cpus && has_enough_memory {
+        num_cpus.max(1)
+    } else {
+        1
+    }
 }
 
 // Helper function for skip_serializing_if to skip false boolean values
@@ -1278,7 +1278,7 @@ pub fn clap_matches() -> &'static clap::ArgMatches {
                 .arg(Arg::new("proxy").long("proxy"))
                 .arg(Arg::new("retry").long("retry").value_parser(clap::value_parser!(usize)))
                 .arg(Arg::new("parallel-download").long("parallel-download").value_parser(clap::value_parser!(usize)))
-                .arg(Arg::new("parallel-processing").long("parallel-processing").value_parser(clap::value_parser!(bool)))
+                .arg(Arg::new("parallel-processing").long("parallel-processing").value_parser(clap::value_parser!(usize)))
                 .subcommand(Command::new("info").arg(Arg::new("PACKAGE_SPEC").num_args(0..)))
                 .arg_required_else_help(false)
                 .get_matches_from(vec!["epkg", "--dry-run", "info"])

@@ -106,7 +106,7 @@ epkg [OPTIONS] <COMMAND>
 | `--proxy <URL>` | HTTP proxy. |
 | `--retry <N>` | Download retries. |
 | `--parallel-download <N>` | Parallel download threads. |
-| `--parallel-processing <BOOL>` | Parallel metadata updates (true/false). |
+| `--parallel-processing <N>` | Parallel processing workers (capped to CPU count; `1` means sequential). |
 | `-h, --help` | Help. |
 | `-V, --version` | Version. |
 

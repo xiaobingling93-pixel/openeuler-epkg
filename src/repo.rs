@@ -185,7 +185,7 @@ fn revise_repos(all_repos: Vec<RepoRevise>) -> Result<()> {
     log::debug!("Starting with {} repositories", all_repos.len());
 
     // Collect all release items from all repositories
-    let all_release_items = if all_repos.len() > 1 && config().common.parallel_processing {
+    let all_release_items = if all_repos.len() > 1 && config().common.parallel_processing > 1 {
         let items = collect_all_repo_metadata_parallel(all_repos)?;
         items
     } else {
@@ -291,7 +291,7 @@ fn process_all_release_items(all_release_items: Vec<RepoReleaseItem>) -> Result<
     log::debug!("Filtered revises: {:#?}", revises);
 
     // Process all items in parallel or sequentially
-    if config().common.parallel_processing {
+    if config().common.parallel_processing > 1 {
         process_revises_parallel(revises.clone())?;
     } else {
         process_revises_sequential(revises.clone())?;

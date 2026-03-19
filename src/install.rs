@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 
 use color_eyre::eyre::{self, Result, WrapErr, eyre};
 use crate::models::*;
@@ -621,6 +622,9 @@ fn wait_downloads_and_unpack(
     packages_to_install: &InstalledPackagesMap,
 ) -> Result<InstalledPackagesMap> {
     let mut aur_packages: InstalledPackagesMap = HashMap::new();
+    let mut unpack_handles: Vec<(String, JoinHandle<Result<(String, String)>>)> = Vec::new();
+    let store_pkglines_by_pkgname = Arc::new(plan.store_pkglines_by_pkgname.clone());
+    let unpack_workers = unpack_worker_count();
 
     // Unpack packages as downloads complete
     while !pending_urls.is_empty() {
@@ -633,46 +637,15 @@ fn wait_downloads_and_unpack(
 
                 // Process all pkgkeys that share this URL (SPLITPKG or shared artifacts)
                 for pkgkey in pkgkeys {
-                    let pkgkey = pkgkey.clone();
-
-                    // Check if this is an AUR package
-                    #[cfg(target_os = "linux")]
-                    let is_aur = is_aur_package(&pkgkey);
-                    #[cfg(not(target_os = "linux"))]
-                    let is_aur = false;
-
-                    if is_aur {
-                        // For AUR packages, just add to aur_packages (they will be built later)
-                        if let Some(package_info) = packages_to_install.get(&pkgkey) {
-                            aur_packages.insert(pkgkey, Arc::clone(package_info));
-                        }
-                    } else {
-                        // For binary packages, unpack (but don't link yet)
-                        // Verify package exists in packages_to_install
-                        if !packages_to_install.contains_key(&pkgkey) {
-                            return Err(eyre!("Package key not found: {}", pkgkey));
-                        }
-
-                        // Get the downloaded file path
-                        let file_path = get_package_file_path(&pkgkey)?;
-
-                        // Load package info to get the format
-                        let package = crate::package_cache::load_package_info(&pkgkey)
-                            .map_err(|e| eyre!("Failed to load package info for {}: {}", pkgkey, e))?;
-
-                        // Unpack the package (without linking)
-                        let (_actual_pkgkey, pkgline) = crate::store::unpack_package(
-                            &file_path,
-                            &pkgkey,
-                            &plan.store_pkglines_by_pkgname,
-                            Some(package.format),
-                        )?;
-
-                        // Update plan.new_pkgs with the updated pkgline so link_packages can find it
-                        if let Some(plan_pkg_info) = plan.new_pkgs.get_mut(&pkgkey) {
-                            Arc::make_mut(plan_pkg_info).pkgline = pkgline;
-                        }
-                    }
+                    process_downloaded_pkgkey(
+                        plan,
+                        pkgkey,
+                        packages_to_install,
+                        &mut aur_packages,
+                        &mut unpack_handles,
+                        &store_pkglines_by_pkgname,
+                        unpack_workers,
+                    )?;
                 }
             } else {
                 log::warn!("Could not find package key for completed URL: {}", completed_url);
@@ -680,8 +653,118 @@ fn wait_downloads_and_unpack(
         }
     }
 
+    // Wait for remaining unpack workers.
+    while let Some(completed) = unpack_handles.pop() {
+        collect_unpack_result_for_plan(plan, completed)?;
+    }
+
     // Return packages that need linking (but don't link them here - that happens after all risk checks)
     // This allows us to check ALL packages before linking ANY, keeping the environment clean
     // Note: packages_to_link is not returned here - they are added to plan.batch.new_pkgkeys later
     Ok(aur_packages)
+}
+
+fn unpack_worker_count() -> usize {
+    if models::config().common.parallel_processing > 1 {
+        models::config().common.parallel_processing.min(6)
+    } else {
+        1
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn is_aur_pkgkey(pkgkey: &str) -> bool {
+    is_aur_package(pkgkey)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_aur_pkgkey(_pkgkey: &str) -> bool {
+    false
+}
+
+fn collect_unpack_result_for_plan(
+    plan: &mut InstallationPlan,
+    (pkgkey, handle): (String, JoinHandle<Result<(String, String)>>),
+) -> Result<()> {
+    let (_actual_pkgkey, pkgline) = handle
+        .join()
+        .map_err(|e| eyre!("Unpack worker thread panicked for {}: {:?}", pkgkey, e))??;
+    if let Some(plan_pkg_info) = plan.new_pkgs.get_mut(&pkgkey) {
+        Arc::make_mut(plan_pkg_info).pkgline = pkgline;
+    }
+    Ok(())
+}
+
+fn process_downloaded_pkgkey(
+    plan: &mut InstallationPlan,
+    pkgkey: &str,
+    packages_to_install: &InstalledPackagesMap,
+    aur_packages: &mut InstalledPackagesMap,
+    unpack_handles: &mut Vec<(String, JoinHandle<Result<(String, String)>>)>,
+    store_pkglines_by_pkgname: &Arc<HashMap<String, Vec<String>>>,
+    unpack_workers: usize,
+) -> Result<()> {
+    if is_aur_pkgkey(pkgkey) {
+        if let Some(package_info) = packages_to_install.get(pkgkey) {
+            aur_packages.insert(pkgkey.to_string(), Arc::clone(package_info));
+        }
+        return Ok(());
+    }
+
+    if !packages_to_install.contains_key(pkgkey) {
+        return Err(eyre!("Package key not found: {}", pkgkey));
+    }
+
+    if unpack_workers > 1 {
+        while unpack_handles.len() >= unpack_workers {
+            let completed = unpack_handles.remove(0);
+            collect_unpack_result_for_plan(plan, completed)?;
+        }
+        spawn_unpack_worker(pkgkey, unpack_handles, Arc::clone(store_pkglines_by_pkgname))?;
+    } else {
+        unpack_binary_package_sync(plan, pkgkey, store_pkglines_by_pkgname)?;
+    }
+
+    Ok(())
+}
+
+fn spawn_unpack_worker(
+    pkgkey: &str,
+    unpack_handles: &mut Vec<(String, JoinHandle<Result<(String, String)>>)>,
+    store_pkglines_by_pkgname: Arc<HashMap<String, Vec<String>>>,
+) -> Result<()> {
+    let file_path = get_package_file_path(pkgkey)?;
+    let pkgkey_for_worker = pkgkey.to_string();
+    let handle = std::thread::spawn(move || -> Result<(String, String)> {
+        let package = crate::package_cache::load_package_info(&pkgkey_for_worker)
+            .map_err(|e| eyre!("Failed to load package info for {}: {}", pkgkey_for_worker, e))?;
+        crate::store::unpack_package(
+            &file_path,
+            &pkgkey_for_worker,
+            &store_pkglines_by_pkgname,
+            Some(package.format),
+        )
+    });
+    unpack_handles.push((pkgkey.to_string(), handle));
+    Ok(())
+}
+
+fn unpack_binary_package_sync(
+    plan: &mut InstallationPlan,
+    pkgkey: &str,
+    store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
+) -> Result<()> {
+    let file_path = get_package_file_path(pkgkey)?;
+    let package = crate::package_cache::load_package_info(pkgkey)
+        .map_err(|e| eyre!("Failed to load package info for {}: {}", pkgkey, e))?;
+    let (_actual_pkgkey, pkgline) = crate::store::unpack_package(
+        &file_path,
+        pkgkey,
+        store_pkglines_by_pkgname,
+        Some(package.format),
+    )?;
+    if let Some(plan_pkg_info) = plan.new_pkgs.get_mut(pkgkey) {
+        Arc::make_mut(plan_pkg_info).pkgline = pkgline;
+    }
+    Ok(())
 }

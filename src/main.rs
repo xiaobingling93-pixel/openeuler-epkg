@@ -513,7 +513,7 @@ fn add_global_args_and_help(cmd: Command) -> Command {
         .arg(arg!(--proxy <URL> "HTTP proxy URL (e.g., http://proxy.example.com:8080)").hide(true).global(true))
         .arg(arg!(--"retry" <NUMBER> "Number of retries for download tasks").value_parser(clap::value_parser!(usize)).hide(true).global(true))
         .arg(arg!(--"parallel-download" <NUMBER> "Number of parallel download threads").value_parser(clap::value_parser!(usize)).hide(true).global(true))
-        .arg(arg!(--"parallel-processing" <BOOL> "Enable parallel processing for metadata updates (true/false)").value_parser(clap::value_parser!(bool)).hide(true).global(true))
+        .arg(arg!(--"parallel-processing" <NUMBER> "Number of parallel processing workers").value_parser(clap::value_parser!(usize)).hide(true).global(true))
         .override_usage("epkg [OPTIONS] <COMMAND>")
         .help_template(
             r#"{about} {version}
@@ -579,7 +579,7 @@ OPTIONS:
       --proxy <URL>                 HTTP proxy URL (e.g., http://proxy.example.com:8080)
       --retry <NUMBER>              Number of retries for download tasks
       --parallel-download <NUMBER>  Number of parallel download threads
-      --parallel-processing <BOOL>  Enable parallel processing for metadata updates (true/false) [possible values: true, false]
+      --parallel-processing <NUMBER>  Number of parallel processing workers
   -h, --help                        Print help
   -V, --version                     Print version
 
@@ -1151,15 +1151,14 @@ fn setup_parallel_params(config: &mut EPKGConfig, matches: &clap::ArgMatches) {
         config.common.nr_parallel_download = if *nr == 0 { 1 } else { *nr };
     }
 
-    // Handle parallel_processing parameter
-    if let Some(parallel_processing) = matches.get_one::<bool>("parallel-processing") {
-        // User explicitly set parallel_processing
-        config.common.parallel_processing = *parallel_processing;
-    } else if config.common.nr_parallel_download <= 1 {
-        // Auto-disable if nr_parallel_download <= 1, overriding the default
-        config.common.parallel_processing = false;
+    // Handle parallel_processing parameter and cap it to CPU count.
+    // Value 1 means sequential processing.
+    let nr_cpus = num_cpus::get().max(1);
+    if let Some(parallel_processing) = matches.get_one::<usize>("parallel-processing") {
+        config.common.parallel_processing = (*parallel_processing).clamp(1, nr_cpus);
+    } else {
+        config.common.parallel_processing = config.common.parallel_processing.clamp(1, nr_cpus);
     }
-    // Otherwise, use the default value set by default_parallel_processing()
 }
 
 pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {

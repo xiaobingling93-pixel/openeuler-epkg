@@ -106,7 +106,7 @@ epkg [选项] <命令>
 | `--proxy <URL>` | HTTP 代理。 |
 | `--retry <N>` | 下载重试次数。 |
 | `--parallel-download <N>` | 并行下载线程数。 |
-| `--parallel-processing <BOOL>` | 并行元数据更新（true/false）。 |
+| `--parallel-processing <N>` | 并行处理工作线程数（上限为 CPU 核心数；`1` 表示串行）。 |
 | `-h, --help` | 帮助。 |
 | `-V, --version` | 版本。 |
 

@@ -563,7 +563,7 @@ OPTIONS:
       --metadata-expire <SECONDS>   Metadata expiration time in seconds (0=never, -1=always)
       --proxy <URL>                 HTTP proxy URL (e.g., http://proxy.example.com:8080)
       --nr-parallel <NUMBER>        Number of parallel download threads
-      --parallel-processing <BOOL>  Enable parallel processing for metadata updates (true/false) [possible values: true, false]
+      --parallel-processing <NUMBER>  Number of parallel processing workers
   -h, --help                        Print help
   -V, --version                     Print version
 ```
