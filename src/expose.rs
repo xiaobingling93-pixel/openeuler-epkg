@@ -477,16 +477,25 @@ fn create_ebin_wrapper(env_root: &Path, fs_file_absolute: &Path, fs_file_relativ
             }
         }
     } else {
-        // For regular files, check the store file; if missing, skip wrapper.
+        // For regular files, prefer store path (works for symlink/hardlink modes),
+        // but fall back to the resolved env path for LinkType::Move where the file
+        // has already been renamed from store to env.
         match utils::get_file_type(fs_file_absolute) {
             Ok(info) => info,
-            Err(e) => {
-                log::info!(
-                    "Skipping ebin wrapper for {}: failed to determine file type: {}",
-                    fs_file_absolute.display(),
-                    e
-                );
-                return Ok(None);
+            Err(store_err) => {
+                match utils::get_file_type(&resolved_env_path) {
+                    Ok(info) => info,
+                    Err(env_err) => {
+                        log::info!(
+                            "Skipping ebin wrapper for {}: failed to determine file type from store path ({}) and resolved env path {} ({}).",
+                            fs_file_absolute.display(),
+                            store_err,
+                            resolved_env_path.display(),
+                            env_err
+                        );
+                        return Ok(None);
+                    }
+                }
             }
         }
     };
