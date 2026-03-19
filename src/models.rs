@@ -106,6 +106,7 @@ pub struct Package {
     pub arch: String,
 
     #[serde(default)]
+    #[serde(skip_serializing_if = "is_zero_u32")]
     pub size: u32,
     // installed_size is in BYTES. Different package formats have different source units:
     // - Debian: Installed-Size is in KB, converted to bytes by appending "000"
@@ -114,6 +115,7 @@ pub struct Package {
     // - Arch Linux: %SIZE% in bytes (no conversion needed)
     #[serde(default)]
     #[serde(rename = "installedSize")]
+    #[serde(skip_serializing_if = "is_zero_u32")]
     pub installed_size: u32,
     #[serde(default)]
     #[serde(rename = "buildTime")]
@@ -1091,6 +1093,10 @@ fn is_false(value: &bool) -> bool {
 }
 
 fn is_zero(value: &i32) -> bool {
+    *value == 0
+}
+
+fn is_zero_u32(value: &u32) -> bool {
     *value == 0
 }
 
