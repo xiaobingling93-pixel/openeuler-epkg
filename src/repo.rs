@@ -647,8 +647,15 @@ fn collect_repo_metadata(repo: &RepoRevise) -> Result<Vec<RepoReleaseItem>> {
         crate::conda_repo::parse_repodata_json(repo, &release_path.parent().unwrap().to_path_buf())
             .with_context(|| format!("Failed to parse conda repodata.json for repository: {}", repo.repo_name))?
     } else if repo.format == PackageFormat::Brew && (repo.index_url.ends_with("formula.json") || repo.index_url.ends_with("formula.jws.json") || repo.index_url.ends_with("formula.jws.json.gz")) {
-        crate::brew_repo::parse_formula_json(repo, &release_path.parent().unwrap().to_path_buf())
-            .with_context(|| format!("Failed to parse brew formula.json for repository: {}", repo.repo_name))?
+        #[cfg(unix)]
+        {
+            crate::brew_repo::parse_formula_json(repo, &release_path.parent().unwrap().to_path_buf())
+                .with_context(|| format!("Failed to parse brew formula.json for repository: {}", repo.repo_name))?
+        }
+        #[cfg(not(unix))]
+        {
+            return Err(eyre::eyre!("Brew repositories are not supported on this platform"));
+        }
     } else if repo.format == PackageFormat::Pacman && (repo.index_url.contains("packages-meta-ext-v1.json") || repo.repo_name == "aur") {
         // AUR repository - use AUR-specific processing
         #[cfg(target_os = "linux")]
@@ -1079,7 +1086,16 @@ fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoRel
                 }
             },
             PackageFormat::Conda => crate::conda_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Conda packages content for {}", revise.download_path.display()))?,
-            PackageFormat::Brew => crate::brew_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Brew packages content for {}", revise.download_path.display()))?,
+            PackageFormat::Brew => {
+                #[cfg(unix)]
+                {
+                    crate::brew_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Brew packages content for {}", revise.download_path.display()))?
+                }
+                #[cfg(not(unix))]
+                {
+                    return Err(eyre::eyre!("Brew repositories are not supported on this platform"));
+                }
+            }
             _ => return Err(eyre::eyre!("Unsupported package format: {:?}", revise.repo_revise.format)),
         };
     } else {

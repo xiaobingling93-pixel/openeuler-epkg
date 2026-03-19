@@ -880,6 +880,7 @@ pub fn fixup_file_permissions_with_mode(_target_path: &Path, _mode: u32, _is_dir
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)]
 pub fn fixup_file_permissions(_target_path: &Path) {
     // No-op on non-Unix systems
 }

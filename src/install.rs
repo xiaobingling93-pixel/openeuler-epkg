@@ -537,6 +537,7 @@ fn link_one_package(plan: &InstallationPlan, pkgkey: &str) -> Result<()> {
         }
 
         // Generate service files for brew packages with service definition
+        #[cfg(unix)]
         if plan.package_format == crate::models::PackageFormat::Brew {
             if let Some(package) = crate::package_cache::load_package_info(pkgkey).ok() {
                 if let Some(ref service_json) = package.service_json {

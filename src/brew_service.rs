@@ -7,6 +7,7 @@
 
 use std::path::Path;
 use color_eyre::Result;
+#[cfg(target_os = "macos")]
 use crate::lfs;
 use crate::brew_repo::BrewService;
 
@@ -217,7 +218,7 @@ fn resolve_run_command(run: &Option<serde_json::Value>, env_root: &Path) -> Vec<
                 .filter_map(|v| v.as_str().map(|s| s.to_string()))
                 .collect()
         }
-        serde_json::Value::Object(obj) => {
+        serde_json::Value::Object(_obj) => {
             // Platform-specific run command
             #[cfg(target_os = "macos")]
             {
@@ -265,7 +266,7 @@ fn escape_plist_string(s: &str) -> String {
 ///
 /// The name can be platform-specific (macos/linux) or use the formula name.
 pub fn get_service_name(service: &BrewService, default_name: &str) -> String {
-    if let Some(name) = &service.name {
+    if let Some(_name) = &service.name {
         #[cfg(target_os = "macos")]
         {
             if let Some(macos) = &name.macos {

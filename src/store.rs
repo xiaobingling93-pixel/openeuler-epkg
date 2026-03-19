@@ -381,6 +381,7 @@ fn general_unpack_package<P: AsRef<Path>>(
         PackageFormat::Conda => {
             crate::conda_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
+        #[cfg(unix)]
         PackageFormat::Brew => {
             crate::brew_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
