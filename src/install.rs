@@ -477,6 +477,15 @@ fn link_packages(plan: &mut InstallationPlan) -> Result<()> {
             }
             let store_fs_dir = plan.store_root.join(&package_info.pkgline).join("fs");
             crate::link::link_package(plan, &store_fs_dir)?;
+
+            // Create symlinks in usr/bin/ for libexec/bin/ executables.
+            // Homebrew formulas (e.g., python@3.14, node) pre-create unversioned
+            // command symlinks in libexec/bin/ during the build phase. These are
+            // included in the bottle tarball (not created by post_install).
+            // We create corresponding symlinks in usr/bin/ for epkg run.
+            if let Err(e) = crate::expose::create_libexec_bin_symlinks(&plan.env_root, &store_fs_dir) {
+                log::debug!("Failed to create libexec bin symlinks for {}: {}", pkgkey, e);
+            }
         }
     }
 

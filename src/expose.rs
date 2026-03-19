@@ -277,6 +277,105 @@ fn create_ebin_wrappers(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate:
     Ok(created_ebin_paths)
 }
 
+/// Create symlinks in usr/bin/ for libexec/bin/ executables.
+///
+/// Homebrew formulas (e.g., python@3.14, node) pre-create unversioned command
+/// symlinks in `libexec/bin/` directory during the build phase. These symlinks
+/// are included in the bottle tarball (not created by post_install).
+///
+/// For example, python@3.14 bottle contains:
+/// - libexec/bin/python -> (symlink to python3.14)
+/// - libexec/bin/pip -> (symlink to pip3.14)
+///
+/// This function creates corresponding symlinks in usr/bin/ so that
+/// `epkg run python` works when the actual binary is python3.14.
+///
+/// Note: With LinkType::Move, files are moved from store to env. So we check
+/// both locations: store_fs_dir/libexec/bin (for symlink/hardlink types) and
+/// env_root/libexec/bin (for move type).
+pub fn create_libexec_bin_symlinks(env_root: &Path, store_fs_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut created_paths: Vec<PathBuf> = Vec::new();
+
+    // Check libexec/bin in both store and env (for Move link type)
+    let libexec_bin_candidates = [
+        store_fs_dir.join("libexec/bin"),
+        env_root.join("libexec/bin"),
+    ];
+
+    let libexec_bin = libexec_bin_candidates.iter()
+        .find(|p| p.exists())
+        .map(|p| p.as_path())
+        .unwrap_or_else(|| &libexec_bin_candidates[0]);
+
+    if !libexec_bin.exists() {
+        return Ok(created_paths);
+    }
+
+    // Target bin directories to create symlinks in
+    let target_bin_dirs = [
+        env_root.join("usr/bin"),
+        env_root.join("bin"),
+    ];
+
+    // Read entries in libexec/bin and create symlinks
+    let entries = match fs::read_dir(&libexec_bin) {
+        Ok(e) => e,
+        Err(e) => {
+            log::debug!("Failed to read libexec/bin: {}", e);
+            return Ok(created_paths);
+        }
+    };
+
+    for entry in entries.flatten() {
+        let name = match entry.file_name().to_str() {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+
+        // Skip if not a symlink or executable
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+
+        // Only process symlinks and regular files
+        if !file_type.is_symlink() && !file_type.is_file() {
+            continue;
+        }
+
+        // Create symlinks in target bin directories
+        for target_bin in &target_bin_dirs {
+            if !target_bin.exists() {
+                continue;
+            }
+
+            let target_path = target_bin.join(&name);
+
+            // Skip if already exists
+            if target_path.exists() || target_path.is_symlink() {
+                continue;
+            }
+
+            // Create symlink pointing to the libexec/bin entry
+            // The symlink target will be relative: ../../libexec/bin/<name>
+            let link_target = Path::new("../../libexec/bin").join(&name);
+            match lfs::symlink(&link_target, &target_path) {
+                Ok(()) => {
+                    log::info!("Created libexec symlink: {} -> {}",
+                              target_path.display(), link_target.display());
+                    created_paths.push(target_path);
+                }
+                Err(e) => {
+                    log::debug!("Failed to create libexec symlink {}: {}",
+                               target_path.display(), e);
+                }
+            }
+        }
+    }
+
+    Ok(created_paths)
+}
+
 /// Resolve the target path for an ebin wrapper by following symlinks in the env.
 ///
 /// This function follows symlinks starting from `env_path` until:

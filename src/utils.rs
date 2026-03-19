@@ -908,11 +908,14 @@ fn replace_symlinks_with_content(env_root: &Path) -> Result<()> {
 
         if lfs::exists_in_env(&full_symlink_path) && full_symlink_path.is_symlink() {
             // Resolve the symlink to get the actual target file path
-            let target_path = std::fs::canonicalize(&full_symlink_path)
-                .map_err(|e| {
-                    log::warn!("Failed to resolve symlink {}: {}", full_symlink_path.display(), e);
-                    e
-                })?;
+            let target_path = match std::fs::canonicalize(&full_symlink_path) {
+                Ok(path) => path,
+                Err(e) => {
+                    // Symlink is broken (target doesn't exist) - skip it
+                    log::debug!("Skipping broken symlink {}: {}", full_symlink_path.display(), e);
+                    continue;
+                }
+            };
 
             // Remove the symlink
             lfs::remove_file(&full_symlink_path)?;
