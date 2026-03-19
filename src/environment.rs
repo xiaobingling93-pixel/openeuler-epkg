@@ -191,10 +191,10 @@ pub fn list_environments() -> Result<()> {
         .map(|cfg| (cfg.name, cfg.register_path_order))
         .collect();
 
-    // Print table header with columns: Type, Status, Environment, Channel, Version, Root
-    println!("{:<10}  {:<25}  {:<30}  {:<15}  {:<15}  {}",
-             "Type", "Status", "Environment", "Channel", "Version", "Root");
-    println!("{}", "-".repeat(140));
+    // Print table header with columns: Type, Status, Environment, Channel, Root
+    println!("{:<10}  {:<25}  {:<30}  {:<20}  {}",
+             "Type", "Status", "Environment", "Channel", "Root");
+    println!("{}", "-".repeat(130));
 
     // Print each environment with its status
     for (env, is_public) in all_envs {
@@ -215,30 +215,29 @@ pub fn list_environments() -> Result<()> {
         let status = status_parts.join(",");
 
         // Get environment root path and channel config
-        let (env_root, channel, version) = match get_env_root(env.clone()) {
+        let (env_root, channel) = match get_env_root(env.clone()) {
             Ok(root) => {
                 let root_str = root.display().to_string();
                 // Try to get channel config for this environment
                 match crate::io::deserialize_channel_config_from_root(&root) {
                     Ok(configs) => {
                         if let Some(cc) = configs.first() {
-                            (root_str, cc.channel.clone(), cc.version.clone())
+                            (root_str, cc.channel.clone())
                         } else {
-                            (root_str, String::new(), String::new())
+                            (root_str, String::new())
                         }
                     }
-                    Err(_) => (root_str, String::new(), String::new()),
+                    Err(_) => (root_str, String::new()),
                 }
             }
-            Err(_) => ("N/A".to_string(), String::new(), String::new()),
+            Err(_) => ("N/A".to_string(), String::new()),
         };
 
-        println!("{:<10}  {:<25}  {:<30}  {:<15}  {:<15}  {}",
+        println!("{:<10}  {:<25}  {:<30}  {:<20}  {}",
             env_type,
             status,
             env,
             channel,
-            version,
             env_root
         );
     }
