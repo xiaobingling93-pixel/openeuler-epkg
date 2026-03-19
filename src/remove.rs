@@ -57,7 +57,14 @@ pub fn unlink_package(
         let target_path = env_root.join(&fs_file_info.path);
 
         // Skip symlinks for top-level directories, some are manually created in create_environment_dirs_early()
+        // NOTE: On macOS, usr/libexec is a symlink (for brew packages), so we skip it.
+        // On Linux, usr/libexec is a real directory (RPM/Debian), so we DON'T skip it.
+        #[cfg(target_os = "macos")]
         if matches!(fs_file_info.path.trim_end_matches('/'), "sbin" | "bin" | "lib" | "lib64" | "lib32" | "share" | "include" | "usr/sbin" | "usr/lib64" | "usr/libexec") {
+            continue;
+        }
+        #[cfg(not(target_os = "macos"))]
+        if matches!(fs_file_info.path.trim_end_matches('/'), "sbin" | "bin" | "lib" | "lib64" | "lib32" | "share" | "include" | "usr/sbin" | "usr/lib64") {
             continue;
         }
 
