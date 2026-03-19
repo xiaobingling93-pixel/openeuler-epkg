@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -107,6 +108,7 @@ pub fn extract_archive_with_policy<R: Read>(
 ) -> Result<usize> {
     let mut entries_processed = 0;
     let mut hard_links: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut created_dirs: HashSet<PathBuf> = HashSet::new();
 
     for entry_result in archive.entries()? {
         let mut entry = entry_result?;
@@ -150,14 +152,22 @@ pub fn extract_archive_with_policy<R: Read>(
             }
         }
 
-        // Ensure parent directory exists
+        // Ensure parent directory exists (with caching to avoid redundant calls)
         if let Some(parent) = target_path.parent() {
-            lfs::create_dir_all(parent)?;
+            if !created_dirs.contains(parent) {
+                lfs::create_dir_all(parent)?;
+                created_dirs.insert(parent.to_path_buf());
+            }
         }
 
         // Extract the file
         entry.unpack(&target_path)?;
         utils::fixup_file_permissions_with_mode(&target_path, mode, is_dir);
+
+        // Cache directory path for future entries
+        if is_dir {
+            created_dirs.insert(target_path.clone());
+        }
     }
 
     // Create hard links after all files are extracted
@@ -207,6 +217,7 @@ pub fn extract_archive<R: Read>(
 ) -> Result<usize> {
     let mut entries_processed = 0;
     let mut hard_links: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut created_dirs: HashSet<PathBuf> = HashSet::new();
 
     for entry_result in archive.entries()? {
         let mut entry = entry_result?;
@@ -243,14 +254,22 @@ pub fn extract_archive<R: Read>(
             }
         }
 
-        // Ensure parent directory exists
+        // Ensure parent directory exists (with caching to avoid redundant calls)
         if let Some(parent) = target_path.parent() {
-            lfs::create_dir_all(parent)?;
+            if !created_dirs.contains(parent) {
+                lfs::create_dir_all(parent)?;
+                created_dirs.insert(parent.to_path_buf());
+            }
         }
 
         // Extract the file
         entry.unpack(&target_path)?;
         utils::fixup_file_permissions_with_mode(&target_path, mode, is_dir);
+
+        // Cache directory path for future entries
+        if is_dir {
+            created_dirs.insert(target_path.clone());
+        }
     }
 
     // Now create all hard links after all files have been extracted

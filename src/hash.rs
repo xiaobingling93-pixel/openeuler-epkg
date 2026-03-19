@@ -8,7 +8,6 @@ use walkdir::WalkDir;
 use sha2;
 use sha2::Digest;
 use color_eyre::{Result, eyre::eyre, eyre::WrapErr};
-use crate::lfs;
 
 // Step 1: Compute SHA256 hash  Output: 32-byte bytes object.
 // Step 2: Compress(XOR) hash   Output: 20-byte bytearray.
@@ -53,21 +52,29 @@ pub fn epkg_store_hash(epkg_path: &str) -> Result<String> {
     let fs_path = dir.join("fs");
     let install_path = dir.join("info").join("install");
 
-    // 收集所有文件和目录的路径
-    let mut paths: Vec<PathBuf> = WalkDir::new(dir)
+    // Collect all entries with their file types (avoids redundant metadata calls)
+    let mut entries: Vec<(PathBuf, fs::FileType)> = WalkDir::new(dir)
         .into_iter()
-        .filter_map(|entry| entry.ok()) // Skip errors
-        .map(|entry| entry.into_path())
-        .filter(|entry| entry.starts_with(&fs_path) || entry.starts_with(&install_path))
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            // Filter to only fs/ and info/install/ paths
+            if path.starts_with(&fs_path) || path.starts_with(&install_path) {
+                // Use file_type() from DirEntry - no extra I/O needed
+                Some((path.to_path_buf(), entry.file_type()))
+            } else {
+                None
+            }
+        })
         .collect();
 
-    paths.sort();
+    // Sort by path for deterministic hash
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut info: Vec<String> = Vec::new();
 
-    for path in &paths {
-        // if path == dir { continue; } // this is where rust WalkDir differs from python os.walk
-        let (ftype, fdata) = get_path_info(&path)
+    for (path, file_type) in &entries {
+        let (ftype, fdata) = get_path_info_with_type(&path, *file_type)
             .wrap_err_with(|| format!("Failed to get path info for: {}", path.display()))?;
         info.push(path.strip_prefix(dir)
             .wrap_err_with(|| format!("Failed to strip prefix '{}' from path '{}'", dir.display(), path.display()))?
@@ -82,21 +89,33 @@ pub fn epkg_store_hash(epkg_path: &str) -> Result<String> {
     Ok(b32_hash(&all_info))
 }
 
-fn get_path_info(path: &Path) -> Result<(&str, String)> {
-    let metadata = lfs::symlink_metadata(path)
-        .wrap_err_with(|| format!("Failed to get metadata for: {}", path.display()))?;
-
-    let (ftype, fdata) = match metadata.file_type() {
-        ft if ft.is_symlink()       => ("S_IFLNK", fs::read_link(path)
-                                        .wrap_err_with(|| format!("Failed to read symlink: {}", path.display()))?
-                                        .to_string_lossy().into_owned()),
-        ft if ft.is_file()          => ("S_IFREG", file_sha256_chunks(path, &metadata)?.join(" ")),
-        ft if ft.is_block_device()  => ("S_IFBLK", metadata.dev().to_string()),  // u64
-        ft if ft.is_char_device()   => ("S_IFCHR", metadata.dev().to_string()),  // high32-major  low32-minor
-        ft if ft.is_dir()           => ("S_IFDIR", "".to_string()),
-        ft if ft.is_fifo()          => ("S_IFIFO", "".to_string()),
-        ft if ft.is_socket()        => ("S_IFSOCK", "".to_string()),
-        _ => return Err(eyre!("Encountered an unknown file type at: {}", path.display())),
+fn get_path_info_with_type(path: &Path, file_type: fs::FileType) -> Result<(&'static str, String)> {
+    // Use the pre-obtained file_type to avoid redundant metadata call
+    let (ftype, fdata) = if file_type.is_symlink() {
+        ("S_IFLNK", fs::read_link(path)
+            .wrap_err_with(|| format!("Failed to read symlink: {}", path.display()))?
+            .to_string_lossy().into_owned())
+    } else if file_type.is_file() {
+        // For files, we still need metadata for size, but this is necessary
+        let metadata = fs::metadata(path)
+            .wrap_err_with(|| format!("Failed to get metadata for: {}", path.display()))?;
+        ("S_IFREG", file_sha256_chunks(path, &metadata)?.join(" "))
+    } else if file_type.is_dir() {
+        ("S_IFDIR", String::new())
+    } else if file_type.is_block_device() {
+        let metadata = fs::metadata(path)
+            .wrap_err_with(|| format!("Failed to get metadata for: {}", path.display()))?;
+        ("S_IFBLK", metadata.dev().to_string())
+    } else if file_type.is_char_device() {
+        let metadata = fs::metadata(path)
+            .wrap_err_with(|| format!("Failed to get metadata for: {}", path.display()))?;
+        ("S_IFCHR", metadata.dev().to_string())
+    } else if file_type.is_fifo() {
+        ("S_IFIFO", String::new())
+    } else if file_type.is_socket() {
+        ("S_IFSOCK", String::new())
+    } else {
+        return Err(eyre!("Encountered an unknown file type at: {}", path.display()));
     };
 
     Ok((ftype, fdata))
