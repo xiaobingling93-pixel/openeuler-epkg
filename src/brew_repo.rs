@@ -14,11 +14,17 @@ pub struct BrewFormula {
     pub name: String,
     #[serde(rename = "full_name")]
     pub full_name: String,
+    #[serde(default)]
+    pub oldnames: Vec<String>,
+    #[serde(default)]
+    pub aliases: Vec<String>,
     pub desc: Option<String>,
     pub license: Option<String>,
     pub homepage: Option<String>,
     pub versions: BrewVersions,
     pub revision: u64,
+    #[serde(default)]
+    pub caveats: Option<String>,
     #[serde(default)]
     pub dependencies: Vec<String>,
     #[serde(default)]
@@ -166,6 +172,11 @@ impl BrewFormula {
             "x86_64"
         };
 
+        // Build provides: pkgname + aliases + oldnames
+        let mut provides = vec![self.name.clone()];
+        provides.extend(self.aliases.clone());
+        provides.extend(self.oldnames.clone());
+
         Some(Package {
             pkgname: self.name.clone(),
             version: format!("{}_{}", version, self.revision),
@@ -178,10 +189,11 @@ impl BrewFormula {
             recommends: recommended,
             suggests: optional,
             conflicts: self.conflicts_with.clone(),
-            provides: vec![self.name.clone()],
+            provides,
             summary: self.desc.clone().unwrap_or_default(),
             description: self.desc.clone(),
             homepage: self.homepage.clone().unwrap_or_default(),
+            caveats: self.caveats.clone(),
             license: self.license.clone(),
             // Store bottle_tag (platform info like sonoma, x86_64_linux, or "all") in tag field
             tag: Some(actual_tag.to_string()),
@@ -396,12 +408,26 @@ fn process_brew_formulas(repo_dir: &PathBuf, revise: &RepoReleaseItem, formulas:
 
     let mut package_count = 0;
     let mut pkgname2ranges: BTreeMap<String, Vec<PackageRange>> = BTreeMap::new();
+    let mut provide2pkgnames: HashMap<String, Vec<String>> = HashMap::new();
     let mut current_offset: usize = 0;
 
     for formula in formulas {
         // Skip formulas without bottles for this tag
         if let Some(package) = formula.to_package(bottle_tag) {
             let package_begin = current_offset;
+
+            // Build provide2pkgnames from aliases and oldnames
+            let pkgname = &package.pkgname;
+            for alias in &formula.aliases {
+                provide2pkgnames.entry(alias.clone())
+                    .or_insert_with(Vec::new)
+                    .push(pkgname.clone());
+            }
+            for oldname in &formula.oldnames {
+                provide2pkgnames.entry(oldname.clone())
+                    .or_insert_with(Vec::new)
+                    .push(pkgname.clone());
+            }
 
             // Write package entry in packages.txt format
             // Build the output string with all available fields
@@ -434,6 +460,10 @@ fn process_brew_formulas(repo_dir: &PathBuf, revise: &RepoReleaseItem, formulas:
             if !package.conflicts.is_empty() {
                 lines.push(format!("conflicts: {}", package.conflicts.join(", ")));
             }
+            // Write provides (includes pkgname, aliases, and oldnames)
+            if !package.provides.is_empty() {
+                lines.push(format!("provides: {}", package.provides.join(", ")));
+            }
             if !package.summary.is_empty() {
                 lines.push(format!("summary: {}", package.summary));
             }
@@ -442,6 +472,17 @@ fn process_brew_formulas(repo_dir: &PathBuf, revise: &RepoReleaseItem, formulas:
             }
             if let Some(ref license) = package.license {
                 lines.push(format!("license: {}", license));
+            }
+            if let Some(ref caveats) = package.caveats {
+                // Write multi-line caveats with space-prefixed continuation lines
+                let caveats_lines: Vec<String> = caveats.lines().enumerate().map(|(i, line)| {
+                    if i == 0 {
+                        format!("caveats: {}", line)
+                    } else {
+                        format!(" {}", line) // continuation line starts with space
+                    }
+                }).collect();
+                lines.push(caveats_lines.join("\n"));
             }
 
             let pkg_block = lines.join("\n") + "\n\n"; // End with blank line between packages
@@ -465,10 +506,11 @@ fn process_brew_formulas(repo_dir: &PathBuf, revise: &RepoReleaseItem, formulas:
         .unwrap_or("packages.txt")
         .to_string();
 
-    // Create provide2pkgnames.rkyv (empty for brew)
+    let nr_provides = provide2pkgnames.len();
+
+    // Create provide2pkgnames.rkyv from aliases and oldnames
     let provide2pkgnames_path = repo_dir.join(filename.replace("packages", "provide2pkgnames")).with_extension("rkyv");
-    let empty_provides: HashMap<String, Vec<String>> = HashMap::new();
-    crate::mmio::serialize_provide2pkgnames(&provide2pkgnames_path, &empty_provides)
+    crate::mmio::serialize_provide2pkgnames(&provide2pkgnames_path, &provide2pkgnames)
         .with_context(|| "Failed to serialize provide2pkgnames")?;
 
     // Create essential_pkgnames (empty for brew)
@@ -505,7 +547,7 @@ fn process_brew_formulas(repo_dir: &PathBuf, revise: &RepoReleaseItem, formulas:
         datetime: String::new(),
         size: 0,
         nr_packages: package_count,
-        nr_provides: 0,
+        nr_provides,
         nr_essentials: 0,
     };
 

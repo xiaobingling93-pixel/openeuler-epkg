@@ -360,6 +360,7 @@ fn process_key_value(package: &mut Package, key: &str, value: &str) -> Result<()
         "description"       => package.description  = Some(value.to_string()),
         "location"          => package.location     = value.to_string(),
         "homepage"          => package.homepage     = value.to_string(),
+        "caveats"           => package.caveats      = Some(value.to_string()),
         "maintainer"        => package.maintainer   = value.to_string(),
         "section"           => package.section      = Some(value.to_string()),
         "priority"          => package.priority     = Some(value.to_string()),

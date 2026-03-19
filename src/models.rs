@@ -178,6 +178,8 @@ pub struct Package {
     #[serde(default)]
     pub homepage: String,
     #[serde(default)]
+    pub caveats: Option<String>,
+    #[serde(default)]
     pub section: Option<String>,
     #[serde(default)]
     pub priority: Option<String>,
