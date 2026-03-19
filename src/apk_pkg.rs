@@ -206,9 +206,16 @@ pub fn unpack_package<P: AsRef<Path>>(apk_file: P, store_tmp_dir: P, pkgkey: Opt
 /// - Dot files (metadata like .PKGINFO, .trigger) go to info/apk/
 /// - Regular files go to fs/
 fn apk_path_policy(path: &Path, _is_hard_link: bool, store_tmp_dir: &Path) -> Option<PathBuf> {
-    if path.starts_with(".") {
-        // Metadata files go to info/apk/
-        Some(store_tmp_dir.join("info/apk").join(path))
+    // Check if the file name starts with '.' (dot file)
+    // Note: Path::starts_with(".") checks for a component ".", not a filename starting with '.'
+    let is_dot_file = path.file_name()
+        .map(|name| name.to_string_lossy().starts_with('.'))
+        .unwrap_or(false);
+
+    if is_dot_file {
+        // Metadata files go to info/apk/ with just the filename
+        let file_name = path.file_name().unwrap();
+        Some(store_tmp_dir.join("info/apk").join(file_name))
     } else {
         // Regular files go to fs/
         Some(store_tmp_dir.join("fs").join(path))
