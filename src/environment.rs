@@ -916,7 +916,12 @@ pub fn unregister_environment(name: &str) -> Result<()> {
     let mut env_config = io::deserialize_env_config_for(name.to_string())?;
 
     if !env_config.register_to_path {
-        println!("# Environment '{}' is not registered.", name);
+        // Only show message when explicitly called via "epkg env unregister"
+        // When called from "epkg env remove", skip the message since user
+        // is removing the environment, not specifically unregistering
+        if config().subcommand == EpkgCommand::EnvUnregister {
+            println!("# Environment '{}' is not registered.", name);
+        }
         return Ok(());
     }
 
