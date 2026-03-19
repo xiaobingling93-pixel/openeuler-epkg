@@ -931,6 +931,11 @@ build_static() {
         rust_target=$(get_rust_target_for_platform "$arch" "darwin")
         rustflags=""
         echo "Building for macOS ($arch)..."
+    elif [[ "$host_os" == MINGW* || "$host_os" == MSYS* || "$host_os" == CYGWIN* ]]; then
+        # On Windows (MSYS2/MinGW), build for native Windows target
+        rust_target=$(get_rust_target_for_platform "$arch" "windows")
+        rustflags=""
+        echo "Building for Windows ($arch)..."
     else
         # On Linux, build for musl target (static Linux binary)
         rust_target=$(get_rust_target "$arch")
@@ -942,6 +947,7 @@ build_static() {
     if [[ "$FEATURES" == "auto" ]]; then
         local target_os="linux"
         [[ "$host_os" == "Darwin" ]] && target_os="darwin"
+        [[ "$host_os" == MINGW* || "$host_os" == MSYS* || "$host_os" == CYGWIN* ]] && target_os="windows"
         if should_enable_libkrun "$arch" "$target_os"; then
             cargo_features="libkrun"
             echo "Auto-enabling libkrun feature for $arch $target_os"
@@ -954,6 +960,7 @@ build_static() {
     if [[ "$cargo_features" == *"libkrun"* ]]; then
         local target_os="linux"
         [[ "$host_os" == "Darwin" ]] && target_os="darwin"
+        [[ "$host_os" == MINGW* || "$host_os" == MSYS* || "$host_os" == CYGWIN* ]] && target_os="windows"
         if ! should_enable_libkrun "$arch" "$target_os"; then
             echo "Warning: libkrun is not supported on $arch $target_os, build may fail"
         fi
@@ -964,11 +971,13 @@ build_static() {
     # Detect host OS
     local host_os=$(uname -s)
     local is_macos=false
+    local is_windows=false
     [[ "$host_os" == "Darwin" ]] && is_macos=true
+    [[ "$host_os" == MINGW* || "$host_os" == MSYS* || "$host_os" == CYGWIN* ]] && is_windows=true
 
-    # On macOS, we don't need Lua (it's only for Linux RPM scriptlets)
+    # On macOS/Windows, we don't need Lua (it's only for Linux RPM scriptlets)
     # On Linux, we need Lua for RPM scriptlet support
-    if [[ "$is_macos" == "false" ]]; then
+    if [[ "$is_macos" == "false" && "$is_windows" == "false" ]]; then
         export LUA_LIB_NAME=lua
         export LUA_LIB="$PROJECT_ROOT/target/lua-musl-$arch"
         export LUA_LINK=static
@@ -979,9 +988,12 @@ build_static() {
     export_linker_var "$arch"
 
     # Set C compiler for mlua-sys build
-    # On macOS, use clang; on Linux, use musl-gcc
     if [[ "$is_macos" == "true" ]]; then
         export CC="clang"
+        export CFLAGS=""
+    elif [[ "$is_windows" == "true" ]]; then
+        # On Windows/MinGW, use gcc
+        export CC="gcc"
         export CFLAGS=""
     else
         export CC=$(get_c_compiler "$arch" "musl")
@@ -998,8 +1010,9 @@ build_static() {
 
     # If we're building with libkrun support, ensure kernel is available.
     # Note: On macOS, libkrun doesn't need a kernel image (it uses hypervisor framework)
+    # Note: On Windows, libkrun is not supported
     if [[ "$cargo_features" == *"libkrun"* ]]; then
-        if [[ "$is_macos" == "false" ]]; then
+        if [[ "$is_macos" == "false" && "$is_windows" == "false" ]]; then
             install_kernel_for_libkrun "$arch"
         fi
     fi
@@ -1024,8 +1037,8 @@ build_static() {
     # This is because mlua-sys builds its own Lua which may reference *64 functions
     # that don't exist in musl libc.
     # We pre-build mlua-sys first, add shims, then build everything else.
-    # Note: On macOS, we don't need this since we don't use Lua.
-    if [[ "$is_macos" == "false" ]] && [[ "$CC" != "musl-gcc" ]]; then
+    # Note: On macOS/Windows, we don't need this since we don't use Lua.
+    if [[ "$is_macos" == "false" && "$is_windows" == "false" ]] && [[ "$CC" != "musl-gcc" ]]; then
         # Pre-build mlua (and mlua-sys) to generate Lua library before main build
         # We build just the lua-related deps first so we can add musl shims
         echo "Pre-building mlua for $arch to add musl compatibility shims..."
