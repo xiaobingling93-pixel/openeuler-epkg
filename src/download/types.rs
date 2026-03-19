@@ -73,6 +73,7 @@ pub const CHUNK_MERGE_THRESHOLD: u64 = PGET_CHUNK_SIZE / 8;     // Threshold for
 // Threading and scheduling constants
 pub const MAX_CHUNK_THREADS_MULTIPLIER: usize = 8;              // Maximum chunk threads as multiple of parallel downloads
 pub const CHUNK_PARALLEL_MULTIPLIER: usize = 2;                 // Thread spawn multiplier for parallel chunk tasks
+pub const MAX_ACTIVE_CHUNKS_PER_FILE: usize = 9;                // Hard cap for active chunk downloads per file
 pub const WAIT_TASK_DURATION_MS: u64 = 100;                     // Wait for task and thread coordination
 pub const CHUNK_SLEEP_DURATION_MS: u64 = 500;                   // Chunk task wait for merge and error recovery
 

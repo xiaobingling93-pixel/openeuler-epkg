@@ -513,7 +513,13 @@ impl DownloadManager {
             pending_chunks.len(), max_chunk_threads, current_chunk_count, threads_to_spawn
         );
 
-        Self::spawn_chunk_threads(&pending_chunks, threads_to_spawn, chunk_handles);
+        let active_chunk_counts_by_file = Self::collect_active_chunk_counts_by_file(tasks);
+        Self::spawn_chunk_threads(
+            &pending_chunks,
+            threads_to_spawn,
+            chunk_handles,
+            active_chunk_counts_by_file,
+        );
     }
 
     /// Calculate the maximum number of chunk threads based on parallel limit and available mirrors
@@ -680,15 +686,48 @@ impl DownloadManager {
         }
     }
 
+    /// Count active chunk downloads by final output file path.
+    fn collect_active_chunk_counts_by_file(
+        tasks: &Arc<Mutex<HashMap<String, Arc<DownloadTask>>>>
+    ) -> HashMap<PathBuf, usize> {
+        let mut active_counts = HashMap::new();
+
+        Self::iterate_3level_tasks(tasks, |task, _level| {
+            if !task.is_chunk_task() {
+                return;
+            }
+            if !matches!(task.get_status(), DownloadStatus::Downloading) {
+                return;
+            }
+            *active_counts.entry(task.final_path.clone()).or_insert(0) += 1;
+        });
+
+        active_counts
+    }
+
     /// Spawn chunk download threads for the given pending chunks
     fn spawn_chunk_threads(
         pending_chunks: &[(f64, Arc<DownloadTask>)],
         threads_to_spawn: usize,
-        chunk_handles: &Arc<Mutex<Vec<thread::JoinHandle<()>>>>
+        chunk_handles: &Arc<Mutex<Vec<thread::JoinHandle<()>>>>,
+        mut active_chunk_counts_by_file: HashMap<PathBuf, usize>,
     ) {
-        for (_, chunk_task) in pending_chunks.iter().take(threads_to_spawn) {
+        let mut spawned_count = 0;
+
+        for (_, chunk_task) in pending_chunks.iter() {
+            if spawned_count >= threads_to_spawn {
+                break;
+            }
+
             let chunk_clone = Arc::clone(chunk_task);
             let _chunk_handles_clone = Arc::clone(chunk_handles);
+
+            let active_for_file = *active_chunk_counts_by_file
+                .get(&chunk_clone.final_path)
+                .unwrap_or(&0);
+            if active_for_file >= MAX_ACTIVE_CHUNKS_PER_FILE {
+                continue;
+            }
 
             // Double-check that the task is still pending before spawning
             if !matches!(chunk_clone.get_status(), DownloadStatus::Pending) {
@@ -708,6 +747,7 @@ impl DownloadManager {
                        chunk_clone.chunk_offset.load(Ordering::Relaxed),
                        chunk_clone.chunk_size.load(Ordering::Relaxed));
 
+            let final_path_for_count = chunk_clone.final_path.clone();
             let handle = thread::spawn(move || {
 
                 match download_chunk_task(&chunk_clone) {
@@ -735,6 +775,11 @@ impl DownloadManager {
                     }
                 }
             });
+
+            *active_chunk_counts_by_file
+                .entry(final_path_for_count)
+                .or_insert(0) += 1;
+            spawned_count += 1;
 
             // Store the chunk handle
             if let Ok(mut handles_guard) = chunk_handles.lock() {
