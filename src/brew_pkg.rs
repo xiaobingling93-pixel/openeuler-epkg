@@ -1,12 +1,13 @@
 use std::fs;
-use std::path::Path;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use tar::Archive;
 use log;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use flate2::read::GzDecoder;
 use crate::lfs;
-use crate::utils;
+use crate::tar_extract::{create_package_dirs, ExtractConfig, extract_archive_with_policy};
 
 /// Homebrew placeholder prefixes that need to be rewritten in dylib paths
 const HOMEBREW_PLACEHOLDER_PREFIXES: &[&str] = &[
@@ -89,8 +90,7 @@ pub fn unpack_package<P: AsRef<Path>>(bottle_file: P, store_tmp_dir: P, pkgkey: 
     let store_tmp_dir = store_tmp_dir.as_ref();
 
     // Create the required directory structure following project pattern
-    fs::create_dir_all(store_tmp_dir.join("fs"))?;
-    fs::create_dir_all(store_tmp_dir.join("info/brew"))?;
+    create_package_dirs(store_tmp_dir, "brew")?;
 
     log::debug!("Unpacking Brew bottle: {}", bottle_file.display());
 
@@ -110,128 +110,10 @@ pub fn unpack_package<P: AsRef<Path>>(bottle_file: P, store_tmp_dir: P, pkgkey: 
     let file = fs::File::open(bottle_file)
         .wrap_err_with(|| format!("Failed to open bottle file: {}", bottle_file.display()))?;
     let decoder = GzDecoder::new(file);
-    let mut archive = Archive::new(decoder);
+    let archive = Archive::new(decoder);
 
-    // Brew bottles have a top-level directory like "package_name/version/"
-    // We need to strip this prefix and extract contents directly to fs/
-    let mut entries_processed = 0;
-    let mut hard_links: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
-
-    for entry_result in archive.entries()? {
-        let mut entry = entry_result?;
-        let path = entry.path()?.to_path_buf();
-        entries_processed += 1;
-
-        log::trace!("Processing tar entry #{}: {}", entries_processed, path.display());
-
-        // Strip the top-level directory (package_name/version/)
-        // Path looks like: "jq/1.7.1/bin/jq" -> we want "bin/jq"
-        let components: Vec<_> = path.components().collect();
-        if components.len() < 3 {
-            // Skip top-level entries (package_name/, package_name/version/)
-            log::trace!("Skipping top-level entry: {}", path.display());
-            continue;
-        }
-
-        // Reconstruct path without first two components (package_name and version)
-        // Check if this is a metadata file/directory at root level
-        let stripped_components: Vec<_> = components.iter().skip(2).collect();
-
-        // Check for .brew/ directory (contains formula with post_install etc)
-        let is_brew_dir = stripped_components.first()
-            .and_then(|c| c.as_os_str().to_str())
-            .map(|s| s == ".brew")
-            .unwrap_or(false);
-
-        // Check for root-level metadata files
-        let is_root_meta_file = !is_brew_dir && stripped_components.len() == 1 &&
-            stripped_components[0].as_os_str().to_str()
-                .map(|s| is_brew_meta_file(s))
-                .unwrap_or(false);
-
-        let target_path = if is_brew_dir {
-            // Move .brew/ directory to info/brew/.brew/ (contains formula with post_install etc)
-            stripped_components.iter().skip(1).fold(
-                store_tmp_dir.join("info/brew/.brew"),
-                |acc, comp| acc.join(comp.as_os_str())
-            )
-        } else if is_root_meta_file {
-            // Move metadata files to info/brew/ to avoid conflicts
-            store_tmp_dir.join("info/brew").join(
-                stripped_components[0].as_os_str()
-            )
-        } else {
-            stripped_components.iter().fold(
-                store_tmp_dir.join("fs"),
-                |acc, comp| acc.join(comp.as_os_str())
-            )
-        };
-
-        // Check if this is a hard link entry
-        let header = entry.header();
-        let is_hard_link = matches!(header.entry_type(), tar::EntryType::Link);
-
-        if is_hard_link {
-            // For hard links, get the link target and convert to our stripped path
-            if let Ok(Some(link_path)) = entry.link_name() {
-                // link_path is the original path in tar, e.g., "perl/5.42.1_1/bin/perl"
-                // We need to strip the first two components to get "bin/perl"
-                let link_components: Vec<_> = link_path.components().collect();
-                if link_components.len() >= 3 {
-                    let stripped_link_components: Vec<_> = link_components.iter().skip(2).collect();
-                    let source_path = stripped_link_components.iter().fold(
-                        store_tmp_dir.join("fs"),
-                        |acc, comp| acc.join(comp.as_os_str())
-                    );
-                    log::trace!("Queued hard link: {} -> {}",
-                        target_path.display(), source_path.display());
-                    hard_links.push((source_path, target_path));
-                }
-                continue;
-            }
-        }
-
-        // Ensure parent directory exists
-        if let Some(parent) = target_path.parent() {
-            lfs::create_dir_all(parent)?;
-        }
-
-        // Extract the file
-        entry.unpack(&target_path)?;
-        utils::fixup_file_permissions(&target_path);
-    }
-
-    // Now create all hard links after all files have been extracted
-    for (source_path, target_path) in hard_links {
-        // Ensure parent directory exists for the hard link target
-        if let Some(parent) = target_path.parent() {
-            if let Err(e) = lfs::create_dir_all(parent) {
-                log::warn!("Failed to create directory {} for hard link: {}", parent.display(), e);
-                continue;
-            }
-        }
-
-        // Create the hard link if the source file exists
-        if lfs::exists_on_host(&source_path) {
-            // Remove existing file if present (in case of re-extraction)
-            if lfs::exists_on_host(&target_path) {
-                if let Err(e) = lfs::remove_file(&target_path) {
-                    log::warn!("Failed to remove existing file {}: {}", target_path.display(), e);
-                }
-            }
-            if let Err(e) = fs::hard_link(&source_path, &target_path) {
-                log::warn!("Failed to create hard link from {} to {}: {}",
-                    source_path.display(), target_path.display(), e);
-            } else {
-                log::trace!("Created hard link: {} -> {}", target_path.display(), source_path.display());
-            }
-        } else {
-            log::warn!("Cannot create hard link {}: source file {} does not exist",
-                target_path.display(), source_path.display());
-        }
-    }
-
-    log::debug!("Successfully unpacked Brew bottle with {} entries", entries_processed);
+    // Use policy-based extraction for Brew bottles
+    extract_brew_contents(archive, store_tmp_dir)?;
 
     // Note: Dylib path rewriting is done at link time (for Move link type)
     // because paths need to be absolute and point to the specific environment.
@@ -251,6 +133,71 @@ pub fn unpack_package<P: AsRef<Path>>(bottle_file: P, store_tmp_dir: P, pkgkey: 
         .wrap_err_with(|| format!("Failed to create filelist.txt for {}", store_tmp_dir.display()))?;
 
     Ok(())
+}
+
+/// Path policy for Brew bottles
+///
+/// Brew bottles have a top-level directory like "package_name/version/"
+/// - Skip top-level entries (package_name/, package_name/version/)
+/// - .brew/ directory goes to info/brew/.brew/
+/// - Root-level metadata files go to info/brew/
+/// - Regular files go to fs/
+fn brew_path_policy(path: &Path, _is_hard_link: bool, store_tmp_dir: &Path) -> Option<PathBuf> {
+    // Strip the top-level directory (package_name/version/)
+    // Path looks like: "jq/1.7.1/bin/jq" -> we want "bin/jq"
+    let components: Vec<_> = path.components().collect();
+    if components.len() < 3 {
+        // Skip top-level entries (package_name/, package_name/version/)
+        return None;
+    }
+
+    // Reconstruct path without first two components (package_name and version)
+    let stripped_components: Vec<_> = components.iter().skip(2).collect();
+
+    // Check for .brew/ directory (contains formula with post_install etc)
+    let is_brew_dir = stripped_components.first()
+        .and_then(|c| c.as_os_str().to_str())
+        .map(|s| s == ".brew")
+        .unwrap_or(false);
+
+    // Check for root-level metadata files
+    let is_root_meta_file = !is_brew_dir && stripped_components.len() == 1 &&
+        stripped_components[0].as_os_str().to_str()
+            .map(|s| is_brew_meta_file(s))
+            .unwrap_or(false);
+
+    let target_path = if is_brew_dir {
+        // Move .brew/ directory to info/brew/.brew/ (contains formula with post_install etc)
+        stripped_components.iter().skip(1).fold(
+            store_tmp_dir.join("info/brew/.brew"),
+            |acc, comp| acc.join(comp.as_os_str())
+        )
+    } else if is_root_meta_file {
+        // Move metadata files to info/brew/ to avoid conflicts
+        store_tmp_dir.join("info/brew").join(
+            stripped_components[0].as_os_str()
+        )
+    } else {
+        stripped_components.iter().fold(
+            store_tmp_dir.join("fs"),
+            |acc, comp| acc.join(comp.as_os_str())
+        )
+    };
+
+    Some(target_path)
+}
+
+/// Extract Brew bottle contents using policy-based extraction
+fn extract_brew_contents<R: Read>(
+    archive: Archive<R>,
+    store_tmp_dir: &Path,
+) -> Result<usize> {
+    let config = ExtractConfig::new(store_tmp_dir)
+        .handle_hard_links(true);
+
+    let policy: crate::tar_extract::PathPolicy = Box::new(brew_path_policy);
+    let mut archive = archive;
+    extract_archive_with_policy(&mut archive, &config, policy)
 }
 
 /// Creates package.txt from pkgkey

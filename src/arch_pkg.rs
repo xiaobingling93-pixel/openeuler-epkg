@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use tar::Archive;
 use log;
@@ -10,6 +10,7 @@ use color_eyre::eyre::{self, WrapErr};
 use zstd::stream::read::Decoder as ZstdDecoder;
 use crate::utils;
 use crate::lfs;
+use crate::tar_extract::{create_package_dirs, ExtractConfig, extract_archive_with_policy};
 
 /// PKGINFO field definitions based on Arch Linux specification
 pub struct PkgInfoField {
@@ -160,9 +161,7 @@ pub fn unpack_package<P: AsRef<Path>>(pkg_file: P, store_tmp_dir: P, pkgkey: Opt
     let store_tmp_dir = store_tmp_dir.as_ref();
 
     // Create the required directory structure
-    fs::create_dir_all(store_tmp_dir.join("fs"))?;
-    fs::create_dir_all(store_tmp_dir.join("info/arch"))?;
-    fs::create_dir_all(store_tmp_dir.join("info/install"))?;
+    create_package_dirs(store_tmp_dir, "arch")?;
 
     log::debug!("Unpacking Arch Linux package: {}", pkg_file.display());
 
@@ -209,109 +208,41 @@ pub fn unpack_package<P: AsRef<Path>>(pkg_file: P, store_tmp_dir: P, pkgkey: Opt
     Ok(())
 }
 
-/// Extract the contents of the package archive
+/// Path policy for Arch Linux packages
+///
+/// - Dot files (metadata like .PKGINFO, .INSTALL, .MTREE) go to info/arch/
+/// - Regular files go to fs/
+fn arch_path_policy(path: &Path, _is_hard_link: bool, store_tmp_dir: &Path) -> Option<PathBuf> {
+    let path_str = path.to_string_lossy();
+
+    if path_str.starts_with(".") {
+        // Metadata files go to info/arch/
+        Some(store_tmp_dir.join("info/arch").join(path))
+    } else {
+        // Regular files go to fs/
+        Some(store_tmp_dir.join("fs").join(path))
+    }
+}
+
+/// Extract the contents of the package archive using policy-based extraction
 fn extract_package_contents<R: Read>(
-    mut archive: Archive<R>,
+    archive: Archive<R>,
     store_tmp_dir: &Path,
 ) -> Result<()> {
-    let entries = archive.entries()
-        .wrap_err("Failed to read entries from package archive")?;
+    let config = ExtractConfig::new(store_tmp_dir)
+        .handle_hard_links(true);
 
-    let mut found_pkginfo = false;
-    let mut entries_processed = 0;
-    // Collect hard links to create after all files are extracted
-    let mut hard_links: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+    let policy: crate::tar_extract::PathPolicy = Box::new(arch_path_policy);
+    let mut archive = archive;  // Make archive mutable
+    let entries = extract_archive_with_policy(&mut archive, &config, policy)?;
 
-    for entry_result in entries {
-        let mut entry = entry_result
-            .wrap_err("Failed to read entry from package archive")?;
-
-        let path = entry.path()?.to_string_lossy().to_string();
-        entries_processed += 1;
-        log::trace!("Processing tar entry #{}: {}", entries_processed, path);
-
-        // Create the target path - for dot files use info/arch/, for others use fs/
-        let target_path = if path.starts_with(".") {
-            // Special file, store in info/arch/
-            if path == ".PKGINFO" {
-                found_pkginfo = true;
-            }
-            log::debug!("Found special file: {}", path);
-            store_tmp_dir.join("info/arch").join(&path)
-        } else {
-            // Regular file, preserve the full path in fs/
-            store_tmp_dir.join("fs").join(&path)
-        };
-
-        // Check if this is a hard link entry
-        let header = entry.header();
-        let is_hard_link = matches!(header.entry_type(), tar::EntryType::Link);
-
-        if is_hard_link {
-            // For hard links, get the link target and collect it for later processing
-            if let Ok(Some(link_path)) = entry.link_name() {
-                // Check if path starts with "." by converting to string
-                let link_path_str = link_path.to_string_lossy();
-                // Resolve the link target path within our extraction directory
-                let source_path = if link_path_str.starts_with(".") {
-                    store_tmp_dir.join("info/arch").join(link_path.as_ref())
-                } else {
-                    store_tmp_dir.join("fs").join(link_path.as_ref())
-                };
-
-                // Store the hard link for later processing
-                hard_links.push((source_path, target_path));
-                continue;
-            }
-        }
-
-        // Ensure parent directory exists
-        if let Some(parent) = target_path.parent() {
-            if let Err(e) = fs::create_dir_all(parent) {
-                log::warn!("Failed to create directory {}: {}", parent.display(), e);
-                continue;
-            }
-        }
-
-        // Extract the file
-        if let Err(e) = entry.unpack(&target_path) {
-            log::warn!("Failed to extract file {}: {}", path, e);
-            continue;
-        }
-
-        // Fix up permissions after extraction to ensure files are readable/writable
-        crate::utils::fixup_file_permissions(&target_path);
-    }
-
-    // Now create all hard links after all files have been extracted
-    for (source_path, target_path) in hard_links {
-        // Ensure parent directory exists for the hard link target
-        if let Some(parent) = target_path.parent() {
-            if let Err(e) = fs::create_dir_all(parent) {
-                log::warn!("Failed to create directory {} for hard link: {}", parent.display(), e);
-                continue;
-            }
-        }
-
-        // Create the hard link if the source file exists
-        if lfs::exists_on_host(&source_path) {
-            if let Err(e) = fs::hard_link(&source_path, &target_path) {
-                log::warn!("Failed to create hard link from {} to {}: {}",
-                    source_path.display(), target_path.display(), e);
-            } else {
-                log::trace!("Created hard link: {} -> {}", target_path.display(), source_path.display());
-            }
-        } else {
-            log::warn!("Cannot create hard link {}: source file {} does not exist",
-                target_path.display(), source_path.display());
-        }
-    }
-
-    if !found_pkginfo {
+    // Check if .PKGINFO was extracted
+    let pkginfo_path = store_tmp_dir.join("info/arch/.PKGINFO");
+    if !lfs::exists_on_host(&pkginfo_path) {
         return Err(eyre::eyre!("No .PKGINFO file found in package"));
     }
 
-    log::debug!("Successfully unpacked Arch Linux package with {} tar entries", entries_processed);
+    log::debug!("Successfully unpacked Arch Linux package with {} tar entries", entries);
     Ok(())
 }
 

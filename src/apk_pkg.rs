@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use tar::Archive;
 use log;
@@ -9,25 +9,26 @@ use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use crate::utils;
 use crate::lfs;
+use crate::tar_extract::{create_package_dirs, ExtractConfig, extract_archive_with_policy};
 
 lazy_static! {
     pub static ref PACKAGE_KEY_MAPPING: std::collections::HashMap<&'static str, &'static str> = {
         let mut m = std::collections::HashMap::new();
 
-		// Map APK field names to common field names based on gen-package.py
-		// Core package metadata
-		m.insert("pkgname",     "pkgname");
-		m.insert("pkgver",      "version");
-		m.insert("pkgdesc",     "summary");
-		m.insert("url",         "homepage");
-		m.insert("builddate",   "buildTime");
-		m.insert("packager",    "maintainer");
-		m.insert("size",        "installedSize");
-		m.insert("arch",        "arch");
-		m.insert("origin",      "source");
-		m.insert("commit",      "commit");
-		m.insert("maintainer",  "maintainer");
-		m.insert("license",     "license");
+        // Map APK field names to common field names based on gen-package.py
+        // Core package metadata
+        m.insert("pkgname",     "pkgname");
+        m.insert("pkgver",      "version");
+        m.insert("pkgdesc",     "summary");
+        m.insert("url",         "homepage");
+        m.insert("builddate",   "buildTime");
+        m.insert("packager",    "maintainer");
+        m.insert("size",        "installedSize");
+        m.insert("arch",        "arch");
+        m.insert("origin",      "source");
+        m.insert("commit",      "commit");
+        m.insert("maintainer",  "maintainer");
+        m.insert("license",     "license");
 
         // Dependencies and relationships
         m.insert("depend",      "requires");
@@ -175,9 +176,7 @@ pub fn unpack_package<P: AsRef<Path>>(apk_file: P, store_tmp_dir: P, pkgkey: Opt
     let store_tmp_dir = store_tmp_dir.as_ref();
 
     // Create the required directory structure
-    fs::create_dir_all(store_tmp_dir.join("fs"))?;
-    fs::create_dir_all(store_tmp_dir.join("info/apk"))?;
-    fs::create_dir_all(store_tmp_dir.join("info/install"))?;
+    create_package_dirs(store_tmp_dir, "apk")?;
 
     // Unpack the APK package
     log::debug!("Unpacking APK package: {}", apk_file.display());
@@ -203,14 +202,24 @@ pub fn unpack_package<P: AsRef<Path>>(apk_file: P, store_tmp_dir: P, pkgkey: Opt
     Ok(())
 }
 
+/// Path policy for APK packages
+///
+/// - Dot files (metadata like .PKGINFO, .trigger) go to info/apk/
+/// - Regular files go to fs/
+fn apk_path_policy(path: &Path, _is_hard_link: bool, store_tmp_dir: &Path) -> Option<PathBuf> {
+    if path.starts_with(".") {
+        // Metadata files go to info/apk/
+        Some(store_tmp_dir.join("info/apk").join(path))
+    } else {
+        // Regular files go to fs/
+        Some(store_tmp_dir.join("fs").join(path))
+    }
+}
+
 /// Unpacks an APK package (concatenated gzip streams containing tar archives)
 fn unpack_apk<P: AsRef<Path>>(apk_file: P, store_tmp_dir: &Path) -> Result<()> {
     let apk_file = apk_file.as_ref();
     log::debug!("Unpacking APK package: {}", apk_file.display());
-
-    // Create required directories
-    fs::create_dir_all(store_tmp_dir.join("fs"))?;
-    fs::create_dir_all(store_tmp_dir.join("info/apk"))?;
 
     // Open the APK file
     let file = fs::File::open(apk_file)
@@ -218,89 +227,17 @@ fn unpack_apk<P: AsRef<Path>>(apk_file: P, store_tmp_dir: &Path) -> Result<()> {
 
     // Use MultiGzDecoder to handle concatenated gzip streams
     let decoder = MultiGzDecoder::new(file);
-    let mut archive = Archive::new(decoder);
+    let archive = Archive::new(decoder);
 
-    let mut entries_processed = 0;
+    // Use policy-based extraction
+    let config = ExtractConfig::new(store_tmp_dir)
+        .handle_hard_links(true);
 
-    // Change to the target directory before extracting to fix hard link issues
-    let original_dir = std::env::current_dir()?;
-    std::env::set_current_dir(store_tmp_dir.join("fs"))?;
+    let policy: crate::tar_extract::PathPolicy = Box::new(apk_path_policy);
+    let mut archive = archive;
+    let entries = extract_archive_with_policy(&mut archive, &config, policy)?;
 
-    // Process tar entries
-    for entry_result in archive.entries()? {
-        let mut entry = match entry_result {
-            Ok(e) => e,
-            Err(e) => {
-                log::error!("Error reading tar entry: {}", e);
-                // If it's a corrupt compression stream, mark the file as bad and fail
-                if e.to_string().contains("corrupt deflate stream") || e.to_string().contains("corrupt xz stream") {
-                    utils::mark_file_bad(apk_file)?;
-                    // Restore original working directory before returning error
-                    std::env::set_current_dir(original_dir)?;
-                    return Err(eyre::eyre!("Corrupt compression stream detected in APK package {}: {} (file marked as .bad)", apk_file.display(), e));
-                }
-                continue; // Skip other problematic entries
-            }
-        };
-
-        let path = match entry.path() {
-            Ok(p) => p.to_string_lossy().to_string(),
-            Err(e) => {
-                log::error!("Error getting path from tar entry: {}", e);
-                // If it's a corrupt compression stream, mark the file as bad and fail
-                if e.to_string().contains("corrupt deflate stream") || e.to_string().contains("corrupt xz stream") {
-                    utils::mark_file_bad(apk_file)?;
-                    // Restore original working directory before returning error
-                    std::env::set_current_dir(original_dir)?;
-                    return Err(eyre::eyre!("Corrupt compression stream detected in APK package {}: {} (file marked as .bad)", apk_file.display(), e));
-                }
-                continue; // Skip other problematic entries
-            }
-        };
-
-        entries_processed += 1;
-        log::trace!("Processing tar entry #{}: {}", entries_processed, path);
-
-        // Create the target path - for dot files use just the filename, for others preserve path
-        let target_path = if path.starts_with(".") {
-            // For dot files, just use the filename part
-            let file_name = Path::new(&path)
-                .file_name()
-                .map(|f| f.to_string_lossy().to_string())
-                .unwrap_or_else(|| path.clone());
-            store_tmp_dir.join("info/apk").join(file_name)
-        } else {
-            // For regular files, preserve the full path under fs/
-            Path::new(&path).to_path_buf()
-        };
-
-        // Ensure parent directory exists
-        if let Some(parent) = target_path.parent() {
-            if let Err(e) = fs::create_dir_all(parent) {
-                log::warn!("Failed to create directory {}: {}", parent.display(), e);
-                continue;
-            }
-        }
-
-        // Extract the file
-        if let Err(e) = entry.unpack(&target_path) {
-            log::error!("Failed to extract file {}: {}", path, e);
-            // If it's a corrupt compression stream, mark the file as bad and fail
-            if e.to_string().contains("corrupt deflate stream") || e.to_string().contains("corrupt xz stream") {
-                utils::mark_file_bad(apk_file)?;
-                // Restore original working directory before returning error
-                std::env::set_current_dir(original_dir)?;
-                return Err(eyre::eyre!("Corrupt compression stream detected while extracting file {} in APK package {}: {} (file marked as .bad)", path, apk_file.display(), e));
-            }
-            continue;
-        }
-        utils::fixup_file_permissions(&target_path);
-    }
-
-    // Restore original working directory
-    std::env::set_current_dir(original_dir)?;
-
-    log::debug!("Successfully unpacked APK package with {} tar entries", entries_processed);
+    log::debug!("Successfully unpacked APK package with {} tar entries", entries);
     Ok(())
 }
 

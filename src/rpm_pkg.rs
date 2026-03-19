@@ -8,6 +8,7 @@ use color_eyre::Result;
 use rpm::{DependencyFlags, FileMode, IndexTag, Package};
 use std::collections::HashMap;
 use crate::lfs;
+use crate::tar_extract::create_package_dirs;
 use std::path::Path;
 
 /// Unpacks an RPM package to the specified directory
@@ -16,9 +17,7 @@ pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P, pkgkey: Opt
     let store_tmp_dir = store_tmp_dir.as_ref();
 
     // Create the required directory structure
-    lfs::create_dir_all(store_tmp_dir.join("fs"))?;
-    lfs::create_dir_all(store_tmp_dir.join("info/rpm"))?;
-    lfs::create_dir_all(store_tmp_dir.join("info/install"))?;
+    create_package_dirs(store_tmp_dir, "rpm")?;
 
     // Open and parse the RPM package
     let package = Package::open(rpm_file)

@@ -10,6 +10,7 @@ use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use crate::deb_repo::PACKAGE_KEY_MAPPING;
 use crate::lfs;
+use crate::tar_extract::create_package_dirs;
 
 /// Unpacks a Debian package to the specified directory
 pub fn unpack_package<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
@@ -17,9 +18,7 @@ pub fn unpack_package<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P, pkgkey: Opt
     let store_tmp_dir = store_tmp_dir.as_ref();
 
     // Create the required directory structure
-    lfs::create_dir_all(store_tmp_dir.join("fs"))?;
-    lfs::create_dir_all(store_tmp_dir.join("info/deb"))?;
-    lfs::create_dir_all(store_tmp_dir.join("info/install"))?;
+    create_package_dirs(store_tmp_dir, "deb")?;
 
     // Extract the AR archive and process tar files
     extract_ar_archive(deb_file, store_tmp_dir)?;

@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use std::io::{Read, Seek};
 use std::process::Command;
@@ -12,8 +12,8 @@ use bzip2::read::BzDecoder;
 use zstd::stream::read::Decoder as ZstdDecoder;
 use zip::ZipArchive;
 use regex;
-use crate::utils;
 use crate::lfs;
+use crate::tar_extract::{create_package_dirs, ExtractConfig, extract_archive};
 
 /// Separator used to combine version and build_string in pkgkey for virtual packages
 /// Format: version-build_string (e.g., "1-skylake_avx512")
@@ -105,9 +105,7 @@ pub fn unpack_package<P: AsRef<Path>>(conda_file: P, store_tmp_dir: P, pkgkey: O
     let store_tmp_dir = store_tmp_dir.as_ref();
 
     // Create the required directory structure following project pattern
-    fs::create_dir_all(store_tmp_dir.join("fs"))?;
-    fs::create_dir_all(store_tmp_dir.join("info/conda"))?;
-    fs::create_dir_all(store_tmp_dir.join("info/install"))?;
+    create_package_dirs(store_tmp_dir, "conda")?;
 
     log::debug!("Unpacking Conda package: {}", conda_file.display());
 
@@ -238,7 +236,7 @@ fn unpack_conda_format<P: AsRef<Path>>(conda_file: P, store_tmp_dir: &Path) -> R
     // Strip "info/" prefix from paths since the info component tar contains paths like "info/index.json"
     if let Some(info_name) = info_component {
         let info_reader = archive.by_name(&info_name)?;
-        extract_zstd_tar_stream(info_reader, &store_tmp_dir.join("info/conda"), Some("info/"))
+        extract_zstd_tar_stream(info_reader, &store_tmp_dir.join("info/conda"), Some("info/".to_string()))
             .wrap_err_with(|| format!("Failed to extract info component: {} for {}", info_name, conda_file.display()))?;
     } else {
         return Err(eyre::eyre!("No info component found in .conda package"));
@@ -248,7 +246,7 @@ fn unpack_conda_format<P: AsRef<Path>>(conda_file: P, store_tmp_dir: &Path) -> R
     // Following conda-package-streaming component extraction logic
     if let Some(pkg_name) = pkg_component {
         let pkg_reader = archive.by_name(&pkg_name)?;
-        extract_zstd_tar_stream(pkg_reader, &store_tmp_dir.join("fs"), None)
+        extract_zstd_tar_stream(pkg_reader, &store_tmp_dir.join("fs"), None::<String>)
             .wrap_err_with(|| format!("Failed to extract pkg component: {} for {}", pkg_name, conda_file.display()))?;
     } else {
         return Err(eyre::eyre!("No pkg component found in .conda package"));
@@ -258,51 +256,22 @@ fn unpack_conda_format<P: AsRef<Path>>(conda_file: P, store_tmp_dir: &Path) -> R
 }
 
 /// Unpacks legacy .tar.bz2 format Conda packages
-/// Based on conda-package-streaming.package_streaming implementation
+/// Uses shared extract_archive() with post-extraction path routing
 fn unpack_tar_bz2_format<P: AsRef<Path>>(conda_file: P, store_tmp_dir: &Path) -> Result<()> {
     let conda_file = conda_file.as_ref();
 
+    // Open and decompress the archive
     let file = fs::File::open(conda_file)?;
     let decoder = BzDecoder::new(file);
     let mut archive = Archive::new(decoder);
 
-    let mut entries_processed = 0;
-    let mut found_index_json = false;
+    // Use shared extraction with path stripping (no prefix to strip for conda)
+    let config = ExtractConfig::new(store_tmp_dir.join("fs"))
+        .meta_dir(store_tmp_dir.join("info/conda"));
+    let entries_processed = extract_archive(&mut archive, &config)?;
 
-    // Extract all contents, following conda-package-streaming logic
-    // .tar.bz2 format contains everything in a single tar archive
-    for entry_result in archive.entries()? {
-        let mut entry = entry_result?;
-        let path = entry.path()?.to_path_buf();
-        entries_processed += 1;
-
-        log::trace!("Processing tar entry #{}: {}", entries_processed, path.display());
-
-        // Determine target location based on path
-        // Following conda-package-streaming path classification
-        let target_path = if path.starts_with("info/") {
-            // Metadata files go to info/conda/ (following project pattern)
-            if path.ends_with("index.json") {
-                found_index_json = true;
-            }
-            store_tmp_dir.join("info/conda").join(path.strip_prefix("info/").unwrap())
-        } else {
-            // Regular files go to fs/ (following project pattern)
-            store_tmp_dir.join("fs").join(&path)
-        };
-
-        // Ensure parent directory exists
-        if let Some(parent) = target_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        // Extract the file
-        entry.unpack(&target_path)?;
-        utils::fixup_file_permissions(&target_path);
-    }
-
-    // Verify required metadata exists
-    if !found_index_json {
+    // Post-extraction: verify index.json exists
+    if !store_tmp_dir.join("info/conda/index.json").exists() {
         return Err(eyre::eyre!("No index.json found in Conda package"));
     }
 
@@ -310,41 +279,53 @@ fn unpack_tar_bz2_format<P: AsRef<Path>>(conda_file: P, store_tmp_dir: &Path) ->
     Ok(())
 }
 
-/// Extracts a zstd-compressed tar stream
+/// Path policy for Conda zstd tar streams
+///
+/// Strips an optional prefix from paths before routing to target directory
+fn conda_zstd_path_policy(
+    path: &Path,
+    _is_hard_link: bool,
+    target_dir: &Path,
+    strip_prefix: &Option<String>,
+) -> Option<PathBuf> {
+    let mut final_path = path.to_path_buf();
+
+    // Strip prefix if specified
+    if let Some(ref prefix) = strip_prefix {
+        let prefix_path = Path::new(prefix);
+        if let Ok(stripped) = final_path.strip_prefix(prefix_path) {
+            final_path = stripped.to_path_buf();
+        }
+    }
+
+    Some(target_dir.join(final_path))
+}
+
+/// Extracts a zstd-compressed tar stream using policy-based extraction
 /// Based on conda-package-streaming's zstandard decompression approach
 ///
 /// If `strip_prefix` is provided, paths starting with that prefix will have it stripped.
-fn extract_zstd_tar_stream<R: Read>(reader: R, target_dir: &Path, strip_prefix: Option<&str>) -> Result<()> {
+fn extract_zstd_tar_stream<R: Read>(
+    reader: R,
+    target_dir: &Path,
+    strip_prefix: Option<String>,
+) -> Result<()> {
     fs::create_dir_all(target_dir)?;
 
-    let decoder = ZstdDecoder::new(reader)
-        .wrap_err("Failed to create zstd decoder")?;
-    let mut archive = Archive::new(decoder);
+    let decoder = ZstdDecoder::new(reader).wrap_err("Failed to create zstd decoder")?;
+    let archive = Archive::new(decoder);
 
-    // Extract with proper permission handling
-    for entry_result in archive.entries()? {
-        let mut entry = entry_result?;
-        let mut path = entry.path()?.to_path_buf();
+    // Create policy closure that captures strip_prefix by move
+    let policy: crate::tar_extract::PathPolicy =
+        Box::new(move |path: &Path, is_hard_link: bool, target_dir: &Path| {
+            conda_zstd_path_policy(path, is_hard_link, target_dir, &strip_prefix)
+        });
 
-        // Strip prefix if specified
-        if let Some(prefix) = strip_prefix {
-            let prefix_path = Path::new(prefix);
-            if let Ok(stripped) = path.strip_prefix(prefix_path) {
-                path = stripped.to_path_buf();
-            }
-        }
+    let config = crate::tar_extract::ExtractConfig::new(target_dir)
+        .handle_hard_links(false); // Conda packages typically don't have hard links
 
-        let target_path = target_dir.join(&path);
-
-        // Ensure parent directory exists
-        if let Some(parent) = target_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        // Extract the file
-        entry.unpack(&target_path)?;
-        utils::fixup_file_permissions(&target_path);
-    }
+    let mut archive = archive;
+    crate::tar_extract::extract_archive_with_policy(&mut archive, &config, policy)?;
 
     Ok(())
 }

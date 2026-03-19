@@ -1,6 +1,7 @@
 mod dirs;
 mod models;
 mod io;
+mod tar_extract;
 mod lfs;
 mod download;
 mod depends;
