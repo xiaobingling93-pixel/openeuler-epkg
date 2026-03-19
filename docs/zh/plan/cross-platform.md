@@ -100,9 +100,123 @@
 
 ---
 
-## 三、平台差异分析
+## 三、Windows 跨平台支持约束
 
-### 3.1 macOS vs Linux
+### 3.1 Windows 平台限制
+
+Windows 用户默认没有创建符号链接（symlink）的权限，需要管理员权限或开发者模式。
+
+### 3.2 可用的链接类型
+
+| 类型 | 适用对象 | 权限要求 | 备注 |
+|------|----------|----------|------|
+| **Hard Link** | 文件 | 无特殊权限 | 两个文件指向同一数据，删除源文件不影响目标 |
+| **Junction** | 目录 | 无特殊权限 | 只能使用绝对路径，类似目录符号链接 |
+| **Symlink** | 文件/目录 | 管理员权限或开发者模式 | 正常用户不可用 |
+
+### 3.3 实现策略
+
+在 `lfs.rs` 底层实现中：
+
+1. **`symlink()` 函数**：
+   - 文件：创建 Hard Link
+   - 目录：创建 Junction（需要绝对路径）
+   - 失败时返回错误，调用者应优雅处理
+
+2. **`force_symlink()` 函数**（在 `utils.rs`）：
+   - "force" 含义是"覆盖已存在的链接"，不是"强制创建符号链接"
+   - 先删除目标，再创建链接
+   - Windows 上底层使用 Hard Link/Junction
+
+### 3.4 代码原则（重要！）
+
+**第一原则：最大化代码复用！禁止偷懒写Windows特定代码！**
+
+Windows 移植的目标是支持原生 Conda/msys2 包，这意味着大量代码应该在 Windows 上直接工作。
+
+**关键约束**：
+
+1. **禁止创建大块 Windows 特定代码**：
+   - 任何新增的 `#[cfg(windows)]` 代码块超过 10 行必须先经过 review
+   - 不要因为"Windows 可能不同"就创建独立代码路径
+   - **先问！不要自作主张！**
+   - **不要偷懒！复用代码是第一优先级！**
+
+2. **平台特定代码限制在底层或局部修改**：
+   - 底层：`lfs.rs`（symlink 实现）、`utils.rs`（通用工具）
+   - 局部：函数内部的条件编译，而非独立函数
+   - **优先级**：底层修改 > 局部条件编译 > 独立函数
+
+3. **symlink 透明化**：
+   - `lfs::symlink()` 和 `utils::force_symlink()` 在 Windows 上应该能正常工作
+   - 调用者不需要知道底层是 symlink、hardlink 还是 Junction
+   - 只有极少数场景需要真正符号链接时才特殊处理
+
+4. **不要假设问题**：
+   - 遇到不确定的情况，**明确提问**
+   - 不要基于假设创建 Windows 特定逻辑
+   - 不要"以防万一"创建备用代码路径
+
+5. **最小化平台特定代码**：
+   - 优先在底层（`lfs.rs`, `utils.rs`）处理平台差异
+   - 上层代码尽量复用，不创建重复逻辑
+
+6. **透明化**：
+   - 大部分情况下，`force_symlink()` 调用者在 Windows 上可以正常工作
+   - 只有少数需要真正符号链接的场景需要特殊处理
+
+7. **错误处理**：
+   - `symlink()` 在 Windows 上可能失败
+   - 调用者应该优雅处理失败，而不是假设成功
+
+**反面案例**：
+```rust
+// 错误！创建了独立的 Windows 代码路径，偷懒不复用！
+#[cfg(windows)]
+fn setup_self_binaries() -> Result<()> {
+    // 50+ 行重复逻辑...
+}
+
+// 正确！复用现有代码
+fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
+    // 跨平台逻辑
+    #[cfg(target_os = "linux")]
+    { /* Linux 特有的 elf-loader */ }
+}
+
+// 错误！把通用数据结构标记为 Unix 特有！
+#[cfg(unix)]
+struct InitPlan { ... }
+
+// 正确！数据结构是通用的，Linux 特有字段用条件编译
+struct InitPlan {
+    epkg_binary_path: PathBuf,
+    #[cfg(target_os = "linux")]
+    elf_loader_path: PathBuf,
+}
+```
+
+### 3.5 已知问题
+
+1. **Junction 需要绝对路径**：
+   - 相对路径会在 `lfs::symlink()` 中被转换为绝对路径
+
+2. **Hard Link 限制**：
+   - 只能用于同一卷上的文件
+   - 不能用于目录
+
+### 3.6 测试要点
+
+- [ ] 文件 Hard Link 创建
+- [ ] 目录 Junction 创建
+- [ ] `force_symlink()` 覆盖已存在的链接
+- [ ] 相对路径转换为绝对路径
+
+---
+
+## 四、平台差异分析
+
+### 4.1 macOS vs Linux
 
 **难度**: ⭐⭐ (低)
 
@@ -129,7 +243,7 @@
 - `--mount`：libkrun 多 virtiofs 挂载
 - 多用户：在磁盘镜像上创建 rootfs（ext4/btrfs），可自由使用 uid
 
-### 3.2 Windows vs Linux
+### 4.2 Windows vs Linux
 
 **难度**: ⭐⭐⭐ (中，因仅支持 Conda/msys2)
 
@@ -144,9 +258,9 @@
 
 ---
 
-## 四、跨平台 Rust Crates 选择
+## 五、跨平台 Rust Crates 选择
 
-### 4.1 已使用的跨平台 Crates
+### 5.1 已使用的跨平台 Crates
 
 | Crate | 功能 | 状态 |
 |-------|------|------|
@@ -159,7 +273,7 @@
 | `sys-info` | 基础系统信息 | ✅ 已使用 |
 | `ctrlc` | 跨平台 Ctrl-C | ✅ 已使用 |
 
-### 4.2 推荐新增的 Crates
+### 5.2 推荐新增的 Crates
 
 ```toml
 # Cargo.toml
@@ -171,7 +285,7 @@ junction = "1.2"           # Windows Junction Point（无需管理员权限）
 remove_dir_all = "1.0"     # Windows 可靠删除目录
 ```
 
-### 4.3 使用示例
+### 5.3 使用示例
 
 #### `which` - 替换手动路径搜索
 
@@ -201,9 +315,9 @@ pub fn create_dir_link(original: &Path, link: &Path) -> Result<()> {
 
 ---
 
-## 五、代码组织策略
+## 六、代码组织策略
 
-### 5.1 平台抽象方式选择
+### 6.1 平台抽象方式选择
 
 **问题**：是否需要 `trait Platform`？
 
@@ -222,7 +336,7 @@ pub fn create_dir_link(original: &Path, link: &Path) -> Result<()> {
 3. 缺失函数会在编译时报错
 4. 渐进式修改，风险低
 
-### 5.2 文件组织
+### 6.2 文件组织
 
 ```
 src/
@@ -235,7 +349,7 @@ src/
 │   └── windows.rs      #    Windows 特定函数
 ```
 
-### 5.3 平台特定函数示例
+### 6.3 平台特定函数示例
 
 ```rust
 // src/platform/mod.rs
@@ -305,9 +419,9 @@ pub fn is_running_as_root() -> bool {
 
 ---
 
-## 六、跨平台路径映射
+## 七、跨平台路径映射
 
-### 6.1 Conda 包安装位置参考
+### 7.1 Conda 包安装位置参考
 
 | 平台 | 用户安装（默认） | 系统安装 |
 |------|-----------------|----------|
@@ -315,7 +429,7 @@ pub fn is_running_as_root() -> bool {
 | macOS | `~/anaconda3`, `~/miniconda3` | `/opt/anaconda3` |
 | Windows | `%USERPROFILE%\anaconda3` | `C:\ProgramData\anaconda3` |
 
-### 6.2 epkg 路径映射方案
+### 7.2 epkg 路径映射方案
 
 | 路径用途 | Linux | macOS | Windows |
 |---------|-------|-------|---------|
@@ -333,7 +447,7 @@ pub fn is_running_as_root() -> bool {
 - macOS 的 Linux ELF epkg 也放在同一目录，便于管理
 - Windows 不需要 elf-loader 和 Linux ELF epkg
 
-### 6.3 dirs.rs 修改要点
+### 7.3 dirs.rs 修改要点
 
 ```rust
 // src/dirs.rs
@@ -377,7 +491,7 @@ pub fn get_epkg_store(shared: bool) -> PathBuf {
 }
 ```
 
-### 6.4 Conda 包目录布局（跨平台一致）
+### 7.4 Conda 包目录布局（跨平台一致）
 
 ```
 prefix/
@@ -397,7 +511,7 @@ prefix/
 
 ---
 
-## 七、实施计划
+## 八、实施计划
 
 ### Phase 1: macOS 基础支持（工作量：小）
 
@@ -499,7 +613,7 @@ prefix/
 
 ---
 
-## 八、build.rs busybox 平台检测
+## 九、build.rs busybox 平台检测
 
 ### 方案选择
 
@@ -550,9 +664,9 @@ fn generate_busybox_modules(applets: &[(&str, &str)]) -> String {
 
 ---
 
-## 九、测试策略
+## 十、测试策略
 
-### 9.1 功能测试矩阵
+### 10.1 功能测试矩阵
 
 | 功能 | Linux | macOS | Windows |
 |-----|-------|-------|---------|
@@ -565,7 +679,7 @@ fn generate_busybox_modules(applets: &[(&str, &str)]) -> String {
 | Debian/RPM/APK | ✅ | ✅ (VM) | ❌ |
 | Arch 包 | ✅ | ✅ (VM) | ❌ |
 
-### 9.2 编译测试
+### 10.2 编译测试
 
 ```yaml
 # CI matrix
@@ -582,7 +696,7 @@ strategy:
 
 ---
 
-## 十、风险与缓解
+## 十一、风险与缓解
 
 | 风险 | 缓解措施 |
 |-----|---------|

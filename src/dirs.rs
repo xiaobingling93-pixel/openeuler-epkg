@@ -1,7 +1,5 @@
 use std::env;
-#[cfg(unix)]
 use std::fs;
-#[cfg(unix)]
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
@@ -424,9 +422,15 @@ pub fn get_user_shell_rc(home_dir: &Path) -> Result<Vec<String>> {
     Ok(collect_shell_rc_paths(&entries, Some(home_dir)))
 }
 
-/// Get username, with security validation when running as setuid.
-/// When running as setuid, validates environment variables against real UID for security.
-#[cfg(unix)]
+/// Get per-user shell RC files (Windows stub - returns empty list)
+#[cfg(not(unix))]
+pub fn get_user_shell_rc(_home_dir: &Path) -> Result<Vec<String>> {
+    // Windows doesn't use shell RC files in the same way
+    Ok(Vec::new())
+}
+
+/// Get username from environment variables.
+/// On Unix, validates environment variables against real UID when running as setuid.
 pub fn get_username() -> Result<String> {
     // Security check: if running as setuid, get username from real UID and validate env vars
     #[cfg(unix)]
@@ -491,16 +495,17 @@ pub fn public_envs_path() -> PathBuf {
 ///
 /// This helper function walks the "bottom" directory level, calling the callback
 /// for each subdirectory found with (env_path, owner_opt).
-#[cfg(unix)]
 pub fn walk_bottom_dir<F>(parent_path: &Path, owner_opt: Option<&str>, callback: &mut F) -> Result<()>
 where
     F: FnMut(&Path, Option<&str>) -> Result<()>,
 {
+    log::debug!("walk_bottom_dir: parent_path='{}'", parent_path.display());
     match fs::read_dir(parent_path) {
         Ok(entries) => {
             for entry in entries.flatten() {
                 let env_path = entry.path();
                 if env_path.is_dir() {
+                    log::debug!("walk_bottom_dir: found env_path='{}'", env_path.display());
                     callback(&env_path, owner_opt)?;
                 }
             }
@@ -517,7 +522,6 @@ where
 
 /// Walk all public environments under /opt/epkg/envs/*/*
 /// Calls the callback for each environment found with (env_path, Some(owner)).
-#[cfg(unix)]
 fn walk_public_envs<F>(callback: &mut F) -> Result<()>
 where
     F: FnMut(&Path, Option<&str>) -> Result<()>,
@@ -550,7 +554,6 @@ where
 ///
 /// Calls the callback for each environment found with (env_path, owner_opt).
 /// owner_opt is Some(owner) for shared_store, None for private.
-#[cfg(unix)]
 pub fn walk_environments<F>(mut callback: F) -> Result<()>
 where
     F: FnMut(&Path, Option<&str>) -> Result<()>,

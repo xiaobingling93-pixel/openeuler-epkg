@@ -25,6 +25,7 @@ use crate::deinit::force_remove_dir_all;
 use crate::deb_triggers::ensure_triggers_dir;
 use crate::plan::prepare_installation_plan;
 use crate::install::execute_installation_plan;
+#[cfg(unix)]
 use crate::history::record_history;
 #[cfg(unix)]
 use crate::path::update_path;
@@ -249,22 +250,29 @@ fn setup_resolv_conf(env_root: &Path) -> Result<()> {
     // Create /etc directory if it doesn't exist
     lfs::create_dir_all(env_root.join("etc"))?;
 
-    let resolv_conf_path = env_root.join("etc/resolv.conf");
-    let host_resolv_conf = Path::new("/etc/resolv.conf");
+    // On Windows, resolv.conf is not used (DNS resolution is handled by the OS)
+    #[cfg(windows)]
+    return Ok(());
 
-    // Skip on 'docker -v /etc/resolv.conf:/etc/resolv.conf:ro' and installing to /
-    if lfs::exists_in_env(&resolv_conf_path) {
-        return Ok(());
-    }
+    #[cfg(not(windows))]
+    {
+        let resolv_conf_path = env_root.join("etc/resolv.conf");
+        let host_resolv_conf = Path::new("/etc/resolv.conf");
 
-    // Check if /etc/resolv.conf exists on host before trying to copy
-    if lfs::exists_on_host(host_resolv_conf) {
-        lfs::copy(host_resolv_conf, &resolv_conf_path)?;
-    } else {
-        // If /etc/resolv.conf doesn't exist on host, create a default one
-        warn!("/etc/resolv.conf does not exist on host. Creating default resolv.conf");
-        let default_resolv_conf = "nameserver 8.8.8.8\nnameserver 223.6.6.6\nnameserver 8.8.4.4\nnameserver 1.1.1.1\n";
-        lfs::write(&resolv_conf_path, default_resolv_conf)?;
+        // Skip on 'docker -v /etc/resolv.conf:/etc/resolv.conf:ro' and installing to /
+        if lfs::exists_in_env(&resolv_conf_path) {
+            return Ok(());
+        }
+
+        // Check if /etc/resolv.conf exists on host before trying to copy
+        if lfs::exists_on_host(host_resolv_conf) {
+            lfs::copy(host_resolv_conf, &resolv_conf_path)?;
+        } else {
+            // If /etc/resolv.conf doesn't exist on host, create a default one
+            warn!("/etc/resolv.conf does not exist on host. Creating default resolv.conf");
+            let default_resolv_conf = "nameserver 8.8.8.8\nnameserver 223.6.6.6\nnameserver 8.8.4.4\nnameserver 1.1.1.1\n";
+            lfs::write(&resolv_conf_path, default_resolv_conf)?;
+        }
     }
 
     Ok(())
@@ -431,13 +439,19 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
 // If the distro provides the commands, they'll overwrite symlink to our implementation.
 fn create_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -> Result<()> {
     // Create a symlink from systemctl to /usr/bin/true to prevent blocking on systemctl daemon-reload
-    let systemctl_path = env_root.join("usr/bin/systemctl");
-    if !lfs::exists_in_env(&systemctl_path) {
-        force_symlink("/usr/bin/true", &systemctl_path)
-            .with_context(|| format!("Failed to create systemctl symlink in {}", systemctl_path.display()))?;
+    // This is Unix-specific as Windows doesn't have systemd
+    #[cfg(unix)]
+    {
+        let systemctl_path = env_root.join("usr/bin/systemctl");
+        if !lfs::exists_in_env(&systemctl_path) {
+            force_symlink("/usr/bin/true", &systemctl_path)
+                .with_context(|| format!("Failed to create systemctl symlink in {}", systemctl_path.display()))?;
+        }
     }
 
     // Automatically discover all applets and create symlinks
+    // On Windows, this may be hardlink
+    #[cfg(unix)]
     crate::busybox::create_all_applet_symlinks(env_root, pkg_format)?;
 
     Ok(())
@@ -498,6 +512,7 @@ fn import_packages_and_create_metadata(env_root: &Path) -> Result<()> {
         lfs::write(installed_packages_path, "{\n}")?;
 
         // Record the environment creation in command history
+        #[cfg(unix)]
         record_history(&gen_1_dir, None)?;
     }
 
@@ -651,11 +666,54 @@ fn copy_repo_configs(sources_path: &Path, env_root: &Path, distro_name: &str) ->
 /// Also copies additional repo configurations to etc/epkg/repos.d/
 fn copy_channel_configs(env_root: &Path) -> Result<()> {
     let sources_path = get_epkg_src_path().join("assets/repos");
+
+    // On Windows, the source path may not exist if running from a standalone binary
+    // In that case, create a default Conda channel configuration
+    if !sources_path.exists() {
+        #[cfg(windows)]
+        {
+            create_default_conda_channel_config(env_root)?;
+            return Ok(());
+        }
+        #[cfg(not(windows))]
+        {
+            return Err(eyre::eyre!(
+                "Channel configs source path does not exist: {}",
+                sources_path.display()
+            ));
+        }
+    }
+
     let (distro_name, distro_version) = parse_channel_option();
 
     copy_main_channel_config(&sources_path, env_root, &distro_name, distro_version.as_deref())?;
     copy_repo_configs(&sources_path, env_root, &distro_name)?;
 
+    Ok(())
+}
+
+/// Create a default Conda channel configuration for Windows
+#[cfg(windows)]
+fn create_default_conda_channel_config(env_root: &Path) -> Result<()> {
+    let channel_content = r#"format: conda
+distro: conda
+distro_dirs:
+- anaconda
+versions:
+- "latest"
+repos:
+  main:
+  free:
+index_url: $mirror/pkgs/$repo/$conda_arch/$conda_repofile
+amend_index_urls:
+  noarch: $mirror/pkgs/$repo/noarch/$conda_repofile
+"#;
+
+    let dest_channel_path = env_root.join("etc/epkg/channel.yaml");
+    lfs::create_dir_all(dest_channel_path.parent().unwrap())?;
+    lfs::write(&dest_channel_path, channel_content)?;
+
+    println!("Created default Conda channel configuration");
     Ok(())
 }
 

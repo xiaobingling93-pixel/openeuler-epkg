@@ -34,13 +34,12 @@ mod mtree;
 mod posix;
 #[cfg(unix)]
 mod history;
-#[cfg(unix)]
 mod environment;
+mod deinit;
 #[cfg(target_os = "linux")]
 mod apparmor;
 #[cfg(unix)]
 mod deinit;
-#[cfg(unix)]
 mod init;
 #[cfg(unix)]
 mod path;
@@ -160,7 +159,7 @@ use crate::upgrade::upgrade_packages;
 use crate::remove::remove_packages;
 #[cfg(unix)]
 use crate::history::{print_history, rollback_history};
-#[cfg(unix)] use crate::init::{install_epkg, try_light_init, light_init, upgrade_epkg};
+use crate::init::{install_epkg, try_light_init, light_init, upgrade_epkg};
 #[cfg(unix)]
 use crate::run::{command_run, command_busybox};
 use color_eyre::Result;
@@ -2154,7 +2153,6 @@ fn command_self(sub_matches: &clap::ArgMatches) -> Result<()> {
     match sub_matches.subcommand() {
         Some(("install", _sub_matches)) => {
             if find_env_base(SELF_ENV).is_none() {
-                #[cfg(unix)]
                 install_epkg()?;
             }
 
@@ -2166,7 +2164,6 @@ fn command_self(sub_matches: &clap::ArgMatches) -> Result<()> {
             }
         }
         Some(("upgrade", _sub_matches)) => {
-            #[cfg(unix)]
             upgrade_epkg()?;
         }
         Some(("remove", sub_matches)) => {

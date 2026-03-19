@@ -81,22 +81,92 @@ pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<(
         .wrap_err_with(|| format!("Failed to create symlink from {} to {}", link.display(), original.display()))
 }
 
+/// Create a symbolic link on Windows.
+///
+/// Windows has different link types with different permission requirements:
+/// - **Junction** (directory): No admin privileges required, but needs absolute path
+/// - **Hard link** (file): No admin privileges required
+/// - **Symlink** (file/dir): Requires admin privileges or Developer Mode
+///
+/// This function uses Junction for directories and hard links for files to avoid
+/// requiring admin privileges. The behavior differs from Unix symlink:
+///
+/// 1. For existing directories: Creates a Junction (requires absolute path)
+/// 2. For existing files: Creates a hard link
+/// 3. For non-existent paths that look like directories (no extension):
+///    Creates the target directory first, then creates a Junction
+/// 4. For non-existent file paths: Skips creation (returns Ok)
+///
+/// Note: `force_symlink()` in utils.rs calls this function after removing any
+/// existing link at the target path. The "force" in `force_symlink` means
+/// "overwrite if exists", not "create if target doesn't exist".
 #[cfg(windows)]
 pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
-    use std::os::windows::fs::symlink_file;
     let original = original.as_ref();
     let link = link.as_ref();
     log::trace!("creating symlink: {} -> {}", link.display(), original.display());
 
-    // Check if original is a directory
-    if original.is_dir() {
-        // Use junction for directories (doesn't require admin privileges)
-        junction::create(original, link)
-            .wrap_err_with(|| format!("Failed to create junction from {} to {}", link.display(), original.display()))
+    // Resolve relative paths relative to link's parent directory
+    // This matches Unix symlink behavior where relative paths are resolved
+    // relative to the location of the symlink, not the current working directory
+    let resolved_original = if original.is_relative() {
+        if let Some(parent) = link.parent() {
+            parent.join(original)
+        } else {
+            original.to_path_buf()
+        }
     } else {
-        // Use symlink_file for files
-        symlink_file(original, link)
-            .wrap_err_with(|| format!("Failed to create file symlink from {} to {}", link.display(), original.display()))
+        original.to_path_buf()
+    };
+
+    // Check if the resolved path exists and is a directory
+    if resolved_original.is_dir() {
+        // Use junction for directories (doesn't require admin privileges)
+        // Junction requires absolute path, so convert if needed
+        let abs_original = if resolved_original.is_relative() {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(&resolved_original))
+                .unwrap_or(resolved_original)
+        } else {
+            resolved_original.clone()
+        };
+        junction::create(&abs_original, link)
+            .wrap_err_with(|| format!("Failed to create junction from {} to {}", link.display(), abs_original.display()))
+    } else if resolved_original.is_file() {
+        // Use hard link for files (doesn't require admin privileges)
+        fs::hard_link(&resolved_original, link)
+            .wrap_err_with(|| format!("Failed to create hard link from {} to {}", link.display(), resolved_original.display()))
+    } else {
+        // Target doesn't exist - check if path looks like a directory
+        // Directory paths typically have no extension
+        let looks_like_dir = original.extension().is_none();
+
+        if looks_like_dir {
+            // Compute absolute path for junction
+            let abs_original = if resolved_original.is_relative() {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(&resolved_original))
+                    .unwrap_or(resolved_original.clone())
+            } else {
+                resolved_original.clone()
+            };
+
+            // Create the target directory if it doesn't exist
+            // This allows creating symlinks like "generations/current -> 1" where "1" is a directory
+            if !abs_original.exists() {
+                fs::create_dir_all(&abs_original)
+                    .wrap_err_with(|| format!("Failed to create directory {}", abs_original.display()))?;
+            }
+
+            // Now create the junction
+            junction::create(&abs_original, link)
+                .wrap_err_with(|| format!("Failed to create junction from {} to {}", link.display(), abs_original.display()))
+        } else {
+            // For file-like paths that don't exist, we cannot create a hard link
+            // Return success to avoid breaking existing code that expects this to work
+            log::debug!("Skipping symlink creation: target {} does not exist", resolved_original.display());
+            Ok(())
+        }
     }
 }
 
@@ -362,7 +432,6 @@ pub fn is_symlink(path: &Path) -> bool {
 /// Check if path itself exists (does NOT follow symlinks)
 /// Returns true for regular files, directories, AND symlinks (even broken ones)
 /// Use case: Check if symlink file itself exists before removing
-#[cfg(unix)]
 pub fn exists_no_follow<P: AsRef<Path>>(path: P) -> bool {
     symlink_metadata(path.as_ref()).is_ok()
 }

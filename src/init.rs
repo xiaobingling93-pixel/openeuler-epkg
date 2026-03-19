@@ -1,20 +1,28 @@
-#![cfg(unix)]
-
+#[cfg(unix)]
 use std::env;
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::fs::OpenOptions;
+#[cfg(unix)]
 use std::io::Write as IoWrite;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use color_eyre::eyre::WrapErr;
-use color_eyre::eyre;
+use color_eyre::eyre::{self, WrapErr};
 use color_eyre::Result;
+#[cfg(unix)]
 use nix::unistd::{fork, ForkResult};
 use serde::{Deserialize, Serialize};
 
+#[cfg(unix)]
 use crate::deinit::remove_epkg_from_rc_file;
+#[cfg(unix)]
 use crate::dirs::{find_env_base, find_env_root, get_env_root};
+#[cfg(not(unix))]
+use crate::dirs::find_env_base;
+#[cfg(unix)]
 use crate::download::download_urls;
+#[cfg(unix)]
 use crate::mirror;
 use crate::models::*;
 use crate::models::dirs;
@@ -48,6 +56,7 @@ fn print_banner() {
 /// - The cache population will complete even if the main process exits
 /// - The child process will automatically clean up when it finishes
 /// - This ensures the cache is properly populated for future epkg operations
+#[cfg(unix)]
 fn pre_populate_country_cache() {
     match unsafe { fork() } {
         Ok(ForkResult::Parent { child, .. }) => {
@@ -116,7 +125,8 @@ pub fn light_init() -> Result<()> {
     let env_config = crate::io::deserialize_env_config_for(MAIN_ENV.to_string())?;
     register_environment_for(MAIN_ENV, env_config)?;
 
-    // Update shell configuration
+    // Update shell configuration (Unix only)
+    #[cfg(unix)]
     update_shell_rc()?;
 
     println!("Notice: for changes to take effect, close and re-open your current shell.");
@@ -130,32 +140,54 @@ pub fn upgrade_epkg() -> Result<()> {
         return Ok(());
     }
 
-    // Check for available updates and get initialization plan
-    match check_for_updates() {
-        Ok(init_plan) => {
-            // Check if upgrade is needed
-            #[cfg(target_os = "linux")]
-            let need_upgrade = init_plan.new.epkg_version != init_plan.current.epkg_version ||
-                init_plan.new.elf_loader_version != init_plan.current.elf_loader_version;
-            #[cfg(not(target_os = "linux"))]
-            let need_upgrade = init_plan.new.epkg_version != init_plan.current.epkg_version;
-            if need_upgrade {
-                println!("Upgrading epkg installation...");
-                download_setup_files(&init_plan)?;
-            } else {
-                println!("epkg is already up to date.");
+    // Unix: check for updates and download
+    #[cfg(unix)]
+    {
+        // Check for available updates and get initialization plan
+        match check_for_updates() {
+            Ok(init_plan) => {
+                // Check if upgrade is needed
+                #[cfg(target_os = "linux")]
+                let need_upgrade = init_plan.new.epkg_version != init_plan.current.epkg_version ||
+                    init_plan.new.elf_loader_version != init_plan.current.elf_loader_version;
+                #[cfg(not(target_os = "linux"))]
+                let need_upgrade = init_plan.new.epkg_version != init_plan.current.epkg_version;
+                if need_upgrade {
+                    println!("Upgrading epkg installation...");
+                    download_setup_files(&init_plan)?;
+                } else {
+                    println!("epkg is already up to date.");
+                }
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to check for updates: {}", e);
+                return Ok(());
             }
         }
-        Err(e) => {
-            eprintln!("Warning: Failed to check for updates: {}", e);
-            return Ok(());
-        }
+    }
+
+    // Windows: just copy the current binary for now
+    #[cfg(windows)]
+    {
+        let self_env_root = dirs().user_envs.join(SELF_ENV);
+        let usr_bin = self_env_root.join("usr/bin");
+
+        let current_exe = std::env::current_exe()
+            .wrap_err("Failed to get current executable path")?;
+        let target_epkg = usr_bin.join("epkg.exe");
+
+        println!("Upgrading epkg binary...");
+        lfs::copy(&current_exe, &target_epkg)?;
+
+        println!("Upgrade complete!");
     }
 
     Ok(())
 }
 
 pub fn install_epkg() -> Result<()> {
+    // Fix up /lib64 symlink on Unix systems
+    #[cfg(unix)]
     fixup_host_lib64_symlink()
         .unwrap_or_else(|e| {
             log::debug!("Could not fixup /lib64 symlink: {}", e);
@@ -167,12 +199,17 @@ pub fn install_epkg() -> Result<()> {
     print_banner();
 
     // Pre-populate country cache in background thread to speed up later invocations
+    #[cfg(unix)]
     pre_populate_country_cache();
 
-    // For fresh install, create a basic init plan
-    let init_plan = check_for_updates()?;
-    download_setup_files(&init_plan)?;
+    // Download and setup package manager files
+    #[cfg(unix)]
+    {
+        let init_plan = check_for_updates()?;
+        download_setup_files(&init_plan)?;
+    }
 
+    // Create self environment
     create_environment(SELF_ENV)?;
 
     // Install AppArmor profile to allow epkg to use namespaces and mounts
@@ -191,9 +228,43 @@ pub fn install_epkg() -> Result<()> {
             log::warn!("Failed to setup tool config symlinks: {}", e);
         });
 
+    // On Windows, setup binaries using current_exe (no download for now)
+    #[cfg(windows)]
+    {
+        let self_env_root = dirs().user_envs.join(SELF_ENV);
+        let init_plan = InitPlan {
+            current: EpkgVersionInfo {
+                epkg_version: String::new(),
+            },
+            new: EpkgVersionInfo {
+                epkg_version: String::new(),
+            },
+            epkg_binary_url: String::new(),
+            epkg_binary_sha_url: String::new(),
+            epkg_src_url: String::new(),
+            epkg_binary_path: std::path::PathBuf::new(),
+            epkg_binary_sha_path: std::path::PathBuf::new(),
+            epkg_src_path: std::path::PathBuf::new(),
+            need_download_epkg_binary: false,
+            need_download_epkg_src: false,
+            using_local_repo: false,
+            vmlinux_url: None,
+            vmlinux_sha_url: None,
+            vmlinux_config_url: None,
+            vmlinux_version: None,
+            vmlinux_path: None,
+            vmlinux_config_path: None,
+        };
+        setup_common_binaries(&self_env_root, &init_plan)?;
+    }
+
+    println!("Installation complete!");
+
     Ok(())
 }
 
+// Unix-specific functions for downloading and setting up package manager files
+#[cfg(unix)]
 fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
     // Collect urls for downloading in parallel
     let mut urls = Vec::new();
@@ -308,6 +379,7 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn download_setup_files(init_plan: &InitPlan) -> Result<()> {
     let self_env_root = dirs().user_envs.join(SELF_ENV);
 
@@ -320,6 +392,7 @@ fn download_setup_files(init_plan: &InitPlan) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn setup_epkg_src(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     let usr_src = env_root.join("usr/src");
     let epkg_src = usr_src.join("epkg");
@@ -373,6 +446,9 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
 
     lfs::create_dir_all(&usr_bin)?;
 
+    #[cfg(windows)]
+    let target_epkg = usr_bin.join("epkg.exe");
+    #[cfg(not(windows))]
     let target_epkg = usr_bin.join("epkg");
 
     // Determine epkg binary source based on whether we're upgrading or installing
@@ -398,7 +474,8 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
         copy_epkg_binary_atomically(&init_plan.elf_loader_path, &elf_loader_target, false)?;
     }
 
-    // Create symlink to epkg binary in the first valid PATH component
+    // Create symlink to epkg binary in the first valid PATH component (Unix only)
+    #[cfg(unix)]
     create_epkg_symlink(&target_epkg)
         .context("Failed to create epkg symlink in PATH")?;
 
@@ -414,6 +491,7 @@ fn copy_epkg_binary_atomically(source: &Path, target: &Path, is_epkg: bool) -> R
             return Ok(());
         } else if target.exists() {
             // Check if target is a symlink pointing to current executable
+            #[cfg(unix)]
             if lfs::is_symlink(target) {
                 if let Ok(target_link) = fs::read_link(target) {
                     if target_link == source {
@@ -425,8 +503,10 @@ fn copy_epkg_binary_atomically(source: &Path, target: &Path, is_epkg: bool) -> R
                 } else {
                     log::warn!("Failed to read target symlink, proceeding with copy");
                 }
-            } else {
-                // Target exists and is not a symlink, proceed with copy
+            }
+            #[cfg(not(unix))]
+            {
+                // Target exists, proceed with copy
                 log::info!("Target epkg binary exists, proceeding with copy");
             }
         } else {
@@ -448,16 +528,17 @@ fn copy_epkg_binary_atomically(source: &Path, target: &Path, is_epkg: bool) -> R
     // Copy to temporary file first
     lfs::copy(source, &temp_target)?;
 
-    // Set permissions on temporary file before rename
-    let mode = if is_epkg && config().init.shared_store {
-        // disable for now
-        // 0o4755 // setuid + rwxr-xr-x for epkg in shared store mode
-        0o755 // rwxr-xr-x for standard permissions
-    } else {
-        0o755 // rwxr-xr-x for standard permissions
-    };
-    utils::set_permissions_from_mode(&temp_target, mode)
-        .context(format!("Failed to set permissions on temporary binary"))?;
+    // Set permissions on temporary file before rename (Unix only)
+    #[cfg(unix)]
+    {
+        let mode = if is_epkg && config().init.shared_store {
+            0o755
+        } else {
+            0o755
+        };
+        utils::set_permissions_from_mode(&temp_target, mode)
+            .context(format!("Failed to set permissions on temporary binary"))?;
+    }
 
     // Atomically rename temporary file to target
     match lfs::rename(&temp_target, target) {
@@ -487,6 +568,7 @@ fn copy_epkg_binary_atomically(source: &Path, target: &Path, is_epkg: bool) -> R
 ///   - Creates a symlink in `$HOME/bin/epkg` if `$HOME/bin` exists and is present in PATH.
 ///   - This allows immediate access to 'epkg' in the current shell session without requiring a shell restart.
 ///   - Does not create `$HOME/bin` if it does not exist.
+#[cfg(unix)]
 fn create_epkg_symlink(epkg_binary_path: &Path) -> Result<()> {
     if config().subcommand == EpkgCommand::SelfUpgrade {
         return Ok(());
@@ -521,6 +603,7 @@ fn create_epkg_symlink(epkg_binary_path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn update_shell_rc() -> Result<()> {
     let self_env_root = get_env_root(SELF_ENV.to_string())?;
     let shell_rc_files = shell_rc_files_for_current_mode()?;
@@ -539,6 +622,7 @@ fn update_shell_rc() -> Result<()> {
 }
 
 /// Determine which shell rc files should be updated based on the current installation mode.
+#[cfg(unix)]
 fn shell_rc_files_for_current_mode() -> Result<Vec<String>> {
     if config().init.shared_store {
         crate::dirs::get_global_shell_rc()
@@ -551,6 +635,7 @@ fn shell_rc_files_for_current_mode() -> Result<Vec<String>> {
 }
 
 /// Build the epkg rc block that will be appended to rc files.
+#[cfg(unix)]
 fn build_epkg_rc_block(self_env_root: &Path) -> String {
     format!(
         r#"
@@ -565,6 +650,7 @@ test -r "$epkg_rc" && . "$epkg_rc"
 
 /// Append the epkg rc block to a given rc file, ensuring any previous epkg block is removed
 /// and newline formatting remains tidy.
+#[cfg(unix)]
 fn append_epkg_block_to_rc_file(rc_file_path: &str, rc_content: &str) -> Result<()> {
     // Remove any existing epkg configuration and get the cleaned content
     let existing_content = remove_epkg_from_rc_file(rc_file_path)?;
@@ -597,6 +683,7 @@ fn append_epkg_block_to_rc_file(rc_file_path: &str, rc_content: &str) -> Result<
     Ok(())
 }
 
+#[cfg(unix)]
 fn find_repo_root() -> Result<std::path::PathBuf> {
     // Check if running from git repo
     let current_exe = std::env::current_exe()
@@ -661,6 +748,7 @@ fn find_repo_root() -> Result<std::path::PathBuf> {
     Ok(repo_root)
 }
 
+#[cfg(unix)]
 fn is_valid_local_repo(repo_root: &std::path::Path) -> bool {
     repo_root.join(".git").exists() &&
     repo_root.join("assets/shell/epkg.sh").exists()
@@ -752,6 +840,7 @@ struct InitPlan {
 }
 
 /// Fetch the latest release information from Gitee API
+#[cfg(unix)]
 fn fetch_latest_release(owner: &str, repo: &str) -> Result<GiteeRelease> {
     let url = format!("{}/repos/{}/{}/releases/latest", GITEE_API_BASE, owner, repo);
 
@@ -795,6 +884,7 @@ fn fetch_latest_release(owner: &str, repo: &str) -> Result<GiteeRelease> {
 }
 
 /// Parse version from --version output
+#[cfg(unix)]
 fn parse_version_from_output(version_output: &str) -> Option<String> {
     // Look for pattern: "... version $version_tag (build date $build_date, commit $git_hash)"
     let re = regex::Regex::new(r"version\s+([^\s]+)\s+\(").ok()?;
@@ -803,6 +893,7 @@ fn parse_version_from_output(version_output: &str) -> Option<String> {
 }
 
 /// Get version from epkg binary
+#[cfg(unix)]
 fn get_epkg_version() -> Result<String> {
     // If this is the running epkg program, use the build-time version
     if let Ok(current_exe) = std::env::current_exe() {
@@ -856,6 +947,7 @@ fn get_elf_loader_version(elf_loader_path: &Path) -> Result<String> {
 }
 
 /// Get the current installed version information
+#[cfg(unix)]
 fn get_current_epkg_version_info() -> Result<EpkgVersionInfo> {
     let epkg_version = get_epkg_version().unwrap_or_else(|_| env!("EPKG_VERSION_TAG").to_string());
 
@@ -1009,6 +1101,7 @@ fn zstd_decompress_file(path: &Path) -> Result<Vec<u8>> {
 }
 
 /// Check for updates and return initialization plan
+#[cfg(unix)]
 fn check_for_updates() -> Result<InitPlan> {
     println!("Checking for updates...");
 
@@ -1147,6 +1240,7 @@ fn check_for_updates() -> Result<InitPlan> {
 /// - If /lib64 already exists as a symlink to usr/lib (archlinux host): remove it or warn 'rpm/deb guest os may not work'
 /// - If /lib64 not exists (alpine host): create symlink to usr/lib64 or warn 'guest os other than alpine/archlinux/conda may not work'
 /// Only works when running as root.
+#[cfg(unix)]
 fn fixup_host_lib64_symlink() -> Result<()> {
     let lib64_path = Path::new("/lib64");
     let usr_lib64_target = Path::new("usr/lib64");

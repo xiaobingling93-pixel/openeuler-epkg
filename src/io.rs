@@ -541,7 +541,6 @@ fn map_to_conda_repofile(repo_name: &str) -> String {
 }
 
 /// Save environment configuration to file
-#[cfg(unix)]
 pub fn serialize_env_config(env_config: EnvConfig) -> Result<()> {
     let config_path = get_env_config_path(&env_config.name);
 
