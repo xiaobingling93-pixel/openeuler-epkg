@@ -46,6 +46,10 @@ RUSTUP_CARGO_DIR="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/stable-$(uname -m | s
 if [[ -d "$RUSTUP_CARGO_DIR" ]]; then
     export PATH="$RUSTUP_CARGO_DIR:$PATH"
 fi
+# MSYS2/MinGW64: add mingw64/bin to PATH for cargo, gcc, etc.
+if [[ -d "/mingw64/bin" ]]; then
+    export PATH="/mingw64/bin:$PATH"
+fi
 RUST_TARGET_X86_64=x86_64-unknown-linux-musl
 RUST_TARGET_AARCH64=aarch64-unknown-linux-musl
 RUST_TARGET_RISCV64=riscv64gc-unknown-linux-musl
@@ -174,13 +178,16 @@ detect_package_manager() {
             fi
             ;;
         windows)
-            if has_cmd choco; then
+            if has_cmd pacman; then
+                # MSYS2 environment
+                PKG_MANAGER="pacman"
+            elif has_cmd choco; then
                 PKG_MANAGER="choco"
             elif has_cmd scoop; then
                 PKG_MANAGER="scoop"
             else
                 PKG_MANAGER="unknown"
-                echo "Warning: No package manager detected (choco/scoop). Some dependencies may need manual installation."
+                echo "Warning: No package manager detected (pacman/choco/scoop). Some dependencies may need manual installation."
             fi
             ;;
         *)
@@ -461,24 +468,48 @@ get_package_manager_config() {
         pacman)
             update_cmd="pacman -Sy"
             install_cmd="pacman -S --noconfirm"
-            case "$mode" in
-                dev|crossdev)
-                    packages="rustup base-devel openssl musl lua"
-                    # Crossdev packages: aarch64-linux-gnu-gcc, riscv64-linux-gnu-gcc, loongarch64-linux-gnu-gcc (from AUR)
-                    ;;
-                sandbox)
-                    # shadow provides newuidmap/newgidmap on Arch
-                    packages="shadow"
-                    ;;
-                qemu)
-                    # Arch packages: qemu-desktop (includes qemu-system-x86_64) and virtiofsd (if packaged separately)
-                    # Users may need to adjust package names on derivatives.
-                    packages="qemu-desktop virtiofsd"
-                    ;;
-                *)
-                    packages=""
-                    ;;
-            esac
+            # Check if we're on MSYS2/Windows
+            if [[ "$OS_FAMILY" == "windows" ]]; then
+                # MSYS2 packages: MinGW-w64 toolchain for native Windows builds
+                # Note: install individual packages instead of mingw-w64-x86_64-toolchain group
+                # to avoid interactive selection prompt
+                common_packages="git wget curl jq tar"
+                case "$mode" in
+                    dev|crossdev)
+                        packages="base-devel mingw-w64-x86_64-gcc mingw-w64-x86_64-make mingw-w64-x86_64-pkgconf mingw-w64-x86_64-rust mingw-w64-x86_64-openssl"
+                        ;;
+                    sandbox)
+                        packages=""
+                        ;;
+                    qemu)
+                        packages="mingw-w64-x86_64-qemu"
+                        ;;
+                    *)
+                        packages=""
+                        ;;
+                esac
+            else
+                # Arch Linux
+                common_packages="git wget curl jq tar"
+                case "$mode" in
+                    dev|crossdev)
+                        packages="rustup base-devel openssl musl lua"
+                        # Crossdev packages: aarch64-linux-gnu-gcc, riscv64-linux-gnu-gcc, loongarch64-linux-gnu-gcc (from AUR)
+                        ;;
+                    sandbox)
+                        # shadow provides newuidmap/newgidmap on Arch
+                        packages="shadow"
+                        ;;
+                    qemu)
+                        # Arch packages: qemu-desktop (includes qemu-system-x86_64) and virtiofsd (if packaged separately)
+                        # Users may need to adjust package names on derivatives.
+                        packages="qemu-desktop virtiofsd"
+                        ;;
+                    *)
+                        packages=""
+                        ;;
+                esac
+            fi
             ;;
         apk)
             update_cmd="apk update"
@@ -569,6 +600,9 @@ install_os_packages() {
         SUDO=""
     elif [[ "$PKG_MANAGER" == "brew" ]]; then
         # Homebrew doesn't use sudo for installs
+        SUDO=""
+    elif [[ "$PKG_MANAGER" == "pacman" && "$OS_FAMILY" == "windows" ]]; then
+        # MSYS2 pacman doesn't use sudo
         SUDO=""
     else
         SUDO="sudo"
