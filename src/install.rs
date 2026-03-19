@@ -468,43 +468,88 @@ fn download_and_unpack_packages(
 /// Link all packages to the environment (without exposing)
 /// This should only be called after all risk checks have passed.
 fn link_packages(plan: &mut InstallationPlan) -> Result<()> {
-    for pkgkey in &plan.batch.new_pkgkeys {
-        if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, &pkgkey) {
-            if package_info.pkgline.is_empty() {
-                return Err(eyre::eyre!(
-                    "Package {} has empty pkgline, cannot link. This indicates the package wasn't properly unpacked.",
-                    pkgkey
-                ));
-            }
-            let store_fs_dir = plan.store_root.join(&package_info.pkgline).join("fs");
-            crate::link::link_package(plan, &store_fs_dir)?;
+    let link_workers = link_worker_count();
+    let plan_ref: &InstallationPlan = &*plan;
+    let pkgkeys = plan.batch.new_pkgkeys.clone();
 
-            // Create symlinks in usr/bin/ for libexec/bin/ executables.
-            // Homebrew formulas (e.g., python@3.14, node) pre-create unversioned
-            // command symlinks in libexec/bin/ during the build phase. These are
-            // included in the bottle tarball (not created by post_install).
-            // We create corresponding symlinks in usr/bin/ for epkg run.
-            if let Err(e) = crate::expose::create_libexec_bin_symlinks(&plan.env_root, &store_fs_dir) {
-                log::debug!("Failed to create libexec bin symlinks for {}: {}", pkgkey, e);
+    if link_workers > 1 {
+        std::thread::scope(|scope| -> Result<()> {
+            let mut handles: Vec<(String, std::thread::ScopedJoinHandle<'_, Result<()>>)> = Vec::new();
+
+            for pkgkey in pkgkeys {
+                while handles.len() >= link_workers {
+                    let (running_pkgkey, handle) = handles.remove(0);
+                    handle
+                        .join()
+                        .map_err(|e| eyre!("Link worker thread panicked for {}: {:?}", running_pkgkey, e))??;
+                }
+
+                let pkgkey_for_worker = pkgkey.clone();
+                let handle = scope.spawn(move || link_one_package(plan_ref, &pkgkey_for_worker));
+                handles.push((pkgkey, handle));
             }
 
-            // Generate service files for brew packages with service definition
-            if plan.package_format == crate::models::PackageFormat::Brew {
-                if let Some(package) = crate::package_cache::load_package_info(&pkgkey).ok() {
-                    if let Some(ref service_json) = package.service_json {
-                        if let Ok(service) = serde_json::from_str::<crate::brew_repo::BrewService>(service_json) {
-                            let pkgname = crate::package::pkgkey2pkgname(&pkgkey).unwrap_or_default();
-                            if let Err(e) = crate::brew_service::generate_service_files(&plan.env_root, &pkgname, &service) {
-                                log::warn!("Failed to generate service files for {}: {}", pkgkey, e);
-                            }
+            while let Some((running_pkgkey, handle)) = handles.pop() {
+                handle
+                    .join()
+                    .map_err(|e| eyre!("Link worker thread panicked for {}: {:?}", running_pkgkey, e))??;
+            }
+
+            Ok(())
+        })?;
+    } else {
+        for pkgkey in &pkgkeys {
+            link_one_package(plan_ref, pkgkey)?;
+        }
+    }
+
+    utils::fixup_env_links(&plan.env_root)?;
+
+    Ok(())
+}
+
+fn link_worker_count() -> usize {
+    if models::config().common.parallel_processing > 1 {
+        models::config().common.parallel_processing.min(8)
+    } else {
+        1
+    }
+}
+
+fn link_one_package(plan: &InstallationPlan, pkgkey: &str) -> Result<()> {
+    if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
+        if package_info.pkgline.is_empty() {
+            return Err(eyre::eyre!(
+                "Package {} has empty pkgline, cannot link. This indicates the package wasn't properly unpacked.",
+                pkgkey
+            ));
+        }
+        let store_fs_dir = plan.store_root.join(&package_info.pkgline).join("fs");
+        crate::link::link_package(plan, &store_fs_dir)?;
+
+        // Create symlinks in usr/bin/ for libexec/bin/ executables.
+        // Homebrew formulas (e.g., python@3.14, node) pre-create unversioned
+        // command symlinks in libexec/bin/ during the build phase. These are
+        // included in the bottle tarball (not created by post_install).
+        // We create corresponding symlinks in usr/bin/ for epkg run.
+        if let Err(e) = crate::expose::create_libexec_bin_symlinks(&plan.env_root, &store_fs_dir) {
+            log::debug!("Failed to create libexec bin symlinks for {}: {}", pkgkey, e);
+        }
+
+        // Generate service files for brew packages with service definition
+        if plan.package_format == crate::models::PackageFormat::Brew {
+            if let Some(package) = crate::package_cache::load_package_info(pkgkey).ok() {
+                if let Some(ref service_json) = package.service_json {
+                    if let Ok(service) = serde_json::from_str::<crate::brew_repo::BrewService>(service_json) {
+                        let pkgname = crate::package::pkgkey2pkgname(pkgkey).unwrap_or_default();
+                        if let Err(e) = crate::brew_service::generate_service_files(&plan.env_root, &pkgname, &service) {
+                            log::warn!("Failed to generate service files for {}: {}", pkgkey, e);
                         }
                     }
                 }
             }
         }
     }
-
-    utils::fixup_env_links(&plan.env_root)?;
 
     Ok(())
 }
