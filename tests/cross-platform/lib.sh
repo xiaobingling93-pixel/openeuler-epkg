@@ -18,9 +18,9 @@ test_install_run() {
 test_lang_python() {
     # Different package names in different channels
     if [ "$CHANNEL_NAME" = "brew" ]; then
-        run_install python@3.12 || return 1
-        run python3.12 --version || return 1
-        run python3.12 -c "print('Hello from Python')" || return 1
+        run_install python || return 1
+        run python3 --version || return 1
+        run python3 -c "print('Hello from Python')" || return 1
     else
         run_install python python3 || return 1
         run python3 --version || return 1
@@ -84,7 +84,10 @@ test_build_ninja() {
 test_scipy_numpy() {
     run_install numpy || return 1
     local py_cmd="python3"
-    [ "$CHANNEL_NAME" = "brew" ] && py_cmd="python3.12"
+    if [ "$CHANNEL_NAME" = "brew" ]; then
+        # Detect python version dynamically (python -> python@3.X)
+        py_cmd="python3"
+    fi
     run $py_cmd -c "import numpy; print('numpy version:', numpy.__version__)" || return 1
     return 0
 }
@@ -92,7 +95,9 @@ test_scipy_numpy() {
 test_scipy_scipy() {
     run_install scipy || return 1
     local py_cmd="python3"
-    [ "$CHANNEL_NAME" = "brew" ] && py_cmd="python3.12"
+    if [ "$CHANNEL_NAME" = "brew" ]; then
+        py_cmd="python3"
+    fi
     run $py_cmd -c "import scipy; print('scipy version:', scipy.__version__)" || return 1
     return 0
 }
@@ -100,7 +105,9 @@ test_scipy_scipy() {
 test_scipy_pandas() {
     run_install pandas || return 1
     local py_cmd="python3"
-    [ "$CHANNEL_NAME" = "brew" ] && py_cmd="python3.12"
+    if [ "$CHANNEL_NAME" = "brew" ]; then
+        py_cmd="python3"
+    fi
     run $py_cmd -c "import pandas; print('pandas version:', pandas.__version__)" || return 1
     return 0
 }
@@ -109,7 +116,9 @@ test_scipy_pandas() {
 test_ml_scikit() {
     run_install scikit-learn || return 1
     local py_cmd="python3"
-    [ "$CHANNEL_NAME" = "brew" ] && py_cmd="python3.12"
+    if [ "$CHANNEL_NAME" = "brew" ]; then
+        py_cmd="python3"
+    fi
     run $py_cmd -c "import sklearn; print('sklearn version:', sklearn.__version__)" || return 1
     return 0
 }

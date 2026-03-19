@@ -40,18 +40,19 @@ test_suite_build
 #========================================
 echo ""
 echo "=== Test 4: Scientific Computing ==="
-echo "SKIP: brew Python packages are version-specific and may not match installed Python"
 
-# test_suite_scipy
+# Skip pandas for brew (not available in homebrew-core)
+test_suite_scipy "pandas"
 
 #========================================
 # Test 5: Machine Learning
 #========================================
 echo ""
 echo "=== Test 5: Machine Learning ==="
-echo "SKIP: brew Python packages are version-specific and may not match installed Python"
 
-# test_suite_ml
+# scikit-learn is not available in homebrew-core
+echo "SKIP: scikit-learn not available in homebrew-core"
+# test_suite_ml "scikit"
 
 #========================================
 # Test 6: Package Management
