@@ -25,6 +25,19 @@ use crate::utils;
 use super::types::*;
 use super::validation::classify_file_type;
 
+fn should_skip_chunking_at_start(url: &str) -> bool {
+    // URLs with $mirror should keep mirror-based retry/chunking behavior.
+    if url.contains("$mirror") {
+        return false;
+    }
+
+    // Some known servers often have limited/unstable Range behavior.
+    const KNOWN_NO_RANGE_SITES: [&str; 2] = ["gitee.com", "atomgit.com"];
+    let site = mirror::url2site(url).to_lowercase();
+
+    KNOWN_NO_RANGE_SITES.iter().any(|known| site.contains(known))
+}
+
 // Macro to add line number to error context
 macro_rules! error_context {
     ($msg:expr) => {
@@ -87,6 +100,7 @@ impl DownloadTask {
         sha1sum: Option<String>,
     ) -> Self {
         let max_retries = config().common.nr_retry;
+        let skip_chunking = should_skip_chunking_at_start(&url);
         // Initialize chunk_path to the standard .part file for master tasks
         let chunk_path = utils::append_suffix(&final_path, "part");
 
@@ -126,7 +140,7 @@ impl DownloadTask {
             repodata_name:     repodata_name,
             sha256sum,
             sha1sum,
-            skip_chunking:     AtomicBool::new(false),
+            skip_chunking:     AtomicBool::new(skip_chunking),
         }
     }
 
