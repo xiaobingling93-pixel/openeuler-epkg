@@ -302,3 +302,63 @@ test_suite_queries() {
 
     return 0
 }
+
+# Test Suite 8: History and Restore
+# Tests epkg history and restore commands
+test_suite_history() {
+    local skip_list="$1"
+
+    # epkg history - show environment history
+    if ! echo "$skip_list" | grep -qw "history"; then
+        epkg history || return 1
+    fi
+
+    # epkg restore - restore to previous generation (if history exists)
+    if ! echo "$skip_list" | grep -qw "restore"; then
+        # Check if there's history to restore by counting lines with numeric ids
+        local gen_count=$(epkg history 2>/dev/null | grep -cE "^[0-9]+" || echo 0)
+        if [ "$gen_count" -gt 1 ]; then
+            # Try restore to previous generation
+            epkg restore -1 || return 1
+        fi
+    fi
+
+    return 0
+}
+
+# Test Suite 9: Environment Export/Import
+# Tests epkg env export and import commands
+test_suite_env_io() {
+    local skip_list="$1"
+    local export_file="/tmp/epkg-env-export-$CHANNEL_NAME.yaml"
+
+    # epkg env export - export environment configuration
+    if ! echo "$skip_list" | grep -qw "export"; then
+        epkg env export > "$export_file" || return 1
+        # Verify export file has content
+        if [ ! -s "$export_file" ]; then
+            echo "Export file is empty" >&2
+            return 1
+        fi
+        echo "Exported environment to $export_file"
+        head -20 "$export_file"
+    fi
+
+    # Note: import is tested during env create, not here
+    # as it would conflict with existing env
+
+    return 0
+}
+
+# Test Suite 10: Garbage Collection
+# Tests epkg gc command
+test_suite_gc() {
+    local skip_list="$1"
+
+    # epkg gc - clean up unused cache and store files
+    if ! echo "$skip_list" | grep -qw "gc"; then
+        epkg gc || return 1
+    fi
+
+    return 0
+}

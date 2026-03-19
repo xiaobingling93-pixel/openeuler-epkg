@@ -81,4 +81,36 @@ echo "=== Test 6: Package Management ==="
 # Remove curl (installed in Test 1)
 test_suite_pkgmgr "curl"
 
+#========================================
+# Test 7: Query Commands
+#========================================
+echo ""
+echo "=== Test 7: Query Commands ==="
+
+test_suite_queries
+
+#========================================
+# Test 8: History and Restore
+#========================================
+echo ""
+echo "=== Test 8: History and Restore ==="
+
+test_suite_history
+
+#========================================
+# Test 9: Environment Export/Import
+#========================================
+echo ""
+echo "=== Test 9: Environment Export/Import ==="
+
+test_suite_env_io
+
+#========================================
+# Test 10: Garbage Collection
+#========================================
+echo ""
+echo "=== Test 10: Garbage Collection ==="
+
+test_suite_gc
+
 channel_ok

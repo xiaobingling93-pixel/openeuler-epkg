@@ -140,6 +140,18 @@ run_test_suite() {
             echo "=== Test 7: Query Commands ==="
             test_suite_queries
             ;;
+        history)
+            echo "=== Test 8: History and Restore ==="
+            test_suite_history
+            ;;
+        env_io)
+            echo "=== Test 9: Environment Export/Import ==="
+            test_suite_env_io
+            ;;
+        gc)
+            echo "=== Test 10: Garbage Collection ==="
+            test_suite_gc
+            ;;
         *)
             echo "Unknown test suite: $suite" >&2
             return 1

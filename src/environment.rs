@@ -25,7 +25,6 @@ use crate::deinit::force_remove_dir_all;
 use crate::deb_triggers::ensure_triggers_dir;
 use crate::plan::prepare_installation_plan;
 use crate::install::execute_installation_plan;
-#[cfg(unix)]
 use crate::history::record_history;
 #[cfg(unix)]
 use crate::path::update_path;
@@ -512,7 +511,6 @@ fn import_packages_and_create_metadata(env_root: &Path) -> Result<()> {
         lfs::write(installed_packages_path, "{\n}")?;
 
         // Record the environment creation in command history
-        #[cfg(unix)]
         record_history(&gen_1_dir, None)?;
     }
 

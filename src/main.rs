@@ -147,7 +147,6 @@ use crate::list::list_packages_with_scope;
 use crate::install::install_packages;
 use crate::upgrade::upgrade_packages;
 use crate::remove::remove_packages;
-#[cfg(unix)]
 use crate::history::{print_history, rollback_history};
 use crate::init::{install_epkg, try_light_init, light_init, upgrade_epkg};
 use crate::run::{command_run, command_busybox};
@@ -246,9 +245,7 @@ fn main() -> Result<()> {
         Some(("install",    sub_matches))  =>  command_install(sub_matches)?,
         Some(("upgrade",    sub_matches))  =>  command_upgrade(sub_matches)?,
         Some(("remove",     sub_matches))  =>  command_remove(sub_matches)?,
-        #[cfg(unix)]
         Some(("history",    sub_matches))  =>  command_history(sub_matches)?,
-        #[cfg(unix)]
         Some(("restore",    sub_matches))  =>  command_restore(sub_matches)?,
         Some(("update",     sub_matches))  =>  command_update(sub_matches)?,
         Some(("repo",       sub_matches))  =>  command_repo(sub_matches)?,
@@ -1978,12 +1975,10 @@ fn command_remove(sub_matches: &clap::ArgMatches) -> Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
 fn command_history(_sub_matches: &clap::ArgMatches) -> Result<()> {
     print_history()
 }
 
-#[cfg(unix)]
 fn command_restore(sub_matches: &clap::ArgMatches) -> Result<()> {
     if let Some(rollback_id) = sub_matches.get_one::<i32>("GEN_ID") {
         rollback_history(*rollback_id)?;

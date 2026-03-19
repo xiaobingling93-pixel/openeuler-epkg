@@ -25,9 +25,7 @@ use crate::plan::prompt_and_confirm_install_plan;
 #[cfg(target_os = "linux")]
 #[allow(unused_imports)]
 use crate::{risks, deb_triggers};
-use crate::history::{create_new_generation_with_root, update_current_generation_symlink_with_root};
-#[cfg(unix)]
-use crate::history::record_history;
+use crate::history::{create_new_generation_with_root, update_current_generation_symlink_with_root, record_history};
 #[cfg(unix)]
 use crate::transaction::run_transaction_batch;
 #[cfg(target_os = "linux")]
@@ -289,32 +287,20 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     // of session_info).
     update_skipped_reinstalls_metadata(&plan)?;
 
-    #[cfg(unix)]
-    {
-        let generations_root = dirs::get_default_generations_root()?;
-        let new_generation = create_new_generation_with_root(&generations_root)?;
-        record_history(&new_generation, Some(&plan))?;
-        save_installed_packages(&new_generation)?;
-        save_world(&new_generation)?;
-        update_current_generation_symlink_with_root(&generations_root, new_generation)?;
+    let generations_root = dirs::get_default_generations_root()?;
+    let new_generation = create_new_generation_with_root(&generations_root)?;
+    record_history(&new_generation, Some(&plan))?;
+    save_installed_packages(&new_generation)?;
+    save_world(&new_generation)?;
+    update_current_generation_symlink_with_root(&generations_root, new_generation)?;
 
-        // Generate dpkg database for Debian/Ubuntu environments
-        // This allows the real dpkg/dpkg-query commands to see installed packages
-        #[cfg(target_os = "linux")]
-        if plan.package_format == crate::models::PackageFormat::Deb {
-            if let Err(e) = crate::dpkg_db::generate_dpkg_database() {
-                log::warn!("Failed to generate dpkg database: {}", e);
-            }
+    // Generate dpkg database for Debian/Ubuntu environments
+    // This allows the real dpkg/dpkg-query commands to see installed packages
+    #[cfg(target_os = "linux")]
+    if plan.package_format == crate::models::PackageFormat::Deb {
+        if let Err(e) = crate::dpkg_db::generate_dpkg_database() {
+            log::warn!("Failed to generate dpkg database: {}", e);
         }
-    }
-    #[cfg(not(unix))]
-    {
-        let generations_root = dirs::get_default_generations_root()?;
-        let new_generation = create_new_generation_with_root(&generations_root)?;
-        // record_history is Unix-only, skip on Windows
-        save_installed_packages(&new_generation)?;
-        save_world(&new_generation)?;
-        update_current_generation_symlink_with_root(&generations_root, new_generation)?;
     }
 
     Ok(plan)
