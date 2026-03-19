@@ -136,6 +136,10 @@ run_test_suite() {
             echo "=== Test 6: Package Management ==="
             test_suite_pkgmgr
             ;;
+        queries)
+            echo "=== Test 7: Query Commands ==="
+            test_suite_queries
+            ;;
         *)
             echo "Unknown test suite: $suite" >&2
             return 1

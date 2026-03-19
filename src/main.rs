@@ -1947,7 +1947,6 @@ fn command_list(sub_matches: &clap::ArgMatches) -> Result<()> {
 
 fn command_info(sub_matches: &clap::ArgMatches) -> Result<()> {
     // First call sync_channel_metadata to prepare data
-    #[cfg(unix)]
     sync_channel_metadata()?;
 
     // Load installed packages info

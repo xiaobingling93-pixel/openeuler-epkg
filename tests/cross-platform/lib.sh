@@ -2,6 +2,16 @@
 # Shared test functions for cross-platform channel tests
 # Sourced by channels/*.sh test scripts.
 
+# Detect the Python command name for the current platform
+# On Windows, conda only provides 'python.exe', not 'python3.exe'
+_get_python_cmd() {
+    if [ "$OS" = "Windows_NT" ]; then
+        echo "python"
+    else
+        echo "python3"
+    fi
+}
+
 # Test: install and verify a package runs
 # Usage: test_install_run <pkg> <cmd> [args...]
 # Example: test_install_run python python --version
@@ -16,15 +26,16 @@ test_install_run() {
 # Test: programming language interpreter
 # Usage: test_lang_python / test_lang_perl / test_lang_ruby / test_lang_nodejs / test_lang_go
 test_lang_python() {
+    local py_cmd="$(_get_python_cmd)"
     # Different package names in different channels
     if [ "$CHANNEL_NAME" = "brew" ]; then
         run_install python || return 1
-        run python3 --version || return 1
-        run python3 -c "print('Hello from Python')" || return 1
+        run $py_cmd --version || return 1
+        run $py_cmd -c "print('Hello from Python')" || return 1
     else
-        run_install python python3 || return 1
-        run python3 --version || return 1
-        run python3 -c "print('Hello from Python')" || return 1
+        run_install python || return 1
+        run $py_cmd --version || return 1
+        run $py_cmd -c "print('Hello from Python')" || return 1
     fi
     return 0
 }
@@ -83,31 +94,21 @@ test_build_ninja() {
 # Test: scientific computing
 test_scipy_numpy() {
     run_install numpy || return 1
-    local py_cmd="python3"
-    if [ "$CHANNEL_NAME" = "brew" ]; then
-        # Detect python version dynamically (python -> python@3.X)
-        py_cmd="python3"
-    fi
+    local py_cmd="$(_get_python_cmd)"
     run $py_cmd -c "import numpy; print('numpy version:', numpy.__version__)" || return 1
     return 0
 }
 
 test_scipy_scipy() {
     run_install scipy || return 1
-    local py_cmd="python3"
-    if [ "$CHANNEL_NAME" = "brew" ]; then
-        py_cmd="python3"
-    fi
+    local py_cmd="$(_get_python_cmd)"
     run $py_cmd -c "import scipy; print('scipy version:', scipy.__version__)" || return 1
     return 0
 }
 
 test_scipy_pandas() {
     run_install pandas || return 1
-    local py_cmd="python3"
-    if [ "$CHANNEL_NAME" = "brew" ]; then
-        py_cmd="python3"
-    fi
+    local py_cmd="$(_get_python_cmd)"
     run $py_cmd -c "import pandas; print('pandas version:', pandas.__version__)" || return 1
     return 0
 }
@@ -115,10 +116,7 @@ test_scipy_pandas() {
 # Test: ML/AI
 test_ml_scikit() {
     run_install scikit-learn || return 1
-    local py_cmd="python3"
-    if [ "$CHANNEL_NAME" = "brew" ]; then
-        py_cmd="python3"
-    fi
+    local py_cmd="$(_get_python_cmd)"
     run $py_cmd -c "import sklearn; print('sklearn version:', sklearn.__version__)" || return 1
     return 0
 }
@@ -277,4 +275,30 @@ test_suite_pkgmgr() {
 
     # Search for package
     epkg search jq | head -20
+
+    # Show package info
+    epkg info jq | head -20
+}
+
+# Test Suite 7: Query Commands
+# Tests various epkg query commands (info, search, list)
+test_suite_queries() {
+    local skip_list="$1"
+
+    # epkg info - show package information
+    if ! echo "$skip_list" | grep -qw "info"; then
+        epkg info python | head -20 || return 1
+    fi
+
+    # epkg search - search for packages
+    if ! echo "$skip_list" | grep -qw "search"; then
+        epkg search python | head -10 || return 1
+    fi
+
+    # epkg list - list installed packages
+    if ! echo "$skip_list" | grep -qw "list"; then
+        epkg list | head -10 || return 1
+    fi
+
+    return 0
 }
