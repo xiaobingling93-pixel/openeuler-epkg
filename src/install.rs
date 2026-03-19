@@ -11,7 +11,7 @@ use crate::store;
 use crate::utils;
 use crate::package;
 use crate::download;
-use crate::plan::InstallationPlan;
+use crate::plan::{InstallationPlan, pkgkey2new_pkg_info};
 use crate::models::PACKAGE_CACHE;
 use crate::link::compute_link_type_and_reflink;
 use crate::io::load_world;
@@ -396,6 +396,33 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
 
         // Clean up pending packages after transaction completes
         remove_pending_packages()?;
+    }
+    #[cfg(not(unix))]
+    {
+        use std::path::PathBuf;
+        // On non-Unix platforms (Windows), update installed_packages cache directly
+        // without running scriptlets (transaction batch handles this on Unix)
+        for (pkgkey, pkg_info) in &plan.new_pkgs {
+            PACKAGE_CACHE.installed_packages.write().unwrap().insert(pkgkey.clone(), Arc::clone(pkg_info));
+            PACKAGE_CACHE.pkgline2installed.write().unwrap().insert(pkg_info.pkgline.clone(), Arc::clone(pkg_info));
+        }
+        // Expose packages (normally done by run_transaction_batch)
+        // Collect packages to expose first to avoid borrow issues
+        let pkgs_to_expose: Vec<(String, PathBuf)> = plan.ordered_operations.iter()
+            .filter(|op| op.should_expose())
+            .filter_map(|op| op.new_pkgkey.as_ref())
+            .filter(|pkgkey| plan.batch.new_pkgkeys.contains(*pkgkey))
+            .filter_map(|pkgkey| {
+                pkgkey2new_pkg_info(plan, pkgkey).map(|info| {
+                    (pkgkey.clone(), plan.store_root.join(&info.pkgline).join("fs"))
+                })
+            })
+            .collect();
+        for (pkgkey, store_fs_dir) in pkgs_to_expose {
+            if let Err(e) = crate::expose::expose_package(plan, &store_fs_dir, &pkgkey) {
+                log::warn!("Failed to expose package {}: {}", pkgkey, e);
+            }
+        }
     }
 
     // Step 4: Build and install AUR packages (build with makepkg)

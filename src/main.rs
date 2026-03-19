@@ -147,7 +147,6 @@ use crate::path::update_path;
 use crate::repo::sync_channel_metadata;
 #[cfg(unix)]
 use crate::list::list_packages_with_scope;
-#[cfg(unix)]
 use crate::install::install_packages;
 use crate::upgrade::upgrade_packages;
 use crate::remove::remove_packages;
@@ -1973,11 +1972,8 @@ fn command_info(sub_matches: &clap::ArgMatches) -> Result<()> {
 
 fn command_install(sub_matches: &clap::ArgMatches) -> Result<()> {
     if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
-        let _packages_vec: Vec<String> = package_specs.cloned().collect();
-        #[cfg(unix)]
-        install_packages(_packages_vec).map(|_| ())?;
-        #[cfg(not(unix))]
-        return Err(color_eyre::eyre::eyre!("Install command not supported on this platform"));
+        let packages_vec: Vec<String> = package_specs.cloned().collect();
+        install_packages(packages_vec).map(|_| ())?;
     }
     Ok(())
 }
@@ -2013,7 +2009,6 @@ fn command_restore(sub_matches: &clap::ArgMatches) -> Result<()> {
 }
 
 fn command_update(_sub_matches: &clap::ArgMatches) -> Result<()> {
-    #[cfg(unix)]
     sync_channel_metadata()?;
     Ok(())
 }
