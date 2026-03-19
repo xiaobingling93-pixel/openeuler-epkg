@@ -180,6 +180,8 @@ pub fn classify_file_type(final_path: &Path, file_size: Option<u64>) -> FileType
     if path_str.contains("/Release")                || // DEB, Release[.gpg]
        path_str.contains("/InRelease")              || // DEB
        path_str.contains("/repomd.xml")             || // RPM, repomd.xml[.asc]
+       path_str.contains("/formula.jws.json")       || // Homebrew Formula
+       path_str.contains("/formula.json")           || // Homebrew Formula
        path_str.ends_with(".db.tar.gz")             || // Archlinux, (core|extra|..).db.tar.gz
        path_str.ends_with(".files.tar.gz")          || // Archlinux, (core|extra|..).files.tar.gz, superset of .db.tar.gz
        path_str.contains("/APKINDEX")               || // Alpine, APKINDEX.tar.gz[.sig]
