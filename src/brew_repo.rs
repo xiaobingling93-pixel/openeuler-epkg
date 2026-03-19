@@ -48,6 +48,10 @@ pub struct BrewFormula {
     pub bottle: Option<BrewBottle>,
     #[serde(default)]
     pub variations: HashMap<String, BrewVariation>,
+    #[serde(default)]
+    pub post_install_defined: bool,
+    #[serde(default)]
+    pub service: Option<BrewService>,
 }
 
 /// Variation for specific platform/OS version
@@ -88,6 +92,50 @@ pub struct BrewBottleFile {
     pub cellar: String,
     pub url: String,
     pub sha256: String,
+}
+
+/// Service definition from brew formula
+/// Reference: Homebrew/Library/Homebrew/service.rb to_hash method
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BrewService {
+    #[serde(default)]
+    pub name: Option<BrewServiceName>,
+    #[serde(default)]
+    pub run: Option<serde_json::Value>,  // Can be string, array, or {macos:, linux:} hash
+    #[serde(default, rename = "run_type")]
+    pub run_type: Option<String>,
+    #[serde(default)]
+    pub interval: Option<u64>,
+    #[serde(default)]
+    pub cron: Option<String>,
+    #[serde(default, rename = "keep_alive")]
+    pub keep_alive: Option<serde_json::Value>,
+    #[serde(default, rename = "launch_only_once")]
+    pub launch_only_once: Option<bool>,
+    #[serde(default, rename = "require_root")]
+    pub require_root: Option<bool>,
+    #[serde(default, rename = "environment_variables")]
+    pub environment_variables: Option<HashMap<String, String>>,
+    #[serde(default, rename = "working_dir")]
+    pub working_dir: Option<String>,
+    #[serde(default, rename = "root_dir")]
+    pub root_dir: Option<String>,
+    #[serde(default, rename = "log_path")]
+    pub log_path: Option<String>,
+    #[serde(default, rename = "error_log_path")]
+    pub error_log_path: Option<String>,
+    #[serde(default, rename = "restart_delay")]
+    pub restart_delay: Option<u64>,
+    #[serde(default)]
+    pub sockets: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BrewServiceName {
+    #[serde(default)]
+    pub macos: Option<String>,
+    #[serde(default)]
+    pub linux: Option<String>,
 }
 
 impl BrewFormula {
