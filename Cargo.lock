@@ -542,6 +542,7 @@ dependencies = [
  "virtio-bindings",
  "vm-fdt",
  "vm-memory",
+ "windows",
 ]
 
 [[package]]
@@ -669,6 +670,7 @@ dependencies = [
  "lazy_static",
  "libc",
  "libkrun",
+ "libloading",
  "liblzma",
  "log",
  "md-5",
@@ -704,6 +706,7 @@ dependencies = [
  "uuid",
  "versions",
  "walkdir",
+ "windows",
  "zip",
  "zstd",
 ]
@@ -1174,7 +1177,7 @@ checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
 
 [[package]]
 name = "libkrun"
-version = "1.17.0"
+version = "1.17.5"
 dependencies = [
  "crossbeam-channel",
  "devices",
@@ -2550,6 +2553,7 @@ dependencies = [
  "log",
  "nix 0.30.1",
  "vmm-sys-util",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

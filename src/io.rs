@@ -631,16 +631,23 @@ fn get_pending_packages_path() -> Result<PathBuf> {
 /// Save pending packages (packages being installed in the current transaction)
 /// This allows dpkg-query to see packages that are being installed but not yet saved
 /// to installed-packages.json
-#[cfg(unix)]
 pub fn save_pending_packages(packages: &InstalledPackagesMap) -> Result<()> {
-    if packages.is_empty() {
-        return Ok(());
+    #[cfg(unix)]
+    {
+        if packages.is_empty() {
+            return Ok(());
+        }
+        let file_path = get_pending_packages_path()?;
+        let entries = installed_packages_to_array(packages);
+        let json = serde_json::to_string_pretty(&entries)?;
+        lfs::write(&file_path, json)?;
+        log::debug!("Saved {} pending packages to {}", entries.len(), file_path.display());
     }
-    let file_path = get_pending_packages_path()?;
-    let entries = installed_packages_to_array(packages);
-    let json = serde_json::to_string_pretty(&entries)?;
-    lfs::write(&file_path, json)?;
-    log::debug!("Saved {} pending packages to {}", entries.len(), file_path.display());
+    #[cfg(not(unix))]
+    {
+        // No-op on non-Unix systems (pending packages are Unix-specific for dpkg-query)
+        let _ = packages;
+    }
     Ok(())
 }
 
@@ -657,12 +664,18 @@ pub fn load_pending_packages() -> Result<HashMap<String, InstalledPackageInfo>> 
 }
 
 /// Remove the pending-packages.json file after installation completes
-#[cfg(unix)]
 pub fn remove_pending_packages() -> Result<()> {
-    let file_path = get_pending_packages_path()?;
-    if lfs::exists_on_host(&file_path) {
-        lfs::remove_file(&file_path)?;
-        log::debug!("Removed pending packages file: {}", file_path.display());
+    #[cfg(unix)]
+    {
+        let file_path = get_pending_packages_path()?;
+        if lfs::exists_on_host(&file_path) {
+            lfs::remove_file(&file_path)?;
+            log::debug!("Removed pending packages file: {}", file_path.display());
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // No-op on non-Unix systems (pending packages are Unix-specific for dpkg-query)
     }
     Ok(())
 }

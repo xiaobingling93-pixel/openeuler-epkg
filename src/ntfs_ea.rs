@@ -26,7 +26,7 @@ pub const LX_EA_DEV:   &str = "$LXDEV";
 pub fn get_file_ea(path: &Path, name: &str) -> Option<Vec<u8>> {
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::Storage::FileSystem::{
         CreateFileW, FILE_FLAG_BACKUP_SEMANTICS,
         FILE_GENERIC_READ, FILE_READ_EA, FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -38,17 +38,13 @@ pub fn get_file_ea(path: &Path, name: &str) -> Option<Vec<u8>> {
     unsafe {
         let handle = CreateFileW(
             windows::core::PCWSTR(path_wide.as_ptr()),
-            FILE_GENERIC_READ.0 | FILE_READ_EA,
+            (FILE_GENERIC_READ | FILE_READ_EA).0,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             Some(ptr::null_mut()),
             OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS,
-            HANDLE::default(),
-        );
-
-        if handle.is_invalid() {
-            return None;
-        }
+            None,
+        ).ok()?;
 
         let result = read_ea_via_ntdll(handle, name);
         let _ = CloseHandle(handle);
@@ -123,7 +119,7 @@ unsafe fn read_ea_via_ntdll(handle: windows::Win32::Foundation::HANDLE, name: &s
 pub fn set_file_ea(path: &Path, name: &str, value: &[u8]) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::Storage::FileSystem::{
         CreateFileW, FILE_FLAG_BACKUP_SEMANTICS,
         FILE_GENERIC_WRITE, FILE_WRITE_EA, FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -135,17 +131,13 @@ pub fn set_file_ea(path: &Path, name: &str, value: &[u8]) -> io::Result<()> {
     unsafe {
         let handle = CreateFileW(
             windows::core::PCWSTR(path_wide.as_ptr()),
-            FILE_GENERIC_WRITE.0 | FILE_WRITE_EA,
+            (FILE_GENERIC_WRITE | FILE_WRITE_EA).0,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             Some(ptr::null_mut()),
             OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS,
-            HANDLE::default(),
-        );
-
-        if handle.is_invalid() {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Failed to open file for EA write"));
-        }
+            None,
+        ).map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, format!("Failed to open file for EA write: {}", e)))?;
 
         let result = write_ea_via_ntdll(handle, name, value);
         let _ = CloseHandle(handle);
@@ -264,4 +256,144 @@ pub fn set_file_mode(path: &Path, mode: u32) -> io::Result<()> {
 /// Helper function to write device ID to EA
 pub fn set_file_dev(path: &Path, dev: u32) -> io::Result<()> {
     set_file_ea(path, LX_EA_DEV, &dev.to_le_bytes())
+}
+
+// ============================================================================
+// Optimized POSIX metadata setting with trivial case skipping
+// ============================================================================
+
+/// Common/trivial permissions that don't need NTFS EA storage
+///
+/// Most package files have these standard permissions:
+/// - Directories: 755 (rwxr-xr-x)
+/// - Files: 644 (rw-r--r--)
+/// - Owned by root (uid=0, gid=0) or current user
+///
+/// For these cases, we skip setting NTFS EA entirely to avoid the overhead
+/// of Windows API calls (CreateFileW, NtSetEaFile, etc.)
+pub const TRIVIAL_DIR_MODE: u32 = 0o755;
+pub const TRIVIAL_FILE_MODE: u32 = 0o644;
+pub const TRIVIAL_UID: u32 = 0;  // root
+pub const TRIVIAL_GID: u32 = 0;  // root
+
+/// Check if file mode is "trivial" (common default that doesn't need EA storage)
+///
+/// Returns true if the mode matches standard package defaults:
+/// - Directories: 755 (rwxr-xr-x)
+/// - Files: 644 (rw-r--r--)
+///
+/// Special permissions (setuid, setgid, sticky, exec) make it non-trivial.
+pub fn is_trivial_mode(mode: u32, is_dir: bool) -> bool {
+    // Extract permission bits (lower 12 bits: mode type + permissions)
+    // Permission bits are lower 9 bits (rwxrwxrwx)
+    let perm_bits = mode & 0o777;
+
+    if is_dir {
+        // Directory is trivial if it's 755
+        perm_bits == TRIVIAL_DIR_MODE
+    } else {
+        // File is trivial if it's 644
+        // Also consider 444 (readonly) as trivial since Windows handles it
+        perm_bits == TRIVIAL_FILE_MODE || perm_bits == 0o444
+    }
+}
+
+/// Check if ownership is "trivial" (root or current user)
+///
+/// Returns true if uid/gid are either:
+/// - Both 0 (root ownership)
+/// - Match the current user's uid/gid (when installed by non-root user)
+pub fn is_trivial_ownership(uid: u32, gid: u32) -> bool {
+    // Root ownership is always trivial
+    if uid == TRIVIAL_UID && gid == TRIVIAL_GID {
+        return true;
+    }
+
+    // On Windows, there's no real uid/gid concept, so any ownership
+    // that matches the current process is trivial
+    // (In WSL context, this would need to check actual uid/gid)
+    #[cfg(target_os = "windows")]
+    {
+        // Windows doesn't have uid/gid in the POSIX sense
+        // Any single-owner scenario is trivial
+        true
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        // On Unix, we could check against current user, but for now
+        // only root is considered trivial
+        false
+    }
+}
+
+/// Set POSIX metadata (uid, gid, mode) on a file with optimization.
+///
+/// This function skips setting NTFS EA when the metadata is "trivial":
+/// - Standard permissions (755 for dirs, 644 for files)
+/// - Root ownership (uid=0, gid=0)
+///
+/// This optimization avoids the significant overhead of Windows EA API calls
+/// for the vast majority of package files.
+///
+/// # Arguments
+/// * `path` - Path to the file or directory
+/// * `uid` - User owner ID (0 for root)
+/// * `gid` - Group owner ID (0 for root)
+/// * `mode` - File mode (permissions + type bits)
+/// * `is_dir` - Whether this is a directory
+///
+/// # Returns
+/// Ok(()) on success (including when skipped due to trivial metadata)
+pub fn set_posix_metadata(
+    path: &Path,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    is_dir: bool,
+) -> io::Result<()> {
+    // Check if we can skip EA setting due to trivial metadata
+    if is_trivial_mode(mode, is_dir) && is_trivial_ownership(uid, gid) {
+        log::trace!(
+            "Skipping NTFS EA for trivial metadata: {} (mode={:o}, uid={}, gid={})",
+            path.display(),
+            mode,
+            uid,
+            gid
+        );
+        return Ok(());
+    }
+
+    // Non-trivial metadata: store all attributes
+    // We store all three even if only one is non-trivial, for consistency
+    log::debug!(
+        "Setting NTFS EA for non-trivial metadata: {} (mode={:o}, uid={}, gid={})",
+        path.display(),
+        mode,
+        uid,
+        gid
+    );
+
+    // Only actually write EA on Windows
+    #[cfg(target_os = "windows")]
+    {
+        set_file_uid(path, uid)?;
+        set_file_gid(path, gid)?;
+        set_file_mode(path, mode)?;
+    }
+
+    // On non-Windows, this is a no-op (permissions handled by OS)
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (path, uid, gid, mode);
+    }
+
+    Ok(())
+}
+
+/// Set POSIX mode (permissions) on a file with trivial-mode optimization.
+///
+/// Convenience function when only mode needs to be set (uid/gid assumed trivial).
+pub fn set_posix_mode(path: &Path, mode: u32, is_dir: bool) -> io::Result<()> {
+    set_posix_metadata(path, TRIVIAL_UID, TRIVIAL_GID, mode, is_dir)
 }

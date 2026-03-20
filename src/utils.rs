@@ -872,8 +872,28 @@ fn ensure_owner_permissions(target_path: &Path, required_mask: u32, file_type: &
 }
 
 #[cfg(not(unix))]
-pub fn fixup_file_permissions_with_mode(_target_path: &Path, _mode: u32, _is_dir: bool) {
-    // No-op on non-Unix systems
+pub fn fixup_file_permissions_with_mode(target_path: &Path, mode: u32, is_dir: bool) {
+    // On Windows, store non-trivial permissions in NTFS EA for POSIX compatibility
+    // This is used when running Linux packages in a VM environment
+
+    // Most package files have trivial permissions (755 dirs, 644 files, root ownership)
+    // The set_posix_mode function will skip NTFS EA for these cases to avoid overhead
+    #[cfg(windows)]
+    {
+        if let Err(e) = crate::ntfs_ea::set_posix_mode(target_path, mode, is_dir) {
+            log::warn!(
+                "Failed to set POSIX mode for {}: {}",
+                target_path.display(),
+                e
+            );
+        }
+    }
+
+    // On non-Windows, non-Unix platforms (e.g., macOS), this is a no-op
+    #[cfg(not(windows))]
+    {
+        let _ = (target_path, mode, is_dir);
+    }
 }
 
 #[cfg(not(unix))]
@@ -1150,7 +1170,6 @@ pub fn copy_scriptlet_file<P: AsRef<Path>>(source: P, target: P) -> Result<()> {
 
 /// Write scriptlet content to a file and make it executable
 /// This is used by rpm_pkg when writing scriptlet content directly (not from files)
-#[cfg(target_os = "linux")]
 pub fn write_scriptlet_content<P: AsRef<Path>>(target: P, content: &[u8]) -> Result<()> {
     let target = target.as_ref();
 

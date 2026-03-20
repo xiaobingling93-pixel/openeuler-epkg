@@ -13,7 +13,6 @@ use crate::package;
 use crate::mmio;
 #[cfg(target_os = "linux")] use crate::aur::is_aur_package;
 use crate::dirs;
-#[cfg(unix)]
 use crate::hooks::{Hook, HookWhen};
 
 /// Package operation flags
@@ -95,9 +94,7 @@ pub enum OperationType {
 pub struct FilesystemInfo {
     pub path: PathBuf,      // Path used to query filesystem info
     pub fsid: u64,          // Filesystem ID from statvfs.f_fsid (0 if statvfs failed)
-    #[cfg(unix)]
     pub free_space: u64,    // Free space in bytes
-    #[cfg(unix)]
     pub free_inodes: u64,   // Free inodes (u64::MAX if unlimited)
 }
 
@@ -152,27 +149,20 @@ pub struct InstallationPlan {
     pub batch: InstallBatch,
 
     // Hook data structures (indexed for efficient lookup)
-    #[cfg(unix)]
     pub hooks_by_when: HashMap<HookWhen, Vec<Arc<Hook>>>,
-    #[cfg(unix)]
     pub hooks_by_pkgkey: HashMap<String, Vec<Arc<Hook>>>,
-    #[cfg(unix)]
     pub hooks_by_name: HashMap<String, Arc<Hook>>,
 
     /// Debian explicit trigger interests (non-file triggers)
     /// - deb_explicit_triggers_by_pkg: pkgkey -> trigger names this package is interested in
     /// - deb_explicit_triggers_by_name: trigger name -> pkgkeys interested in it
-    #[cfg(target_os = "linux")]
     pub deb_explicit_triggers_by_pkg: HashMap<String, Vec<String>>,
-    #[cfg(target_os = "linux")]
     pub deb_explicit_triggers_by_name: HashMap<String, Vec<String>>,
 
     /// Debian activate triggers (triggers that packages activate)
     /// - deb_activate_triggers_by_pkg: pkgkey -> trigger names this package activates
     /// - deb_activate_triggers_by_name: trigger name -> pkgkeys that activate it
-    #[cfg(target_os = "linux")]
     pub deb_activate_triggers_by_pkg: HashMap<String, Vec<String>>,
-    #[cfg(target_os = "linux")]
     pub deb_activate_triggers_by_name: HashMap<String, Vec<String>>,
 
     /// Desktop integration flags tracking which types occurred during expose operations
@@ -236,20 +226,13 @@ impl Default for InstallationPlan {
             store_root: PathBuf::new(),
             package_format: PackageFormat::default(),
             batch: InstallBatch::default(),
-            #[cfg(unix)]
             hooks_by_when: HashMap::new(),
-            #[cfg(unix)]
             hooks_by_pkgkey: HashMap::new(),
-            #[cfg(unix)]
             hooks_by_name: HashMap::new(),
             installed: HashSet::new(),
-            #[cfg(target_os = "linux")]
             deb_explicit_triggers_by_pkg: HashMap::new(),
-            #[cfg(target_os = "linux")]
             deb_explicit_triggers_by_name: HashMap::new(),
-            #[cfg(target_os = "linux")]
             deb_activate_triggers_by_pkg: HashMap::new(),
-            #[cfg(target_os = "linux")]
             deb_activate_triggers_by_name: HashMap::new(),
             #[cfg(target_os = "linux")]
             desktop_integration_occurred: crate::xdesktop::DesktopIntegrationFlags::default(),
@@ -275,7 +258,6 @@ pub fn pkgkey2installed_pkg_info(pkgkey: &str) -> Option<Arc<InstalledPackageInf
 /// Get InstalledPackageInfo for a package key (fallback lookup)
 /// First looks up in plan.new_pkgs, then falls back to PACKAGE_CACHE.installed_packages
 /// Use this only when you don't know which source the package comes from
-#[cfg(unix)]
 pub fn pkgkey2installinfo(plan: &InstallationPlan, pkgkey: &str) -> Option<Arc<InstalledPackageInfo>> {
     // First try plan.new_pkgs (new packages being installed)
     if let Some(info) = plan.new_pkgs.get(pkgkey) {
@@ -287,7 +269,6 @@ pub fn pkgkey2installinfo(plan: &InstallationPlan, pkgkey: &str) -> Option<Arc<I
 
 /// Get pkgline for a package key
 /// Uses pkgkey2installinfo() to find the package info
-#[cfg(unix)]
 pub fn pkgkey2pkgline(plan: &InstallationPlan, pkgkey: &str) -> String {
     pkgkey2installinfo(plan, pkgkey)
         .map(|info| info.pkgline.clone())
@@ -949,7 +930,6 @@ pub fn build_all_pkgs_from_operations(plan: &mut InstallationPlan) {
 /// # Arguments
 /// * `pkgkey` - Package key to remove
 /// * `pkg_info` - Package info containing the depends list
-#[cfg(unix)]
 pub fn remove_package_from_cache(pkgkey: &str, pkg_info: &InstalledPackageInfo) {
     PACKAGE_CACHE.installed_packages.write().unwrap().remove(pkgkey);
     PACKAGE_CACHE.pkgline2installed.write().unwrap().remove(&pkg_info.pkgline);

@@ -15,7 +15,6 @@ use crate::plan::InstallationPlan;
 use crate::models::PACKAGE_CACHE;
 use crate::link::compute_link_type_and_reflink;
 use crate::io::load_world;
-#[cfg(unix)]
 use crate::io::{save_pending_packages, remove_pending_packages};
 use crate::io::{save_installed_packages, save_world};
 use crate::repo::sync_channel_metadata;
@@ -26,7 +25,6 @@ use crate::plan::prompt_and_confirm_install_plan;
 #[allow(unused_imports)]
 use crate::{risks, deb_triggers};
 use crate::history::{create_new_generation_with_root, update_current_generation_symlink_with_root, record_history};
-#[cfg(unix)]
 use crate::transaction::run_transaction_batch;
 #[cfg(target_os = "linux")]
 use crate::aur::is_aur_package;

@@ -102,6 +102,12 @@ remove_dir_all = "1.0"
 liblzma = { version = "0.4", features = ["parallel", "static"], default-features = false }
 # For NTFS Extended Attributes (POSIX permissions support via ntdll.dll)
 libloading = "0.8"
+# Windows API bindings for NTFS EA operations
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_Security",
+] }
 
 # Optional but recommended for better progress bars
 [dependencies.console]

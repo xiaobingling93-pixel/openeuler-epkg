@@ -1,12 +1,8 @@
-#[cfg(unix)]
 use std::fs;
-#[cfg(unix)]
 use std::path::PathBuf;
 use std::collections::HashMap;
 use color_eyre::Result;
-#[cfg(unix)]
 use color_eyre::eyre;
-#[cfg(unix)]
 use crate::lfs;
 use crate::plan::InstallationPlan;
 use crate::models::PACKAGE_CACHE;
@@ -23,7 +19,6 @@ use crate::io::{load_installed_packages, load_world};
 /// * `pkgline` - Package line (relative path in store)
 /// * `store_root` - Root of the package store
 /// * `env_root` - Root of the environment
-#[cfg(unix)]
 pub fn unlink_package(
     pkgkey: &str,
     pkgline: &str,

@@ -76,7 +76,6 @@ pub fn pkgkey2version(pkgkey: &str) -> Result<String> {
     parse_pkgkey_parts(pkgkey).map(|(_, version, _)| version.to_string())
 }
 
-#[cfg(target_os = "linux")]
 pub fn pkgkey2arch(pkgkey: &str) -> Result<String> {
     parse_pkgkey_parts(pkgkey).map(|(_, _, arch)| arch.to_string())
 }

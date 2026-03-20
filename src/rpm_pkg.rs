@@ -1,5 +1,5 @@
 use crate::rpm_repo::PACKAGE_KEY_MAPPING;
-#[cfg(debug_assertions)]
+#[cfg(all(target_os = "linux", debug_assertions))]
 use crate::rpm_verify;
 use crate::rpm_triggers::{extract_rpm_triggers, extract_install_prefixes};
 use crate::utils;
@@ -28,8 +28,8 @@ pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P, pkgkey: Opt
     extract_rpm_files(&package, &target_fs_dir)?;
 
     // ---- Verification Step ----
-    // Only run verification in debug builds when rpm_verify module is compiled
-    #[cfg(debug_assertions)]
+    // Only run verification in debug builds on Linux when rpm_verify module is compiled
+    #[cfg(all(target_os = "linux", debug_assertions))]
     {
         if let Err(e) = rpm_verify::verify_rpm_extraction(rpm_file, &target_fs_dir) {
             log::warn!("RPM extraction verification check failed for {}: {}. Continuing with epkg's version.", rpm_file.display(), e);

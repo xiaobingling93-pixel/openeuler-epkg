@@ -47,24 +47,16 @@ mod index_html;
 // Windows-specific: NTFS Extended Attributes for POSIX metadata
 #[cfg(windows)]
 mod ntfs_ea;
-// Linux-only package formats
-#[cfg(target_os = "linux")]
+// Linux package formats - now cross-platform for VM execution
 mod deb_repo;
-#[cfg(target_os = "linux")]
 mod deb_pkg;
-#[cfg(target_os = "linux")]
 mod deb_sources;
-#[cfg(target_os = "linux")]
 mod rpm_repo;
-#[cfg(target_os = "linux")]
 mod rpm_pkg;
-#[cfg(target_os = "linux")]
 mod rpm_sources;
-#[cfg(target_os = "linux")]
 mod apk_repo;
-#[cfg(target_os = "linux")]
 mod apk_pkg;
-// Cross-platform package formats (Conda)
+// Cross-platform package formats (Conda, Arch)
 mod arch_repo;
 mod arch_pkg;
 #[cfg(target_os = "linux")]
@@ -85,21 +77,16 @@ mod epkg;
 mod parse_version;
 mod plan;
 mod version_compare;
-// Cross-platform: scriptlets needed for Conda/Homebrew/msys2
+// Cross-platform: scriptlets and hooks needed for all package formats
 mod scriptlets;
-#[cfg(unix)]
 mod hooks;
 #[cfg(unix)]
 mod userdb;
-#[cfg(target_os = "linux")]
 mod deb_triggers;
-#[cfg(target_os = "linux")]
 mod dpkg_db;
-#[cfg(target_os = "linux")]
 mod rpm_triggers;
 #[cfg(target_os = "linux")]
 mod lua;
-#[cfg(unix)]
 mod risks;
 mod run;
 #[cfg(target_os = "linux")]
@@ -118,11 +105,9 @@ mod busybox;
 mod info;
 mod list;
 mod search;
-#[cfg(unix)]
 mod gc;
 #[cfg(unix)]
 mod service;
-#[cfg(target_os = "linux")]
 mod tool_wrapper;
 
 #[cfg(debug_assertions)]
