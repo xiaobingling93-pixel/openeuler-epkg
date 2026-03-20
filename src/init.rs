@@ -485,17 +485,6 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     Ok(())
 }
 
-#[cfg(windows)]
-fn setup_common_binaries_windows(env_root: &Path) -> Result<()> {
-    let current_exe = std::env::current_exe()
-        .context("Failed to get current executable path")?;
-    let usr_bin = crate::dirs::path_join(env_root, &["usr", "bin"]);
-    lfs::create_dir_all(&usr_bin)?;
-    let target_epkg = usr_bin.join(EPKG_BIN_NAME);
-    copy_epkg_binary_atomically(&current_exe, &target_epkg, true)?;
-    Ok(())
-}
-
 /// Safely copy a binary using atomic operations to avoid conflicts with running processes
 fn copy_epkg_binary_atomically(source: &Path, target: &Path, is_epkg: bool) -> Result<()> {
     // Check if we're trying to copy the epkg binary to itself or to a location that would conflict
@@ -840,6 +829,7 @@ impl AssetDownloadPlan {
         mirror::Mirrors::remote_url_to_path(&self.sha_url(), epkg_download_dir, "epkg")
     }
 
+    #[cfg(feature = "libkrun")]
     fn file_name(&self) -> Result<String> {
         Ok(self.path
             .file_name()
@@ -849,6 +839,7 @@ impl AssetDownloadPlan {
     }
 
     /// Derive `config-*` URL from the `vmlinux-<ver>-<arch>.zst` URL.
+    #[cfg(feature = "libkrun")]
     fn vmlinux_config_url(&self) -> Result<String> {
         let file_name = self.file_name()?;
         if !file_name.starts_with("vmlinux-") || !file_name.ends_with(".zst") {
@@ -874,6 +865,7 @@ impl AssetDownloadPlan {
         Ok(config_url)
     }
 
+    #[cfg(feature = "libkrun")]
     fn vmlinux_config_path(&self, epkg_download_dir: &std::path::Path) -> Result<std::path::PathBuf> {
         let config_url = self.vmlinux_config_url()?;
         mirror::Mirrors::remote_url_to_path(&config_url, epkg_download_dir, "epkg")
@@ -891,7 +883,9 @@ struct InitPlan {
     // Self-update assets (epkg + optional elf-loader + optional vmlinux)
     epkg_binary: Option<AssetDownloadPlan>,
     elf_loader: Option<AssetDownloadPlan>,
+    #[cfg(feature = "libkrun")]
     vmlinux: Option<AssetDownloadPlan>,
+    #[cfg(feature = "libkrun")]
     vmlinux_version: Option<String>,
     // Flags
     need_download_epkg_src: bool,
@@ -1216,7 +1210,6 @@ fn resolve_assets_for_os(
     os: &str,
     is_linux: bool,
     using_local_repo: bool,
-    has_local_elf_loader: bool,
 ) -> Result<ResolvedAssets> {
     let local_dev_mode = is_linux && using_local_repo;
 
@@ -1346,7 +1339,6 @@ fn check_for_updates() -> Result<InitPlan> {
         os,
         is_linux,
         using_local_repo,
-        has_local_elf_loader,
     )?;
 
     // Always show version information
@@ -1377,7 +1369,10 @@ fn check_for_updates() -> Result<InitPlan> {
     let need_download_elf_loader = is_linux && !has_local_elf_loader;
 
     // Optional addon (libkrun).
+    #[cfg(feature = "libkrun")]
     let (vmlinux_plan, vmlinux_version) = resolve_vmlinux_plan(epkg_download_dir)?;
+    #[cfg(not(feature = "libkrun"))]
+    let _ = resolve_vmlinux_plan(epkg_download_dir)?;
 
     let epkg_binary_plan: Option<AssetDownloadPlan> = if need_download_epkg_binary {
         Some(AssetDownloadPlan {
@@ -1410,7 +1405,9 @@ fn check_for_updates() -> Result<InitPlan> {
         epkg_src_path,
         epkg_binary: epkg_binary_plan,
         elf_loader: elf_loader_plan,
+        #[cfg(feature = "libkrun")]
         vmlinux: vmlinux_plan,
+        #[cfg(feature = "libkrun")]
         vmlinux_version,
         need_download_epkg_src,
         need_download_elf_loader,

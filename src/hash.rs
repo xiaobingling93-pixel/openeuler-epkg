@@ -1,10 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::io::Read;
-#[cfg(unix)]
-use std::os::unix::fs::FileTypeExt;
-#[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
 use base32;
 use walkdir::WalkDir;
 use sha2;

@@ -1,4 +1,4 @@
-#[cfg(any(target_os = "linux", feature = "libkrun"))]
+#[cfg(unix)]
 use std::env;
 #[cfg(target_os = "linux")]
 use std::fs;
@@ -21,6 +21,7 @@ use crate::utils::is_suid;
 use color_eyre::eyre;
 use color_eyre::Result;
 use log::debug;
+#[cfg(unix)]
 use log::trace;
 #[cfg(target_os = "linux")]
 use log::{info, warn};

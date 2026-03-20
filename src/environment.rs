@@ -1295,16 +1295,20 @@ pub fn find_command_in_registered_envs(cmd_name: &str) -> Result<Option<(String,
     // Common binary directories to check in each environment
     let bin_dirs = ["usr/bin", "bin", "usr/local/bin", "usr/sbin", "sbin"];
 
-    let mut command_candidates = vec![cmd_name.to_string()];
     #[cfg(windows)]
-    {
+    let command_candidates = {
         let has_extension = Path::new(cmd_name).extension().is_some();
+        let mut candidates = vec![cmd_name.to_string()];
         if !has_extension {
-            command_candidates.push(format!("{}.exe", cmd_name));
-            command_candidates.push(format!("{}.bat", cmd_name));
-            command_candidates.push(format!("{}.cmd", cmd_name));
+            candidates.push(format!("{}.exe", cmd_name));
+            candidates.push(format!("{}.bat", cmd_name));
+            candidates.push(format!("{}.cmd", cmd_name));
         }
-    }
+        candidates
+    };
+
+    #[cfg(not(windows))]
+    let command_candidates = vec![cmd_name.to_string()];
 
     for config in configs {
         match get_env_root(config.name.clone()) {
