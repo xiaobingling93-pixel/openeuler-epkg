@@ -310,8 +310,13 @@ pub fn compute_link_type_and_reflink(
     // can_hardlink: hardlinks only work on the same filesystem
     let can_hardlink = same_fs;
 
+    // Check symlink capability on Windows
+    // Windows users need Admin or Developer Mode to create symlinks
+    let can_create_symlinks = lfs::can_create_symlinks();
+
     // can_symlink: symlinks work across filesystems, but not if link type is Move
-    let can_symlink = link_type != LinkType::Move;
+    // On Windows, also check if user has symlink creation permission
+    let can_symlink = link_type != LinkType::Move && can_create_symlinks;
 
     // Check reflink support only once when needed
     let should_check_reflink = plan.package_format == PackageFormat::Conda
@@ -348,6 +353,14 @@ pub fn compute_link_type_and_reflink(
             ));
         }
         // Same filesystem, rename() will work
+    } else if link_type == LinkType::Symlink && !can_create_symlinks {
+        // On Windows without symlink permission, downgrade to hardlink if same filesystem
+        if same_fs {
+            log::info!("Windows symlink creation not available; using hardlinks instead");
+            link_type = LinkType::Hardlink;
+        }
+        // If different filesystems, keep symlink type - the lfs::symlink() function
+        // will handle the fallback (junction for dirs, hardlink/copy for files)
     }
 
     plan.link = link_type;

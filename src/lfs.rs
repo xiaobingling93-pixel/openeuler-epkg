@@ -269,6 +269,60 @@ pub fn remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
         .wrap_err_with(|| format!("Failed to remove directory {}", path.display()))
 }
 
+/// Check if the current Windows user has permission to create symbolic links.
+///
+/// On Windows, creating symlinks requires either:
+/// - Administrator privileges, OR
+/// - Developer Mode enabled (Windows 10+)
+///
+/// This function tests symlink creation capability by attempting to create
+/// a temporary symlink. The result is cached for the process lifetime.
+#[cfg(windows)]
+pub fn can_create_symlinks() -> bool {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static CAN_SYMLINK: AtomicBool = AtomicBool::new(false);
+    static CHECKED: AtomicBool = AtomicBool::new(false);
+
+    if CHECKED.load(Ordering::Relaxed) {
+        return CAN_SYMLINK.load(Ordering::Relaxed);
+    }
+
+    // Test symlink creation in temp directory
+    let result = std::env::temp_dir();
+    let test_file = result.join("epkg_symlink_test_file");
+    let test_link = result.join("epkg_symlink_test_link");
+
+    // Create a test file
+    let can_create = (|| {
+        let _ = std::fs::File::create(&test_file).ok()?;
+        let result = std::os::windows::fs::symlink_file(&test_file, &test_link).is_ok();
+        // Clean up
+        let _ = std::fs::remove_file(&test_file);
+        let _ = std::fs::remove_file(&test_link);
+        Some(result)
+    })();
+
+    let can_create = can_create.unwrap_or(false);
+
+    CAN_SYMLINK.store(can_create, Ordering::Relaxed);
+    CHECKED.store(true, Ordering::Relaxed);
+
+    if can_create {
+        log::debug!("Windows symlink creation is available");
+    } else {
+        log::info!("Windows symlink creation is NOT available (requires Admin or Developer Mode); will use hardlinks/junctions");
+    }
+
+    can_create
+}
+
+/// On Unix systems, symlinks are always available.
+#[cfg(unix)]
+pub fn can_create_symlinks() -> bool {
+    true
+}
+
 /// Create a directory and all its parent directories if they are missing.
 pub fn create_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
     let path = path.as_ref();
