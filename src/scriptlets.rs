@@ -1,20 +1,12 @@
-#[cfg(target_os = "linux")]
 use crate::deb_triggers::setup_deb_env_vars;
-#[cfg(unix)]
 use crate::models::{InstalledPackageInfo, PackageFormat};
-#[cfg(unix)]
 use crate::package;
-#[cfg(unix)]
 use crate::plan::InstallationPlan;
-#[cfg(target_os = "linux")]
 use crate::rpm_triggers::setup_rpm_env_vars;
-#[cfg(unix)]
 use crate::lfs;
-#[cfg(unix)]
 use color_eyre::eyre::{eyre, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg(unix)]
 pub enum ScriptletType {
     PreInstall,
     PostInstall,
@@ -29,7 +21,6 @@ pub enum ScriptletType {
     PostUnTrans,   // %postuntrans - after uninstall transaction completes
 }
 
-#[cfg(unix)]
 impl ScriptletType {
     /// Get the script filenames for this scriptlet type
     fn get_script_names(&self, package_format: PackageFormat) -> Vec<String> {
@@ -326,7 +317,6 @@ impl ScriptletType {
 /// - APK_PACKAGE: Package name (package scripts only)
 /// - APK_SCRIPT: Set to one of the package script types
 /// Reference: apk_ipkg_run_script() and apk_script_types[] in /c/package-managers/apk-tools/src/package.c
-#[cfg(target_os = "linux")]
 pub fn setup_apk_env_vars(
     env_vars: &mut std::collections::HashMap<String, String>,
     pkgkey: &str,
@@ -365,7 +355,6 @@ pub fn setup_apk_env_vars(
 /// - PKG_VERSION: The version of the package (without build string)
 /// - PKG_BUILDNUM: The build number of the package
 /// Reference: conda/core/link.py and rattler/src/install/link_script.rs
-#[cfg(unix)]
 pub fn setup_conda_env_vars(
     env_vars: &mut std::collections::HashMap<String, String>,
     pkgkey: &str,
@@ -419,7 +408,6 @@ pub fn setup_conda_env_vars(
 
 /// Get interpreters to try for a given script file extension
 /// For .lua files, use external lua interpreter rpmlua
-#[cfg(unix)]
 pub fn get_interpreters_for_script(script_name: &str) -> Vec<&'static str> {
     if script_name.ends_with(".sh") {
         vec!["bash", "sh"]
@@ -439,7 +427,6 @@ pub fn get_interpreters_for_script(script_name: &str) -> Vec<&'static str> {
 /// Iterates over plan.ordered_operations and runs transaction scriptlets for suitable packages
 /// based on scriptlet_type, with per-package is_upgrade determination.
 /// Only handles transaction scriptlets: PreTrans, PostTrans, PreUnTrans, PostUnTrans
-#[cfg(unix)]
 pub fn run_trans_scriptlets(
     plan: &InstallationPlan,
     scriptlet_type: ScriptletType,
@@ -482,7 +469,6 @@ pub fn run_trans_scriptlets(
 }
 
 /// Run a single scriptlet for one package
-#[cfg(unix)]
 pub fn run_scriptlet(
     plan: &InstallationPlan,
     scriptlet_type: ScriptletType,
@@ -661,7 +647,6 @@ pub fn run_scriptlet(
 }
 
 /// Check if a scriptlet error should be ignored to allow installation to continue
-#[cfg(unix)]
 fn should_ignore_scriptlet_error(error_msg: &str, scriptlet_type: ScriptletType) -> bool {
     // Known patterns of recoverable errors
     let recoverable_patterns = [

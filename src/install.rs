@@ -339,10 +339,6 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
         crate::risks::validate_before_linking(plan)
             .with_context(|| "Risk check failed - aborting before any linking to keep environment clean")?;
     }
-    #[cfg(not(unix))]
-    {
-        // Risk checking not supported on this platform
-    }
 
     // Step 2b: Link all packages (after risk checks pass)
     link_packages(plan)?;
@@ -352,93 +348,40 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
     // Note: setup_tool_wrappers is now called in run_transaction_batch after build_batch_file_union
 
     // Build trigger indices used by hooks/trigger mapping.
-    #[cfg(target_os = "linux")]
-    {
-        crate::deb_triggers::load_initial_deb_triggers(plan)?;
-    }
+    crate::deb_triggers::load_initial_deb_triggers(plan)?;
 
     // Load initial hooks (from installed packages and etc/pacman.d/hooks/)
-    #[cfg(unix)]
-    {
-        crate::hooks::load_initial_hooks(plan)?;
-    }
-    #[cfg(not(unix))]
-    {
-        // Hooks not supported on this platform
-    }
+    crate::hooks::load_initial_hooks(plan)?;
 
     // Step 3: Process upgrades and fresh installations
     // Set is_first flag for the first batch
     plan.batch.is_first = true;
-    #[cfg(unix)]
-    {
-        // Save pending packages so dpkg-query can see packages being installed
-        save_pending_packages(&plan.new_pkgs)?;
 
-        // Generate dpkg database for Debian/Ubuntu environments before running scriptlets
-        // This allows maintainer scripts to query packages being installed
-        #[cfg(target_os = "linux")]
-        if plan.package_format == crate::models::PackageFormat::Deb {
-            // First generate status for already installed packages
-            if let Err(e) = crate::dpkg_db::generate_dpkg_status() {
-                log::warn!("Failed to generate initial dpkg status: {}", e);
-            }
-            // Then add pending packages to the dpkg status
-            if let Err(e) = crate::dpkg_db::append_pending_to_dpkg_status(&plan.new_pkgs) {
-                log::warn!("Failed to append pending packages to dpkg status: {}", e);
-            }
+    // Save pending packages so dpkg-query can see packages being installed
+    save_pending_packages(&plan.new_pkgs)?;
+
+    // Generate dpkg database for Debian/Ubuntu environments before running scriptlets
+    // This allows maintainer scripts to query packages being installed
+    #[cfg(target_os = "linux")]
+    if plan.package_format == crate::models::PackageFormat::Deb {
+        // First generate status for already installed packages
+        if let Err(e) = crate::dpkg_db::generate_dpkg_status() {
+            log::warn!("Failed to generate initial dpkg status: {}", e);
         }
-
-        run_transaction_batch(plan)?;
-
-        // Clean up pending packages after transaction completes
-        remove_pending_packages()?;
-    }
-    #[cfg(not(unix))]
-    {
-        use crate::models::PackageFormat;
-        use std::path::PathBuf;
-
-        // Check if this is a Linux-format package that requires VM execution
-        let is_linux_format = matches!(plan.package_format,
-            PackageFormat::Deb | PackageFormat::Rpm | PackageFormat::Apk |
-            PackageFormat::Pacman // Note: Pacman includes MSYS2 which is native
-        );
-        let is_arch_linux = plan.package_format == PackageFormat::Pacman &&
-            crate::models::channel_config().distro != "msys2";
-
-        if is_linux_format || is_arch_linux {
-            // For Linux-format packages on non-Unix hosts, run transaction batch
-            // which will execute scriptlets via VM (libkrun).
-            // The prepare_run_options_for_command() auto-enables IsolateMode::Vm.
-            log::info!("Running transaction batch with VM isolation for Linux packages");
-            run_transaction_batch(plan)?;
-            remove_pending_packages()?;
-        } else {
-            // For native formats (conda/brew/msys2), update cache directly
-            // without running scriptlets (transaction batch handles this on Unix)
-            for (pkgkey, pkg_info) in &plan.new_pkgs {
-                PACKAGE_CACHE.installed_packages.write().unwrap().insert(pkgkey.clone(), Arc::clone(pkg_info));
-                PACKAGE_CACHE.pkgline2installed.write().unwrap().insert(pkg_info.pkgline.clone(), Arc::clone(pkg_info));
-            }
-            // Expose packages (normally done by run_transaction_batch)
-            let pkgs_to_expose: Vec<(String, PathBuf)> = plan.ordered_operations.iter()
-                .filter(|op| op.should_expose())
-                .filter_map(|op| op.new_pkgkey.as_ref())
-                .filter(|pkgkey| plan.batch.new_pkgkeys.contains(*pkgkey))
-                .filter_map(|pkgkey| {
-                    crate::plan::pkgkey2new_pkg_info(plan, pkgkey).map(|info| {
-                        (pkgkey.clone(), plan.store_root.join(&info.pkgline).join("fs"))
-                    })
-                })
-                .collect();
-            for (pkgkey, store_fs_dir) in pkgs_to_expose {
-                if let Err(e) = crate::expose::expose_package(plan, &store_fs_dir, &pkgkey) {
-                    log::warn!("Failed to expose package {}: {}", pkgkey, e);
-                }
-            }
+        // Then add pending packages to the dpkg status
+        if let Err(e) = crate::dpkg_db::append_pending_to_dpkg_status(&plan.new_pkgs) {
+            log::warn!("Failed to append pending packages to dpkg status: {}", e);
         }
     }
+
+    // Run transaction batch for all platforms.
+    // On Windows/macOS with Linux-format packages, scriptlets run via VM (libkrun).
+    // On Windows/macOS with native formats (conda/brew/msys2), skip_namespace_isolation
+    // is set, allowing direct execution.
+    run_transaction_batch(plan)?;
+
+    // Clean up pending packages after transaction completes
+    remove_pending_packages()?;
 
     // Step 4: Build and install AUR packages (build with makepkg)
     #[cfg(target_os = "linux")]
