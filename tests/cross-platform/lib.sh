@@ -55,7 +55,7 @@ test_lang_ruby() {
 }
 
 test_lang_nodejs() {
-    run_install nodejs node || return 1
+    run_install nodejs || return 1
     run node --version || return 1
     run node -e "console.log('Hello from Node.js')" || return 1
     return 0
@@ -198,9 +198,9 @@ test_suite_langs() {
         if [ "$CHANNEL_NAME" = "brew" ]; then
             run_install node
         elif [ "$CHANNEL_NAME" = "msys2" ]; then
-            run_install mingw-w64-x86_64-nodejs node
+            run_install mingw-w64-x86_64-nodejs
         else
-            run_install nodejs node
+            run_install nodejs
         fi
         run node -e "console.log('Hello from Node.js')"
     fi
