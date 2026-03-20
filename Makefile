@@ -83,10 +83,17 @@ clone-repos:
 
 # Build release binaries for all architectures (sequentially to avoid Cargo lock conflicts)
 release-all:
+	mkdir -p "$(OUTPUT_DIR)"
 	$(MAKE) release-x86_64
 	$(MAKE) release-aarch64
 	$(MAKE) release-riscv64
 	$(MAKE) release-loongarch64
+	# Cross build macOS (asset names: epkg-macos-<arch>)
+	$(MAKE) cross-macos ARCH=x86_64
+	$(MAKE) cross-macos ARCH=aarch64
+	# Cross build Windows (asset names: epkg-windows-<arch>.exe)
+	$(MAKE) cross-windows ARCH=x86_64
+	$(MAKE) cross-windows ARCH=aarch64
 
 # Build release binary for a specific architecture
 # Note: libkrun auto-enabled for supported platforms (see make.sh)
@@ -115,11 +122,11 @@ $(eval $(call build_lua_lib,loongarch64))
 
 # Cross-compilation to macOS (default aarch64)
 cross-macos:
-	@$(PROJECT_ROOT)/bin/make.sh cross-macos
+	@$(PROJECT_ROOT)/bin/make.sh cross-macos $(ARCH)
 
 # Cross-compilation to Windows (default x86_64)
 cross-windows:
-	@$(PROJECT_ROOT)/bin/make.sh cross-windows
+	@$(PROJECT_ROOT)/bin/make.sh cross-windows $(ARCH)
 
 # Run tests (module-level unit tests)
 test:

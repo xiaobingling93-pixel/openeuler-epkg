@@ -75,12 +75,81 @@ print_error() {
 
 check_architecture() {
     case "$ARCH" in
-        x86_64|aarch64|riscv64|loongarch64)
-            ;;
+        x86_64|aarch64|riscv64|loongarch64) : ;;
         *)
             print_error "Unsupported architecture: $ARCH"
             ;;
     esac
+}
+
+detect_os_family() {
+    local uname_s
+    uname_s=$(uname -s 2>/dev/null || echo "unknown")
+    case "$uname_s" in
+        Linux)
+            echo "linux"
+            ;;
+        Darwin)
+            echo "macos"
+            ;;
+        CYGWIN*|MINGW*|MSYS*)
+            echo "windows"
+            ;;
+        *)
+            print_error "Unsupported OS: $uname_s"
+            ;;
+    esac
+}
+
+normalize_arch() {
+    # Normalize uname -m outputs into release naming arch set.
+    case "$ARCH" in
+        amd64) ARCH="x86_64" ;;
+        arm64) ARCH="aarch64" ;;
+        *) ;;
+    esac
+}
+
+download_epkg_asset() {
+    local asset_name="$1"
+    local latest_version="$2"
+
+    local binary_url="https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}/releases/download/${latest_version}/${asset_name}"
+    local sha_url="${binary_url}.sha256"
+    local sha_file="${asset_name}.sha256"
+
+    echo
+    echo "Downloading ${sha_file} ..."
+    rm -f "./${sha_file}" "./${asset_name}" 2>/dev/null || true
+    curl -L -# -o "./${sha_file}" "${sha_url}" --connect-timeout 15 --max-time 30 || return 1
+
+    # Validate checksum file
+    if [ ! -s "./${sha_file}" ]; then
+        return 1
+    fi
+
+    # Check if file contains HTML (error page) - look for common HTML tags
+    if grep -q -i '<html\|<!DOCTYPE\|<body' "./${sha_file}" 2>/dev/null; then
+        return 1
+    fi
+
+    # Check if file contains JSON error response (common API error format)
+    if grep -q '{' "./${sha_file}" 2>/dev/null; then
+        return 1
+    fi
+
+    # Validate SHA256 checksum file format
+    if ! grep -q -E '^[0-9a-f]{64}[ *]' "./${sha_file}" 2>/dev/null; then
+        return 1
+    fi
+
+    echo "Downloading ${asset_name} ..."
+    curl -L -# -o "./${asset_name}" "${binary_url}" --retry 5 --connect-timeout 15 --max-time 300 || return 1
+    chmod +x "./${asset_name}" || true
+
+    command -v sha256sum >/dev/null || return 0
+    sha256sum -c "./${sha_file}" || return 1
+    return 0
 }
 
 setup_environment() {
@@ -147,64 +216,64 @@ download_files() {
     latest_version=$(fetch_show_latest_release) || exit 1
 
     # Construct download URLs based on latest release
-    # Format: https://gitee.com/openeuler/epkg/releases/download/{tag_name}/epkg-{arch}
-    local EPKG_BINARY_URL="https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}/releases/download/${latest_version}/${EPKG_STATIC}-${ARCH}"
-    local EPKG_SHA_URL="${EPKG_BINARY_URL}.sha256"
+    # Assets:
+    # - Linux:   epkg-linux-<arch>
+    # - macOS:   epkg-macos-<arch>
+    # - Windows: epkg-windows-<arch>.exe
+    local OS_FAMILY
+    OS_FAMILY=$(detect_os_family)
+
+    local ASSET_NAME
+    case "$OS_FAMILY" in
+        linux)
+            ASSET_NAME="${EPKG_STATIC}-linux-${ARCH}"
+            ;;
+        macos)
+            case "$ARCH" in
+                x86_64|aarch64) ;;
+                *) print_error "Unsupported architecture for macOS: $ARCH" ;;
+            esac
+            ASSET_NAME="${EPKG_STATIC}-macos-${ARCH}"
+            ;;
+        windows)
+            case "$ARCH" in
+                x86_64|aarch64) ;;
+                *) print_error "Unsupported architecture for Windows: $ARCH" ;;
+            esac
+            ASSET_NAME="${EPKG_STATIC}-windows-${ARCH}.exe"
+            ;;
+        *)
+            print_error "Unsupported OS family: $OS_FAMILY"
+            ;;
+    esac
 
     cd "$EPKG_CACHE" || exit
 
     echo
     print_info "Latest release: $latest_version"
-    print_info "Source URL: $EPKG_BINARY_URL"
     print_info "Destination: $EPKG_CACHE"
 
-    echo
-    echo "Downloading $EPKG_STATIC-$ARCH.sha256 ..."
-    curl -L -# -o "$EPKG_STATIC-$ARCH.sha256" "$EPKG_SHA_URL" --connect-timeout 15 --max-time 30 || print_error "Failed to download checksum file from $EPKG_SHA_URL"
+    local LEGACY_ASSET_NAME=""
+    case "$OS_FAMILY" in
+        linux)
+            LEGACY_ASSET_NAME="${EPKG_STATIC}-${ARCH}"
+            ;;
+    esac
 
-    # Validate checksum file
-    if [ ! -s "$EPKG_STATIC-$ARCH.sha256" ]; then
-        print_error "Checksum file '$EPKG_STATIC-$ARCH.sha256' is empty or not found"
+    if download_epkg_asset "$ASSET_NAME" "$latest_version"; then
+        EPKG_PATH="./${ASSET_NAME}"
+        return 0
     fi
 
-    # Check if file contains HTML (error page) - look for common HTML tags
-    if grep -q -i '<html\|<!DOCTYPE\|<body' "$EPKG_STATIC-$ARCH.sha256" 2>/dev/null; then
-        print_error "Checksum file appears to be an HTML error page. URL '$EPKG_SHA_URL' may be incorrect."
+    if [ -n "$LEGACY_ASSET_NAME" ]; then
+        print_info "New linux asset not found, falling back to legacy: $LEGACY_ASSET_NAME"
+        if download_epkg_asset "$LEGACY_ASSET_NAME" "$latest_version"; then
+            EPKG_PATH="./${LEGACY_ASSET_NAME}"
+            return 0
+        fi
     fi
 
-    # Check if file contains JSON error response (common API error format)
-    if grep -q '{' "$EPKG_STATIC-$ARCH.sha256" 2>/dev/null; then
-        echo "ERROR: Checksum file appears to be a JSON error response." >&2
-        echo "File: $EPKG_STATIC-$ARCH.sha256" >&2
-        echo "URL: $EPKG_SHA_URL" >&2
-        echo "First line of the file:" >&2
-        head -n 1 "$EPKG_STATIC-$ARCH.sha256" 2>/dev/null >&2
-        echo >&2
-        echo "URL may be incorrect or API error." >&2
-        exit 1
-    fi
-
-    # Validate SHA256 checksum file format
-    if ! grep -q -E '^[0-9a-f]{64}[ *]' "$EPKG_STATIC-$ARCH.sha256" 2>/dev/null; then
-        echo "ERROR: Checksum file '$EPKG_STATIC-$ARCH.sha256' does not contain a valid SHA256 checksum line." >&2
-        echo "URL: $EPKG_SHA_URL" >&2
-        echo "First 200 characters of the file:" >&2
-        head -c 200 "$EPKG_STATIC-$ARCH.sha256" 2>/dev/null | cat >&2
-        echo >&2
-        print_error "Invalid checksum file format. Please check the download URL: $EPKG_SHA_URL"
-    fi
-
-    echo "Downloading $EPKG_STATIC-$ARCH ..."
-    curl -L -# -o "$EPKG_STATIC-$ARCH" "$EPKG_BINARY_URL" --retry 5 --connect-timeout 15 --max-time 300 || print_error "Failed to download binary from $EPKG_BINARY_URL"
-    chmod +x "./$EPKG_STATIC-$ARCH"
-    EPKG_PATH=./$EPKG_STATIC-$ARCH
-
-    command -v sha256sum >/dev/null || return
-    if ! sha256sum -c "$EPKG_STATIC-$ARCH.sha256"; then
-        echo "ERROR: Checksum verification failed for binary '$EPKG_STATIC-$ARCH' with checksum file '$EPKG_STATIC-$ARCH.sha256'." >&2
-        echo "The downloaded binary may be corrupted or the checksum file is invalid." >&2
-        exit 1
-    fi
+    print_error "Failed to download epkg binary for ${OS_FAMILY}/${ARCH} (${ASSET_NAME}${LEGACY_ASSET_NAME:+, ${LEGACY_ASSET_NAME}})"
 }
 
 initialize_epkg() {
@@ -263,6 +332,7 @@ check_duplicate_install()
 main() {
     check_duplicate_install
     parse_args "$@"
+    normalize_arch
     check_architecture
     setup_environment
     download_files

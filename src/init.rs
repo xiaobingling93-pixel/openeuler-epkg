@@ -6,47 +6,42 @@ use std::fs;
 use std::fs::OpenOptions;
 #[cfg(unix)]
 use std::io::Write as IoWrite;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-#[cfg(unix)]
 use color_eyre::eyre::{self, WrapErr};
-#[cfg(not(unix))]
-use color_eyre::eyre::WrapErr;
 use color_eyre::Result;
 #[cfg(unix)]
 use nix::unistd::{fork, ForkResult};
-#[cfg(unix)]
 use serde::{Deserialize, Serialize};
 
 #[cfg(unix)]
 use crate::deinit::remove_epkg_from_rc_file;
 #[cfg(unix)]
-use crate::dirs::{find_env_base, find_env_root, get_env_root};
+use crate::dirs::{find_env_base, get_env_root};
 #[cfg(not(unix))]
 use crate::dirs::find_env_base;
-#[cfg(unix)]
 use crate::download::download_urls;
-#[cfg(unix)]
 use crate::mirror;
 use crate::models::*;
 use crate::models::dirs;
-#[cfg(unix)]
 use crate::utils;
 use crate::environment::{create_environment, register_environment_for};
 use crate::lfs;
 #[cfg(target_os = "linux")]
 use crate::apparmor;
 
-#[cfg(unix)]
 const GITEE_API_BASE:   &str = &"https://gitee.com/api/v5";
-#[cfg(unix)]
 const GITEE_OWNER:      &str = &"wu_fengguang";
-#[cfg(unix)]
 const REPO_EPKG:        &str = &"epkg";
-#[cfg(target_os = "linux")]
 const REPO_ELF_LOADER:  &str = &"elf-loader";
 #[cfg(feature = "libkrun")]
 const REPO_VMLINUX:     &str = &"sandbox-kernel";
+
+// Installed epkg binary name inside `.../usr/bin/`.
+#[cfg(windows)]
+const EPKG_BIN_NAME: &str = "epkg.exe";
+#[cfg(not(windows))]
+const EPKG_BIN_NAME: &str = "epkg";
 
 fn print_banner() {
     println!(r#"         ____  _  ______   "#);
@@ -148,46 +143,24 @@ pub fn upgrade_epkg() -> Result<()> {
         return Ok(());
     }
 
-    // Unix: check for updates and download
-    #[cfg(unix)]
-    {
-        // Check for available updates and get initialization plan
-        match check_for_updates() {
-            Ok(init_plan) => {
-                // Check if upgrade is needed
-                #[cfg(target_os = "linux")]
-                let need_upgrade = init_plan.new.epkg_version != init_plan.current.epkg_version ||
-                    init_plan.new.elf_loader_version != init_plan.current.elf_loader_version;
-                #[cfg(not(target_os = "linux"))]
-                let need_upgrade = init_plan.new.epkg_version != init_plan.current.epkg_version;
-                if need_upgrade {
-                    println!("Upgrading epkg installation...");
-                    download_setup_files(&init_plan)?;
-                } else {
-                    println!("epkg is already up to date.");
-                }
-            }
-            Err(e) => {
-                eprintln!("Warning: Failed to check for updates: {}", e);
-                return Ok(());
+    // Check for available updates and get initialization plan
+    match check_for_updates() {
+        Ok(init_plan) => {
+            // Check if upgrade is needed (platform-neutral: elf_loader_version is `None` off-Linux).
+            let need_upgrade = init_plan.new.epkg_version != init_plan.current.epkg_version
+                || init_plan.new.elf_loader_version != init_plan.current.elf_loader_version;
+
+            if need_upgrade {
+                println!("Upgrading epkg installation...");
+                download_setup_files(&init_plan)?;
+            } else {
+                println!("epkg is already up to date.");
             }
         }
-    }
-
-    // Windows: just copy the current binary for now
-    #[cfg(windows)]
-    {
-        let self_env_root = dirs().user_envs.join(SELF_ENV);
-        let usr_bin = crate::dirs::path_join(&self_env_root, &["usr", "bin"]);
-
-        let current_exe = std::env::current_exe()
-            .wrap_err("Failed to get current executable path")?;
-        let target_epkg = usr_bin.join("epkg.exe");
-
-        println!("Upgrading epkg binary...");
-        lfs::copy(&current_exe, &target_epkg)?;
-
-        println!("Upgrade complete!");
+        Err(e) => {
+            eprintln!("Warning: Failed to check for updates: {}", e);
+            return Ok(());
+        }
     }
 
     Ok(())
@@ -211,11 +184,8 @@ pub fn install_epkg() -> Result<()> {
     pre_populate_country_cache();
 
     // Download and setup package manager files
-    #[cfg(unix)]
-    {
-        let init_plan = check_for_updates()?;
-        download_setup_files(&init_plan)?;
-    }
+    let init_plan = check_for_updates()?;
+    download_setup_files(&init_plan)?;
 
     // Create self environment
     create_environment(SELF_ENV)?;
@@ -236,23 +206,55 @@ pub fn install_epkg() -> Result<()> {
             log::warn!("Failed to setup tool config symlinks: {}", e);
         });
 
-    // On Windows, setup binaries using current_exe (no download for now)
-    #[cfg(windows)]
-    {
-        let self_env_root = dirs().user_envs.join(SELF_ENV);
-        setup_common_binaries_windows(&self_env_root)?;
-    }
-
     println!("Installation complete!");
 
     Ok(())
 }
 
-// Unix-specific functions for downloading and setting up package manager files
-#[cfg(unix)]
+#[allow(dead_code)]
+fn download_and_install_epkg_binary_from_release(
+    release: &GiteeRelease,
+    binary_asset_name: &str,
+    target_epkg: &Path,
+) -> Result<()> {
+    // Assets are paired as:
+    // - `${binary_asset_name}`
+    // - `${binary_asset_name}.sha256`
+    let sha_asset_name = format!("{}.sha256", binary_asset_name);
+
+    let epkg_binary_url = release.find_asset_url(binary_asset_name)?;
+    let epkg_binary_sha_url = release.find_asset_url(&sha_asset_name)?;
+
+    let epkg_download_dir = &dirs().epkg_downloads_cache;
+
+    let epkg_binary_path =
+        mirror::Mirrors::remote_url_to_path(&epkg_binary_url, epkg_download_dir, "epkg")?;
+    let epkg_binary_sha_path =
+        mirror::Mirrors::remote_url_to_path(&epkg_binary_sha_url, epkg_download_dir, "epkg")?;
+
+    // Delete sha file first: HTTP timestamps may be missing and we want fresh checksum content.
+    if epkg_binary_sha_path.exists() {
+        lfs::remove_file(&epkg_binary_sha_path)?;
+    }
+
+    let download_results =
+        download_urls(vec![epkg_binary_url.clone(), epkg_binary_sha_url.clone()]);
+    for result in download_results {
+        result.with_context(|| "Failed to download epkg binary for upgrade")?;
+    }
+
+    utils::verify_sha256sum(&epkg_binary_sha_path)
+        .context("Failed to verify epkg binary checksum")?;
+
+    copy_epkg_binary_atomically(&epkg_binary_path, target_epkg, true)?;
+    Ok(())
+}
+
 fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
     // Collect urls for downloading in parallel
     let mut urls = Vec::new();
+    let dirs = dirs();
+    let epkg_download_dir = &dirs.epkg_downloads_cache;
 
     // Handle epkg source code (local repo or download)
     if init_plan.need_download_epkg_src {
@@ -260,46 +262,48 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
         urls.push(init_plan.epkg_src_url.clone());
     }
 
-    // Download epkg binary if upgrading
-    if init_plan.need_download_epkg_binary {
-        println!("Downloading epkg binary from {}", init_plan.epkg_binary_url);
-        urls.extend(vec![
-            init_plan.epkg_binary_url.clone(),
-            init_plan.epkg_binary_sha_url.clone()
-        ]);
+    // Download epkg binary only when version differs.
+    if let Some(ref epkg_plan) = init_plan.epkg_binary {
+        println!("Downloading epkg binary from {}", epkg_plan.url);
+        let sha_url = epkg_plan.sha_url();
+        urls.extend(vec![epkg_plan.url.clone(), sha_url]);
     }
 
-    // Check for local elf-loader (Linux only)
-    #[cfg(target_os = "linux")]
-    {
-        if let Some(ref local_loader) = init_plan.local_elf_loader_path {
-            // Ensure parent directory exists before copying
-            if let Some(parent) = init_plan.elf_loader_path.parent() {
-                lfs::create_dir_all(parent)?;
-            }
-            lfs::copy(local_loader, &init_plan.elf_loader_path)?;
-            println!("Using local elf-loader from {}", local_loader.display());
-        } else if init_plan.need_download_elf_loader {
-            println!("Downloading elf-loader from {}", init_plan.elf_loader_url);
-            urls.extend(vec![
-                init_plan.elf_loader_url.clone(),
-                init_plan.elf_loader_sha_url.clone()
-            ]);
+    // Check for local elf-loader override (Linux only in practice, but represented as runtime optional).
+    if let Some(ref local_loader) = init_plan.local_elf_loader_path {
+        let elf_loader_path = init_plan
+            .elf_loader
+            .as_ref()
+            .ok_or_else(|| eyre::eyre!("Missing remote elf-loader plan while local_elf_loader_path exists"))?
+            .path
+            .clone();
+
+        // Ensure parent directory exists before copying
+        if let Some(parent) = elf_loader_path.parent() {
+            lfs::create_dir_all(parent)?;
+        }
+        lfs::copy(local_loader, &elf_loader_path)?;
+        println!("Using local elf-loader from {}", local_loader.display());
+    } else if init_plan.need_download_elf_loader {
+        if let Some(ref elf_plan) = init_plan.elf_loader {
+            println!("Downloading elf-loader from {}", elf_plan.url);
+            let sha_url = elf_plan.sha_url();
+            urls.extend(vec![elf_plan.url.clone(), sha_url]);
         }
     }
 
     // Download vmlinux if built with libkrun feature
     #[cfg(feature = "libkrun")]
     {
-        if let Some(ref vmlinux_url) = init_plan.vmlinux_url {
-            println!("Downloading vmlinux from {}", vmlinux_url);
+        if let Some(ref vmlinux_plan) = init_plan.vmlinux {
+            println!("Downloading vmlinux from {}", vmlinux_plan.url);
+            let sha_url = vmlinux_plan.sha_url();
+            let config_url = vmlinux_plan.vmlinux_config_url()?;
             urls.extend(vec![
-                vmlinux_url.clone(),
-                init_plan.vmlinux_sha_url.clone().unwrap_or_default(),
+                vmlinux_plan.url.clone(),
+                sha_url,
             ]);
-            if let Some(ref config_url) = init_plan.vmlinux_config_url {
-                urls.push(config_url.clone());
-            }
+            urls.push(config_url);
         }
     }
 
@@ -310,14 +314,20 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
     // Delete .sha256 files first: gitee.com HTTP headers have no file timestamp,
     // so download.rs would think "File unchanged" based on file size matching.
     #[allow(unused_mut)]
-    let mut sha256_files_to_delete: Vec<std::path::PathBuf> = vec![
-        init_plan.epkg_binary_sha_path.clone(),
-    ];
-    #[cfg(target_os = "linux")]
-    sha256_files_to_delete.push(init_plan.elf_loader_sha_path.clone());
+    let mut sha256_files_to_delete: Vec<std::path::PathBuf> = if let Some(ref epkg_plan) = init_plan.epkg_binary {
+        vec![epkg_plan.sha_path(epkg_download_dir)?]
+    } else {
+        Vec::new()
+    };
+
+    if init_plan.local_elf_loader_path.is_none() && init_plan.need_download_elf_loader {
+        if let Some(ref elf_plan) = init_plan.elf_loader {
+            sha256_files_to_delete.push(elf_plan.sha_path(epkg_download_dir)?);
+        }
+    }
     #[cfg(feature = "libkrun")]
-    if let Some(ref sha_path) = init_plan.vmlinux_path {
-        sha256_files_to_delete.push(sha_path.with_extension("zst.sha256"));
+    if let Some(ref vmlinux_plan) = init_plan.vmlinux {
+        sha256_files_to_delete.push(vmlinux_plan.sha_path(epkg_download_dir)?);
     }
     for sha256_path in &sha256_files_to_delete {
         if sha256_path.exists() {
@@ -333,16 +343,17 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
     }
 
     // Verify checksums
-    #[cfg(target_os = "linux")]
-    {
-        if init_plan.local_elf_loader_path.is_none() && init_plan.need_download_elf_loader {
-            utils::verify_sha256sum(&init_plan.elf_loader_sha_path)
+    if init_plan.local_elf_loader_path.is_none() && init_plan.need_download_elf_loader {
+        if let Some(ref elf_plan) = init_plan.elf_loader {
+            let elf_sha_path = elf_plan.sha_path(epkg_download_dir)?;
+            utils::verify_sha256sum(&elf_sha_path)
                 .context("Failed to verify elf-loader checksum")?;
         }
     }
 
-    if init_plan.need_download_epkg_binary {
-        utils::verify_sha256sum(&init_plan.epkg_binary_sha_path)
+    if let Some(ref epkg_plan) = init_plan.epkg_binary {
+        let epkg_sha_path = epkg_plan.sha_path(epkg_download_dir)?;
+        utils::verify_sha256sum(&epkg_sha_path)
             .context("Failed to verify epkg binary checksum")?;
     }
 
@@ -353,10 +364,16 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
     // Install vmlinux if downloaded
     #[cfg(feature = "libkrun")]
     {
-        if let (Some(ref vmlinux_path), Some(ref version)) = (&init_plan.vmlinux_path, &init_plan.vmlinux_version) {
-            if vmlinux_path.exists() {
+        if let (Some(ref vmlinux_plan), Some(ref version)) = (&init_plan.vmlinux, &init_plan.vmlinux_version) {
+            if vmlinux_plan.path.exists() {
                 let arch = &config().common.arch;
-                install_vmlinux(vmlinux_path, init_plan.vmlinux_config_path.as_deref(), version, arch)?;
+                let cfg_path = vmlinux_plan.vmlinux_config_path(epkg_download_dir)?;
+                install_vmlinux(
+                    &vmlinux_plan.path,
+                    Some(&cfg_path),
+                    version,
+                    arch,
+                )?;
             }
         }
     }
@@ -364,7 +381,6 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
 fn download_setup_files(init_plan: &InitPlan) -> Result<()> {
     let self_env_root = dirs().user_envs.join(SELF_ENV);
 
@@ -377,7 +393,6 @@ fn download_setup_files(init_plan: &InitPlan) -> Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
 fn setup_epkg_src(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     let usr_src = crate::dirs::path_join(env_root, &["usr", "src"]);
     let epkg_src = usr_src.join("epkg");
@@ -426,28 +441,24 @@ fn setup_epkg_src(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
 fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     let usr_bin = crate::dirs::path_join(env_root, &["usr", "bin"]);
 
     lfs::create_dir_all(&usr_bin)?;
 
-    #[cfg(windows)]
-    let target_epkg = usr_bin.join("epkg.exe");
-    #[cfg(not(windows))]
-    let target_epkg = usr_bin.join("epkg");
+    let target_epkg = usr_bin.join(EPKG_BIN_NAME);
 
-    // Determine epkg binary source based on whether we're upgrading or installing
-    let epkg_source = if config().subcommand == EpkgCommand::SelfUpgrade {
-        // Use downloaded epkg binary for upgrades
-        if !init_plan.epkg_binary_path.exists() {
-            return Err(eyre::eyre!("Downloaded epkg binary not found at {}", init_plan.epkg_binary_path.display()));
+    // Use downloaded epkg binary only when a version differs and we decided to download it.
+    let epkg_source = if let Some(ref epkg_plan) = init_plan.epkg_binary {
+        if !epkg_plan.path.exists() {
+            return Err(eyre::eyre!(
+                "Downloaded epkg binary not found at {}",
+                epkg_plan.path.display()
+            ));
         }
-        init_plan.epkg_binary_path.clone()
+        epkg_plan.path.clone()
     } else {
-        // Use current executable for normal installs
-        std::env::current_exe()
-            .context("Failed to get current executable path")?
+        std::env::current_exe().context("Failed to get current executable path")?
     };
 
     // Copy epkg binary using atomic operation
@@ -457,7 +468,13 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         let elf_loader_target = usr_bin.join("elf-loader");
-        copy_epkg_binary_atomically(&init_plan.elf_loader_path, &elf_loader_target, false)?;
+        let elf_loader_path = init_plan
+            .elf_loader
+            .as_ref()
+            .ok_or_else(|| eyre::eyre!("Missing elf_loader asset plan"))?
+            .path
+            .clone();
+        copy_epkg_binary_atomically(&elf_loader_path, &elf_loader_target, false)?;
     }
 
     // Create symlink to epkg binary in the first valid PATH component (Unix only)
@@ -470,14 +487,12 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
 
 #[cfg(windows)]
 fn setup_common_binaries_windows(env_root: &Path) -> Result<()> {
-    let usr_bin = crate::dirs::path_join(env_root, &["usr", "bin"]);
-    lfs::create_dir_all(&usr_bin)?;
-
-    let target_epkg = usr_bin.join("epkg.exe");
     let current_exe = std::env::current_exe()
         .context("Failed to get current executable path")?;
+    let usr_bin = crate::dirs::path_join(env_root, &["usr", "bin"]);
+    lfs::create_dir_all(&usr_bin)?;
+    let target_epkg = usr_bin.join(EPKG_BIN_NAME);
     copy_epkg_binary_atomically(&current_exe, &target_epkg, true)?;
-
     Ok(())
 }
 
@@ -682,7 +697,6 @@ fn append_epkg_block_to_rc_file(rc_file_path: &str, rc_content: &str) -> Result<
     Ok(())
 }
 
-#[cfg(unix)]
 fn find_repo_root() -> Result<std::path::PathBuf> {
     // Check if running from git repo
     let current_exe = std::env::current_exe()
@@ -720,7 +734,7 @@ fn find_repo_root() -> Result<std::path::PathBuf> {
     // running the installed epkg don't have the repo in their executable path.
     // We need to check both the current user's self env and root's self env.
     let possible_self_envs = vec![
-        find_env_root(SELF_ENV),
+        crate::dirs::find_env_root(SELF_ENV),
         // Also check root's self environment directly
         Some(dirs().opt_epkg.join("envs").join("root").join(SELF_ENV))
             .filter(|p| p.exists()),
@@ -734,7 +748,7 @@ fn find_repo_root() -> Result<std::path::PathBuf> {
                 if lfs::is_symlink(&epkg_src_symlink) {
                     // Follow the symlink to get the actual repo root
                     // Use canonicalize on the symlink itself to handle both absolute and relative paths
-                    if let Ok(canonical_path) = fs::canonicalize(&epkg_src_symlink) {
+                    if let Ok(canonical_path) = std::fs::canonicalize(&epkg_src_symlink) {
                         if is_valid_local_repo(&canonical_path) {
                             return Ok(canonical_path);
                         }
@@ -747,14 +761,12 @@ fn find_repo_root() -> Result<std::path::PathBuf> {
     Ok(repo_root)
 }
 
-#[cfg(unix)]
 fn is_valid_local_repo(repo_root: &std::path::Path) -> bool {
     repo_root.join(".git").exists() &&
     crate::dirs::path_join(repo_root, &["assets", "shell", "epkg.sh"]).exists()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg(unix)]
 struct GiteeRelease {
     tag_name: String,
     prerelease: bool,
@@ -764,13 +776,11 @@ struct GiteeRelease {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg(unix)]
 struct GiteeAsset {
     name: String,
     browser_download_url: String,
 }
 
-#[cfg(unix)]
 impl GiteeRelease {
     fn find_asset_url(&self, name: &str) -> Result<String> {
         self.assets.iter()
@@ -788,63 +798,110 @@ impl GiteeRelease {
         let sha_url = self.find_asset_url(&sha_name)?;
         Ok((binary_url, sha_url))
     }
+
+    fn find_asset_urls_for_arch_with_prefixes(
+        &self,
+        prefixes: &[&str],
+        arch: &str,
+    ) -> Result<(String, String)> {
+        let mut last_err: Option<color_eyre::eyre::Report> = None;
+        for prefix in prefixes {
+            match self.find_asset_urls_for_arch(prefix, arch) {
+                Ok(v) => return Ok(v),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| eyre::eyre!("No asset URLs found for arch {}", arch)))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg(unix)]
 struct EpkgVersionInfo {
     epkg_version: String,
-    #[cfg(target_os = "linux")]
-    elf_loader_version: String,
+    // Present only when we can reasonably detect elf-loader version.
+    // On non-Linux platforms we keep this as `None` to avoid large `cfg` forks.
+    elf_loader_version: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-#[cfg(unix)]
+struct AssetDownloadPlan {
+    // Main asset
+    url: String,
+    path: std::path::PathBuf,
+}
+
+impl AssetDownloadPlan {
+    fn sha_url(&self) -> String {
+        format!("{}.sha256", self.url)
+    }
+
+    fn sha_path(&self, epkg_download_dir: &std::path::Path) -> Result<std::path::PathBuf> {
+        // Derive sha local path using the same cache mapping as other downloads.
+        mirror::Mirrors::remote_url_to_path(&self.sha_url(), epkg_download_dir, "epkg")
+    }
+
+    fn file_name(&self) -> Result<String> {
+        Ok(self.path
+            .file_name()
+            .ok_or_else(|| eyre::eyre!("Asset path missing file name: {}", self.path.display()))?
+            .to_string_lossy()
+            .to_string())
+    }
+
+    /// Derive `config-*` URL from the `vmlinux-<ver>-<arch>.zst` URL.
+    fn vmlinux_config_url(&self) -> Result<String> {
+        let file_name = self.file_name()?;
+        if !file_name.starts_with("vmlinux-") || !file_name.ends_with(".zst") {
+            return Err(eyre::eyre!("Unexpected vmlinux asset name: {}", file_name));
+        }
+
+        let inner = file_name
+            .strip_prefix("vmlinux-")
+            .and_then(|s| s.strip_suffix(".zst"))
+            .ok_or_else(|| eyre::eyre!("Failed to parse vmlinux asset name: {}", file_name))?;
+
+        let (version, arch) = inner
+            .rsplit_once('-')
+            .ok_or_else(|| eyre::eyre!("Failed to split vmlinux name: {}", file_name))?;
+
+        let config_asset_name = format!("config-{}-{}", version, arch);
+        let config_url = self
+            .url
+            .strip_suffix(&file_name)
+            .map(|p| format!("{}{}", p, config_asset_name))
+            .ok_or_else(|| eyre::eyre!("Failed to derive vmlinux config url from {}", self.url))?;
+
+        Ok(config_url)
+    }
+
+    fn vmlinux_config_path(&self, epkg_download_dir: &std::path::Path) -> Result<std::path::PathBuf> {
+        let config_url = self.vmlinux_config_url()?;
+        mirror::Mirrors::remote_url_to_path(&config_url, epkg_download_dir, "epkg")
+    }
+}
+
+#[derive(Debug, Clone)]
 struct InitPlan {
     current: EpkgVersionInfo,
     new: EpkgVersionInfo,
     // File paths and URLs
-    epkg_binary_url: String,
-    epkg_binary_sha_url: String,
     epkg_src_url: String,
-    #[cfg(target_os = "linux")]
-    elf_loader_url: String,
-    #[cfg(target_os = "linux")]
-    elf_loader_sha_url: String,
-    // Local file paths
-    epkg_binary_path: std::path::PathBuf,
-    epkg_binary_sha_path: std::path::PathBuf,
     epkg_src_path: std::path::PathBuf,
-    #[cfg(target_os = "linux")]
-    elf_loader_path: std::path::PathBuf,
-    #[cfg(target_os = "linux")]
-    elf_loader_sha_path: std::path::PathBuf,
+
+    // Self-update assets (epkg + optional elf-loader + optional vmlinux)
+    epkg_binary: Option<AssetDownloadPlan>,
+    elf_loader: Option<AssetDownloadPlan>,
+    vmlinux: Option<AssetDownloadPlan>,
+    vmlinux_version: Option<String>,
     // Flags
-    need_download_epkg_binary: bool,
     need_download_epkg_src: bool,
-    #[cfg(target_os = "linux")]
     need_download_elf_loader: bool,
     using_local_repo: bool,
     // Local elf-loader info
-    #[cfg(target_os = "linux")]
     local_elf_loader_path: Option<std::path::PathBuf>,
-    // vmlinux info for libkrun (only used when built with libkrun feature)
-    #[allow(dead_code)]
-    vmlinux_url:        Option<String>,
-    #[allow(dead_code)]
-    vmlinux_sha_url:    Option<String>,
-    #[allow(dead_code)]
-    vmlinux_config_url: Option<String>,
-    #[allow(dead_code)]
-    vmlinux_version:    Option<String>,
-    #[allow(dead_code)]
-    vmlinux_path:       Option<std::path::PathBuf>,
-    #[allow(dead_code)]
-    vmlinux_config_path: Option<std::path::PathBuf>,
 }
 
 /// Fetch the latest release information from Gitee API
-#[cfg(unix)]
 fn fetch_latest_release(owner: &str, repo: &str) -> Result<GiteeRelease> {
     let url = format!("{}/repos/{}/{}/releases/latest", GITEE_API_BASE, owner, repo);
 
@@ -888,7 +945,6 @@ fn fetch_latest_release(owner: &str, repo: &str) -> Result<GiteeRelease> {
 }
 
 /// Parse version from --version output
-#[cfg(unix)]
 fn parse_version_from_output(version_output: &str) -> Option<String> {
     // Look for pattern: "... version $version_tag (build date $build_date, commit $git_hash)"
     let re = regex::Regex::new(r"version\s+([^\s]+)\s+\(").ok()?;
@@ -896,8 +952,51 @@ fn parse_version_from_output(version_output: &str) -> Option<String> {
     Some(captures.get(1)?.as_str().to_string())
 }
 
+/// Fetch a specific release by tag name from Gitee.
+#[allow(dead_code)]
+fn fetch_release_by_tag(owner: &str, repo: &str, tag_name: &str) -> Result<GiteeRelease> {
+    let url = format!(
+        "{}/repos/{}/{}/releases/tags/{}",
+        GITEE_API_BASE, owner, repo, tag_name
+    );
+
+    log::debug!("Request url: {}", url);
+
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(std::time::Duration::from_secs(15)))
+        .timeout_recv_response(Some(std::time::Duration::from_secs(30)))
+        .build()
+        .into();
+
+    let mut response = agent.get(&url).call()
+        .with_context(|| format!("Failed to fetch release by tag from {}", url))?;
+
+    let status = response.status();
+    if status != 200 {
+        let body = response.body_mut().read_to_string().unwrap_or_else(|_| "Failed to read error response body".to_string());
+        return Err(eyre::eyre!(
+            "HTTP {} error when fetching release info from {}: {}",
+            status,
+            url,
+            body
+        ));
+    }
+
+    let body = response.body_mut()
+        .read_to_string()
+        .context("Failed to read response body")?;
+
+    let release: GiteeRelease = serde_json::from_str(&body)
+        .with_context(|| format!(
+            "Failed to parse release information from response body: {}",
+            body
+        ))?;
+
+    Ok(release)
+}
+
 /// Get version from epkg binary
-#[cfg(unix)]
+#[allow(dead_code)]
 fn get_epkg_version() -> Result<String> {
     // If this is the running epkg program, use the build-time version
     if let Ok(current_exe) = std::env::current_exe() {
@@ -928,7 +1027,6 @@ fn get_epkg_version() -> Result<String> {
 }
 
 /// Get version from elf-loader binary
-#[cfg(target_os = "linux")]
 fn get_elf_loader_version(elf_loader_path: &Path) -> Result<String> {
     if !elf_loader_path.exists() {
         return Err(eyre::eyre!("elf-loader binary not found"));
@@ -951,14 +1049,14 @@ fn get_elf_loader_version(elf_loader_path: &Path) -> Result<String> {
 }
 
 /// Get the current installed version information
-#[cfg(unix)]
 fn get_current_epkg_version_info() -> Result<EpkgVersionInfo> {
     let epkg_version = get_epkg_version().unwrap_or_else(|_| env!("EPKG_VERSION_TAG").to_string());
 
-    #[cfg(target_os = "linux")]
-    {
+    // Try to find elf-loader in common locations on Linux.
+    // On non-Linux platforms we keep it as `None`.
+    let elf_loader_version = if std::env::consts::OS == "linux" {
         // Try to find elf-loader in common locations
-        let env_root = find_env_root(SELF_ENV);
+        let env_root = crate::dirs::find_env_root(SELF_ENV);
         let possible_elf_loader_paths = [
             env_root.as_ref().map(|root| crate::dirs::path_join(root, &["usr", "bin", "elf-loader"])).unwrap_or_else(|| PathBuf::new()),
             dirs()
@@ -968,20 +1066,18 @@ fn get_current_epkg_version_info() -> Result<EpkgVersionInfo> {
             PathBuf::from("./elf-loader"),
         ];
 
-        let elf_loader_version = possible_elf_loader_paths
+        possible_elf_loader_paths
             .iter()
             .find_map(|path| get_elf_loader_version(path).ok())
-            .unwrap_or_else(|| "unknown".to_string());
+            .map(Some)
+            .unwrap_or(None)
+    } else {
+        None
+    };
 
-        Ok(EpkgVersionInfo {
-            epkg_version,
-            elf_loader_version,
-        })
-    }
-
-    #[cfg(not(target_os = "linux"))]
     Ok(EpkgVersionInfo {
         epkg_version,
+        elf_loader_version,
     })
 }
 
@@ -1108,14 +1204,118 @@ fn zstd_decompress_file(path: &Path) -> Result<Vec<u8>> {
 }
 
 /// Check for updates and return initialization plan
-#[cfg(unix)]
+struct ResolvedAssets {
+    new_version: EpkgVersionInfo,
+    epkg_binary_url: String,
+    elf_loader_url: Option<String>,
+}
+
+fn resolve_assets_for_os(
+    current_version: &EpkgVersionInfo,
+    arch: &str,
+    os: &str,
+    is_linux: bool,
+    using_local_repo: bool,
+    has_local_elf_loader: bool,
+) -> Result<ResolvedAssets> {
+    let local_dev_mode = is_linux && using_local_repo;
+
+    if local_dev_mode {
+        // Local development mode - keep current versions and resolve asset names
+        // with backward-compatible prefix fallback.
+        let new_version = current_version.clone();
+        let epkg_release = fetch_release_by_tag(GITEE_OWNER, REPO_EPKG, &new_version.epkg_version)?;
+
+        let (epkg_binary_url, _sha_url) =
+            epkg_release.find_asset_urls_for_arch_with_prefixes(&["epkg-linux", "epkg"], arch)?;
+
+        let elf_loader_url = match &new_version.elf_loader_version {
+            Some(elf_loader_tag) => {
+                let elf_loader_release =
+                    fetch_release_by_tag(GITEE_OWNER, REPO_ELF_LOADER, elf_loader_tag)?;
+                let (loader_url, _loader_sha_url) =
+                    elf_loader_release.find_asset_urls_for_arch("elf-loader", arch)?;
+                Some(loader_url)
+            }
+            None => None,
+        };
+
+        return Ok(ResolvedAssets {
+            new_version,
+            epkg_binary_url,
+            elf_loader_url,
+        });
+    }
+
+    // Production mode - fetch releases and resolve URLs from assets.
+    let epkg_release = fetch_latest_release(GITEE_OWNER, REPO_EPKG)?;
+    let epkg_version = epkg_release.tag_name.clone();
+
+    let (elf_loader_version, elf_loader_url) = if is_linux {
+        let elf_loader_release = fetch_latest_release(GITEE_OWNER, REPO_ELF_LOADER)?;
+        let elf_loader_version = Some(elf_loader_release.tag_name.clone());
+        let (loader_url, _loader_sha_url) =
+            elf_loader_release.find_asset_urls_for_arch("elf-loader", arch)?;
+        (elf_loader_version, Some(loader_url))
+    } else {
+        (None, None)
+    };
+
+    let new_version = EpkgVersionInfo {
+        epkg_version,
+        elf_loader_version,
+    };
+
+    let epkg_binary_url = if is_linux {
+        let (bin_url, _sha_url) =
+            epkg_release.find_asset_urls_for_arch_with_prefixes(&["epkg-linux", "epkg"], arch)?;
+        bin_url
+    } else if os == "windows" {
+        let binary_name = format!("epkg-windows-{}.exe", arch);
+        epkg_release.find_asset_url(&binary_name)?
+    } else if os == "macos" {
+        let (bin_url, _sha_url) = epkg_release.find_asset_urls_for_arch("epkg-macos", arch)?;
+        bin_url
+    } else {
+        return Err(eyre::eyre!("Unsupported OS for asset resolution: {}", os));
+    };
+
+    Ok(ResolvedAssets {
+        new_version,
+        epkg_binary_url,
+        elf_loader_url,
+    })
+}
+
+#[cfg(feature = "libkrun")]
+fn resolve_vmlinux_plan(
+    epkg_download_dir: &Path,
+) -> Result<(Option<AssetDownloadPlan>, Option<String>)> {
+    match get_vmlinux_url() {
+        Ok(Some((url, _sha_url, _config_url, version))) => {
+            let path = mirror::Mirrors::remote_url_to_path(&url, epkg_download_dir, "epkg")?;
+            Ok((Some(AssetDownloadPlan { url, path }), Some(version)))
+        }
+        Ok(None) => Ok((None, None)),
+        Err(e) => {
+            log::warn!("Failed to get vmlinux URL: {}", e);
+            Ok((None, None))
+        }
+    }
+}
+
+#[cfg(not(feature = "libkrun"))]
+fn resolve_vmlinux_plan(
+    _epkg_download_dir: &Path,
+) -> Result<(Option<AssetDownloadPlan>, Option<String>)> {
+    Ok((None, None))
+}
+
 fn check_for_updates() -> Result<InitPlan> {
     println!("Checking for updates...");
 
     let current_version = get_current_epkg_version_info()?;
 
-    // Determine if this is an upgrade or fresh install
-    let is_upgrade = config().subcommand == EpkgCommand::SelfUpgrade;
     let arch = &config().common.arch;
     let dirs = dirs();
     // Use the base downloads cache directory (without "epkg" subdirectory)
@@ -1125,119 +1325,101 @@ fn check_for_updates() -> Result<InitPlan> {
     // Check for local repo BEFORE making API calls
     let repo_root = find_repo_root()?;
     let using_local_repo = is_valid_local_repo(&repo_root);
+    // Resolve OS family at runtime to keep asset-resolution logic centralized.
+    let os = std::env::consts::OS;
+    let is_linux = os == "linux";
 
-    #[cfg(target_os = "linux")]
-    let local_elf_loader_path = crate::dirs::path_join(&repo_root, &["git", "elf-loader", "src", "loader"]);
-    #[cfg(target_os = "linux")]
-    let has_local_elf_loader = local_elf_loader_path.exists();
-
-    #[cfg(target_os = "linux")]
-    let (new_version, epkg_binary_url, epkg_binary_sha_url, elf_loader_url, elf_loader_sha_url) = if using_local_repo && has_local_elf_loader {
-        // Local development mode - use current versions and construct placeholder URLs
-        let new_version = current_version.clone();
-        let epkg_binary_url = format!("https://gitee.com/{}/{}/releases/download/{}/epkg-{}", GITEE_OWNER, REPO_EPKG, new_version.epkg_version, arch);
-        let elf_loader_url = format!("https://gitee.com/{}/{}/releases/download/{}/elf-loader-{}", GITEE_OWNER, REPO_ELF_LOADER, new_version.elf_loader_version, arch);
-        let epkg_binary_sha_url = format!("{}.sha256", epkg_binary_url);
-        let elf_loader_sha_url = format!("{}.sha256", elf_loader_url);
-        (new_version, epkg_binary_url, epkg_binary_sha_url, elf_loader_url, elf_loader_sha_url)
+    let local_elf_loader_path = if is_linux {
+        Some(crate::dirs::path_join(&repo_root, &["git", "elf-loader", "src", "loader"]))
     } else {
-        // Production mode - fetch releases and get URLs from assets
-        let epkg_release        = fetch_latest_release(GITEE_OWNER, REPO_EPKG)?;
-        let elf_loader_release  = fetch_latest_release(GITEE_OWNER, REPO_ELF_LOADER)?;
-
-        let new_version = EpkgVersionInfo {
-            epkg_version: epkg_release.tag_name.clone(),
-            elf_loader_version: elf_loader_release.tag_name.clone(),
-        };
-        let (epkg_binary_url, epkg_binary_sha_url) = epkg_release.find_asset_urls_for_arch("epkg", arch)?;
-        let (elf_loader_url, elf_loader_sha_url) = elf_loader_release.find_asset_urls_for_arch("elf-loader", arch)?;
-        (new_version, epkg_binary_url, epkg_binary_sha_url, elf_loader_url, elf_loader_sha_url)
+        None
     };
+    let has_local_elf_loader = local_elf_loader_path.as_ref().map(|p| p.exists()).unwrap_or(false);
 
-    #[cfg(not(target_os = "linux"))]
-    let (new_version, epkg_binary_url, epkg_binary_sha_url) = {
-        let epkg_release = fetch_latest_release(GITEE_OWNER, REPO_EPKG)?;
-        let new_version = EpkgVersionInfo {
-            epkg_version: epkg_release.tag_name.clone(),
-        };
-        let (epkg_binary_url, epkg_binary_sha_url) = epkg_release.find_asset_urls_for_arch("epkg", arch)?;
-        (new_version, epkg_binary_url, epkg_binary_sha_url)
-    };
+    let ResolvedAssets {
+        new_version,
+        epkg_binary_url,
+        elf_loader_url,
+    } = resolve_assets_for_os(
+        &current_version,
+        arch,
+        os,
+        is_linux,
+        using_local_repo,
+        has_local_elf_loader,
+    )?;
 
     // Always show version information
     println!("  epkg: {} → {}", current_version.epkg_version, new_version.epkg_version);
-    #[cfg(target_os = "linux")]
-    println!("  elf-loader: {} → {}", current_version.elf_loader_version, new_version.elf_loader_version);
+    if is_linux {
+        println!(
+            "  elf-loader: {:?} → {:?}",
+            current_version.elf_loader_version, new_version.elf_loader_version
+        );
+    }
 
-    let epkg_src_url = format!("https://gitee.com/{}/{}/repository/archive/{}.tar.gz", GITEE_OWNER, REPO_EPKG, new_version.epkg_version);
+    let epkg_src_url = format!(
+        "https://gitee.com/{}/{}/repository/archive/{}.tar.gz",
+        GITEE_OWNER, REPO_EPKG, new_version.epkg_version
+    );
 
-    // Set up file paths using the same resolution logic as the download system
-    // This ensures paths match where files are actually downloaded
-    let epkg_binary_path      = mirror::Mirrors::remote_url_to_path(&epkg_binary_url,       &epkg_download_dir, "epkg")?;
-    let epkg_binary_sha_path  = mirror::Mirrors::remote_url_to_path(&epkg_binary_sha_url,   &epkg_download_dir, "epkg")?;
-    let epkg_src_path         = mirror::Mirrors::remote_url_to_path(&epkg_src_url,          &epkg_download_dir, "epkg")?;
+    // Set up file paths using the same resolution logic as the download system.
+    // This ensures paths match where files are actually downloaded.
+    let epkg_binary_path =
+        mirror::Mirrors::remote_url_to_path(&epkg_binary_url, &epkg_download_dir, "epkg")?;
+    let epkg_src_path =
+        mirror::Mirrors::remote_url_to_path(&epkg_src_url, &epkg_download_dir, "epkg")?;
 
-    #[cfg(target_os = "linux")]
-    let elf_loader_path       = mirror::Mirrors::remote_url_to_path(&elf_loader_url,        &epkg_download_dir, "epkg")?;
-    #[cfg(target_os = "linux")]
-    let elf_loader_sha_path   = mirror::Mirrors::remote_url_to_path(&elf_loader_sha_url,    &epkg_download_dir, "epkg")?;
-
-    // Determine what needs to be downloaded
-    let need_download_epkg_binary = is_upgrade;
+    // Determine what needs to be downloaded.
+    // epkg binary is downloaded only when the version actually differs.
+    let need_download_epkg_binary = new_version.epkg_version != current_version.epkg_version;
     let need_download_epkg_src = !using_local_repo;
-    #[cfg(target_os = "linux")]
-    let need_download_elf_loader = !has_local_elf_loader;
+    let need_download_elf_loader = is_linux && !has_local_elf_loader;
 
-    // Get vmlinux URL and path if built with libkrun feature
-    #[cfg(feature = "libkrun")]
-    let (vmlinux_url, vmlinux_sha_url, vmlinux_config_url, vmlinux_version, vmlinux_path, vmlinux_config_path) = {
-        match get_vmlinux_url() {
-            Ok(Some((url, sha_url, config_url, version))) => {
-                let path = mirror::Mirrors::remote_url_to_path(&url, &epkg_download_dir, "epkg")?;
-                let config_path = mirror::Mirrors::remote_url_to_path(&config_url, &epkg_download_dir, "epkg")?;
-                (Some(url), Some(sha_url), Some(config_url), Some(version), Some(path), Some(config_path))
-            }
-            Ok(None) => (None, None, None, None, None, None),
-            Err(e) => {
-                log::warn!("Failed to get vmlinux URL: {}", e);
-                (None, None, None, None, None, None)
-            }
-        }
+    // Optional addon (libkrun).
+    let (vmlinux_plan, vmlinux_version) = resolve_vmlinux_plan(epkg_download_dir)?;
+
+    let epkg_binary_plan: Option<AssetDownloadPlan> = if need_download_epkg_binary {
+        Some(AssetDownloadPlan {
+            url: epkg_binary_url.clone(),
+            path: epkg_binary_path,
+        })
+    } else {
+        None
     };
 
-    #[cfg(not(feature = "libkrun"))]
-    let (vmlinux_url, vmlinux_sha_url, vmlinux_config_url, vmlinux_version, vmlinux_path, vmlinux_config_path) = (None, None, None, None, None, None);
+    let elf_loader_plan: Option<AssetDownloadPlan> = if need_download_elf_loader {
+        if let Some(loader_url) = elf_loader_url {
+            let elf_loader_path =
+                mirror::Mirrors::remote_url_to_path(&loader_url, &epkg_download_dir, "epkg")?;
+            Some(AssetDownloadPlan {
+                url: loader_url,
+                path: elf_loader_path,
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     Ok(InitPlan {
         current: current_version,
         new: new_version,
-        epkg_binary_url,
-        epkg_binary_sha_url,
         epkg_src_url,
-        #[cfg(target_os = "linux")]
-        elf_loader_url,
-        #[cfg(target_os = "linux")]
-        elf_loader_sha_url,
-        epkg_binary_path,
-        epkg_binary_sha_path,
         epkg_src_path,
-        #[cfg(target_os = "linux")]
-        elf_loader_path,
-        #[cfg(target_os = "linux")]
-        elf_loader_sha_path,
-        need_download_epkg_binary,
+        epkg_binary: epkg_binary_plan,
+        elf_loader: elf_loader_plan,
+        vmlinux: vmlinux_plan,
+        vmlinux_version,
         need_download_epkg_src,
-        #[cfg(target_os = "linux")]
         need_download_elf_loader,
         using_local_repo,
-        #[cfg(target_os = "linux")]
-        local_elf_loader_path: if has_local_elf_loader { Some(local_elf_loader_path) } else { None },
-        vmlinux_url,
-        vmlinux_sha_url,
-        vmlinux_config_url,
-        vmlinux_version,
-        vmlinux_path,
-        vmlinux_config_path,
+        local_elf_loader_path: if has_local_elf_loader {
+            local_elf_loader_path
+        } else {
+            None
+        },
     })
 }
 

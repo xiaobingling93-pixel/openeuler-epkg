@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::io::{BufRead, BufReader, Read, Write, Seek, SeekFrom};
-#[cfg(unix)]
 use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
@@ -15,7 +14,6 @@ use base64::Engine;
 use sha1::Sha1;
 use sha2::digest::Digest;
 use sha2::Sha256;
-#[cfg(unix)]
 use tar::Archive;
 use flate2::read::GzDecoder;
 use liblzma;
@@ -293,7 +291,6 @@ pub fn normalize_sha1(base64_or_hex: &str) -> Result<String> {
 /// # Returns
 /// * `Ok(())` if the checksum matches
 /// * `Err` if the checksum doesn't match or there are any I/O errors
-#[cfg(unix)]
 pub fn verify_sha256sum(checksum_file: &Path) -> Result<()> {
     let file_path = checksum_file.with_extension("");
 
@@ -314,9 +311,10 @@ pub fn verify_sha256sum(checksum_file: &Path) -> Result<()> {
         .ok_or_else(|| eyre::eyre!("Invalid checksum file format"))?;
 
     // Compute actual checksum
-    let file_path_str = file_path.to_str()
-        .ok_or_else(|| eyre::eyre!("File path contains invalid UTF-8: {}", file_path.display()))?;
-    let actual_checksum = compute_file_sha256(file_path_str)?;
+    // Avoid failing on non-UTF-8 paths (common on Windows); checksum computation
+    // only needs a lossily-rendered OS path.
+    let file_path_str = file_path.to_string_lossy().to_string();
+    let actual_checksum = compute_file_sha256(&file_path_str)?;
 
     // Compare checksums
     if actual_checksum != expected_checksum {
@@ -340,7 +338,6 @@ pub fn verify_sha256sum(checksum_file: &Path) -> Result<()> {
 /// # Returns
 /// * `Ok(())` if extraction succeeds
 /// * `Err` if there are any I/O errors or the archive is invalid
-#[cfg(unix)]
 pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
     // Verify tar file exists and is readable
     if !lfs::exists_on_host(tar_path) {

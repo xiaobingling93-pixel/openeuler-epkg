@@ -21,6 +21,7 @@ use crate::utils::is_suid;
 use color_eyre::eyre;
 use color_eyre::Result;
 use log::debug;
+use log::trace;
 #[cfg(target_os = "linux")]
 use log::{info, warn};
 #[cfg(target_os = "linux")]

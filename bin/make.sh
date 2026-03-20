@@ -113,6 +113,24 @@ safe_cp() {
     }
 }
 
+# Deploy a release binary into $OUTPUT_DIR with a stable platform-aware name.
+# Also generates sha256sum files in OUTPUT_DIR so the sha file line embeds only
+# the filename (not a leading dist/... path).
+deploy_release_binary() {
+    local src="$1"
+    local out_name="$2"
+    local out_path="$OUTPUT_DIR/$out_name"
+
+    mkdir -p "$OUTPUT_DIR"
+    safe_cp "$src" "$out_path"
+
+    pushd "$OUTPUT_DIR" >/dev/null
+    sha256sum "$out_name" > "$out_name.sha256"
+    popd >/dev/null
+
+    echo "Deployed: $PROJECT_ROOT/$OUTPUT_DIR/$out_name"
+}
+
 # Detect OS and version
 detect_os() {
     local uname_s=$(uname -s)
@@ -1057,12 +1075,26 @@ build_static() {
     # Deploy only for release mode
     if [[ "$mode" == "release" ]]; then
         mkdir -p "$OUTPUT_DIR"
+        # Naming must include platform so the same repo can host Linux/macOS/Windows assets.
+        local output_os="linux"
+        local exe_suffix=""
+        if [[ "$is_macos" == "true" ]]; then
+            output_os="macos"
+        fi
+        if [[ "$is_windows" == "true" ]]; then
+            output_os="windows"
+            exe_suffix=".exe"
+        fi
+
         # Copy binary, handling "Text file busy" error
-        safe_cp "target/$rust_target/$build_dir/$BINARY_NAME" "$OUTPUT_DIR/$BINARY_NAME-$arch"
-        echo "Generating checksum for $arch binary..."
+        safe_cp "target/$rust_target/$build_dir/${BINARY_NAME}${exe_suffix}" \
+            "$OUTPUT_DIR/${BINARY_NAME}-${output_os}-${arch}${exe_suffix}"
+
+        echo "Generating checksum for $output_os/$arch binary..."
+        local out_name="${BINARY_NAME}-${output_os}-${arch}${exe_suffix}"
         pushd "$OUTPUT_DIR" >/dev/null
-        sha256sum "$BINARY_NAME-$arch" > "$BINARY_NAME-$arch.sha256"
-        echo "$arch release completed: $PROJECT_ROOT/$OUTPUT_DIR/$BINARY_NAME-$arch"
+        sha256sum "$out_name" > "$out_name.sha256"
+        echo "$output_os/$arch release completed: $PROJECT_ROOT/$OUTPUT_DIR/$out_name"
         popd >/dev/null
     fi
 
@@ -1234,6 +1266,9 @@ cross-macos() {
     cargo build --release --target "$target" --ignore-rust-version "${cargo_feature_args[@]}"
 
     echo "Cross-compilation to macOS completed. Binary is in target/$target/release/$BINARY_NAME"
+
+    # Deploy for release uploads (asset names: epkg-macos-<arch>)
+    deploy_release_binary "target/$target/release/$BINARY_NAME" "epkg-macos-${arch}"
 }
 
 # Cross-compilation to Windows
@@ -1279,6 +1314,9 @@ cross-windows() {
     cargo build --release --target "$target" --ignore-rust-version "${cargo_feature_args[@]}"
 
     echo "Cross-compilation to Windows completed. Binary is in target/$target/release/$BINARY_NAME"
+
+    # Deploy for release uploads (asset names: epkg-windows-<arch>.exe)
+    deploy_release_binary "target/$target/release/${BINARY_NAME}.exe" "epkg-windows-${arch}.exe"
 }
 
 # Run tests (module-level unit tests)
