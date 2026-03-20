@@ -12,7 +12,7 @@ use color_eyre::eyre::{self, Result, WrapErr};
 use crate::dirs::*;
 use crate::models::{self, *};
 use crate::models::PACKAGE_CACHE;
-#[cfg(unix)] use crate::history::get_current_generation_id;
+use crate::history::get_current_generation_id;
 use crate::lfs;
 
 pub const CHANNEL_SEPARATOR: char = '-';
@@ -585,10 +585,7 @@ pub fn load_installed_packages() -> Result<()> {
     if !PACKAGE_CACHE.installed_packages.read().unwrap().is_empty() {
         return Ok(());
     }
-    #[cfg(unix)]
     let generation_id = get_current_generation_id()?;
-    #[cfg(not(unix))]
-    let generation_id = 1u32;
     let packages = read_installed_packages(&config().common.env_name, generation_id)?;
     let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();
     for (k, v) in packages {
@@ -709,10 +706,7 @@ pub fn read_world(env: &str, generation_id: u32) -> Result<HashMap<String, Strin
 }
 
 pub fn load_world() -> Result<()> {
-    #[cfg(unix)]
     let generation_id = get_current_generation_id()?;
-    #[cfg(not(unix))]
-    let generation_id = 1u32;
     let world = read_world(&config().common.env_name, generation_id)?;
     let mut cache_world = PACKAGE_CACHE.world.write().unwrap();
     cache_world.clear();
