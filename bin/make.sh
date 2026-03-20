@@ -1271,16 +1271,18 @@ cross-macos() {
     deploy_release_binary "target/$target/release/$BINARY_NAME" "epkg-macos-${arch}"
 }
 
-# Cross-compilation to Windows
+# Cross-compilation to Windows (x86_64 only)
 # Note: Lua is only needed for Linux RPM scriptlets (disabled for Windows)
 cross-windows() {
     local arch="${1:-x86_64}"
-    local target=""
-    case "$arch" in
-        x86_64) target="$RUST_TARGET_X86_64_WINDOWS" ;;
-        aarch64) target="$RUST_TARGET_AARCH64_WINDOWS" ;;
-        *) echo "Unsupported architecture for Windows: $arch"; exit 1 ;;
-    esac
+
+    if [[ "$arch" != "x86_64" ]]; then
+        echo "Error: Windows cross-compilation only supports x86_64 architecture"
+        echo "       aarch64 is not supported due to missing mingw-w64 libraries"
+        exit 1
+    fi
+
+    local target="$RUST_TARGET_X86_64_WINDOWS"
 
     echo "Building for Windows ($arch)..."
     if has_cmd rustup; then
@@ -1668,7 +1670,7 @@ case $cmd in
         echo ""
         echo "Commands (cross-platform builds - Linux x86_64 host only):"
         echo "  cross-macos [<arch>]                 Cross-compile to macOS (aarch64/x86_64)"
-        echo "  cross-windows [<arch>]               Cross-compile to Windows (x86_64/aarch64)"
+        echo "  cross-windows                        Cross-compile to Windows (x86_64 only)"
         echo ""
         echo "Commands (dynamic linking - LEGACY):"
         echo "  dynamic-build                        Build dynamic debug binary (not recommended)"

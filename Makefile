@@ -92,8 +92,8 @@ release-all:
 	$(MAKE) cross-macos ARCH=x86_64
 	$(MAKE) cross-macos ARCH=aarch64
 	# Cross build Windows (asset names: epkg-windows-<arch>.exe)
-	$(MAKE) cross-windows ARCH=x86_64
-	$(MAKE) cross-windows ARCH=aarch64
+	# Note: only x86_64 supported; aarch64 requires mingw-w64 libraries not available in Debian
+	$(MAKE) cross-windows
 
 # Build release binary for a specific architecture
 # Note: libkrun auto-enabled for supported platforms (see make.sh)
@@ -124,7 +124,7 @@ $(eval $(call build_lua_lib,loongarch64))
 cross-macos:
 	@$(PROJECT_ROOT)/bin/make.sh cross-macos $(ARCH)
 
-# Cross-compilation to Windows (default x86_64)
+# Cross-compilation to Windows (x86_64 only; aarch64 not supported)
 cross-windows:
 	@$(PROJECT_ROOT)/bin/make.sh cross-windows $(ARCH)
 
