@@ -249,21 +249,24 @@ fn setup_resolv_conf(env_root: &Path) -> Result<()> {
     // Create /etc directory if it doesn't exist
     lfs::create_dir_all(env_root.join("etc"))?;
 
-    // On Windows, resolv.conf is not used (DNS resolution is handled by the OS)
+    let resolv_conf_path = crate::dirs::path_join(env_root, &["etc", "resolv.conf"]);
+
+    // Skip on 'docker -v /etc/resolv.conf:/etc/resolv.conf:ro' and installing to /
+    if lfs::exists_in_env(&resolv_conf_path) {
+        return Ok(());
+    }
+
     #[cfg(windows)]
-    return Ok(());
+    {
+        // Windows doesn't use /etc/resolv.conf. Add a placeholder so Linux-oriented tooling
+        // inside env sees a predictable file without forcing Unix-only code paths.
+        let windows_stub = "# Managed by epkg on Windows\n# DNS resolution is provided by Windows networking.\n";
+        lfs::write(&resolv_conf_path, windows_stub)?;
+    }
 
     #[cfg(not(windows))]
     {
-        let resolv_conf_path = crate::dirs::path_join(env_root, &["etc", "resolv.conf"]);
         let host_resolv_conf = Path::new("/etc/resolv.conf");
-
-        // Skip on 'docker -v /etc/resolv.conf:/etc/resolv.conf:ro' and installing to /
-        if lfs::exists_in_env(&resolv_conf_path) {
-            return Ok(());
-        }
-
-        // Check if /etc/resolv.conf exists on host before trying to copy
         if lfs::exists_on_host(host_resolv_conf) {
             lfs::copy(host_resolv_conf, &resolv_conf_path)?;
         } else {
@@ -431,6 +434,12 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
             .wrap_err_with(|| format!("Failed to set permissions for {}", env_root.display()))?;
     }
 
+    #[cfg(windows)]
+    if !env_config.public {
+        // Keep behavior explicit on Windows until ACL-based private env enforcement is added.
+        log::debug!("private environment requested for '{}'; ACL hardening is not implemented on Windows yet", env_root.display());
+    }
+
     Ok(())
 }
 
@@ -448,9 +457,8 @@ fn create_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -> Result
         }
     }
 
-    // Automatically discover all applets and create symlinks
-    // On Windows, this may be hardlink
-    #[cfg(unix)]
+    // Automatically discover all applets and create links.
+    // On Windows, lfs::symlink falls back to hardlink/copy if needed.
     crate::busybox::create_all_applet_symlinks(env_root, pkg_format)?;
 
     Ok(())
@@ -1287,12 +1295,26 @@ pub fn find_command_in_registered_envs(cmd_name: &str) -> Result<Option<(String,
     // Common binary directories to check in each environment
     let bin_dirs = ["usr/bin", "bin", "usr/local/bin", "usr/sbin", "sbin"];
 
+    let mut command_candidates = vec![cmd_name.to_string()];
+    #[cfg(windows)]
+    {
+        let has_extension = Path::new(cmd_name).extension().is_some();
+        if !has_extension {
+            command_candidates.push(format!("{}.exe", cmd_name));
+            command_candidates.push(format!("{}.bat", cmd_name));
+            command_candidates.push(format!("{}.cmd", cmd_name));
+        }
+    }
+
     for config in configs {
         match get_env_root(config.name.clone()) {
             Ok(env_root) => {
                 for bin_dir in &bin_dirs {
-                    let cmd_path = env_root.join(bin_dir).join(cmd_name);
-                    if lfs::exists_in_env(&cmd_path) {
+                    for candidate in &command_candidates {
+                        let cmd_path = env_root.join(bin_dir).join(candidate);
+                        if !lfs::exists_in_env(&cmd_path) {
+                            continue;
+                        }
                         // Check if executable (Unix only)
                         #[cfg(unix)]
                         {

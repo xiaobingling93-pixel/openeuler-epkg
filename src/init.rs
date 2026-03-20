@@ -6,12 +6,16 @@ use std::fs;
 use std::fs::OpenOptions;
 #[cfg(unix)]
 use std::io::Write as IoWrite;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+#[cfg(unix)]
 use color_eyre::eyre::{self, WrapErr};
+#[cfg(not(unix))]
+use color_eyre::eyre::WrapErr;
 use color_eyre::Result;
 #[cfg(unix)]
 use nix::unistd::{fork, ForkResult};
+#[cfg(unix)]
 use serde::{Deserialize, Serialize};
 
 #[cfg(unix)]
@@ -26,14 +30,18 @@ use crate::download::download_urls;
 use crate::mirror;
 use crate::models::*;
 use crate::models::dirs;
+#[cfg(unix)]
 use crate::utils;
 use crate::environment::{create_environment, register_environment_for};
 use crate::lfs;
 #[cfg(target_os = "linux")]
 use crate::apparmor;
 
+#[cfg(unix)]
 const GITEE_API_BASE:   &str = &"https://gitee.com/api/v5";
+#[cfg(unix)]
 const GITEE_OWNER:      &str = &"wu_fengguang";
+#[cfg(unix)]
 const REPO_EPKG:        &str = &"epkg";
 #[cfg(target_os = "linux")]
 const REPO_ELF_LOADER:  &str = &"elf-loader";
@@ -232,30 +240,7 @@ pub fn install_epkg() -> Result<()> {
     #[cfg(windows)]
     {
         let self_env_root = dirs().user_envs.join(SELF_ENV);
-        let init_plan = InitPlan {
-            current: EpkgVersionInfo {
-                epkg_version: String::new(),
-            },
-            new: EpkgVersionInfo {
-                epkg_version: String::new(),
-            },
-            epkg_binary_url: String::new(),
-            epkg_binary_sha_url: String::new(),
-            epkg_src_url: String::new(),
-            epkg_binary_path: std::path::PathBuf::new(),
-            epkg_binary_sha_path: std::path::PathBuf::new(),
-            epkg_src_path: std::path::PathBuf::new(),
-            need_download_epkg_binary: false,
-            need_download_epkg_src: false,
-            using_local_repo: false,
-            vmlinux_url: None,
-            vmlinux_sha_url: None,
-            vmlinux_config_url: None,
-            vmlinux_version: None,
-            vmlinux_path: None,
-            vmlinux_config_path: None,
-        };
-        setup_common_binaries(&self_env_root, &init_plan)?;
+        setup_common_binaries_windows(&self_env_root)?;
     }
 
     println!("Installation complete!");
@@ -441,6 +426,7 @@ fn setup_epkg_src(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     let usr_bin = crate::dirs::path_join(env_root, &["usr", "bin"]);
 
@@ -478,6 +464,19 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     #[cfg(unix)]
     create_epkg_symlink(&target_epkg)
         .context("Failed to create epkg symlink in PATH")?;
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn setup_common_binaries_windows(env_root: &Path) -> Result<()> {
+    let usr_bin = crate::dirs::path_join(env_root, &["usr", "bin"]);
+    lfs::create_dir_all(&usr_bin)?;
+
+    let target_epkg = usr_bin.join("epkg.exe");
+    let current_exe = std::env::current_exe()
+        .context("Failed to get current executable path")?;
+    copy_epkg_binary_atomically(&current_exe, &target_epkg, true)?;
 
     Ok(())
 }
@@ -755,6 +754,7 @@ fn is_valid_local_repo(repo_root: &std::path::Path) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg(unix)]
 struct GiteeRelease {
     tag_name: String,
     prerelease: bool,
@@ -764,11 +764,13 @@ struct GiteeRelease {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg(unix)]
 struct GiteeAsset {
     name: String,
     browser_download_url: String,
 }
 
+#[cfg(unix)]
 impl GiteeRelease {
     fn find_asset_url(&self, name: &str) -> Result<String> {
         self.assets.iter()
@@ -789,6 +791,7 @@ impl GiteeRelease {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg(unix)]
 struct EpkgVersionInfo {
     epkg_version: String,
     #[cfg(target_os = "linux")]
@@ -796,6 +799,7 @@ struct EpkgVersionInfo {
 }
 
 #[derive(Debug, Clone)]
+#[cfg(unix)]
 struct InitPlan {
     current: EpkgVersionInfo,
     new: EpkgVersionInfo,

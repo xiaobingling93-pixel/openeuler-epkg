@@ -1479,7 +1479,6 @@ fn try_env_from_epkg_activenv(config: &mut EPKGConfig) -> bool {
 }
 
 /// Detect environment from run command (.eenv or registered envs). Returns Ok(true) if env_name was set.
-#[cfg(unix)]
 fn try_env_from_run_command(config: &mut EPKGConfig) -> Result<bool> {
     if config.run.command.is_empty() || config.subcommand != EpkgCommand::Run {
         return Ok(false);
@@ -1490,7 +1489,6 @@ fn try_env_from_run_command(config: &mut EPKGConfig) -> Result<bool> {
         set_env_name_by_path(&dot_eenv, config)?;
         log::debug!("env: from run command .eenv at {} -> {}", dot_eenv.display(), config.common.env_name);
     } else if !is_path {
-        #[cfg(unix)]
         search_registered_envs(&command, config);
         if !config.common.env_name.is_empty() {
             log::debug!("env: from run command (registered) -> {}", config.common.env_name);
@@ -1526,11 +1524,8 @@ fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
     if try_env_from_epkg_activenv(config) {
         return Ok(());
     }
-    #[cfg(unix)]
-    {
-        if try_env_from_run_command(config)? {
-            return Ok(());
-        }
+    if try_env_from_run_command(config)? {
+        return Ok(());
     }
     if try_env_from_cwd_dot_eenv(config)? {
         return Ok(());
@@ -1541,10 +1536,9 @@ fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
 fn determine_command_path_info(command: &str) -> (bool, PathBuf) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    if command.contains('/') {
+    if command.contains('/') || command.contains('\\') {
         // Command contains slash: treat as path
         let cmd_path = Path::new(command);
         let parent = cmd_path.parent().unwrap_or(&cwd);
@@ -1578,7 +1572,6 @@ fn set_env_name_by_path(dot_eenv: &Path, options: &mut EPKGConfig) -> Result<()>
     Ok(())
 }
 
-#[cfg(unix)]
 fn search_registered_envs(command: &str, options: &mut EPKGConfig) {
     if let Ok(Some((env_name, env_root))) = find_command_in_registered_envs(command) {
         // Command found in a registered environment
