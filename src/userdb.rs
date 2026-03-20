@@ -54,6 +54,23 @@ fn gshadow_path(root: Option<&Path>) -> PathBuf {
     crate::dirs::path_join(root.unwrap_or_else(|| Path::new("/")), &["etc", "gshadow"])
 }
 
+/// Validate a user or group name (systemd/sysusers-style rules; shared by groupadd, sysusers, etc.).
+pub fn validate_user_group_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(eyre!("User/group name cannot be empty"));
+    }
+    if name.len() > 32 {
+        return Err(eyre!("User/group name too long: {}", name));
+    }
+    if !name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.') {
+        return Err(eyre!("Invalid characters in user/group name: {}", name));
+    }
+    if name.starts_with('-') || name.starts_with('.') {
+        return Err(eyre!("User/group name cannot start with dash or dot: {}", name));
+    }
+    Ok(())
+}
+
 fn read_lines(path: &Path) -> Result<Vec<String>> {
     let file = match fs::File::open(path) {
         Ok(f) => f,
@@ -598,7 +615,6 @@ fn delete_shadow_entry(name: &str, root: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
 pub fn remove_user_from_group(
     user: &str,
     group: &str,

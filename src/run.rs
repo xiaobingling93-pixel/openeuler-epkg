@@ -117,7 +117,6 @@ where
 /// 1. RunOptions.vm_cpus (from --cpus)
 /// 2. EPKG_VM_CPUS (u8)
 /// 3. Default: 2 vCPUs
-#[cfg(target_os = "linux")]
 pub fn resolve_vm_cpus(run_options: &RunOptions) -> u8 {
     if let Some(cpus) = run_options.vm_cpus {
         return cpus;
@@ -135,7 +134,6 @@ pub fn resolve_vm_cpus(run_options: &RunOptions) -> u8 {
 /// 2. EPKG_VM_MEMORY as a human-readable size (e.g. "2048M", "2G") via parse_size_bytes_opt
 /// 3. EPKG_VM_MEMORY parsed as plain MiB (u32) for backward compatibility
 /// 4. Default: 2048 MiB
-#[cfg(target_os = "linux")]
 pub fn resolve_vm_memory_mib(run_options: &RunOptions) -> u32 {
     if let Some(mib) = run_options.vm_memory_mib {
         return mib;

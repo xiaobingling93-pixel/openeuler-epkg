@@ -196,7 +196,7 @@ fn process_user_line(parts: &[String], locked: bool, root: Option<&Path>) -> Res
     }
 
     let name = &parts[1];
-    validate_user_group_name(name)?;
+    userdb::validate_user_group_name(name)?;
     let id_field    = parts.get(2).map(|s| s.as_str()).unwrap_or("-");
     let gecos       = parts.get(3).map(|s| s.as_str()).unwrap_or("-");
     let home        = parts.get(4).map(|s| s.as_str()).unwrap_or("-");
@@ -222,7 +222,7 @@ fn process_group_line(parts: &[String], root: Option<&Path>) -> Result<()> {
     }
 
     let name = &parts[1];
-    validate_user_group_name(name)?;
+    userdb::validate_user_group_name(name)?;
     let id_field = parts.get(2).map(|s| s.as_str()).unwrap_or("-");
 
     let gid = parse_gid_field(id_field)?;
@@ -240,8 +240,8 @@ fn process_member_line(parts: &[String], root: Option<&Path>) -> Result<()> {
     let user = &parts[1];
     let group = &parts[2];
 
-    validate_user_group_name(user)?;
-    validate_user_group_name(group)?;
+    userdb::validate_user_group_name(user)?;
+    userdb::validate_user_group_name(group)?;
 
     userdb::add_user_to_group(user, group, root)?;
 
@@ -306,7 +306,7 @@ fn parse_gid_field(id_field: &str) -> Result<Option<String>> {
         if id_field.chars().all(|c| c.is_ascii_digit()) {
             validate_gid(id_field)?;
         } else {
-            validate_user_group_name(id_field)?;
+            userdb::validate_user_group_name(id_field)?;
         }
         Ok(Some(id_field.to_string()))
     }
@@ -318,18 +318,3 @@ fn validate_gid(gid_str: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn validate_user_group_name(name: &str) -> Result<()> {
-    if name.is_empty() {
-        return Err(eyre!("User/group name cannot be empty"));
-    }
-    if name.len() > 32 {  // Typical limit
-        return Err(eyre!("User/group name too long: {}", name));
-    }
-    if !name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.') {
-        return Err(eyre!("Invalid characters in user/group name: {}", name));
-    }
-    if name.starts_with('-') || name.starts_with('.') {
-        return Err(eyre!("User/group name cannot start with dash or dot: {}", name));
-    }
-    Ok(())
-}

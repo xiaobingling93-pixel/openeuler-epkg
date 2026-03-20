@@ -87,8 +87,11 @@ pub fn run(options: SyncOptions) -> Result<()> {
                 }
             }
         } else if options.data_only {
-            // Sync file data only (no metadata)
+            // Sync file data only (no metadata on Linux). macOS libc has no fdatasync; fsync is stronger.
+            #[cfg(target_os = "linux")]
             let result = unsafe { libc::fdatasync(fd) };
+            #[cfg(not(target_os = "linux"))]
+            let result = unsafe { libc::fsync(fd) };
             if result != 0 {
                 let err = std::io::Error::last_os_error();
                 return Err(eyre!("sync: failed to sync data for '{}': {}", file_path, err));
