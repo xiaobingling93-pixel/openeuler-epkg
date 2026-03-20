@@ -962,7 +962,7 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
     let is_conda = channel_format == crate::models::PackageFormat::Conda;
     let is_brew = channel_format == crate::models::PackageFormat::Brew;
     let is_msys2 = channel_format == crate::models::PackageFormat::Pacman && ch.distro == "msys2";
-    let is_linux_format = should_enable_libkrun(channel_format, &ch.distro);
+    let is_linux_format = is_linux_package_format(channel_format, &ch.distro);
     if is_conda || is_brew || is_msys2 {
         // conda ELF binary has RPATH; brew bottles are native macOS binaries;
         // MSYS2/MinGW binaries are native Windows PE and run on the host
@@ -993,7 +993,7 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
     }
 }
 
-/// Check if libkrun VM sandbox should be auto-enabled for the given package format.
+/// Check if the package format is a Linux format that requires VM on non-Linux hosts.
 ///
 /// On Windows/macOS, Linux-format packages (deb/rpm/arch/apk) cannot run natively
 /// and require a Linux VM via libkrun.
@@ -1003,8 +1003,8 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
 /// * `distro` - The distro name (e.g., "debian", "fedora", "arch", "msys2")
 ///
 /// # Returns
-/// `true` if the package is a Linux format that requires VM sandbox on non-Linux hosts.
-fn should_enable_libkrun(format: crate::models::PackageFormat, distro: &str) -> bool {
+/// `true` if the package is a Linux format that requires VM on non-Linux hosts.
+fn is_linux_package_format(format: crate::models::PackageFormat, distro: &str) -> bool {
     use crate::models::PackageFormat;
     match format {
         PackageFormat::Deb |
