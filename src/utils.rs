@@ -840,6 +840,10 @@ pub fn fixup_file_permissions_with_mode(target_path: &Path, mode: u32, is_dir: b
 
 /// Fix up file permissions by reading metadata from disk.
 /// Prefer fixup_file_permissions_with_mode() when mode is already available.
+///
+/// This is only used during cleanup (deinit) to make directories/files
+/// removable by ensuring owner write permission. NTFS EA is not set here
+/// since cleanup is about deletion, not preserving permissions for VM use.
 #[cfg(unix)]
 pub fn fixup_file_permissions(target_path: &Path) {
     if let Ok(metadata) = lfs::symlink_metadata(target_path) {
@@ -899,7 +903,9 @@ pub fn fixup_file_permissions_with_mode(target_path: &Path, mode: u32, is_dir: b
 #[cfg(not(unix))]
 #[allow(dead_code)]
 pub fn fixup_file_permissions(_target_path: &Path) {
-    // No-op on non-Unix systems
+    // No-op on non-Unix systems.
+    // This is only called during cleanup (deinit) to make files removable.
+    // Setting NTFS EA here is meaningless - cleanup is about deletion, not preserving permissions.
 }
 
 #[cfg(not(unix))]
