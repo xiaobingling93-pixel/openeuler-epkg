@@ -1,20 +1,40 @@
 format: pacman
 distro: msys2
 distro_dirs:
-- msys2
 - MSYS2
+- msys2
+- msys2.org
+- msys2-mirror
 versions:
 - "latest"
 repos:
   msys:
+    index_url: $mirror/msys/$arch/$repo.files.tar.zst
   mingw64:
   ucrt64:
   clang64:
   clangarm64:
-index_url: $mirror/$repo/$arch/$repo.files.tar.zst
+index_url: $mirror/mingw/$repo/$repo.files.tar.zst
 
-# Example URLs:
-# https://mirrors.ustc.edu.cn/msys2/msys/x86_64/msys.files.tar.zst
+# URL structure differs between msys and mingw repos:
+# - msys:     $mirror/msys/$arch/msys.files.tar.zst
+# - mingw64:  $mirror/mingw/mingw64/mingw64.files.tar.zst  (no $arch subdirectory)
 #
 # Epkg skips repos that do not exist for the selected $arch (mingw64/ucrt64/clang64
 # are x86_64-only; clangarm64 is used on aarch64 Windows).
+#
+# https://mirrors.ustc.edu.cn/msys2/msys/
+#
+# i686/
+# sources/
+# x86_64/
+#
+# https://mirrors.ustc.edu.cn/msys2/mingw/
+#
+# clang32/
+# clang64/
+# clangarm64/
+# mingw32/
+# mingw64/
+# sources/
+# ucrt64/

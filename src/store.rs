@@ -256,11 +256,8 @@ pub fn unpack_mv_package_with_format(
     // Calculate content-addressable hash
     #[allow(unused)]
     let store_tmp_dir_str = store_tmp_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid UTF-8 in temporary directory path: {}", store_tmp_dir.display()))?;
-    #[cfg(unix)]
     let ca_hash_real = crate::hash::epkg_store_hash(store_tmp_dir_str)
         .wrap_err_with(|| format!("Failed to calculate content-addressable hash for directory: {}", store_tmp_dir.display()))?;
-    #[cfg(not(unix))]
-    let ca_hash_real = "unknown".to_string(); // TODO: implement cross-platform hash
 
     // Read package.txt to get package name and version
     let package_txt_path = crate::dirs::path_join(&store_tmp_dir, &["info", "package.txt"]);

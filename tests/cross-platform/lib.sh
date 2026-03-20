@@ -197,6 +197,8 @@ test_suite_langs() {
         # Different package names in different channels
         if [ "$CHANNEL_NAME" = "brew" ]; then
             run_install node
+        elif [ "$CHANNEL_NAME" = "msys2" ]; then
+            run_install mingw-w64-x86_64-nodejs node
         else
             run_install nodejs node
         fi

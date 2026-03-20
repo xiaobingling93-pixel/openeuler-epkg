@@ -1,7 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::io::Read;
+#[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use base32;
 use walkdir::WalkDir;
@@ -102,20 +104,33 @@ fn get_path_info_with_type(path: &Path, file_type: fs::FileType) -> Result<(&'st
         ("S_IFREG", file_sha256_chunks(path, &metadata)?.join(" "))
     } else if file_type.is_dir() {
         ("S_IFDIR", String::new())
-    } else if file_type.is_block_device() {
-        let metadata = fs::metadata(path)
-            .wrap_err_with(|| format!("Failed to get metadata for: {}", path.display()))?;
-        ("S_IFBLK", metadata.dev().to_string())
-    } else if file_type.is_char_device() {
-        let metadata = fs::metadata(path)
-            .wrap_err_with(|| format!("Failed to get metadata for: {}", path.display()))?;
-        ("S_IFCHR", metadata.dev().to_string())
-    } else if file_type.is_fifo() {
-        ("S_IFIFO", String::new())
-    } else if file_type.is_socket() {
-        ("S_IFSOCK", String::new())
     } else {
-        return Err(eyre!("Encountered an unknown file type at: {}", path.display()));
+        // On Unix, handle special file types (block device, char device, fifo, socket)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileTypeExt;
+            if file_type.is_block_device() {
+                let metadata = fs::metadata(path)
+                    .wrap_err_with(|| format!("Failed to get metadata for: {}", path.display()))?;
+                use std::os::unix::fs::MetadataExt;
+                ("S_IFBLK", metadata.dev().to_string())
+            } else if file_type.is_char_device() {
+                let metadata = fs::metadata(path)
+                    .wrap_err_with(|| format!("Failed to get metadata for: {}", path.display()))?;
+                use std::os::unix::fs::MetadataExt;
+                ("S_IFCHR", metadata.dev().to_string())
+            } else if file_type.is_fifo() {
+                ("S_IFIFO", String::new())
+            } else if file_type.is_socket() {
+                ("S_IFSOCK", String::new())
+            } else {
+                return Err(eyre!("Encountered an unknown file type at: {}", path.display()));
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            return Err(eyre!("Encountered an unknown file type at: {}", path.display()));
+        }
     };
 
     Ok((ftype, fdata))

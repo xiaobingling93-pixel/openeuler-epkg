@@ -238,7 +238,7 @@ fn create_temp_file(
                     return Ok(path);
                 }
                 Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
-                Err(e) if quiet => return Err(eyre!("")),
+                Err(_e) if quiet => return Err(eyre!("")),
                 Err(e) => {
                     return Err(eyre!(
                         "mktemp: failed to create file '{}': {}",
@@ -322,7 +322,7 @@ fn create_temp_dir(
             match std::fs::create_dir(&path) {
                 Ok(()) => return Ok(path),
                 Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
-                Err(e) if quiet => return Err(eyre!("")),
+                Err(_e) if quiet => return Err(eyre!("")),
                 Err(e) => {
                     return Err(eyre!(
                         "mktemp: failed to create directory '{}': {}",

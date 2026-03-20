@@ -15,7 +15,6 @@ mod provides;
 mod install;
 mod upgrade;
 mod remove;
-#[cfg(unix)]
 mod hash;
 #[cfg(unix)]
 mod ipc;
@@ -249,7 +248,6 @@ fn main() -> Result<()> {
         Some(("restore",    sub_matches))  =>  command_restore(sub_matches)?,
         Some(("update",     sub_matches))  =>  command_update(sub_matches)?,
         Some(("repo",       sub_matches))  =>  command_repo(sub_matches)?,
-        #[cfg(unix)]
         Some(("hash",       sub_matches))  =>  command_hash(sub_matches)?,
         #[cfg(unix)]
         Some(("build",      sub_matches))  =>  command_build(sub_matches)?,
@@ -1995,8 +1993,6 @@ fn command_repo(sub_matches: &clap::ArgMatches) -> Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
-#[cfg(unix)]
 fn command_hash(sub_matches: &clap::ArgMatches) -> Result<()> {
     if let Some(package_store_dirs) = sub_matches.get_many::<String>("PACKAGE_STORE_DIR") {
         for dir in package_store_dirs {
