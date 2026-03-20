@@ -962,11 +962,25 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
     let is_conda = channel_format == crate::models::PackageFormat::Conda;
     let is_brew = channel_format == crate::models::PackageFormat::Brew;
     let is_msys2 = channel_format == crate::models::PackageFormat::Pacman && ch.distro == "msys2";
+    let is_linux_format = should_enable_libkrun(channel_format, &ch.distro);
     if is_conda || is_brew || is_msys2 {
         // conda ELF binary has RPATH; brew bottles are native macOS binaries;
         // MSYS2/MinGW binaries are native Windows PE and run on the host
         run_options.skip_namespace_isolation = true;
     }
+
+    // On Windows/macOS, Linux-format packages require VM sandbox.
+    // Auto-enable IsolateMode::Vm if not explicitly set by user.
+    #[cfg(not(target_os = "linux"))]
+    if is_linux_format && run_options.sandbox.isolate_mode.is_none() {
+        debug!("Auto-enabling VM sandbox for Linux package format: {:?}/{}",
+               channel_format, ch.distro);
+        run_options.effective_sandbox.isolate_mode = Some(IsolateMode::Vm);
+    }
+
+    // Silence unused warning on Linux
+    #[cfg(target_os = "linux")]
+    let _ = is_linux_format;
 
     // When running directly inside env_root or with env_root=/, always bypass namespace isolation.
     if config_guard.common.in_env_root || env_root.as_os_str() == "/" {
@@ -976,6 +990,34 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
     // Allow bypassing namespace isolation via environment variable for testing
     if std::env::var("EPKG_SKIP_NAMESPACE").is_ok() {
         run_options.skip_namespace_isolation = true;
+    }
+}
+
+/// Check if libkrun VM sandbox should be auto-enabled for the given package format.
+///
+/// On Windows/macOS, Linux-format packages (deb/rpm/arch/apk) cannot run natively
+/// and require a Linux VM via libkrun.
+///
+/// # Arguments
+/// * `format` - The package format (e.g., Deb, Rpm, Apk, Pacman, Conda, Brew)
+/// * `distro` - The distro name (e.g., "debian", "fedora", "arch", "msys2")
+///
+/// # Returns
+/// `true` if the package is a Linux format that requires VM sandbox on non-Linux hosts.
+fn should_enable_libkrun(format: crate::models::PackageFormat, distro: &str) -> bool {
+    use crate::models::PackageFormat;
+    match format {
+        PackageFormat::Deb |
+        PackageFormat::Rpm |
+        PackageFormat::Apk => true,
+        PackageFormat::Pacman => {
+            // Arch Linux requires VM, but MSYS2 is native Windows
+            distro != "msys2"
+        }
+        PackageFormat::Epkg |
+        PackageFormat::Conda |
+        PackageFormat::Brew |
+        PackageFormat::Python => false,
     }
 }
 
