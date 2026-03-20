@@ -136,6 +136,10 @@ run_test_suite() {
             echo "=== Test 6: Package Management ==="
             test_suite_pkgmgr
             ;;
+        install_list)
+            echo "=== Test 6.5: Install-List Consistency ==="
+            test_suite_install_list_consistency
+            ;;
         queries)
             echo "=== Test 7: Query Commands ==="
             test_suite_queries
@@ -183,6 +187,19 @@ run_test_suite() {
         dryrun)
             echo "=== Test 18: Dry Run ==="
             test_suite_dry_run
+            ;;
+        # Channel-specific user scenario tests
+        msys2_scenario)
+            echo "=== Test: MSYS2 User Scenario (MinGW C/C++ Dev) ==="
+            test_msys2_mingw_cpp_dev
+            ;;
+        conda_scenario)
+            echo "=== Test: Conda User Scenario (Data Science) ==="
+            test_conda_data_science
+            ;;
+        brew_scenario)
+            echo "=== Test: Homebrew User Scenario (Dev Tools) ==="
+            test_brew_dev_tools
             ;;
         *)
             echo "Unknown test suite: $suite" >&2

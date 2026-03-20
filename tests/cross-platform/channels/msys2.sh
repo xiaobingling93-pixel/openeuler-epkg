@@ -75,6 +75,15 @@ echo "=== Test 6: Package Management ==="
 test_suite_pkgmgr "tree"
 
 #========================================
+# Test 6.5: Install-List Consistency
+#========================================
+echo ""
+echo "=== Test 6.5: Install-List Consistency ==="
+
+# Test that installed packages are visible in epkg list
+test_suite_install_list_consistency
+
+#========================================
 # Test 7: Query Commands
 #========================================
 echo ""
@@ -169,5 +178,13 @@ echo ""
 echo "=== Test 18: Dry Run ==="
 
 test_suite_dry_run
+
+#========================================
+# Test 19: MSYS2 User Scenario (MinGW C/C++ Dev)
+#========================================
+echo ""
+echo "=== Test 19: MSYS2 User Scenario (MinGW C/C++ Dev) ==="
+
+test_msys2_mingw_cpp_dev
 
 channel_ok

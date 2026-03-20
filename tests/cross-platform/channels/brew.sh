@@ -71,4 +71,12 @@ echo "=== Test 6: Package Management ==="
 # Remove tree (installed in Test 1)
 test_suite_pkgmgr "tree"
 
+#========================================
+# Test 7: Homebrew User Scenario (Dev Tools)
+#========================================
+echo ""
+echo "=== Test 7: Homebrew User Scenario (Dev Tools) ==="
+
+test_brew_dev_tools
+
 channel_ok

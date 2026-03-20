@@ -282,6 +282,143 @@ test_suite_pkgmgr() {
     epkg info jq | head -20
 }
 
+# Test Suite 6.5: Install-List Consistency
+# Verifies that installed packages are visible in epkg list
+# This tests the core workflow: install -> list shows the package
+test_suite_install_list_consistency() {
+    local skip_list="$1"
+    local test_pkg1="${2:-jq}"
+    local test_pkg2="${3:-tree}"
+
+    # Step 1: Install first package and verify it appears in list
+    if ! echo "$skip_list" | grep -qw "install_list_1"; then
+        echo "--- Installing $test_pkg1 and verifying visibility ---"
+        run_install "$test_pkg1" || return 1
+
+        local list_output
+        list_output=$(epkg list --installed 2>&1)
+
+        if echo "$list_output" | grep -q "No packages found"; then
+            echo "FAIL: epkg list shows no packages after installing $test_pkg1" >&2
+            return 1
+        fi
+
+        if ! echo "$list_output" | grep -q "$test_pkg1"; then
+            echo "FAIL: $test_pkg1 not visible in epkg list after install" >&2
+            return 1
+        fi
+        echo "PASS: $test_pkg1 visible in list after install"
+    fi
+
+    # Step 2: Install second package (creates new generation) and verify both visible
+    if ! echo "$skip_list" | grep -qw "install_list_2"; then
+        echo "--- Installing $test_pkg2 and verifying both packages visible ---"
+        run_install "$test_pkg2" || return 1
+
+        local list_output
+        list_output=$(epkg list --installed 2>&1)
+
+        if echo "$list_output" | grep -q "No packages found"; then
+            echo "FAIL: epkg list shows no packages after installing $test_pkg2" >&2
+            return 1
+        fi
+
+        if ! echo "$list_output" | grep -q "$test_pkg1"; then
+            echo "FAIL: $test_pkg1 no longer visible after installing $test_pkg2" >&2
+            return 1
+        fi
+
+        if ! echo "$list_output" | grep -q "$test_pkg2"; then
+            echo "FAIL: $test_pkg2 not visible in epkg list after install" >&2
+            return 1
+        fi
+        echo "PASS: both $test_pkg1 and $test_pkg2 visible in list"
+    fi
+
+    return 0
+}
+
+#========================================
+# Channel-Specific User Scenario Tests
+#========================================
+
+# MSYS2 User Scenario: C/C++ Development on Windows
+# Typical users install MinGW toolchain to compile native Windows applications
+test_msys2_mingw_cpp_dev() {
+    local skip_list="$1"
+
+    echo "--- MSYS2: MinGW C/C++ development scenario ---"
+
+    # Install MinGW C compiler (for ucrt64 target)
+    if ! echo "$skip_list" | grep -qw "mingw_gcc"; then
+        # The package name varies by channel
+        if [ "$CHANNEL_NAME" = "msys2" ]; then
+            run_install mingw-w64-ucrt-x86_64-gcc || return 1
+            # Verify gcc works
+            run gcc --version || return 1
+        fi
+    fi
+
+    # Install cmake for MinGW
+    if ! echo "$skip_list" | grep -qw "mingw_cmake"; then
+        if [ "$CHANNEL_NAME" = "msys2" ]; then
+            run_install mingw-w64-ucrt-x86_64-cmake || return 1
+            run cmake --version || return 1
+        fi
+    fi
+
+    echo "PASS: MSYS2 MinGW development tools work"
+    return 0
+}
+
+# Conda User Scenario: Data Science with Python
+# Typical users install Python + numpy + pandas for data analysis
+test_conda_data_science() {
+    local skip_list="$1"
+
+    echo "--- Conda: Data Science scenario ---"
+
+    # Install Python
+    if ! echo "$skip_list" | grep -qw "ds_python"; then
+        run_install python || return 1
+        local py_cmd="$(_get_python_cmd)"
+        run $py_cmd --version || return 1
+    fi
+
+    # Install numpy
+    if ! echo "$skip_list" | grep -qw "ds_numpy"; then
+        run_install numpy || return 1
+        local py_cmd="$(_get_python_cmd)"
+        run $py_cmd -c "import numpy; print('numpy:', numpy.__version__)" || return 1
+    fi
+
+    echo "PASS: Conda data science tools work"
+    return 0
+}
+
+# Homebrew User Scenario: Developer Tools
+# Typical users install git, vim, tmux, jq for development
+test_brew_dev_tools() {
+    local skip_list="$1"
+
+    echo "--- Homebrew: Developer tools scenario ---"
+
+    # git
+    if ! echo "$skip_list" | grep -qw "dev_git"; then
+        run_install git || return 1
+        run git --version || return 1
+    fi
+
+    # jq (already tested in utils)
+    if ! echo "$skip_list" | grep -qw "dev_jq"; then
+        run_install jq || return 1
+        run jq --version || return 1
+    fi
+
+    echo "PASS: Homebrew developer tools work"
+    return 0
+}
+
 # Test Suite 7: Query Commands
 # Tests various epkg query commands (info, search, list)
 test_suite_queries() {

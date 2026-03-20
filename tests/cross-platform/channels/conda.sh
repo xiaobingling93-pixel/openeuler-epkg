@@ -177,4 +177,13 @@ echo "=== Test 18: Dry Run ==="
 
 test_suite_dry_run
 
+#========================================
+# Test 19: Conda User Scenario (Data Science)
+#========================================
+echo ""
+echo "=== Test 19: Conda User Scenario (Data Science) ==="
+
+# Skip numpy due to Python 3.14 _ctypes module issue
+test_conda_data_science "ds_numpy"
+
 channel_ok
