@@ -910,7 +910,7 @@ fn show_package_scripts(store_path: &Path) -> Result<()> {
         ("post_untrans", "postuntrans"),
     ].into_iter().collect();
 
-    let scripts_dir = store_path.join("info/install");
+    let scripts_dir = crate::dirs::path_join(store_path, &["info", "install"]);
     if !scripts_dir.exists() {
         return Ok(());
     }
@@ -1056,7 +1056,7 @@ fn show_triggers_generic<F>(
 where
     F: Fn(&str) -> bool,
 {
-    let scripts_dir = store_path.join("info/install");
+    let scripts_dir = crate::dirs::path_join(store_path, &["info", "install"]);
     if !scripts_dir.exists() {
         return Ok(());
     }

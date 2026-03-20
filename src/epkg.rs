@@ -52,7 +52,7 @@ pub fn unpack_packages(files: Vec<String>) -> Result<()> {
 }
 
 pub fn compress_packages(store_dir: &std::path::PathBuf, out_dir: &str, origin_url: &str) -> Result<()> {
-    let package_txt_path = store_dir.join("info/package.txt");
+    let package_txt_path = crate::dirs::path_join(store_dir, &["info", "package.txt"]);
     let pkgline = store_dir.file_name().and_then(|os_str| os_str.to_str()).unwrap_or("unknown");
     let output_file = Path::new(out_dir).join(&format!("{}.epkg", pkgline));
     append_to_file(&package_txt_path, &format!("originUrl: {}", origin_url))?;

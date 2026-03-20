@@ -104,13 +104,13 @@ pub fn get_region_code() -> Option<String> {
 /// Get the tool config directory path (~/.config/epkg/tool)
 fn get_tool_config_dir() -> Result<PathBuf> {
     let home = dirs::get_home()?;
-    Ok(PathBuf::from(home).join(".config/epkg/tool"))
+    Ok(crate::dirs::path_join(&PathBuf::from(home), &[".config", "epkg", "tool"]))
 }
 
 /// Get the env_vars directory path
 fn get_env_vars_dir() -> Result<PathBuf> {
     let epkg_src = dirs::get_epkg_src_path();
-    Ok(epkg_src.join("assets/tool/env_vars"))
+    Ok(crate::dirs::path_join(&epkg_src, &["assets", "tool", "env_vars"]))
 }
 
 /// Setup tool config symlinks on `epkg self install`
@@ -224,7 +224,7 @@ fn should_create_wrapper(tool: &str, env_root: &Path) -> bool {
     // Check if wrapper already exists
     // Use exists_in_env because wrapper_path is in env_root and may be a broken symlink
     // (symlink target exists in guest namespace but not on host)
-    let wrapper_path = env_root.join("usr/local/bin").join(tool);
+    let wrapper_path = crate::dirs::path_join(env_root, &["usr", "local", "bin"]).join(tool);
     if lfs::exists_in_env(&wrapper_path) {
         log::debug!("Wrapper already exists for {}: {}", tool, wrapper_path.display());
         return false;
@@ -301,7 +301,7 @@ fn detect_installed_tools(plan: &InstallationPlan) -> Vec<String> {
 /// Note: Filesystem symlinks (e.g., node->npm) are auto-followed by read_to_string()
 fn get_wrapper_content(tool: &str) -> Result<String> {
     let epkg_src = dirs::get_epkg_src_path();
-    let wrapper_path = epkg_src.join("assets/tool/wrappers").join(tool);
+    let wrapper_path = crate::dirs::path_join(&epkg_src, &["assets", "tool", "wrappers"]).join(tool);
 
     // Use exists_on_host for regular host file check
     if lfs::exists_on_host(&wrapper_path) {
@@ -315,7 +315,7 @@ fn get_wrapper_content(tool: &str) -> Result<String> {
 
 /// Create wrapper script for a tool
 fn create_tool_wrapper(tool: &str, env_root: &Path) -> Result<()> {
-    let wrapper_dir = env_root.join("usr/local/bin");
+    let wrapper_dir = crate::dirs::path_join(env_root, &["usr", "local", "bin"]);
     lfs::create_dir_all(&wrapper_dir)?;
 
     let wrapper_path = wrapper_dir.join(tool);
@@ -339,7 +339,7 @@ fn create_tool_wrapper(tool: &str, env_root: &Path) -> Result<()> {
 /// Remove wrapper script for a tool
 #[allow(dead_code)]
 fn remove_tool_wrapper(tool: &str, env_root: &Path) -> Result<()> {
-    let wrapper_path = env_root.join("usr/local/bin").join(tool);
+    let wrapper_path = crate::dirs::path_join(env_root, &["usr", "local", "bin"]).join(tool);
 
     // Use exists_in_env because wrapper_path is in env_root and may be a broken symlink
     if lfs::exists_in_env(&wrapper_path) {

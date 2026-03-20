@@ -39,19 +39,19 @@ pub struct ShadowEntry {
 }
 
 fn passwd_path(root: Option<&Path>) -> PathBuf {
-    root.unwrap_or_else(|| Path::new("/")).join("etc/passwd")
+    crate::dirs::path_join(root.unwrap_or_else(|| Path::new("/")), &["etc", "passwd"])
 }
 
 fn group_path(root: Option<&Path>) -> PathBuf {
-    root.unwrap_or_else(|| Path::new("/")).join("etc/group")
+    crate::dirs::path_join(root.unwrap_or_else(|| Path::new("/")), &["etc", "group"])
 }
 
 fn shadow_path(root: Option<&Path>) -> PathBuf {
-    root.unwrap_or_else(|| Path::new("/")).join("etc/shadow")
+    crate::dirs::path_join(root.unwrap_or_else(|| Path::new("/")), &["etc", "shadow"])
 }
 
 fn gshadow_path(root: Option<&Path>) -> PathBuf {
-    root.unwrap_or_else(|| Path::new("/")).join("etc/gshadow")
+    crate::dirs::path_join(root.unwrap_or_else(|| Path::new("/")), &["etc", "gshadow"])
 }
 
 fn read_lines(path: &Path) -> Result<Vec<String>> {
@@ -751,8 +751,8 @@ pub fn group_exists(name: &str, root: Option<&Path>) -> Result<bool> {
 
 fn entry_exists(name: &str, filename: &str, root: Option<&Path>) -> Result<bool> {
     let file_path = match root {
-        Some(root) => root.join(format!("etc/{}", filename)),
-        None => PathBuf::from(format!("/etc/{}", filename)),
+        Some(root) => crate::dirs::path_join(root, &["etc", filename]),
+        None => crate::dirs::path_join(Path::new("/"), &["etc", filename]),
     };
     let file = match fs::File::open(&file_path) {
         Ok(f) => f,

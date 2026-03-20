@@ -585,19 +585,19 @@ pub(crate) fn mount_traditional_host_compatibility(env_root: &Path) -> Result<Ve
     let mut specs = Vec::new();
 
     // Bind mount host's /bin to $env_root/usr/bin
-    let guest_bin = env_root.join("usr/bin");
+    let guest_bin = crate::dirs::path_join(env_root, &["usr", "bin"]);
     if should_bind_mount(Path::new("/bin"), &guest_bin) {
         specs.push("/bin:@/usr/bin".to_string());
     }
 
     // Bind mount host's /sbin to $env_root/usr/sbin
-    let guest_sbin = env_root.join("usr/sbin");
+    let guest_sbin = crate::dirs::path_join(env_root, &["usr", "sbin"]);
     if should_bind_mount(Path::new("/sbin"), &guest_sbin) {
         specs.push("/sbin:@/usr/sbin".to_string());
     }
 
     // Bind mount host's /lib to $env_root/usr/lib
-    let guest_lib = env_root.join("usr/lib");
+    let guest_lib = crate::dirs::path_join(env_root, &["usr", "lib"]);
     if should_bind_mount(Path::new("/lib"), &guest_lib) {
         specs.push("/lib:@/usr/lib".to_string());
     }

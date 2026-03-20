@@ -255,7 +255,7 @@ fn setup_resolv_conf(env_root: &Path) -> Result<()> {
 
     #[cfg(not(windows))]
     {
-        let resolv_conf_path = env_root.join("etc/resolv.conf");
+        let resolv_conf_path = crate::dirs::path_join(env_root, &["etc", "resolv.conf"]);
         let host_resolv_conf = Path::new("/etc/resolv.conf");
 
         // Skip on 'docker -v /etc/resolv.conf:/etc/resolv.conf:ro' and installing to /
@@ -288,13 +288,13 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
                                                     // won't go to PATH
     lfs::create_dir_all(env_root.join("ebin"))?;
     // usr/sbin creation is delayed to create_environment_dirs() (may be symlink on Fedora)
-    lfs::create_dir_all(env_root.join("usr/bin"))?;
-    lfs::create_dir_all(env_root.join("usr/lib"))?;
-    lfs::create_dir_all(env_root.join("usr/share"))?;
-    lfs::create_dir_all(env_root.join("usr/include"))?;
-    lfs::create_dir_all(env_root.join("usr/local/bin"))?;
+    lfs::create_dir_all(crate::dirs::path_join(env_root, &["usr", "bin"]))?;
+    lfs::create_dir_all(crate::dirs::path_join(env_root, &["usr", "lib"]))?;
+    lfs::create_dir_all(crate::dirs::path_join(env_root, &["usr", "share"]))?;
+    lfs::create_dir_all(crate::dirs::path_join(env_root, &["usr", "include"]))?;
+    lfs::create_dir_all(crate::dirs::path_join(env_root, &["usr", "local", "bin"]))?;
     lfs::create_dir_all(env_root.join("var"))?;
-    lfs::create_dir_all(env_root.join("opt/epkg"))?;
+    lfs::create_dir_all(crate::dirs::path_join(env_root, &["opt", "epkg"]))?;
     lfs::create_dir_all(env_root_etc_epkg(env_root))?;
 
     // Create symlinks in generation 1 (usr-merge layout)
@@ -348,10 +348,10 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
 pub fn create_epkg_symlink(env_root: &Path) -> Result<()> {
     // Try to find epkg binary in self environment
     if let Some(self_env_root) = find_env_root(SELF_ENV) {
-        let self_epkg = self_env_root.join("usr/bin/epkg");
+        let self_epkg = crate::dirs::path_join(&self_env_root, &["usr", "bin", "epkg"]);
         if lfs::exists_in_env(&self_epkg) {
             // Create absolute symlink from env_root/usr/bin/epkg to self_epkg
-            let epkg_symlink = env_root.join("usr/bin/epkg");
+            let epkg_symlink = crate::dirs::path_join(env_root, &["usr", "bin", "epkg"]);
             log::debug!("Creating/updating epkg symlink {} -> {}", epkg_symlink.display(), self_epkg.display());
             force_symlink(&self_epkg, &epkg_symlink)
                 .with_context(|| format!("Failed to create epkg symlink in {}", epkg_symlink.display()))?;
@@ -368,16 +368,16 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
             // /usr/lib64 -> lib
             // /lib64 -> usr/lib
             lfs::create_dir_all(env_root.join("usr"))?;
-            force_symlink("lib", env_root.join("usr/lib64"))?;
+            force_symlink("lib", crate::dirs::path_join(env_root, &["usr", "lib64"]))?;
             force_symlink("usr/lib", env_root.join("lib64"))?;
         },
         _ => {
             // Default behavior for other formats
-            lfs::create_dir_all(env_root.join("usr/lib64"))?;
+            lfs::create_dir_all(crate::dirs::path_join(env_root, &["usr", "lib64"]))?;
             force_symlink("usr/lib64", env_root.join("lib64"))?;
 
             if lfs::exists_on_host("/usr/lib32") {
-                lfs::create_dir_all(env_root.join("usr/lib32"))?;
+                lfs::create_dir_all(crate::dirs::path_join(env_root, &["usr", "lib32"]))?;
                 force_symlink("usr/lib32", env_root.join("lib32"))?;
             }
         }
@@ -392,18 +392,18 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
     if *pkg_format == PackageFormat::Brew {
         #[cfg(target_os = "macos")]
         {
-            force_symlink("../libexec", env_root.join("usr/libexec"))?;
-            force_symlink("../Frameworks", env_root.join("usr/Frameworks"))?;
-            force_symlink("../opt", env_root.join("usr/opt"))?;
+            force_symlink("../libexec", crate::dirs::path_join(env_root, &["usr", "libexec"]))?;
+            force_symlink("../Frameworks", crate::dirs::path_join(env_root, &["usr", "Frameworks"]))?;
+            force_symlink("../opt", crate::dirs::path_join(env_root, &["usr", "opt"]))?;
         }
         // On Linux, do nothing - packages will create usr/libexec as a real directory if needed
     }
 
     // Fedora: usr/sbin is a symlink to bin (unified /usr/bin and /usr/sbin)
     if channel_config.distro == "fedora" {
-        force_symlink("bin", env_root.join("usr/sbin"))?;
+        force_symlink("bin", crate::dirs::path_join(env_root, &["usr", "sbin"]))?;
     } else {
-        lfs::create_dir_all(env_root.join("usr/sbin"))?;
+        lfs::create_dir_all(crate::dirs::path_join(env_root, &["usr", "sbin"]))?;
     }
 
     // Debian-specific setup (Linux only)
@@ -441,7 +441,7 @@ fn create_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -> Result
     // This is Unix-specific as Windows doesn't have systemd
     #[cfg(unix)]
     {
-        let systemctl_path = env_root.join("usr/bin/systemctl");
+        let systemctl_path = crate::dirs::path_join(env_root, &["usr", "bin", "systemctl"]);
         if !lfs::exists_in_env(&systemctl_path) {
             force_symlink("/usr/bin/true", &systemctl_path)
                 .with_context(|| format!("Failed to create systemctl symlink in {}", systemctl_path.display()))?;
@@ -482,7 +482,7 @@ fn create_default_world_json(env_root: &Path, pkg_format: &PackageFormat) -> Res
     }
 
     // Write world.json
-    let world_path = env_root.join("generations/1/world.json");
+    let world_path = crate::dirs::path_join(env_root, &["generations", "1", "world.json"]);
     let world_json = serde_json::to_string_pretty(&world)?;
     lfs::write(&world_path, world_json)?;
 
@@ -491,7 +491,7 @@ fn create_default_world_json(env_root: &Path, pkg_format: &PackageFormat) -> Res
 
 /// Install packages and create metadata files for the environment
 fn import_packages_and_create_metadata(env_root: &Path) -> Result<()> {
-    let gen_1_dir = env_root.join("generations/1");
+    let gen_1_dir = crate::dirs::path_join(env_root, &["generations", "1"]);
     let installed_packages_path = gen_1_dir.join("installed-packages.json");
 
     // Read packages to install from JSON if importing (supports both object and array format)
@@ -548,7 +548,7 @@ fn setup_environment_paths(env_base: &PathBuf) -> Result<PathBuf> {
         env_base.clone()
     };
 
-    let env_channel_yaml = env_root_channel_yaml(env_root);
+    let env_channel_yaml = env_root_channel_yaml(&env_root);
     if lfs::exists_on_host(&env_channel_yaml) {
         return Err(eyre::eyre!("Environment already exists at path: '{}'", env_root.display()));
     }
@@ -663,7 +663,7 @@ fn copy_repo_configs(sources_path: &Path, env_root: &Path, distro_name: &str) ->
 /// and saving it to etc/epkg/channel.yaml in the target environment.
 /// Also copies additional repo configurations to etc/epkg/repos.d/
 fn copy_channel_configs(env_root: &Path) -> Result<()> {
-    let sources_path = get_epkg_src_path().join("assets/repos");
+    let sources_path = crate::dirs::path_join(get_epkg_src_path().as_path(), &["assets", "repos"]);
     let (distro_name, distro_version) = parse_channel_option();
 
     // On Windows, the source path may not exist if running from a standalone binary.
@@ -852,10 +852,15 @@ pub fn activate_environment(name: &str) -> Result<()> {
     let session_path = original_session_path.unwrap_or_else(|| {
         let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64 ^ (std::process::id() as u64);
         let mut rng = StdRng::seed_from_u64(seed);
-        let path = format!("/tmp/deactivate-{}-{:08x}", std::process::id(), rng.random::<u32>());
-        println!("export EPKG_SESSION_PATH=\"{}\"", path);
+        let path = std::env::temp_dir().join(format!(
+            "deactivate-{}-{:08x}",
+            std::process::id(),
+            rng.random::<u32>()
+        ));
+        let path_str = path.to_string_lossy().into_owned();
+        println!("export EPKG_SESSION_PATH=\"{}\"", path_str);
         script.push_str(&format!("unset EPKG_SESSION_PATH\n"));
-        path
+        path_str
     });
 
     // Prepare new active envs
@@ -1220,7 +1225,7 @@ pub fn registered_env_configs() -> Vec<EnvConfig> {
         }
 
         // Check if environment has a config file
-        let config_path = env_path.join("etc").join("epkg").join("env.yaml");
+        let config_path = env_root_env_yaml(env_path);
         if !lfs::exists_in_env(&config_path) {
             return Ok(());
         }

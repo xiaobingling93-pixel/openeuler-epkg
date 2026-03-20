@@ -6,7 +6,7 @@ use std::fs;
 use std::fs::OpenOptions;
 #[cfg(unix)]
 use std::io::Write as IoWrite;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{self, WrapErr};
 use color_eyre::Result;
@@ -170,7 +170,7 @@ pub fn upgrade_epkg() -> Result<()> {
     #[cfg(windows)]
     {
         let self_env_root = dirs().user_envs.join(SELF_ENV);
-        let usr_bin = self_env_root.join("usr/bin");
+        let usr_bin = crate::dirs::path_join(&self_env_root, &["usr", "bin"]);
 
         let current_exe = std::env::current_exe()
             .wrap_err("Failed to get current executable path")?;
@@ -394,7 +394,7 @@ fn download_setup_files(init_plan: &InitPlan) -> Result<()> {
 
 #[cfg(unix)]
 fn setup_epkg_src(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
-    let usr_src = env_root.join("usr/src");
+    let usr_src = crate::dirs::path_join(env_root, &["usr", "src"]);
     let epkg_src = usr_src.join("epkg");
 
     // Check if we're using a local repository
@@ -442,7 +442,7 @@ fn setup_epkg_src(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
 }
 
 fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
-    let usr_bin = env_root.join("usr/bin");
+    let usr_bin = crate::dirs::path_join(env_root, &["usr", "bin"]);
 
     lfs::create_dir_all(&usr_bin)?;
 
@@ -729,7 +729,7 @@ fn find_repo_root() -> Result<std::path::PathBuf> {
 
     for self_env_root_opt in possible_self_envs {
         if let Some(self_env_root) = self_env_root_opt {
-            let epkg_src_symlink = self_env_root.join("usr/src/epkg");
+            let epkg_src_symlink = crate::dirs::path_join(&self_env_root, &["usr", "src", "epkg"]);
             if epkg_src_symlink.exists() {
                 // Check if it's a symlink
                 if lfs::is_symlink(&epkg_src_symlink) {
@@ -751,7 +751,7 @@ fn find_repo_root() -> Result<std::path::PathBuf> {
 #[cfg(unix)]
 fn is_valid_local_repo(repo_root: &std::path::Path) -> bool {
     repo_root.join(".git").exists() &&
-    repo_root.join("assets/shell/epkg.sh").exists()
+    crate::dirs::path_join(repo_root, &["assets", "shell", "epkg.sh"]).exists()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -956,8 +956,11 @@ fn get_current_epkg_version_info() -> Result<EpkgVersionInfo> {
         // Try to find elf-loader in common locations
         let env_root = find_env_root(SELF_ENV);
         let possible_elf_loader_paths = [
-            env_root.as_ref().map(|root| root.join("usr/bin/elf-loader")).unwrap_or_else(|| PathBuf::new()),
-            dirs().epkg_downloads_cache.join(format!("epkg/elf-loader-{}", &config().common.arch)),
+            env_root.as_ref().map(|root| crate::dirs::path_join(root, &["usr", "bin", "elf-loader"])).unwrap_or_else(|| PathBuf::new()),
+            dirs()
+                .epkg_downloads_cache
+                .join("epkg")
+                .join(format!("elf-loader-{}", &config().common.arch)),
             PathBuf::from("./elf-loader"),
         ];
 
@@ -1120,7 +1123,7 @@ fn check_for_updates() -> Result<InitPlan> {
     let using_local_repo = is_valid_local_repo(&repo_root);
 
     #[cfg(target_os = "linux")]
-    let local_elf_loader_path = repo_root.join("git/elf-loader/src/loader");
+    let local_elf_loader_path = crate::dirs::path_join(&repo_root, &["git", "elf-loader", "src", "loader"]);
     #[cfg(target_os = "linux")]
     let has_local_elf_loader = local_elf_loader_path.exists();
 

@@ -398,7 +398,10 @@ pub fn setup_conda_env_vars(
     // Try to read PKG_BUILDNUM from package.txt
     // Build number is stored as "buildNumber" in package.txt
     let mut build_num = "0".to_string(); // Default to "0" if not found
-    let package_txt_path = store_root.join(&package_info.pkgline).join("info/package.txt");
+    let package_txt_path = crate::dirs::path_join(
+        &store_root.join(&package_info.pkgline),
+        &["info", "package.txt"],
+    );
     if package_txt_path.exists() {
         if let Ok(content) = fs::read_to_string(&package_txt_path) {
             for line in content.lines() {
@@ -506,7 +509,10 @@ pub fn run_scriptlet(
         return Ok(());
     }
 
-    let script_base_path = store_root.join(&package_info.pkgline).join("info/install");
+    let script_base_path = crate::dirs::path_join(
+        &store_root.join(&package_info.pkgline),
+        &["info", "install"],
+    );
 
     // Get the script names to try for this scriptlet type
     let script_names = scriptlet_type.get_script_names(package_format);
@@ -532,7 +538,7 @@ pub fn run_scriptlet(
                 // Scriptlets run in namespace isolation, so only environment paths are accessible.
                 // System paths (/usr/bin/*) are not available since we're in a chroot environment.
                 // We validate symlinks properly to handle cases where environment symlinks point to valid targets.
-                let interpreter_path = env_root.join("usr/bin").join(interpreter);
+                let interpreter_path = crate::dirs::path_join(env_root, &["usr", "bin"]).join(interpreter);
                 if lfs::resolve_symlink_in_env(&interpreter_path, env_root).is_none() {
                     log::debug!(
                         "Interpreter {} not found in environment, trying next interpreter",

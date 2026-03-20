@@ -825,7 +825,7 @@ fn find_env_root_from_path(path: &Path) -> Option<PathBuf> {
         if parent.join("usr").is_dir() {
             // Check for usr-merge symlinks
             let has_bin_symlink = lfs::is_symlink(&parent.join("bin"));
-            let has_usr_bin = parent.join("usr/bin").is_dir();
+            let has_usr_bin = crate::dirs::path_join(parent, &["usr", "bin"]).is_dir();
             if has_bin_symlink && has_usr_bin {
                 return Some(parent.to_path_buf());
             }

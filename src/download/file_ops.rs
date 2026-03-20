@@ -460,7 +460,7 @@ fn try_symlink_from_global_cache(task: &DownloadTask) -> bool {
     }
 
     // Compute global shared cache root: /opt/epkg/cache/downloads
-    let global_cache_root = dirs().opt_epkg.join("cache/downloads");
+    let global_cache_root = crate::dirs::path_join(dirs().opt_epkg.as_path(), &["cache", "downloads"]);
     let local_cache_root = dirs().epkg_downloads_cache.clone();
 
     // Get relative path from local cache root

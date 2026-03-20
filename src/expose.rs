@@ -111,8 +111,8 @@ fn unexpose_package_ebin(env_root: &Path, pkgkey: &str) -> Result<()> {
 /// Some distros (e.g., openEuler) install npm modules in /usr/lib/node_modules,
 /// but npm expects to find them in /usr/bin/node_modules when resolving modules.
 fn create_node_modules_symlink(env_root: &Path) -> Result<()> {
-    let node_modules_in_lib = env_root.join("usr/lib/node_modules");
-    let node_modules_in_bin = env_root.join("usr/bin/node_modules");
+    let node_modules_in_lib = crate::dirs::path_join(env_root, &["usr", "lib", "node_modules"]);
+    let node_modules_in_bin = crate::dirs::path_join(env_root, &["usr", "bin", "node_modules"]);
 
     // Only create symlink if source exists
     if !lfs::exists_in_env(&node_modules_in_lib) {
@@ -140,7 +140,7 @@ fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()>
     let self_env_root = dirs::find_env_root(SELF_ENV)
         .ok_or_else(|| eyre::eyre!("Self environment not found"))?;
 
-    let elf_loader_path = self_env_root.join("usr/bin/elf-loader");
+    let elf_loader_path = crate::dirs::path_join(&self_env_root, &["usr", "bin", "elf-loader"]);
     log::info!("  elf_loader_path={}", elf_loader_path.display());
 
     // Create hardlink from elf-loader to target path (replace copy&replace)
@@ -298,8 +298,8 @@ pub fn create_libexec_bin_symlinks(env_root: &Path, store_fs_dir: &Path) -> Resu
 
     // Check libexec/bin in both store and env (for Move link type)
     let libexec_bin_candidates = [
-        store_fs_dir.join("libexec/bin"),
-        env_root.join("libexec/bin"),
+        crate::dirs::path_join(store_fs_dir, &["libexec", "bin"]),
+        crate::dirs::path_join(env_root, &["libexec", "bin"]),
     ];
 
     let libexec_bin = libexec_bin_candidates.iter()
@@ -313,7 +313,7 @@ pub fn create_libexec_bin_symlinks(env_root: &Path, store_fs_dir: &Path) -> Resu
 
     // Target bin directories to create symlinks in
     let target_bin_dirs = [
-        env_root.join("usr/bin"),
+        crate::dirs::path_join(env_root, &["usr", "bin"]),
         env_root.join("bin"),
     ];
 
@@ -889,19 +889,22 @@ mod tests {
         use super::*;
 
         fn get_test_osroot() -> PathBuf {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/osroot")
+            crate::dirs::path_join(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+                &["tests", "osroot"],
+            )
         }
 
         #[test]
         fn test_alpine_npm_symlink() {
             // Alpine: /usr/bin/npm -> ../share/nodejs/npm/bin/npm-cli.js
             let osroot = get_test_osroot().join("alpine");
-            let env_path = osroot.join("usr/bin/npm");
+            let env_path = crate::dirs::path_join(osroot, &["usr", "bin", "npm"]);
 
             let resolved = resolve_ebin_target_path(&osroot, &env_path);
 
             // Should resolve to: osroot/usr/share/nodejs/npm/bin/npm-cli.js
-            let expected = osroot.join("usr/share/nodejs/npm/bin/npm-cli.js");
+            let expected = crate::dirs::path_join(osroot, &["usr", "share", "nodejs", "npm", "bin", "npm-cli.js"]);
             assert_eq!(resolved.canonicalize().unwrap(), expected.canonicalize().unwrap(), "Alpine npm symlink should resolve to npm-cli.js");
         }
 
@@ -909,11 +912,11 @@ mod tests {
         fn test_alpine_npx_symlink() {
             // Alpine: /usr/bin/npx -> ../share/nodejs/npm/bin/npx-cli.js
             let osroot = get_test_osroot().join("alpine");
-            let env_path = osroot.join("usr/bin/npx");
+            let env_path = crate::dirs::path_join(osroot, &["usr", "bin", "npx"]);
 
             let resolved = resolve_ebin_target_path(&osroot, &env_path);
 
-            let expected = osroot.join("usr/share/nodejs/npm/bin/npx-cli.js");
+            let expected = crate::dirs::path_join(osroot, &["usr", "share", "nodejs", "npm", "bin", "npx-cli.js"]);
             assert_eq!(resolved.canonicalize().unwrap(), expected.canonicalize().unwrap(), "Alpine npx symlink should resolve to npx-cli.js");
         }
 
@@ -921,12 +924,12 @@ mod tests {
         fn test_openeuler_npm_symlink() {
             // OpenEuler: /usr/bin/npm -> ../share/nodejs/npm/bin/npm (symlink to shell script)
             let osroot = get_test_osroot().join("openeuler");
-            let env_path = osroot.join("usr/bin/npm");
+            let env_path = crate::dirs::path_join(osroot, &["usr", "bin", "npm"]);
 
             let resolved = resolve_ebin_target_path(&osroot, &env_path);
 
             // Should resolve to: osroot/usr/share/nodejs/npm/bin/npm (the shell script)
-            let expected = osroot.join("usr/share/nodejs/npm/bin/npm");
+            let expected = crate::dirs::path_join(osroot, &["usr", "share", "nodejs", "npm", "bin", "npm"]);
             assert_eq!(resolved.canonicalize().unwrap(), expected.canonicalize().unwrap(), "OpenEuler npm symlink should resolve to npm shell script");
         }
 
@@ -934,11 +937,11 @@ mod tests {
         fn test_debian_npm_symlink() {
             // Debian: /usr/bin/npm -> ../share/nodejs/npm/bin/npm-cli.js
             let osroot = get_test_osroot().join("debian");
-            let env_path = osroot.join("usr/bin/npm");
+            let env_path = crate::dirs::path_join(osroot, &["usr", "bin", "npm"]);
 
             let resolved = resolve_ebin_target_path(&osroot, &env_path);
 
-            let expected = osroot.join("usr/share/nodejs/npm/bin/npm-cli.js");
+            let expected = crate::dirs::path_join(osroot, &["usr", "share", "nodejs", "npm", "bin", "npm-cli.js"]);
             assert_eq!(resolved.canonicalize().unwrap(), expected.canonicalize().unwrap(), "Debian npm symlink should resolve to npm-cli.js");
         }
 
@@ -946,11 +949,11 @@ mod tests {
         fn test_debian_nodejs_symlink() {
             // Debian: /usr/bin/nodejs -> node (symlink to real file)
             let osroot = get_test_osroot().join("debian");
-            let env_path = osroot.join("usr/bin/nodejs");
+            let env_path = crate::dirs::path_join(osroot, &["usr", "bin", "nodejs"]);
 
             let resolved = resolve_ebin_target_path(&osroot, &env_path);
 
-            let expected = osroot.join("usr/bin/node");
+            let expected = crate::dirs::path_join(osroot, &["usr", "bin", "node"]);
             assert_eq!(resolved.canonicalize().unwrap(), expected.canonicalize().unwrap(), "Debian nodejs symlink should resolve to node");
         }
 
@@ -958,7 +961,7 @@ mod tests {
         fn test_regular_file_no_symlink() {
             // Test with a regular file (no symlink) - should return the same path
             let osroot = get_test_osroot().join("debian");
-            let env_path = osroot.join("usr/bin/node");
+            let env_path = crate::dirs::path_join(osroot, &["usr", "bin", "node"]);
 
             let resolved = resolve_ebin_target_path(&osroot, &env_path);
 

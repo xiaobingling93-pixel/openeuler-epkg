@@ -133,7 +133,10 @@ pub fn setup_rpm_env_vars(
     // Try to read install prefixes from package metadata
     // RPM stores install prefixes in RPMTAG_INSTPREFIXES
     // For now, we'll try to read from a metadata file if it exists
-    let install_dir = store_root.join(&package_info.pkgline).join("info/install");
+    let install_dir = crate::dirs::path_join(
+        &store_root.join(&package_info.pkgline),
+        &["info", "install"],
+    );
     let prefixes_file = install_dir.join("install_prefixes.txt");
 
     if let Ok(prefixes_content) = std::fs::read_to_string(&prefixes_file) {
@@ -307,7 +310,7 @@ fn write_rpm_hook_file<P: AsRef<Path>>(
 /// Stores them in info/install/install_prefixes.txt for use in scriptlet environment variables
 pub fn extract_install_prefixes<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
-    let install_dir = store_tmp_dir.join("info/install");
+    let install_dir = crate::dirs::path_join(store_tmp_dir, &["info", "install"]);
     let metadata = &package.metadata;
 
     // Check if RPMTAG_INSTPREFIXES exists in the header
@@ -980,7 +983,7 @@ fn process_legacy_package_triggers(
 ///   rpm-<trigger_type>-<seqno>.hook
 fn extract_rpm_package_triggers<P: AsRef<Path>>(metadata: &rpm::PackageMetadata, store_tmp_dir: P) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
-    let install_dir = store_tmp_dir.join("info/install");
+    let install_dir = crate::dirs::path_join(store_tmp_dir, &["info", "install"]);
 
     let trigger_names: Vec<String> = extract_string_array(metadata, IndexTag::RPMTAG_TRIGGERNAME);
     if trigger_names.is_empty() {
@@ -1541,7 +1544,7 @@ fn extract_modern_file_triggers<P: AsRef<Path>>(
 /// extract_per_trigger_paths_and_priorities for the layout and 1:1 mapping.
 fn extract_rpm_file_triggers<P: AsRef<Path>>(metadata: &rpm::PackageMetadata, store_tmp_dir: P) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
-    let install_dir = store_tmp_dir.join("info/install");
+    let install_dir = crate::dirs::path_join(store_tmp_dir, &["info", "install"]);
 
     let mut hook_seq_counter = HashMap::new();
     let mut script_order_counter = 0_u32;

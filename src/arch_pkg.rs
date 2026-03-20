@@ -190,7 +190,7 @@ pub fn unpack_package<P: AsRef<Path>>(pkg_file: P, store_tmp_dir: P, pkgkey: Opt
         .wrap_err_with(|| format!("Failed to create filelist.txt for {}", store_tmp_dir.display()))?;
 
     // Check if .INSTALL file exists and process it
-    let install_path = store_tmp_dir.join("info/arch/.INSTALL");
+    let install_path = crate::dirs::path_join(store_tmp_dir, &["info", "arch", ".INSTALL"]);
     if lfs::exists_on_host(&install_path) {
         log::debug!("Processing install script");
         let install_content = fs::read(&install_path)
@@ -217,7 +217,7 @@ fn arch_path_policy(path: &Path, _is_hard_link: bool, store_tmp_dir: &Path) -> O
 
     if path_str.starts_with(".") {
         // Metadata files go to info/arch/
-        Some(store_tmp_dir.join("info/arch").join(path))
+        Some(crate::dirs::path_join(store_tmp_dir, &["info", "arch"]).join(path))
     } else {
         // Regular files go to fs/
         Some(store_tmp_dir.join("fs").join(path))
@@ -237,7 +237,7 @@ fn extract_package_contents<R: Read>(
     let entries = extract_archive_with_policy(&mut archive, &config, policy)?;
 
     // Check if .PKGINFO was extracted
-    let pkginfo_path = store_tmp_dir.join("info/arch/.PKGINFO");
+    let pkginfo_path = crate::dirs::path_join(store_tmp_dir, &["info", "arch", ".PKGINFO"]);
     if !lfs::exists_on_host(&pkginfo_path) {
         return Err(eyre::eyre!("No .PKGINFO file found in package"));
     }
@@ -283,7 +283,8 @@ source \"$THIS_SCRIPT_DIR/../arch/.INSTALL\"
 "
                 );
 
-                let script_path = store_tmp_dir.join(format!("info/install/{}", standard_name));
+                let script_path =
+                    crate::dirs::path_join(store_tmp_dir, &["info", "install"]).join(standard_name);
                 fs::write(&script_path, wrapper_content)
                     .wrap_err_with(|| format!("Failed to write scriptlet wrapper to {}", script_path.display()))?;
 
@@ -303,7 +304,7 @@ fn create_package_txt(store_tmp_dir: &Path, pkgkey: Option<&str>) -> Result<()> 
     log::debug!("Creating package.txt from .PKGINFO");
 
     // Read the .PKGINFO file
-    let pkginfo_path = store_tmp_dir.join("info/arch/.PKGINFO");
+    let pkginfo_path = crate::dirs::path_join(store_tmp_dir, &["info", "arch", ".PKGINFO"]);
     let pkginfo_content = fs::read_to_string(&pkginfo_path)
         .wrap_err_with(|| format!("Failed to read .PKGINFO file: {}", pkginfo_path.display()))?;
 

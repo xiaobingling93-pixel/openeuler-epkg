@@ -112,7 +112,7 @@ pub enum FileMode {
 
 /// Read index.json from conda package
 fn read_index_json(package_dir: &Path) -> Result<IndexJson> {
-    let index_path = package_dir.join("info/conda/index.json");
+    let index_path = crate::dirs::path_join(package_dir, &["info", "conda", "index.json"]);
     let index_data: Value = crate::io::read_json_file(&index_path)
         .wrap_err_with(|| format!("Failed to read index.json from {}", package_dir.display()))?;
 
@@ -217,7 +217,7 @@ fn parse_paths_entry(path_entry: &Value) -> Result<PathsEntry> {
 /// Read paths.json from conda package
 /// Returns empty vector if paths.json does not exist (fallback to generic linking)
 fn read_paths_json(package_dir: &Path) -> Result<Vec<PathsEntry>> {
-    let paths_path = package_dir.join("info/conda/paths.json");
+    let paths_path = crate::dirs::path_join(package_dir, &["info", "conda", "paths.json"]);
 
     // Check if file exists first
     if !lfs::exists_on_host(&paths_path) {
@@ -279,7 +279,7 @@ fn parse_entry_point(ep: &Value) -> Result<EntryPoint> {
 
 /// Read link.json from conda package (for Python entry points)
 fn read_link_json(package_dir: &Path) -> Result<Option<Vec<EntryPoint>>> {
-    let link_path = package_dir.join("info/conda/link.json");
+    let link_path = crate::dirs::path_join(package_dir, &["info", "conda", "link.json"]);
 
     if !lfs::exists_on_host(&link_path) {
         return Ok(None);

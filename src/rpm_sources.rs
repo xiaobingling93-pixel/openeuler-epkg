@@ -117,7 +117,7 @@ fn parse_repo_file(path: &Path) -> Result<ChannelConfig> {
 /// Load repository configurations from env_root/etc/yum.repos.d/*.repo files as ChannelConfig instances
 pub fn load_rpm_system_repos(env_root: &Path) -> Result<Vec<ChannelConfig>> {
     let mut all_channel_configs = Vec::new();
-    let repos_dir = env_root.join("etc/yum.repos.d");
+    let repos_dir = crate::dirs::path_join(env_root, &["etc", "yum.repos.d"]);
     let pattern = repos_dir.join("*.repo");
 
     if !lfs::exists_on_host(&repos_dir) {

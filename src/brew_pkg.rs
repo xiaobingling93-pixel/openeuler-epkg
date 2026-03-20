@@ -176,12 +176,12 @@ fn brew_path_policy(path: &Path, _is_hard_link: bool, store_tmp_dir: &Path) -> O
     let target_path = if is_brew_dir {
         // Move .brew/ directory to info/brew/.brew/ (contains formula with post_install etc)
         stripped_components.iter().skip(1).fold(
-            store_tmp_dir.join("info/brew/.brew"),
+            crate::dirs::path_join(store_tmp_dir, &["info", "brew", ".brew"]),
             |acc, comp| acc.join(comp.as_os_str())
         )
     } else if is_root_meta_file {
         // Move metadata files to info/brew/ to avoid conflicts
-        store_tmp_dir.join("info/brew").join(
+        crate::dirs::path_join(store_tmp_dir, &["info", "brew"]).join(
             stripped_components[0].as_os_str()
         )
     } else {

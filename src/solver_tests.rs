@@ -592,7 +592,10 @@ mod tests {
             })
             .try_init();
 
-        let tests_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/solver");
+        let tests_dir = crate::dirs::path_join(
+            Path::new(env!("CARGO_MANIFEST_DIR")),
+            &["tests", "solver"],
+        );
         if tests_dir.exists() {
             // Run the tests and unwrap to fail the test if there are errors
             run_all_tests(&tests_dir).unwrap();

@@ -245,7 +245,10 @@ static TIMEZONE_COUNTRY_MAP: LazyLock<HashMap<String, String>> = LazyLock::new(|
 });
 
 fn load_timezone_country_mapping() -> Result<HashMap<String, String>> {
-    let file_path = crate::dirs::get_epkg_src_path().join("assets/mirrors/cc-timezone.txt");
+    let file_path = crate::dirs::path_join(
+        crate::dirs::get_epkg_src_path().as_path(),
+        &["assets", "mirrors", "cc-timezone.txt"],
+    );
     let contents = fs::read_to_string(&file_path)
         .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
 

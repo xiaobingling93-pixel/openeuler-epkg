@@ -245,9 +245,10 @@ fn show_scripts_info(
 
     let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
     if let Some(installed_info) = installed.get(&package.pkgkey) {
-        let scripts_path = dirs().epkg_store
-            .join(&installed_info.pkgline)
-            .join("info/install");
+        let scripts_path = crate::dirs::path_join(
+            &dirs().epkg_store.join(&installed_info.pkgline),
+            &["info", "install"],
+        );
 
         if scripts_path.exists() {
             if let Ok(entries) = fs::read_dir(&scripts_path) {
@@ -289,9 +290,10 @@ fn show_files_info(
 
     let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
     if let Some(installed_info) = installed.get(&package.pkgkey) {
-        let filelist_path = dirs().epkg_store
-            .join(&installed_info.pkgline)
-            .join("info/filelist.txt");
+        let filelist_path = crate::dirs::path_join(
+            &dirs().epkg_store.join(&installed_info.pkgline),
+            &["info", "filelist.txt"],
+        );
 
         if filelist_path.exists() {
             println!("Files for {}:", package.pkgkey);
@@ -379,7 +381,7 @@ fn add_installation_info(
             }
 
             // Try to load additional package info from store
-            // let package_txt_path = store_path.join("info/package.txt");
+            // let package_txt_path = crate::dirs::path_join(store_path, &["info", "package.txt"]);
 
             // if package_txt_path.exists() {
             //     if let Ok(local_package) = crate::mmio::map_pkgline2package(&installed_info.pkgline) {

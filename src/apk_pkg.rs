@@ -215,7 +215,7 @@ fn apk_path_policy(path: &Path, _is_hard_link: bool, store_tmp_dir: &Path) -> Op
     if is_dot_file {
         // Metadata files go to info/apk/ with just the filename
         let file_name = path.file_name().unwrap();
-        Some(store_tmp_dir.join("info/apk").join(file_name))
+        Some(crate::dirs::path_join(store_tmp_dir, &["info", "apk"]).join(file_name))
     } else {
         // Regular files go to fs/
         Some(store_tmp_dir.join("fs").join(path))
@@ -250,8 +250,8 @@ fn unpack_apk<P: AsRef<Path>>(apk_file: P, store_tmp_dir: &Path) -> Result<()> {
 /// Maps APK scriptlet names to common scriptlet names and moves them to info/install/
 pub fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
-    let apk_dir = store_tmp_dir.join("info/apk");
-    let install_dir = store_tmp_dir.join("info/install");
+    let apk_dir = crate::dirs::path_join(store_tmp_dir, &["info", "apk"]);
+    let install_dir = crate::dirs::path_join(store_tmp_dir, &["info", "install"]);
 
     // Mapping from APK scriptlet names to common names
     // APK scriptlet types: pre-install, post-install, pre-upgrade, post-upgrade, pre-deinstall, post-deinstall
@@ -309,7 +309,7 @@ fn fixup_inconsistent_arch(raw_fields: &mut HashMap<String, Vec<String>>, pkgkey
 /// Parses the .PKGINFO file with improved validation and creates package.txt
 pub fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
-    let pkginfo_path = store_tmp_dir.join("info/apk/.PKGINFO");
+    let pkginfo_path = crate::dirs::path_join(store_tmp_dir, &["info", "apk", ".PKGINFO"]);
 
     if !lfs::exists_on_host(&pkginfo_path) {
         return Err(eyre::eyre!(".PKGINFO file not found: {}", pkginfo_path.display()));
@@ -465,7 +465,7 @@ fn write_apk_hook_file<P: AsRef<Path>>(
 
     // Check if .trigger script exists in info/apk/.trigger
     let store_tmp_dir = store_tmp_dir.as_ref();
-    let trigger_script_path = store_tmp_dir.join("info/apk/.trigger");
+    let trigger_script_path = crate::dirs::path_join(store_tmp_dir, &["info", "apk", ".trigger"]);
     if !lfs::exists_on_host(&trigger_script_path) {
         log::warn!("Package has triggers but no .trigger script, skipping trigger hook generation");
         return Ok(());
@@ -502,7 +502,7 @@ fn write_apk_hook_file<P: AsRef<Path>>(
     writeln!(buf, "Exec = %PKGINFO_DIR/apk/.trigger")?;
     writeln!(buf, "NeedsTargets")?; // Pass matched paths as arguments
 
-    let install_dir = store_tmp_dir.join("info/install");
+    let install_dir = crate::dirs::path_join(store_tmp_dir, &["info", "install"]);
     let hook_path = install_dir.join("apk-trigger.hook");
     fs::create_dir_all(&install_dir)?;
     fs::write(&hook_path, buf)

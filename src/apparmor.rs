@@ -8,8 +8,10 @@ pub fn install_apparmor_profile() -> Result<()> {
         return Ok(());
     }
 
-    let profile_src = crate::dirs::get_epkg_src_path()
-        .join("assets/etc/apparmor.d/epkg");
+    let profile_src = crate::dirs::path_join(
+        crate::dirs::get_epkg_src_path().as_path(),
+        &["assets", "etc", "apparmor.d", "epkg"],
+    );
     let profile_dst = host_apparmor_dir.join("epkg");
 
     if profile_src.exists() {

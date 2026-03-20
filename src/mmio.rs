@@ -550,7 +550,10 @@ pub fn is_essential_pkgname(pkgname: &str) -> bool {
 pub fn map_pkgline2package(pkgline: &str) -> Result<Package> {
     // The pkgline should be the path/identifier for the package in the store
     // Read the package.txt file from the store directory
-    let store_path = crate::models::dirs().epkg_store.join(pkgline).join("info/package.txt");
+    let store_path = crate::dirs::path_join(
+        &crate::models::dirs().epkg_store.join(pkgline),
+        &["info", "package.txt"],
+    );
 
     if !store_path.exists() {
         return Err(eyre::eyre!("Package info not found in store: {}", store_path.display()));

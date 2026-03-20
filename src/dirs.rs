@@ -14,13 +14,24 @@ use crate::userdb;
 use color_eyre::eyre::{self};
 use color_eyre::Result;
 
+/// Join `parts` onto `base` with one `Path::join` per component (avoids `.join("a/b")` mixing
+/// separators on Windows.)
+#[inline]
+pub fn path_join<P: AsRef<Path> + ?Sized>(base: &P, parts: &[&str]) -> PathBuf {
+    let mut p = base.as_ref().to_path_buf();
+    for s in parts {
+        p = p.join(s);
+    }
+    p
+}
+
 #[cfg(unix)]
 impl EPKGDirs {
     pub fn build_dirs(options: &EPKGConfig) -> Result<Self> {
         let opt_epkg = PathBuf::from("/opt/epkg");
         let home = get_home()?;
         let home_epkg = PathBuf::from(&home).join(".epkg");
-        let home_cache = PathBuf::from(&home).join(".cache/epkg");
+        let home_cache = path_join(&PathBuf::from(&home), &[".cache", "epkg"]);
 
         let (epkg_store, epkg_cache) = if options.init.shared_store {
             // Shared store/cache live under /opt/epkg
@@ -35,7 +46,7 @@ impl EPKGDirs {
 
         let user_envs = if options.init.shared_store {
             // /opt/epkg/envs/$USER
-            opt_epkg.join(format!("envs/{}", username))
+            opt_epkg.join("envs").join(&username)
         } else {
             // $HOME/.epkg/envs
             home_epkg.join("envs")
@@ -201,13 +212,13 @@ pub fn get_env_base_path(env_name: &str) -> PathBuf {
 
 /// Get the relative path to epkg environment config (etc/epkg/env.yaml)
 fn env_config_relative_path() -> PathBuf {
-    PathBuf::from("etc").join("epkg").join("env.yaml")
+    path_join(Path::new(""), &["etc", "epkg", "env.yaml"])
 }
 
 /// `$env_root/etc/epkg` built with per-component joins (consistent separators on Windows).
 #[inline]
 pub fn env_root_etc_epkg(env_root: &Path) -> PathBuf {
-    env_root.join("etc").join("epkg")
+    path_join(env_root, &["etc", "epkg"])
 }
 
 #[inline]
@@ -235,7 +246,7 @@ pub fn get_env_config_path(env_name: &str) -> PathBuf {
     }
     // If we're running inside an environment root (chroot/bind mount), the config is at /etc/epkg/env.yaml
     if cfg.common.in_env_root && env_name == cfg.common.env_name {
-        return Path::new("/").join("etc").join("epkg").join("env.yaml");
+        return env_root_env_yaml(Path::new("/"));
     }
     get_env_base_path(env_name).join(env_config_relative_path())
 }
@@ -263,13 +274,13 @@ pub fn find_env_root(env_name: &str) -> Option<PathBuf> {
 /// - $HOME/.epkg/envs/self/usr/src/epkg
 /// - /opt/epkg/envs/root/self/usr/src/epkg
 pub fn get_epkg_src_path() -> PathBuf {
-    let user_path = get_env_base_path(SELF_ENV).join("usr/src/epkg");
+    let user_path = path_join(&get_env_base_path(SELF_ENV), &["usr", "src", "epkg"]);
     if user_path.exists() {
         log::debug!("Using user's epkg source path: {:?}", user_path);
         return user_path;
     }
 
-    let root_path = public_envs_path().join("root/self/usr/src/epkg");
+    let root_path = path_join(&public_envs_path(), &["root", "self", "usr", "src", "epkg"]);
     if root_path.exists() {
         log::debug!("Using root's epkg source path: {:?}", root_path);
         return root_path;

@@ -97,7 +97,7 @@ fn extract_ar_archive<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P) -> Result<(
 
     // Extract control.tar to info/deb/
     if let Some(control_tar) = control_tar_path {
-        extract_tar(&control_tar, &store_tmp_dir.join("info/deb"))?;
+        extract_tar(&control_tar, &crate::dirs::path_join(store_tmp_dir, &["info", "deb"]))?;
         lfs::remove_file(&control_tar)?;
     } else {
         return Err(eyre::eyre!("No control.tar found in deb archive"));
@@ -138,8 +138,8 @@ fn extract_tar<P: AsRef<Path>>(tar_path: P, target_dir: P) -> Result<()> {
 /// Maps Debian scriptlet names to common scriptlet names and moves them to info/install/
 fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
-    let deb_dir = store_tmp_dir.join("info/deb");
-    let install_dir = store_tmp_dir.join("info/install");
+    let deb_dir = crate::dirs::path_join(store_tmp_dir, &["info", "deb"]);
+    let install_dir = crate::dirs::path_join(store_tmp_dir, &["info", "install"]);
 
     // Mapping from Debian scriptlet names to common names
     // Debian upgrade uses the same scripts as install
@@ -160,7 +160,7 @@ fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
 fn create_package_txt<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
     let deb_file = deb_file.as_ref();
     let store_tmp_dir = store_tmp_dir.as_ref();
-    let control_path = store_tmp_dir.join("info/deb/control");
+    let control_path = crate::dirs::path_join(store_tmp_dir, &["info", "deb", "control"]);
 
     if !lfs::exists_on_host(&control_path) {
         return Err(eyre::eyre!("Control file not found: {}", control_path.display()));
@@ -260,7 +260,7 @@ mod tests {
         let store_tmp_dir = temp_dir.path();
 
         // Create required directory structure
-        let deb_dir = store_tmp_dir.join("info/deb");
+        let deb_dir = crate::dirs::path_join(store_tmp_dir, &["info", "deb"]);
         lfs::create_dir_all(&deb_dir).unwrap();
 
         // Create a mock control file with multi-line Description
@@ -289,7 +289,7 @@ Architecture: all
         create_package_txt(&mock_deb_file, &store_tmp_dir_buf, None).unwrap();
 
         // Read the generated package.txt file
-        let package_txt_path = store_tmp_dir.join("info/package.txt");
+        let package_txt_path = crate::dirs::path_join(store_tmp_dir, &["info", "package.txt"]);
         assert!(package_txt_path.exists());
 
         let package_txt_content = fs::read_to_string(&package_txt_path).unwrap();

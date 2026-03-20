@@ -236,7 +236,7 @@ fn unpack_conda_format<P: AsRef<Path>>(conda_file: P, store_tmp_dir: &Path) -> R
     // Strip "info/" prefix from paths since the info component tar contains paths like "info/index.json"
     if let Some(info_name) = info_component {
         let info_reader = archive.by_name(&info_name)?;
-        extract_zstd_tar_stream(info_reader, &store_tmp_dir.join("info/conda"), Some("info/".to_string()))
+        extract_zstd_tar_stream(info_reader, &crate::dirs::path_join(store_tmp_dir, &["info", "conda"]), Some("info/".to_string()))
             .wrap_err_with(|| format!("Failed to extract info component: {} for {}", info_name, conda_file.display()))?;
     } else {
         return Err(eyre::eyre!("No info component found in .conda package"));
@@ -267,11 +267,11 @@ fn unpack_tar_bz2_format<P: AsRef<Path>>(conda_file: P, store_tmp_dir: &Path) ->
 
     // Use shared extraction with path stripping (no prefix to strip for conda)
     let config = ExtractConfig::new(store_tmp_dir.join("fs"))
-        .meta_dir(store_tmp_dir.join("info/conda"));
+        .meta_dir(crate::dirs::path_join(store_tmp_dir, &["info", "conda"]));
     let entries_processed = extract_archive(&mut archive, &config)?;
 
     // Post-extraction: verify index.json exists
-    if !store_tmp_dir.join("info/conda/index.json").exists() {
+    if !crate::dirs::path_join(store_tmp_dir, &["info", "conda", "index.json"]).exists() {
         return Err(eyre::eyre!("No index.json found in Conda package"));
     }
 
@@ -334,7 +334,7 @@ fn extract_zstd_tar_stream<R: Read>(
 /// Based on conda-package-streaming metadata extraction approach
 fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
-    let conda_info_dir = store_tmp_dir.join("info/conda");
+    let conda_info_dir = crate::dirs::path_join(store_tmp_dir, &["info", "conda"]);
 
     // Try to read index.json (primary metadata file)
     let index_json_path = conda_info_dir.join("index.json");
@@ -408,8 +408,8 @@ fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>) ->
 /// Based on conda-package-streaming script handling and project script mapping pattern
 fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
-    let conda_info_dir = store_tmp_dir.join("info/conda");
-    let install_dir = store_tmp_dir.join("info/install");
+    let conda_info_dir = crate::dirs::path_join(store_tmp_dir, &["info", "conda"]);
+    let install_dir = crate::dirs::path_join(store_tmp_dir, &["info", "install"]);
 
     crate::utils::copy_scriptlets_by_mapping(&SCRIPT_MAPPING, &conda_info_dir, &install_dir, false)?;
 

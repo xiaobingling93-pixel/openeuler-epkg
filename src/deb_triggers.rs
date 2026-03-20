@@ -360,7 +360,7 @@ pub fn setup_deb_env_vars(
 pub fn read_package_triggers<P: AsRef<Path>>(
     package_dir: P,
 ) -> Result<(Vec<TriggerEntry>, Vec<TriggerEntry>)> {
-    let triggers_path = package_dir.as_ref().join("info/deb/triggers");
+    let triggers_path = crate::dirs::path_join(package_dir.as_ref(), &["info", "deb", "triggers"]);
     if !lfs::exists_on_host(&triggers_path) {
         return Ok((Vec::new(), Vec::new()));
     }
@@ -441,7 +441,7 @@ pub fn write_deb_trigger_hooks<P: AsRef<Path>>(
     use std::fmt::Write as FmtWrite;
 
     let store_tmp_dir = store_tmp_dir.as_ref();
-    let install_dir = store_tmp_dir.join("info/install");
+    let install_dir = crate::dirs::path_join(store_tmp_dir, &["info", "install"]);
 
     if interest_triggers.is_empty() && activate_triggers.is_empty() {
         return Ok(());

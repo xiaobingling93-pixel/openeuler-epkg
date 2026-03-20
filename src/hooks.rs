@@ -762,15 +762,13 @@ fn load_package_hooks(plan: &mut InstallationPlan, pkgkey: &str) -> Result<()> {
 
     let hook_dir = match plan.package_format {
         crate::models::PackageFormat::Pacman => {
-            plan.store_root
-                .join(&pkgline)
-                .join("fs")
-                .join("usr/share/libalpm/hooks")
+            crate::dirs::path_join(
+                &plan.store_root.join(&pkgline).join("fs"),
+                &["usr", "share", "libalpm", "hooks"],
+            )
         }
         _ => {
-            plan.store_root
-                .join(&pkgline)
-                .join("info/install")
+            crate::dirs::path_join(&plan.store_root.join(&pkgline), &["info", "install"])
         }
     };
 
@@ -784,13 +782,13 @@ fn load_package_hooks(plan: &mut InstallationPlan, pkgkey: &str) -> Result<()> {
 pub fn load_initial_hooks(plan: &mut InstallationPlan) -> Result<()> {
     // Global hooks from etc/pacman.d/hooks/ are only for Pacman format
     if plan.package_format == PackageFormat::Pacman {
-        let etc_hooks_dir = plan.env_root.join("etc/pacman.d/hooks");
+        let etc_hooks_dir = crate::dirs::path_join(&plan.env_root, &["etc", "pacman.d", "hooks"]);
         load_hooks_from_directory(plan, &etc_hooks_dir, None)?;
     }
 
     // Global hooks from etc/apk/commit_hooks.d/ are only for APK format
     if plan.package_format == PackageFormat::Apk {
-        let etc_hooks_dir = plan.env_root.join("etc/apk/commit_hooks.d");
+        let etc_hooks_dir = crate::dirs::path_join(&plan.env_root, &["etc", "apk", "commit_hooks.d"]);
         load_hooks_from_directory(plan, &etc_hooks_dir, None)?;
     }
 
@@ -1008,7 +1006,7 @@ fn create_deb_sysusers(plan: &InstallationPlan)
     }
 
     // Write basic.conf if missing
-    let basic_conf_path = plan.env_root.join("usr/lib/sysusers.d/basic.conf");
+    let basic_conf_path = crate::dirs::path_join(&plan.env_root, &["usr", "lib", "sysusers.d", "basic.conf"]);
     if basic_conf_path.exists() {
         return;
     }

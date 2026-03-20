@@ -263,7 +263,7 @@ pub fn unpack_mv_package_with_format(
     let ca_hash_real = "unknown".to_string(); // TODO: implement cross-platform hash
 
     // Read package.txt to get package name and version
-    let package_txt_path = store_tmp_dir.join("info/package.txt");
+    let package_txt_path = crate::dirs::path_join(&store_tmp_dir, &["info", "package.txt"]);
     let package_content = fs::read_to_string(&package_txt_path)
         .wrap_err_with(|| format!("Failed to read package.txt file: {}", package_txt_path.display()))?;
 
@@ -412,7 +412,7 @@ pub fn detect_package_format(package_file: &Path) -> Result<PackageFormat> {
 pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
     let fs_dir = store_tmp_dir.join("fs");
-    let filelist_path = store_tmp_dir.join("info/filelist.txt");
+    let filelist_path = crate::dirs::path_join(&store_tmp_dir, &["info", "filelist.txt"]);
 
     if !lfs::exists_on_host(&fs_dir) {
         return Ok(()); // No filesystem files to list
@@ -614,7 +614,7 @@ pub fn format_package_fields(package_fields: &HashMap<String, String>) -> String
 /// If pkgkey is provided, merges fields from repo package into the store package.txt
 pub fn save_package_txt<P: AsRef<Path>>(mut package_fields: HashMap<String, String>, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
-    let package_txt_path = store_tmp_dir.join("info/package.txt");
+    let package_txt_path = crate::dirs::path_join(&store_tmp_dir, &["info", "package.txt"]);
 
     // If pkgkey is provided, merge fields from repo package before writing
     if let Some(pkgkey) = pkgkey {
@@ -845,7 +845,7 @@ fn validate_store_integrity(pkgline: &str) -> bool {
     }
 
     // Check filelist.txt exists and has content
-    let filelist_path = store_path.join("info/filelist.txt");
+    let filelist_path = crate::dirs::path_join(&store_path, &["info", "filelist.txt"]);
     if !lfs::exists_on_host(&filelist_path) {
         log::debug!("validate_store_integrity: filelist.txt missing for {}", pkgline);
         return false;

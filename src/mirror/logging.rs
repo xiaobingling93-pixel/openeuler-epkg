@@ -428,8 +428,10 @@ pub(crate) fn load_performance_logs(mirrors: &mut HashMap<String, Mirror>) {
     let months_to_check = generate_recent_month_strings(now, 6);
 
     for month in months_to_check {
-        let log_file_path = dirs().epkg_downloads_cache
-            .join(format!("log/mirror-{}.log", month));
+        let log_file_path = dirs()
+            .epkg_downloads_cache
+            .join("log")
+            .join(format!("mirror-{}.log", month));
 
         if log_file_path.exists() {
             if let Err(e) = parse_and_distribute_log_entries(&log_file_path, mirrors) {

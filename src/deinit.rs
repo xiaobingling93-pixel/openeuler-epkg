@@ -138,7 +138,8 @@ fn collect_user_personal_plan() -> Result<DeinitPlan> {
 
         // Remove $HOME/bin/epkg symlink
         let home_dir = get_home()?;
-        let home_bin_epkg = PathBuf::from(&home_dir).join("bin/epkg");
+        let home_bin_epkg =
+            crate::dirs::path_join(&PathBuf::from(&home_dir), &["bin", "epkg"]);
         if lfs::exists_on_host(&home_bin_epkg) {
             plan.symlinks_to_remove.push(home_bin_epkg);
         }

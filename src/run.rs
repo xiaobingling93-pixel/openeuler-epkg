@@ -360,7 +360,7 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
                 return Ok(cmd_in_bin);
             }
 
-            let cmd_in_usr_bin = env_root.join("usr/bin").join(cmd_name);
+            let cmd_in_usr_bin = crate::dirs::path_join(env_root, &["usr", "bin"]).join(cmd_name);
             if cmd_in_usr_bin.exists() {
                 return Ok(cmd_in_usr_bin);
             }
@@ -372,13 +372,13 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
             }
 
             // Check Library/bin/ (standard conda location on Windows)
-            let cmd_in_library_bin = env_root.join("Library/bin").join(cmd_name);
+            let cmd_in_library_bin = crate::dirs::path_join(env_root, &["Library", "bin"]).join(cmd_name);
             if cmd_in_library_bin.exists() {
                 return Ok(cmd_in_library_bin);
             }
 
             // Check Library/mingw-w64/bin/ (conda-forge mingw packages on Windows)
-            let cmd_in_mingw = env_root.join("Library/mingw-w64/bin").join(cmd_name);
+            let cmd_in_mingw = crate::dirs::path_join(env_root, &["Library", "mingw-w64", "bin"]).join(cmd_name);
             if cmd_in_mingw.exists() {
                 return Ok(cmd_in_mingw);
             }

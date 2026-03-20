@@ -91,7 +91,7 @@ pub type PathPolicy =
 ///
 ///     // Handle .brew/ directory specially
 ///     if stripped.starts_with(".brew") {
-///         return Some(store_tmp_dir.join("info/brew/.brew").join(
+///         return Some(crate::dirs::path_join(store_tmp_dir, &["info", "brew", ".brew"]).join(
 ///             stripped.strip_prefix(".brew").unwrap_or(&stripped)));
 ///     }
 ///
@@ -370,8 +370,8 @@ pub fn create_package_dirs<P: AsRef<Path>>(
 ) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
     lfs::create_dir_all(store_tmp_dir.join("fs"))?;
-    lfs::create_dir_all(store_tmp_dir.join(format!("info/{}", format)))?;
-    lfs::create_dir_all(store_tmp_dir.join("info/install"))?;
+    lfs::create_dir_all(crate::dirs::path_join(store_tmp_dir, &["info", format]))?;
+    lfs::create_dir_all(crate::dirs::path_join(store_tmp_dir, &["info", "install"]))?;
     Ok(())
 }
 

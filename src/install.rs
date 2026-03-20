@@ -11,7 +11,7 @@ use crate::store;
 use crate::utils;
 use crate::package;
 use crate::download;
-use crate::plan::{InstallationPlan, pkgkey2new_pkg_info};
+use crate::plan::InstallationPlan;
 use crate::models::PACKAGE_CACHE;
 use crate::link::compute_link_type_and_reflink;
 use crate::io::load_world;
@@ -166,7 +166,7 @@ fn process_local_package_files(local_files: Vec<String>) -> Result<Vec<String>> 
             .with_context(|| format!("Failed to parse pkgline: {}", pkgline))?;
 
         // Read package.txt from the unpacked package
-        let package_txt_path = final_dir.join("info/package.txt");
+        let package_txt_path = crate::dirs::path_join(&final_dir, &["info", "package.txt"]);
         if !lfs::exists_on_host(&package_txt_path) {
             return Err(eyre::eyre!("Package metadata not found: {}", package_txt_path.display()));
         }

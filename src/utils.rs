@@ -112,7 +112,7 @@ pub fn list_package_files_with_info(package_fs_dir: &str) -> Result<Vec<MtreeFil
     } else if package_fs_path.join("fs").exists() {
         // Input is the store directory, has fs/ subdir
         package_fs_path
-    } else if package_fs_path.join("info/filelist.txt").exists() {
+    } else if crate::dirs::path_join(package_fs_path, &["info", "filelist.txt"]).exists() {
         // Input is the store directory, fs/ doesn't exist but filelist.txt does
         // This happens for consumed stores after LinkType::Move
         package_fs_path
@@ -120,7 +120,7 @@ pub fn list_package_files_with_info(package_fs_dir: &str) -> Result<Vec<MtreeFil
         return Err(eyre::eyre!("Cannot determine store directory structure for {}", package_fs_dir));
     };
 
-    let filelist_path = store_dir.join("info/filelist.txt");
+    let filelist_path = crate::dirs::path_join(store_dir, &["info", "filelist.txt"]);
 
     // If filelist.txt doesn't exist, return an error
     if !lfs::exists_on_host(&filelist_path) {
@@ -453,7 +453,7 @@ pub fn determine_shared_store() -> Result<bool> {
 
     // Rule 3: If $HOME/.epkg/envs/ exists, set to private
     let home = get_home()?;
-    let home_envs = Path::new(&home).join(".epkg/envs");
+    let home_envs = crate::dirs::path_join(Path::new(&home), &[".epkg", "envs"]);
     let home_envs_exists = lfs::exists_on_host(&home_envs);
     if home_envs_exists {
         log::trace!("determine_shared_store: rule 3 -> private ({} exists)", home_envs.display());
@@ -896,7 +896,7 @@ fn ensure_owner_permissions(_target_path: &Path, _required_mask: u32, _file_type
 pub fn fixup_env_links(env_root: &Path) -> Result<()> {
     log::trace!("fixup_env_links called for {}", env_root.display());
     // Prevent running and stalling on `systemctl --system daemon-reload`
-    let _ = lfs::remove_dir(env_root.join("run/systemd/system"));
+    let _ = lfs::remove_dir(crate::dirs::path_join(env_root, &["run", "systemd", "system"]));
 
     // Replace symlinks with their target file content
     replace_symlinks_with_content(env_root)?;
@@ -1036,7 +1036,7 @@ fn create_makepkg_download_conf(env_root: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let conf_dir = env_root.join("etc/makepkg.conf.d");
+    let conf_dir = crate::dirs::path_join(env_root, &["etc", "makepkg.conf.d"]);
     if !lfs::exists_in_env(&conf_dir) {
         return Ok(());
     }

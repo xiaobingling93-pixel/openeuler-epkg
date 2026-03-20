@@ -1274,7 +1274,7 @@ fn write_filelists_metadata_json(output_path: &PathBuf, file_info: &FilelistsFil
 pub fn list_repos() -> Result<()> {
     let self_env_root = dirs::find_env_root(SELF_ENV)
                 .ok_or_else(|| eyre::eyre!("Self environment not found"))?;
-    let manager_channel_dir = self_env_root.join("usr/src/epkg/assets/repos");
+    let manager_channel_dir = crate::dirs::path_join(&self_env_root, &["usr", "src", "epkg", "assets", "repos"]);
     if !lfs::exists_on_host(&manager_channel_dir) {
         return Ok(());
     }

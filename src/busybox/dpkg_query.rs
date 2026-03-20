@@ -117,7 +117,7 @@ fn format_conffiles(installed_info: Option<&InstalledPackageInfo>) -> String {
     // Read conffiles from info/deb/conffiles
     if let Some(info) = installed_info {
         let store_path = dirs().epkg_store.join(&info.pkgline);
-        let conffiles_path = store_path.join("info/deb/conffiles");
+        let conffiles_path = crate::dirs::path_join(&store_path, &["info", "deb", "conffiles"]);
         if conffiles_path.exists() {
             if let Ok(content) = fs::read_to_string(&conffiles_path) {
                 // Format: each line is "path md5sum" or "path md5sum obsolete"
@@ -394,7 +394,7 @@ fn show_control_path(package_spec: &str, control_file: Option<&str>) -> Result<(
     if let Some((_package, installed_info)) = maybe_package {
         let store_path = dirs().epkg_store.join(&installed_info.pkgline);
         let control_file_name = control_file.unwrap_or("control");
-        let control_path = store_path.join("info/deb").join(control_file_name);
+        let control_path = crate::dirs::path_join(&store_path, &["info", "deb"]).join(control_file_name);
 
         if control_path.exists() {
             println!("{}", control_path.display());

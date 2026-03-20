@@ -406,7 +406,7 @@ fn is_musl_build() -> bool {
 pub fn create_all_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -> Result<()> {
 
     // First try to use the epkg binary symlink within the environment
-    let epkg_exe = env_root.join("usr/bin/epkg");
+    let epkg_exe = crate::dirs::path_join(env_root, &["usr", "bin", "epkg"]);
     let epkg_exe = if epkg_exe.exists() {
         log::debug!("Using epkg binary symlink at {}", epkg_exe.display());
         epkg_exe
@@ -428,7 +428,7 @@ pub fn create_all_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -
     for cmd in applet_commands {
         let cmd_name = cmd.get_name();
         let subdir = if is_sbin_command(cmd_name) { "sbin" } else { "bin" };
-        let symlink_path = env_root.join(format!("usr/{}/{}", subdir, cmd_name));
+        let symlink_path = env_root.join("usr").join(subdir).join(cmd_name);
         let target = if let Some(parent) = symlink_path.parent() {
             pathdiff::diff_paths(&epkg_exe, parent).unwrap_or(epkg_exe.clone())
         } else {
@@ -437,7 +437,7 @@ pub fn create_all_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -
         force_symlink(&target, &symlink_path)
             .with_context(|| format!("Failed to create {} symlink in {}", cmd_name, symlink_path.display()))?;
     }
-    let bracket_path = env_root.join("usr/bin/[");
+    let bracket_path = crate::dirs::path_join(env_root, &["usr", "bin", "["]);
     let bracket_target = if let Some(parent) = bracket_path.parent() {
         pathdiff::diff_paths(&epkg_exe, parent).unwrap_or(epkg_exe.clone())
     } else {

@@ -286,7 +286,7 @@ fn run_desktop_update_command(
     command_name: &str,
 ) -> Result<()> {
     // Compute XDG_DATA_HOME and the directory to check for existence
-    let xdg_data_home = home.join(".local/share");
+    let xdg_data_home = crate::dirs::path_join(home, &[".local", "share"]);
     let dir_to_update = xdg_data_home.join(subdir);
 
     // Check if directory exists

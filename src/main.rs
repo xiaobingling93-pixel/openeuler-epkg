@@ -1037,7 +1037,10 @@ fn load_config_from_matches(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
     let config = matches.get_one::<String>("config").map_or_else(
         || {
             // Try default config file location
-            let default_config_path = PathBuf::from(dirs::get_home()?).join(".epkg/config/options.yaml");
+            let default_config_path = crate::dirs::path_join(
+                &PathBuf::from(dirs::get_home()?),
+                &[".epkg", "config", "options.yaml"],
+            );
             if default_config_path.exists() {
                 read_yaml_file(&default_config_path)
             } else {
@@ -1278,7 +1281,7 @@ fn env_name_from_path(dir: &str) -> String {
 /// we're on the host selecting that env, so run must still do namespace/mounts (same as -e).
 fn apply_env_config_from_path(env_root_or_etc: &Path, config: &mut EPKGConfig) -> Result<()> {
     let config_path = if env_root_or_etc == Path::new("/") {
-        Path::new("/").join("etc").join("epkg").join("env.yaml")
+        env_root_env_yaml(Path::new("/"))
     } else {
         env_root_env_yaml(env_root_or_etc)
     };
@@ -1319,7 +1322,7 @@ pub fn resolve_env_root(env_root: &str) -> Result<String> {
         ));
     }
 
-    let config_path = env_root.join("etc").join("epkg").join("env.yaml");
+    let config_path = env_root_env_yaml(env_root.as_path());
     if !config_path.exists() {
         return Err(eyre::eyre!(
             "Environment not found at path: {}\n  (missing configuration file: {})",
@@ -1408,7 +1411,7 @@ fn determine_environment_explicit(matches: &clap::ArgMatches, config: &mut EPKGC
 /// Try to detect environment from /etc/epkg/env.yaml (when running inside an environment).
 /// Returns Ok(true) if environment detected and config updated, Ok(false) if file doesn't exist.
 fn try_detect_environment_from_env_yaml(config: &mut EPKGConfig) -> Result<bool> {
-    let root_env_yaml = Path::new("/").join("etc").join("epkg").join("env.yaml");
+    let root_env_yaml = env_root_env_yaml(Path::new("/"));
     if !root_env_yaml.exists() {
         return Ok(false);
     }
@@ -1425,7 +1428,7 @@ fn try_apply_explicit_env_root(config: &mut EPKGConfig) -> Result<bool> {
     }
     let env_root_path = config.common.env_root.clone();
     let config_path = if env_root_path == "/" {
-        Path::new("/").join("etc").join("epkg").join("env.yaml")
+        env_root_env_yaml(Path::new("/"))
     } else {
         env_root_env_yaml(Path::new(&env_root_path))
     };
@@ -2015,7 +2018,7 @@ fn command_hash(sub_matches: &clap::ArgMatches) -> Result<()> {
 fn command_build(sub_matches: &clap::ArgMatches) -> Result<()> {
     if let Some(package_yaml) = sub_matches.get_one::<String>("PACKAGE_YAML") {
         let epkg_src_path = get_epkg_src_path();
-        let build_script = epkg_src_path.join("build/scripts/generic-build.sh");
+        let build_script = crate::dirs::path_join(&epkg_src_path, &["build", "scripts", "generic-build.sh"]);
         if !build_script.exists() {
             return Err(eyre::eyre!("Build script not found"));
         }

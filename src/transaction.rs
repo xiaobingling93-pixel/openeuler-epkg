@@ -473,13 +473,13 @@ pub fn process_package_operation(
 /// Called after all package operations complete
 #[cfg(unix)]
 fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
-    let ld_so_cache = env_root.join("etc/ld.so.cache");
+    let ld_so_cache = crate::dirs::path_join(env_root, &["etc", "ld.so.cache"]);
     let lib_dirs = [
-        env_root.join("etc/ld.so.conf.d"),
+        crate::dirs::path_join(env_root, &["etc", "ld.so.conf.d"]),
         env_root.join("lib"),
         env_root.join("lib64"),
-        env_root.join("usr/lib"),
-        env_root.join("usr/lib64"),
+        crate::dirs::path_join(env_root, &["usr", "lib"]),
+        crate::dirs::path_join(env_root, &["usr", "lib64"]),
     ];
 
     // Get mtime of ld.so.cache if it exists

@@ -364,7 +364,7 @@ fn process_single_source_file(path: &Path, parser: fn(&Path, &str) -> Result<Vec
 /// RepoReleaseItem::RepoRevise::repo_name, but distinguish by different repodata_name.
 fn load_apt_sources_with_glob(env_root: &Path, glob_pattern: &str, parser: fn(&Path, &str) -> Result<Vec<RepoConfig>>, arch: &str) -> Result<Vec<ChannelConfig>> {
     let mut channel_configs = Vec::new();
-    let sources_dir = env_root.join("etc/apt/sources.list.d");
+    let sources_dir = crate::dirs::path_join(env_root, &["etc", "apt", "sources.list.d"]);
     let full_pattern = sources_dir.join(glob_pattern);
 
     if !lfs::exists_on_host(&sources_dir) {

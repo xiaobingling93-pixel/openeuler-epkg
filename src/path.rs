@@ -74,8 +74,8 @@ fn get_active_env_paths(active_env: &str, pure: bool) -> Result<Vec<String>> {
 
     // In pure mode, add bin and sbin paths
     if pure {
-        let bin_path = env_root.join("usr/bin");
-        let sbin_path = env_root.join("usr/sbin");
+        let bin_path = crate::dirs::path_join(&env_root, &["usr", "bin"]);
+        let sbin_path = crate::dirs::path_join(&env_root, &["usr", "sbin"]);
 
         if lfs::exists_or_any_symlink(&bin_path) {
             path_components.push(bin_path.display().to_string());

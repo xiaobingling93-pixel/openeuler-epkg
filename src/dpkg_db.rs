@@ -71,7 +71,7 @@ use crate::lfs;
 /// Get the dpkg admin directory path for the current environment
 fn get_dpkg_admindir() -> Result<PathBuf> {
     let env_root = dirs::get_env_root(crate::models::config().common.env_name.clone())?;
-    Ok(env_root.join("var/lib/dpkg"))
+    Ok(crate::dirs::path_join(&env_root, &["var", "lib", "dpkg"]))
 }
 
 /// Generate dpkg status entry for a package
@@ -139,7 +139,7 @@ fn generate_status_entry(
 /// Read control file from package store
 fn read_package_control(pkgline: &str) -> Option<String> {
     let store_path = dirs().epkg_store.join(pkgline);
-    let control_path = store_path.join("info/deb/control");
+    let control_path = crate::dirs::path_join(&store_path, &["info", "deb", "control"]);
     std::fs::read_to_string(&control_path).ok()
 }
 
@@ -253,7 +253,8 @@ pub fn create_dpkg_info_symlinks(pkgname: &str, pkgline: &str) -> Result<()> {
 
     lfs::create_dir_all(&info_dir)?;
 
-    let store_info_path = dirs().epkg_store.join(pkgline).join("info/deb");
+    let store_info_path =
+        crate::dirs::path_join(&dirs().epkg_store.join(pkgline), &["info", "deb"]);
 
     // Skip if no deb info directory
     if !store_info_path.exists() {

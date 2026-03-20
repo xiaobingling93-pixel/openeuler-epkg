@@ -148,7 +148,7 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
 /// Creates scriptlets with appropriate file extensions based on interpreter information
 pub fn create_scriptlets<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
-    let install_dir = store_tmp_dir.join("info/install");
+    let install_dir = crate::dirs::path_join(store_tmp_dir, &["info", "install"]);
 
     // Mapping from RPM scriptlet names to common names
     // Note: Transaction scriptlets (pretrans, posttrans, preuntrans, postuntrans) use distinct filenames
