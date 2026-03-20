@@ -396,28 +396,46 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
     }
     #[cfg(not(unix))]
     {
+        use crate::models::PackageFormat;
         use std::path::PathBuf;
-        // On non-Unix platforms (Windows), update installed_packages cache directly
-        // without running scriptlets (transaction batch handles this on Unix)
-        for (pkgkey, pkg_info) in &plan.new_pkgs {
-            PACKAGE_CACHE.installed_packages.write().unwrap().insert(pkgkey.clone(), Arc::clone(pkg_info));
-            PACKAGE_CACHE.pkgline2installed.write().unwrap().insert(pkg_info.pkgline.clone(), Arc::clone(pkg_info));
-        }
-        // Expose packages (normally done by run_transaction_batch)
-        // Collect packages to expose first to avoid borrow issues
-        let pkgs_to_expose: Vec<(String, PathBuf)> = plan.ordered_operations.iter()
-            .filter(|op| op.should_expose())
-            .filter_map(|op| op.new_pkgkey.as_ref())
-            .filter(|pkgkey| plan.batch.new_pkgkeys.contains(*pkgkey))
-            .filter_map(|pkgkey| {
-                crate::plan::pkgkey2new_pkg_info(plan, pkgkey).map(|info| {
-                    (pkgkey.clone(), plan.store_root.join(&info.pkgline).join("fs"))
+
+        // Check if this is a Linux-format package that requires VM execution
+        let is_linux_format = matches!(plan.package_format,
+            PackageFormat::Deb | PackageFormat::Rpm | PackageFormat::Apk |
+            PackageFormat::Pacman // Note: Pacman includes MSYS2 which is native
+        );
+        let is_arch_linux = plan.package_format == PackageFormat::Pacman &&
+            crate::models::channel_config().distro != "msys2";
+
+        if is_linux_format || is_arch_linux {
+            // For Linux-format packages on non-Unix hosts, run transaction batch
+            // which will execute scriptlets via VM (libkrun).
+            // The prepare_run_options_for_command() auto-enables IsolateMode::Vm.
+            log::info!("Running transaction batch with VM isolation for Linux packages");
+            run_transaction_batch(plan)?;
+            remove_pending_packages()?;
+        } else {
+            // For native formats (conda/brew/msys2), update cache directly
+            // without running scriptlets (transaction batch handles this on Unix)
+            for (pkgkey, pkg_info) in &plan.new_pkgs {
+                PACKAGE_CACHE.installed_packages.write().unwrap().insert(pkgkey.clone(), Arc::clone(pkg_info));
+                PACKAGE_CACHE.pkgline2installed.write().unwrap().insert(pkg_info.pkgline.clone(), Arc::clone(pkg_info));
+            }
+            // Expose packages (normally done by run_transaction_batch)
+            let pkgs_to_expose: Vec<(String, PathBuf)> = plan.ordered_operations.iter()
+                .filter(|op| op.should_expose())
+                .filter_map(|op| op.new_pkgkey.as_ref())
+                .filter(|pkgkey| plan.batch.new_pkgkeys.contains(*pkgkey))
+                .filter_map(|pkgkey| {
+                    crate::plan::pkgkey2new_pkg_info(plan, pkgkey).map(|info| {
+                        (pkgkey.clone(), plan.store_root.join(&info.pkgline).join("fs"))
+                    })
                 })
-            })
-            .collect();
-        for (pkgkey, store_fs_dir) in pkgs_to_expose {
-            if let Err(e) = crate::expose::expose_package(plan, &store_fs_dir, &pkgkey) {
-                log::warn!("Failed to expose package {}: {}", pkgkey, e);
+                .collect();
+            for (pkgkey, store_fs_dir) in pkgs_to_expose {
+                if let Err(e) = crate::expose::expose_package(plan, &store_fs_dir, &pkgkey) {
+                    log::warn!("Failed to expose package {}: {}", pkgkey, e);
+                }
             }
         }
     }
