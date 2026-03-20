@@ -79,9 +79,8 @@ const UNIX_ONLY: &[&str] = &[
 
     // Mount tables, metadata, device nodes, archives; install uses chmod/chown semantics.
     // sync: POSIX sync(2)/fsync; --file-system uses syncfs(2) on Linux only (see sync.rs).
-    "df",
+    // df / ls: not listed here — built on all targets (Windows: partial; see sources).
     "install",
-    "ls",
     "mkfifo",
     "stat",
     "sync",

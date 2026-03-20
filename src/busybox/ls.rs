@@ -4,18 +4,39 @@ use color_eyre::eyre::eyre;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
-use crate::posix::{posix_stat, PosixError};
 use crate::busybox::{format_list_columns, terminal_width, visible_width_ansi};
-use users::{get_user_by_uid, get_group_by_gid};
-use libc;
 use std::io::IsTerminal;
 use std::env;
+#[cfg(unix)]
+use crate::posix::{posix_stat, PosixError};
+#[cfg(unix)]
+use users::{get_user_by_uid, get_group_by_gid};
+#[cfg(unix)]
+use libc;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
 use nix::dir::Dir;
+#[cfg(unix)]
 use nix::fcntl::OFlag;
+#[cfg(unix)]
 use nix::sys::stat::Mode;
+
+/// st_blocks for -s / total; POSIX st_blocks or Windows rough 512-byte sectors.
+fn st_blocks(m: &fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    {
+        m.blocks()
+    }
+    #[cfg(windows)]
+    {
+        (m.len() + 511) / 512
+    }
+}
 
 fn blocks_kb(blocks: u64) -> u64 {
     (blocks + 1) / 2
@@ -317,26 +338,34 @@ impl LsOptions {
     }
 
     fn ls_color_key_for_metadata(metadata: &fs::Metadata) -> String {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.is_dir() {
-            "di".to_string()
-        } else if metadata.is_symlink() {
-            "ln".to_string()
-        } else if metadata.file_type().is_socket() {
-            "so".to_string()
-        } else if metadata.file_type().is_fifo() {
-            "pi".to_string()
-        } else if metadata.file_type().is_char_device() {
-            "cd".to_string()
-        } else if metadata.file_type().is_block_device() {
-            "bd".to_string()
-        } else {
-            // Check for executable
-            let mode = metadata.permissions().mode();
-            if mode & 0o111 != 0 {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.is_dir() {
+                "di".to_string()
+            } else if metadata.is_symlink() {
+                "ln".to_string()
+            } else if metadata.file_type().is_socket() {
+                "so".to_string()
+            } else if metadata.file_type().is_fifo() {
+                "pi".to_string()
+            } else if metadata.file_type().is_char_device() {
+                "cd".to_string()
+            } else if metadata.file_type().is_block_device() {
+                "bd".to_string()
+            } else if metadata.permissions().mode() & 0o111 != 0 {
                 "ex".to_string()
             } else {
-                // default to no color
+                "".to_string()
+            }
+        }
+        #[cfg(windows)]
+        {
+            if metadata.is_dir() {
+                "di".to_string()
+            } else if metadata.is_symlink() {
+                "ln".to_string()
+            } else {
                 "".to_string()
             }
         }
@@ -570,6 +599,7 @@ fn format_size(size: u64, human_readable: bool) -> String {
     }
 }
 
+#[cfg(unix)]
 fn get_permissions_string(stat: &crate::posix::PosixStat) -> String {
     let file_type_char = if stat.mode & libc::S_IFMT as u32 == libc::S_IFDIR as u32 {
         'd'
@@ -589,6 +619,21 @@ fn get_permissions_string(stat: &crate::posix::PosixStat) -> String {
     format!("{}{}", file_type_char, stat.mode_str)
 }
 
+#[cfg(windows)]
+fn get_permissions_string_win(meta: &fs::Metadata) -> String {
+    let c = if meta.is_dir() {
+        'd'
+    } else if meta.is_symlink() {
+        'l'
+    } else {
+        '-'
+    };
+    let ro = meta.permissions().readonly();
+    let tri = if ro { "r--r--r--" } else { "rw-rw-rw-" };
+    format!("{}{}", c, tri)
+}
+
+#[cfg(unix)]
 fn get_owner_group_strings(stat: &crate::posix::PosixStat) -> (String, String) {
     let owner = get_user_by_uid(stat.uid)
         .map(|u| u.name().to_string_lossy().to_string())
@@ -597,6 +642,12 @@ fn get_owner_group_strings(stat: &crate::posix::PosixStat) -> (String, String) {
         .map(|g| g.name().to_string_lossy().to_string())
         .unwrap_or_else(|| stat.gid.to_string());
     (owner, group)
+}
+
+#[cfg(windows)]
+fn get_owner_group_strings_win() -> (String, String) {
+    let owner = env::var("USERNAME").unwrap_or_else(|_| "-".to_string());
+    (owner, "-".to_string())
 }
 
 fn get_name_with_symlink(entry: &FileEntry) -> String {
@@ -612,29 +663,52 @@ fn get_name_with_symlink(entry: &FileEntry) -> String {
 }
 
 fn get_long_entry_fields(entry: &FileEntry, options: &LsOptions) -> Result<LongEntryFields> {
-    let stat = posix_stat(entry.path.to_str().unwrap())
-        .map_err(|e| match e {
-            PosixError::Io(io_err) => eyre!("{}", io_err),
-            PosixError::InvalidArgument(msg) => eyre!("{}", msg),
-            PosixError::NotFound => eyre!("File not found"),
-        })?;
+    #[cfg(unix)]
+    {
+        let stat = posix_stat(entry.path.to_str().unwrap())
+            .map_err(|e| match e {
+                PosixError::Io(io_err) => eyre!("{}", io_err),
+                PosixError::InvalidArgument(msg) => eyre!("{}", msg),
+                PosixError::NotFound => eyre!("File not found"),
+            })?;
 
-    let permissions = get_permissions_string(&stat);
-    let nlink = stat.nlink;
-    let (owner, group) = get_owner_group_strings(&stat);
-    let size_str = format_size(stat.size, options.human_readable);
-    let date_str = format_time(stat.mtime, options.time_style.as_ref());
-    let name = get_name_with_symlink(entry);
+        let permissions = get_permissions_string(&stat);
+        let nlink = stat.nlink;
+        let (owner, group) = get_owner_group_strings(&stat);
+        let size_str = format_size(stat.size, options.human_readable);
+        let date_str = format_time(stat.mtime, options.time_style.as_ref());
+        let name = get_name_with_symlink(entry);
 
-    Ok(LongEntryFields {
-        permissions,
-        nlink,
-        owner,
-        group,
-        size_str,
-        date_str,
-        name,
-    })
+        Ok(LongEntryFields {
+            permissions,
+            nlink,
+            owner,
+            group,
+            size_str,
+            date_str,
+            name,
+        })
+    }
+    #[cfg(windows)]
+    {
+        let meta = &entry.metadata;
+        let permissions = get_permissions_string_win(meta);
+        let nlink = 1u64;
+        let (owner, group) = get_owner_group_strings_win();
+        let size_str = format_size(meta.len(), options.human_readable);
+        let date_str = format_time(entry.mtime, options.time_style.as_ref());
+        let name = get_name_with_symlink(entry);
+
+        Ok(LongEntryFields {
+            permissions,
+            nlink,
+            owner,
+            group,
+            size_str,
+            date_str,
+            name,
+        })
+    }
 }
 
 fn format_long_entry(fields: &LongEntryFields, entry: &FileEntry, options: &LsOptions, widths: &ColumnWidths) -> Result<String> {
@@ -669,6 +743,15 @@ fn get_classify_indicator(entry: &FileEntry) -> char {
                 return '*';
             }
         }
+        #[cfg(windows)]
+        {
+            if let Some(ext) = entry.path.extension().and_then(|e| e.to_str()) {
+                match ext.to_ascii_lowercase().as_str() {
+                    "exe" | "bat" | "cmd" | "ps1" | "com" => return '*',
+                    _ => {}
+                }
+            }
+        }
         '\0'
     }
 }
@@ -679,7 +762,14 @@ fn collect_and_filter_entries(dir: &Path, options: &LsOptions) -> Result<Vec<Fil
         if let Ok(entries) = collect_and_filter_entries_getdents64(dir, options) {
             return Ok(entries);
         }
-        collect_and_filter_entries_nix(dir, options)
+        #[cfg(unix)]
+        {
+            return collect_and_filter_entries_nix(dir, options);
+        }
+        #[cfg(not(unix))]
+        {
+            return collect_and_filter_entries_std(dir, options);
+        }
     } else {
         collect_and_filter_entries_std(dir, options)
     }
@@ -692,7 +782,7 @@ fn collect_and_filter_entries_std(dir: &Path, options: &LsOptions) -> Result<Vec
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let name = entry.file_name();
-            let bytes = name.as_bytes();
+            let bytes = name.as_os_str().as_encoded_bytes();
             if !options.all && !options.almost_all && bytes.first() == Some(&b'.') {
                 return None;
             }
@@ -801,6 +891,7 @@ fn collect_and_filter_entries_getdents64(dir: &Path, options: &LsOptions) -> Res
     Ok(file_entries)
 }
 
+#[cfg(unix)]
 fn collect_and_filter_entries_nix(dir: &Path, options: &LsOptions) -> Result<Vec<FileEntry>> {
     let mut nix_dir = Dir::open(
         dir,
@@ -874,7 +965,7 @@ fn print_long_format(entries: &[FileEntry], options: &LsOptions, _prefix: &str) 
         widths.size = widths.size.max(fields.size_str.len());
         fields_vec.push(fields);
     }
-    let total_blocks: u64 = entries.iter().map(|e| e.metadata.blocks()).sum::<u64>();
+    let total_blocks: u64 = entries.iter().map(|e| st_blocks(&e.metadata)).sum::<u64>();
     let total_kblocks = blocks_kb(total_blocks);
     println!("total {}", total_kblocks);
     for (entry, fields) in entries.iter().zip(fields_vec.iter()) {
@@ -889,14 +980,14 @@ fn print_short_format(entries: &[FileEntry], options: &LsOptions) -> Result<()> 
     let mut block_width = 0;
     if options.size_blocks {
         for entry in entries {
-            let blocks = blocks_kb(entry.metadata.blocks());
+            let blocks = blocks_kb(st_blocks(&entry.metadata));
             block_width = block_width.max(blocks.to_string().len());
         }
     }
 
     // Print total blocks if -s flag is used
     if options.size_blocks {
-        let total_blocks: u64 = entries.iter().map(|e| e.metadata.blocks()).sum();
+        let total_blocks: u64 = entries.iter().map(|e| st_blocks(&e.metadata)).sum();
         let total_kblocks = blocks_kb(total_blocks);
         println!("total {}", total_kblocks);
     }
@@ -904,7 +995,7 @@ fn print_short_format(entries: &[FileEntry], options: &LsOptions) -> Result<()> 
     if options.one {
         // One entry per line
         for entry in entries {
-            let mut formatted = format_name(entry.name.as_bytes(), options);
+            let mut formatted = format_name(entry.name.as_os_str().as_encoded_bytes(), options);
             if options.classify {
                 let indicator = get_classify_indicator(entry);
                 if indicator != '\0' {
@@ -913,7 +1004,7 @@ fn print_short_format(entries: &[FileEntry], options: &LsOptions) -> Result<()> 
             }
             let colored_name = options.colorize_name(entry, &formatted);
             if options.size_blocks {
-                let blocks = blocks_kb(entry.metadata.blocks());
+                let blocks = blocks_kb(st_blocks(&entry.metadata));
                 println!("{:>width$} {}", blocks, colored_name, width = block_width);
             } else {
                 println!("{}", colored_name);
@@ -928,7 +1019,7 @@ fn print_short_format(entries: &[FileEntry], options: &LsOptions) -> Result<()> 
     let mut widths = Vec::with_capacity(entries.len());
 
     for entry in entries {
-        let mut formatted = format_name(entry.name.as_bytes(), options);
+        let mut formatted = format_name(entry.name.as_os_str().as_encoded_bytes(), options);
         if options.classify {
             let indicator = get_classify_indicator(entry);
             if indicator != '\0' {
@@ -937,7 +1028,7 @@ fn print_short_format(entries: &[FileEntry], options: &LsOptions) -> Result<()> 
         }
         let colored_name = options.colorize_name(entry, &formatted);
         let display = if options.size_blocks {
-            let blocks = blocks_kb(entry.metadata.blocks());
+            let blocks = blocks_kb(st_blocks(&entry.metadata));
             format!("{:>width$} {}", blocks, colored_name, width = block_width)
         } else {
             colored_name
@@ -993,9 +1084,8 @@ fn print_path_header_if_needed(path: &Path, options: &LsOptions) {
     }
 }
 
-/// Get the actual filename from the parent directory by inode (raw bytes from
-/// readdir), so we display correctly when the path was lossy-converted.
-/// Uses nix::dir to get raw directory names like BusyBox ls.c (readdir d_name).
+/// Unix: filename from parent by inode (raw readdir bytes).
+#[cfg(unix)]
 fn real_name_from_parent(path: &Path, ino: u64) -> Option<std::ffi::OsString> {
     let parent = path.parent()?;
     let mut nix_dir = Dir::open(
@@ -1022,9 +1112,17 @@ fn file_entry_for_path(path: &Path, metadata: fs::Metadata) -> Result<FileEntry>
         .map_err(|e| eyre!("ls: {}: {}", path.display(), e))?
         .as_secs();
 
-    let ino = metadata.ino();
-    let name = real_name_from_parent(path, ino)
-        .or_else(|| path.file_name().map(|n| n.to_owned()))
+    #[cfg(unix)]
+    let name = {
+        let ino = metadata.ino();
+        real_name_from_parent(path, ino)
+            .or_else(|| path.file_name().map(|n| n.to_owned()))
+            .unwrap_or_else(|| path.as_os_str().to_owned())
+    };
+    #[cfg(windows)]
+    let name = path
+        .file_name()
+        .map(|n| n.to_owned())
         .unwrap_or_else(|| path.as_os_str().to_owned());
 
     Ok(FileEntry {
@@ -1052,7 +1150,7 @@ fn print_single_entry(entry: &FileEntry, options: &LsOptions) -> Result<()> {
         let display_str = if options.directory {
             entry.path.to_string_lossy().to_string()
         } else {
-            format_name(entry.name.as_bytes(), options)
+            format_name(entry.name.as_os_str().as_encoded_bytes(), options)
         };
         let mut display_name = display_str;
         if options.classify {

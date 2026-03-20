@@ -2,14 +2,67 @@ use clap::{Arg, ArgAction, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use std::env;
+#[cfg(unix)]
 use std::fs::File;
+#[cfg(unix)]
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use crate::posix::{posix_statfs, PosixStatFs};
+#[cfg(unix)]
+use crate::posix::{posix_statfs, PosixStatFs, PosixError};
+
+/// Normalized statfs fields for df output (POSIX statfs on Unix; GetDiskFreeSpaceExW on Windows).
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct DfFsStat {
+    f_bsize: u64,
+    f_blocks: u64,
+    f_bfree: u64,
+    f_bavail: u64,
+    f_files: u64,
+    f_ffree: u64,
+}
+
+#[cfg(unix)]
+fn statfs_to_df(mut s: PosixStatFs, inodes: bool) -> DfFsStat {
+    if inodes {
+        s.f_blocks = s.f_files;
+        s.f_bfree = s.f_ffree;
+        s.f_bavail = s.f_ffree;
+        s.f_bsize = 1;
+    }
+    DfFsStat {
+        f_bsize: s.f_bsize,
+        f_blocks: s.f_blocks,
+        f_bfree: s.f_bfree,
+        f_bavail: s.f_bavail,
+        f_files: s.f_files,
+        f_ffree: s.f_ffree,
+    }
+}
+
+#[cfg(windows)]
+fn statfs_to_df_windows(
+    total: u64,
+    free_total: u64,
+    avail: u64,
+    bsize: u64,
+    _inodes: bool,
+) -> DfFsStat {
+    let blocks = (total + bsize - 1) / bsize;
+    let bfree = (free_total + bsize - 1) / bsize;
+    let bavail = (avail + bsize - 1) / bsize;
+    DfFsStat {
+        f_bsize: bsize,
+        f_blocks: blocks,
+        f_bfree: bfree,
+        f_bavail: bavail,
+        f_files: 0,
+        f_ffree: 0,
+    }
+}
 
 #[derive(Debug)]
 pub struct DfOptions {
-    // Display options
     pub posix_format: bool,
     pub human_readable: bool,
     pub human_decimal: bool,
@@ -19,11 +72,7 @@ pub struct DfOptions {
     pub show_fs_type: bool,
     pub inodes: bool,
     pub all_filesystems: bool,
-
-    // Filter options
     pub fs_type_filter: Option<String>,
-
-    // Input
     pub filesystems: Vec<String>,
 }
 
@@ -42,7 +91,6 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<DfOptions> {
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();
 
-    // Parse block size if specified
     let block_size_parsed = if let Some(bs) = block_size {
         Some(parse_block_size(&bs)?)
     } else {
@@ -64,13 +112,11 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<DfOptions> {
     })
 }
 
-/// Parse block size string with optional suffix (K, M, G, T, P, E)
 fn parse_block_size(s: &str) -> Result<u64> {
     if s.is_empty() {
         return Err(eyre!("empty block size"));
     }
 
-    // Check for suffix
     let suffix = s.chars().last().unwrap();
     let (num_str, multiplier) = match suffix {
         '0'..='9' => (s, 1),
@@ -139,7 +185,7 @@ pub fn command() -> Command {
         .arg(
             Arg::new("inodes")
                 .short('i')
-                .help("List inode information instead of block usage")
+                .help("List inode information instead of block usage (Unix only; not supported on Windows)")
                 .action(ArgAction::SetTrue)
         )
         .arg(
@@ -163,22 +209,18 @@ pub fn command() -> Command {
         .arg(Arg::new("help").long("help").action(clap::ArgAction::Help))
 }
 
-/// Format size for display based on options
 fn format_blocks(blocks: u64, block_size: u64, display_block_size: u64, human_readable: bool, human_decimal: bool, _posix_format: bool) -> String {
     if human_readable || human_decimal {
         format_size_human(blocks * block_size, human_decimal)
     } else if display_block_size == 1 {
-        // For inodes mode or raw counts
         blocks.to_string()
     } else {
-        // Convert to display blocks
         let total_bytes = blocks as u128 * block_size as u128;
         let display_blocks = (total_bytes + (display_block_size as u128 / 2)) / display_block_size as u128;
         display_blocks.to_string()
     }
 }
 
-/// Human readable size formatting (similar to ls.rs)
 fn format_size_human(size: u64, decimal: bool) -> String {
     const UNITS_BINARY: &[&str] = &["B", "K", "M", "G", "T", "P", "E"];
     const UNITS_DECIMAL: &[&str] = &["B", "KB", "MB", "GB", "TB", "PB", "EB"];
@@ -201,7 +243,7 @@ fn format_size_human(size: u64, decimal: bool) -> String {
     }
 }
 
-/// Read mount table from /proc/mounts or /etc/mtab
+#[cfg(unix)]
 fn read_mount_table() -> Result<Vec<(String, String, String)>> {
     let file = File::open("/proc/mounts").or_else(|_| File::open("/etc/mtab"))?;
     let reader = BufReader::new(file);
@@ -221,28 +263,170 @@ fn read_mount_table() -> Result<Vec<(String, String, String)>> {
     Ok(mounts)
 }
 
-/// Get filesystem statistics for a mount point
-fn get_fs_stats(path: &str, inodes: bool) -> Result<PosixStatFs> {
-    let mut stats = posix_statfs(path)
-        .map_err(|e| eyre!("cannot read filesystem statistics for '{}': {:?}", path, e))?;
+#[cfg(windows)]
+mod win_df {
+    use super::*;
+    use std::ffi::{OsStr, OsString};
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use std::path::PathBuf;
 
-    if inodes {
-        // For inode mode, repurpose block fields as inode counts
-        stats.f_blocks = stats.f_files;
-        stats.f_bfree = stats.f_ffree;
-        stats.f_bavail = stats.f_ffree;
-        stats.f_bsize = 1; // Each "block" is one inode
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetLogicalDriveStringsW(n_buffer_length: u32, lp_buffer: *mut u16) -> u32;
+        fn GetDiskFreeSpaceExW(
+            lp_directory_name: *const u16,
+            lp_free_bytes_available: *mut u64,
+            lp_total_number_of_bytes: *mut u64,
+            lp_total_free_bytes: *mut u64,
+        ) -> i32;
+        fn GetVolumeInformationW(
+            lp_root_path_name: *const u16,
+            lp_volume_name_buffer: *mut u16,
+            n_volume_name_size: u32,
+            lp_volume_serial_number: *mut u32,
+            lp_max_component_len: *mut u32,
+            lp_file_system_flags: *mut u32,
+            lp_file_system_name_buffer: *mut u16,
+            n_file_system_name_size: u32,
+        ) -> i32;
     }
 
-    Ok(stats)
+    fn to_wide_nul(path: &OsStr) -> Vec<u16> {
+        path.encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    pub fn read_mount_table() -> Result<Vec<(String, String, String)>> {
+        let mut buf = vec![0u16; 512];
+        let n = unsafe { GetLogicalDriveStringsW(buf.len() as u32, buf.as_mut_ptr()) };
+        if n == 0 {
+            return Err(eyre!("GetLogicalDriveStringsW failed: {}", std::io::Error::last_os_error()));
+        }
+        let buf = &buf[..n as usize];
+        let mut mounts = Vec::new();
+        let mut start = 0;
+        while start < buf.len() {
+            let end = buf[start..].iter().position(|&c| c == 0).map(|i| start + i).unwrap_or(buf.len());
+            if end == start {
+                break;
+            }
+            let wide: Vec<u16> = buf[start..end].to_vec();
+            let root = OsString::from_wide(&wide)
+                .to_string_lossy()
+                .into_owned();
+            if !root.is_empty() {
+                let trimmed = root.trim_end_matches('\\').to_string();
+                let device = if trimmed.len() == 2 && trimmed.ends_with(':') {
+                    trimmed.clone()
+                } else {
+                    trimmed.clone()
+                };
+                let fs_type = volume_fs_type(&root)?;
+                mounts.push((device, root, fs_type));
+            }
+            start = end + 1;
+        }
+        Ok(mounts)
+    }
+
+    pub fn volume_fs_type(root: &str) -> Result<String> {
+        let mut root_pb = PathBuf::from(root);
+        if !root.ends_with('\\') {
+            root_pb.push("");
+        }
+        let wide = to_wide_nul(root_pb.as_os_str());
+        let mut fs_name = vec![0u16; 32];
+        let ok = unsafe {
+            GetVolumeInformationW(
+                wide.as_ptr(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                fs_name.as_mut_ptr(),
+                fs_name.len() as u32,
+            )
+        };
+        if ok == 0 {
+            return Ok("unknown".to_string());
+        }
+        let len = fs_name.iter().position(|&x| x == 0).unwrap_or(fs_name.len());
+        Ok(String::from_utf16_lossy(&fs_name[..len]))
+    }
+
+    pub fn disk_space_for_root(root: &str) -> Result<(u64, u64, u64)> {
+        let mut root_pb = PathBuf::from(root);
+        if !root.ends_with('\\') {
+            root_pb.push("");
+        }
+        let wide = to_wide_nul(root_pb.as_os_str());
+        let mut avail = 0u64;
+        let mut total = 0u64;
+        let mut free = 0u64;
+        let ok = unsafe {
+            GetDiskFreeSpaceExW(
+                wide.as_ptr(),
+                &mut avail,
+                &mut total,
+                &mut free,
+            )
+        };
+        if ok == 0 {
+            return Err(eyre!("GetDiskFreeSpaceExW for '{}': {}", root, std::io::Error::last_os_error()));
+        }
+        Ok((total, free, avail))
+    }
+
+    pub fn volume_root_for_path(path: &Path) -> PathBuf {
+        use std::path::Prefix;
+        let mut c = path.components();
+        match c.next() {
+            Some(std::path::Component::Prefix(pref)) => match pref.kind() {
+                Prefix::VerbatimDisk(d) | Prefix::Disk(d) => {
+                    PathBuf::from(format!("{}:\\", char::from(d)))
+                }
+                _ => path.to_path_buf(),
+            },
+            _ => {
+                let s = path.to_string_lossy();
+                if s.len() >= 2 && s.as_bytes()[1] == b':' {
+                    PathBuf::from(format!("{}\\", &s[..2]))
+                } else {
+                    path.to_path_buf()
+                }
+            }
+        }
+    }
 }
 
-/// Calculate usage percentage
+#[cfg(unix)]
+fn get_fs_stats(path: &str, inodes: bool) -> Result<DfFsStat> {
+    let stats = posix_statfs(path)
+        .map_err(|e| match e {
+            PosixError::Io(ioe) => eyre!("cannot read filesystem statistics for '{}': {}", path, ioe),
+            PosixError::InvalidArgument(m) => eyre!("cannot read filesystem statistics for '{}': {}", path, m),
+            PosixError::NotFound => eyre!("cannot read filesystem statistics for '{}': not found", path),
+        })?;
+    Ok(statfs_to_df(stats, inodes))
+}
+
+#[cfg(windows)]
+fn get_fs_stats(path: &str, inodes: bool) -> Result<DfFsStat> {
+    let _ = inodes;
+    let (total, free, avail) = win_df::disk_space_for_root(path)?;
+    let bsize = 512u64;
+    Ok(statfs_to_df_windows(total, free, avail, bsize, false))
+}
+
+#[cfg(windows)]
+fn read_mount_table() -> Result<Vec<(String, String, String)>> {
+    win_df::read_mount_table()
+}
+
 fn calculate_percent(used: u64, total: u64) -> u64 {
     if total == 0 {
         0
     } else {
-        // Scale down to avoid overflow
         let mut used_scaled = used as u128;
         let mut total_scaled = total as u128;
 
@@ -259,7 +443,11 @@ fn calculate_percent(used: u64, total: u64) -> u64 {
 }
 
 pub fn run(options: DfOptions) -> Result<()> {
-    // Determine display block size based on options and environment
+    #[cfg(windows)]
+    if options.inodes {
+        return Err(eyre!("df: inode counts (-i) are not supported on Windows"));
+    }
+
     let mut display_block_size = if options.kilo_bytes {
         1024
     } else if options.mega_bytes {
@@ -272,34 +460,54 @@ pub fn run(options: DfOptions) -> Result<()> {
         1024
     };
 
-    // If showing inodes, display block size should be 1 (one inode per "block")
     if options.inodes {
         display_block_size = 1;
     }
 
-    // Get mount list
     let mounts = if options.filesystems.is_empty() {
         read_mount_table()?
     } else {
-        // For specified filesystems/mount points, we need to find their mount entries
         let all_mounts = read_mount_table()?;
         let mut filtered = Vec::new();
 
         for fs in &options.filesystems {
             let path = Path::new(fs);
-            // Try to find mount point containing this path
             let mut found = None;
             for (device, mount_point, fs_type) in &all_mounts {
+                #[cfg(unix)]
                 if fs == device || fs == mount_point || path.starts_with(mount_point) {
-                    // Use the mount point itself, not the subdirectory
                     found = Some((device.clone(), mount_point.clone(), fs_type.clone()));
                     break;
+                }
+                #[cfg(windows)]
+                {
+                    let fsl = fs.to_lowercase();
+                    let mpl = mount_point.to_lowercase();
+                    let pl = path.to_string_lossy().to_lowercase();
+                    if fsl == device.to_lowercase() || fsl == mpl || pl.starts_with(&mpl.trim_end_matches('\\'))
+                        || pl.starts_with(&format!("{}\\", mpl.trim_end_matches('\\')).to_lowercase())
+                    {
+                        found = Some((device.clone(), mount_point.clone(), fs_type.clone()));
+                        break;
+                    }
                 }
             }
 
             if let Some(mount) = found {
                 filtered.push(mount);
             } else {
+                #[cfg(windows)]
+                {
+                    let root = win_df::volume_root_for_path(path);
+                    let mut root_str = root.to_string_lossy().into_owned();
+                    if !root_str.ends_with('\\') {
+                        root_str.push('\\');
+                    }
+                    let fs_type = win_df::volume_fs_type(&root_str).unwrap_or_else(|_| "unknown".to_string());
+                    let dev = root_str.trim_end_matches('\\').to_string();
+                    filtered.push((dev, root_str, fs_type));
+                }
+                #[cfg(not(windows))]
                 return Err(eyre!("cannot find mount point for '{}'", fs));
             }
         }
@@ -307,7 +515,6 @@ pub fn run(options: DfOptions) -> Result<()> {
         filtered
     };
 
-    // Print header
     if options.posix_format {
         print!("Filesystem          ");
         if options.show_fs_type {
@@ -333,21 +540,18 @@ pub fn run(options: DfOptions) -> Result<()> {
         println!("Mounted on");
     }
 
-    // Process each mount
     for (device, mount_point, fs_type) in mounts {
-        // Skip rootfs if not showing all
+        #[cfg(unix)]
         if !options.all_filesystems && device == "rootfs" {
             continue;
         }
 
-        // Filter by filesystem type if specified
         if let Some(filter_type) = &options.fs_type_filter {
             if &fs_type != filter_type {
                 continue;
             }
         }
 
-        // Get filesystem statistics
         let stats = match get_fs_stats(&mount_point, options.inodes) {
             Ok(stats) => stats,
             Err(e) => {
@@ -360,7 +564,6 @@ pub fn run(options: DfOptions) -> Result<()> {
             }
         };
 
-        // Skip filesystems with 0 blocks unless specifically listed or -a
         if stats.f_blocks == 0 && !options.all_filesystems && options.filesystems.is_empty() {
             continue;
         }
@@ -368,7 +571,6 @@ pub fn run(options: DfOptions) -> Result<()> {
         let used_blocks = stats.f_blocks - stats.f_bfree;
         let percent_used = calculate_percent(used_blocks, used_blocks + stats.f_bavail);
 
-        // Format device name (truncate or pad to 20 chars)
         let device_display = if device.len() > 20 && !options.posix_format {
             format!("{}\n{:20}", device, "")
         } else {
@@ -376,7 +578,6 @@ pub fn run(options: DfOptions) -> Result<()> {
         };
         print!("{}", device_display);
 
-        // Filesystem type if requested
         if options.show_fs_type {
             let type_display = if fs_type.len() > 10 && !options.posix_format {
                 format!(" {}\n{:31}", fs_type, "")
@@ -386,7 +587,6 @@ pub fn run(options: DfOptions) -> Result<()> {
             print!("{}", type_display);
         }
 
-        // Total blocks
         let total_display = format_blocks(
             stats.f_blocks,
             stats.f_bsize,
@@ -397,7 +597,6 @@ pub fn run(options: DfOptions) -> Result<()> {
         );
         print!(" {:>9}", total_display);
 
-        // Used blocks
         let used_display = format_blocks(
             used_blocks,
             stats.f_bsize,
@@ -408,7 +607,6 @@ pub fn run(options: DfOptions) -> Result<()> {
         );
         print!(" {:>9}", used_display);
 
-        // Available blocks
         let avail_display = format_blocks(
             stats.f_bavail,
             stats.f_bsize,
@@ -419,10 +617,8 @@ pub fn run(options: DfOptions) -> Result<()> {
         );
         print!(" {:>9}", avail_display);
 
-        // Percentage
         print!(" {:>3}%", percent_used);
 
-        // Mount point
         println!(" {}", mount_point);
     }
 

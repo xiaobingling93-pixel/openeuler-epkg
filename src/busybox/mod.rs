@@ -86,7 +86,6 @@ pub fn terminal_width() -> usize {
 /// Format a list of strings into column layout (column-major order, padded to fit term width).
 /// Uses per-column widths (like GNU ls) so more columns fit; each column is as wide as its longest entry.
 /// When term_width is 0 (not a TTY), uses 1 column (one entry per line), matching upstream ls.
-#[cfg(unix)]
 pub fn format_list_columns(items: &[String], widths: &[usize], term_width: usize) -> String {
     if items.is_empty() {
         return String::new();
@@ -205,7 +204,6 @@ fn format_list_compact_flow(
 }
 
 /// Visible character width of a string, ignoring ANSI escape sequences.
-#[cfg(unix)]
 pub fn visible_width_ansi(s: &str) -> usize {
     let mut len = 0;
     let mut i = 0;
