@@ -137,9 +137,7 @@ use time::macros::format_description;
 use crate::models::*;
 use crate::dirs::*;
 use crate::environment::*;
-use crate::io::edit_environment_config;
-use crate::io::load_installed_packages;
-use crate::io::read_yaml_file;
+use crate::io::{edit_environment_config, load_installed_packages, read_yaml_file, CHANNEL_SEPARATOR};
 use crate::path::update_path;
 use crate::repo::sync_channel_metadata;
 use crate::list::list_packages_with_scope;
@@ -1273,6 +1271,61 @@ fn env_name_from_path(dir: &str) -> String {
     }
 }
 
+/// Try to infer channel from environment name.
+///
+/// This function checks if the env_name matches a valid channel pattern:
+/// 1. Exact match: env_name is a channel name (e.g., "alpine", "conda")
+/// 2. Channel-version: env_name is "{channel}-{version}" (e.g., "fedora-42", "ubuntu-noble")
+///
+/// Returns Some(channel_string) if successfully inferred, None otherwise.
+fn infer_channel_from_env_name(env_name: &str) -> Option<String> {
+    // Get the assets/repos path
+    let repos_path = path_join(&get_epkg_src_path(), &["assets", "repos"]);
+
+    // Strategy 1: Check for exact channel match (e.g., "alpine", "fedora", "ubuntu")
+    let exact_channel_path = repos_path.join(format!("{}.yaml", env_name));
+    if exact_channel_path.exists() {
+        return Some(env_name.to_string());
+    }
+
+    // Strategy 2: Try to parse as "{distro}-{version}" format
+    // Split by '-' and try different split points from right to left
+    // This handles cases like "fedora-42", "ubuntu-noble", "debian-trixie"
+    let parts: Vec<&str> = env_name.split(CHANNEL_SEPARATOR).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+
+    // Try each possible split point (from right to left to handle version with '-')
+    // For "fedora-42": try distro="fedora", version="42"
+    // For "debian-bookworm": try distro="debian", version="bookworm"
+    for split_idx in 1..parts.len() {
+        let distro = parts[..split_idx].join(&CHANNEL_SEPARATOR.to_string());
+        let version = parts[split_idx..].join(&CHANNEL_SEPARATOR.to_string());
+
+        // Check if distro.yaml exists
+        let distro_path = repos_path.join(format!("{}.yaml", distro));
+        if !distro_path.exists() {
+            continue;
+        }
+
+        // Load the channel config to check if version is valid
+        if let Ok(channel_config) = read_yaml_file::<ChannelConfig>(&distro_path) {
+            // Check if version matches any version or alias in versions list
+            // versions format: "noble 24.04" where first is standard name, rest are aliases
+            let version_matches = channel_config.versions.iter().any(|v| {
+                v.split_whitespace().any(|alias| alias == version)
+            });
+
+            if version_matches {
+                return Some(format!("{}{}{}", distro, CHANNEL_SEPARATOR, version));
+            }
+        }
+    }
+
+    None
+}
+
 /// Load env.yaml from a path (either env root dir, or "/" when config is at /etc/epkg/env.yaml)
 /// and apply to config and ENV_CONFIG so get_env_config_path() and env_config() use it.
 /// Set in_env_root only when loading from "/" (we're inside the env); when loading from -r PATH
@@ -1684,6 +1737,11 @@ fn parse_options_env(config: &mut EPKGConfig, matches: &clap::ArgMatches) -> Res
                 config.subcommand = EpkgCommand::EnvCreate;
                 if let Some(channel) = sub_matches.get_one::<String>("channel") {
                     config.env.channel = Some(channel.to_string());
+                } else if !config.common.env_name.is_empty() {
+                    // Try to infer channel from env_name if -c is not specified
+                    if let Some(inferred_channel) = infer_channel_from_env_name(&config.common.env_name) {
+                        config.env.channel = Some(inferred_channel);
+                    }
                 }
                 if let Some(repos) = sub_matches.get_many::<String>("repo") {
                     config.env.repos = repos.map(|s| s.to_string()).collect();
