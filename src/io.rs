@@ -394,13 +394,13 @@ pub fn deserialize_channel_config_from_root(env_root: &PathBuf) -> Result<Vec<Ch
     let mut channel_configs = Vec::new();
 
     // Load main channel config
-    let file_path = env_root.join("etc/epkg/channel.yaml");
+    let file_path = env_root_channel_yaml(env_root);
     load_and_process_channel_config(&file_path, &mut channel_configs, None)?;
 
     // Load additional configs from repos.d
     // Ideally the latter should all use the same cc.distro and cc.version as main config,
     // for now we allow users to mix for flexibility, and just emit warning on mismatch.
-    let repos_dir = env_root.join("etc/epkg/repos.d");
+    let repos_dir = env_root_repos_d(env_root);
     if lfs::exists_on_host(&repos_dir) {
         // First collect all repo config paths
         let mut repo_paths = Vec::new();

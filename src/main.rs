@@ -596,7 +596,7 @@ fn add_self_subcommand(cmd: Command) -> Command {
                 Command::new("install")
                     .about("Install epkg")
                     .arg(arg!(--commit <COMMIT>).help(format!("Source commit of epkg to install [default: {}]", DEFAULT_COMMIT)))
-                    .arg(arg!(-c --channel <CHANNEL> "Set the channel for the environment, e.g. debian or debian-13"))
+                    .arg(arg!(-c --channel <CHANNEL> "Set the channel, e.g. debian, debian-13, or msys2 (Windows)"))
                     .arg(arg!(   --repo <REPO> "Add one or more repos separated by space, e.g. ceph postgresql").num_args(1..))
                     .arg(
                         arg!(--store <STORE> "Store mode: 'shared' (reused by all users), 'private' (current user only), or 'auto' (shared if installed by root)")
@@ -633,7 +633,7 @@ fn add_env_subcommand(cmd: Command) -> Command {
                 Command::new("create")
                     .about("Create a new environment")
                     .arg(arg!([ENV_NAME] "Environment name or owner/name"))
-                    .arg(arg!(-c --channel <CHANNEL> "Set the channel for the environment, e.g. debian or debian-13"))
+                    .arg(arg!(-c --channel <CHANNEL> "Set the channel, e.g. debian, debian-13, or msys2 (Windows)"))
                     .arg(arg!(   --repo <REPO> "Add one or more repos separated by space, e.g. ceph postgresql").num_args(1..))
                     .arg(arg!(-P --public "Usable by all users in the machine"))
                     .arg(arg!(-i --import <FILE> "Import from config file"))
@@ -1278,9 +1278,9 @@ fn env_name_from_path(dir: &str) -> String {
 /// we're on the host selecting that env, so run must still do namespace/mounts (same as -e).
 fn apply_env_config_from_path(env_root_or_etc: &Path, config: &mut EPKGConfig) -> Result<()> {
     let config_path = if env_root_or_etc == Path::new("/") {
-        PathBuf::from("/etc/epkg/env.yaml")
+        Path::new("/").join("etc").join("epkg").join("env.yaml")
     } else {
-        env_root_or_etc.join("etc").join("epkg").join("env.yaml")
+        env_root_env_yaml(env_root_or_etc)
     };
     if !config_path.exists() {
         return Err(eyre::eyre!("Environment config not found: {}", config_path.display()));
@@ -1408,7 +1408,8 @@ fn determine_environment_explicit(matches: &clap::ArgMatches, config: &mut EPKGC
 /// Try to detect environment from /etc/epkg/env.yaml (when running inside an environment).
 /// Returns Ok(true) if environment detected and config updated, Ok(false) if file doesn't exist.
 fn try_detect_environment_from_env_yaml(config: &mut EPKGConfig) -> Result<bool> {
-    if !Path::new("/etc/epkg/env.yaml").exists() {
+    let root_env_yaml = Path::new("/").join("etc").join("epkg").join("env.yaml");
+    if !root_env_yaml.exists() {
         return Ok(false);
     }
     apply_env_config_from_path(Path::new("/"), config)?;
@@ -1424,9 +1425,9 @@ fn try_apply_explicit_env_root(config: &mut EPKGConfig) -> Result<bool> {
     }
     let env_root_path = config.common.env_root.clone();
     let config_path = if env_root_path == "/" {
-        PathBuf::from("/etc/epkg/env.yaml")
+        Path::new("/").join("etc").join("epkg").join("env.yaml")
     } else {
-        PathBuf::from(&env_root_path).join("etc/epkg/env.yaml")
+        env_root_env_yaml(Path::new(&env_root_path))
     };
     let is_env_create = config.subcommand == EpkgCommand::EnvCreate;
     if config_path.exists() {

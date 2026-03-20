@@ -555,7 +555,8 @@ fn fork_and_execute_direct(env_root: &Path, run_options: &RunOptions) -> Result<
     // Set up environment variables
     let mut env_vars = run_options.env_vars.clone();
 
-    let channel_format = crate::models::channel_config().format;
+    let ch = crate::models::channel_config();
+    let channel_format = ch.format;
 
     // Set CONDA_PREFIX if this is a conda environment
     if channel_format == crate::models::PackageFormat::Conda {
@@ -609,6 +610,20 @@ fn fork_and_execute_direct(env_root: &Path, run_options: &RunOptions) -> Result<
             }
             env_vars.insert("PATH".to_string(), path_dirs.join(";"));
         }
+    }
+
+    // MSYS2-style pacman env: prepend merged bin paths so .exe and MinGW DLLs resolve.
+    #[cfg(windows)]
+    if channel_format == crate::models::PackageFormat::Pacman && ch.distro == "msys2" {
+        let bin_dir = env_root.join("bin");
+        let usr_bin = env_root.join("usr").join("bin");
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let path_dirs = vec![
+            bin_dir.display().to_string(),
+            usr_bin.display().to_string(),
+            original_path,
+        ];
+        env_vars.insert("PATH".to_string(), path_dirs.join(";"));
     }
 
     // Note: Brew packages use absolute paths rewritten at link time (LinkType::Move),
@@ -930,11 +945,14 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
     }
 
     // Normalise skip_namespace_isolation based on channel and environment context.
-    let channel_format = crate::models::channel_config().format;
+    let ch = crate::models::channel_config();
+    let channel_format = ch.format;
     let is_conda = channel_format == crate::models::PackageFormat::Conda;
     let is_brew = channel_format == crate::models::PackageFormat::Brew;
-    if is_conda || is_brew {
-        // conda ELF binary has RPATH; brew bottles are native macOS binaries
+    let is_msys2 = channel_format == crate::models::PackageFormat::Pacman && ch.distro == "msys2";
+    if is_conda || is_brew || is_msys2 {
+        // conda ELF binary has RPATH; brew bottles are native macOS binaries;
+        // MSYS2/MinGW binaries are native Windows PE and run on the host
         run_options.skip_namespace_isolation = true;
     }
 

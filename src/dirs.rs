@@ -204,17 +204,38 @@ fn env_config_relative_path() -> PathBuf {
     PathBuf::from("etc").join("epkg").join("env.yaml")
 }
 
+/// `$env_root/etc/epkg` built with per-component joins (consistent separators on Windows).
+#[inline]
+pub fn env_root_etc_epkg(env_root: &Path) -> PathBuf {
+    env_root.join("etc").join("epkg")
+}
+
+#[inline]
+pub fn env_root_channel_yaml(env_root: &Path) -> PathBuf {
+    env_root_etc_epkg(env_root).join("channel.yaml")
+}
+
+#[inline]
+pub fn env_root_repos_d(env_root: &Path) -> PathBuf {
+    env_root_etc_epkg(env_root).join("repos.d")
+}
+
+#[inline]
+pub fn env_root_env_yaml(env_root: &Path) -> PathBuf {
+    env_root_etc_epkg(env_root).join("env.yaml")
+}
+
 /// Get the path to an environment's configuration file
 pub fn get_env_config_path(env_name: &str) -> PathBuf {
     let cfg = crate::config();
     // When env_root is set (e.g. create with --root, install --root), config lives at env_root/etc/epkg/env.yaml.
     // Check before in_env_root so that create with --root writes to the target path, not /etc.
     if !cfg.common.env_root.is_empty() && env_name == cfg.common.env_name {
-        return PathBuf::from(&cfg.common.env_root).join(env_config_relative_path());
+        return env_root_env_yaml(Path::new(&cfg.common.env_root));
     }
     // If we're running inside an environment root (chroot/bind mount), the config is at /etc/epkg/env.yaml
     if cfg.common.in_env_root && env_name == cfg.common.env_name {
-        return PathBuf::from("/etc/epkg/env.yaml");
+        return Path::new("/").join("etc").join("epkg").join("env.yaml");
     }
     get_env_base_path(env_name).join(env_config_relative_path())
 }

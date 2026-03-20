@@ -135,6 +135,15 @@ pub fn download_file_with_repodata_name(url: &str, repodata_name: &str) -> Resul
     Ok(())
 }
 
+/// MSYS2 mirrors host different repo names per CPU arch; skip combinations that 404.
+fn msys2_repo_applies_to_arch(repo_name: &str, arch: &str) -> bool {
+    match arch {
+        "x86_64" => repo_name != "clangarm64",
+        "aarch64" => !matches!(repo_name, "mingw64" | "ucrt64" | "clang64"),
+        _ => repo_name == "msys",
+    }
+}
+
 fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
     let mut all_repos: Vec<RepoRevise> = Vec::new();
 
@@ -142,6 +151,15 @@ fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
     for (repo_name, repo_config) in &config.repos {
         // Skip disabled repos
         if !repo_config.enabled {
+            continue;
+        }
+
+        if config.distro == "msys2" && !msys2_repo_applies_to_arch(repo_name, &config.arch) {
+            log::debug!(
+                "Skipping MSYS2 repo '{}' for arch '{}'",
+                repo_name,
+                config.arch
+            );
             continue;
         }
 

@@ -295,7 +295,7 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     lfs::create_dir_all(env_root.join("usr/local/bin"))?;
     lfs::create_dir_all(env_root.join("var"))?;
     lfs::create_dir_all(env_root.join("opt/epkg"))?;
-    lfs::create_dir_all(env_root.join("etc/epkg"))?;
+    lfs::create_dir_all(env_root_etc_epkg(env_root))?;
 
     // Create symlinks in generation 1 (usr-merge layout)
     // This allows brew packages (which have bin/, share/, include/ at root)
@@ -548,7 +548,7 @@ fn setup_environment_paths(env_base: &PathBuf) -> Result<PathBuf> {
         env_base.clone()
     };
 
-    let env_channel_yaml = env_root.join("etc/epkg/channel.yaml");
+    let env_channel_yaml = env_root_channel_yaml(env_root);
     if lfs::exists_on_host(&env_channel_yaml) {
         return Err(eyre::eyre!("Environment already exists at path: '{}'", env_root.display()));
     }
@@ -635,7 +635,7 @@ fn copy_main_channel_config(sources_path: &Path, env_root: &Path, distro_name: &
     }
 
     // Save main channel config
-    let dest_channel_path = env_root.join("etc/epkg/channel.yaml");
+    let dest_channel_path = env_root_channel_yaml(env_root);
     lfs::create_dir_all(dest_channel_path.parent().unwrap())?;
     lfs::write(&dest_channel_path, &channel_content)?;
 
@@ -648,7 +648,7 @@ fn copy_repo_configs(sources_path: &Path, env_root: &Path, distro_name: &str) ->
         let src_repo_yaml_path = sources_path.join(format!("{}-{}.yaml", distro_name, repo));
 
         // Copy repo config file
-        let repos_dir = env_root.join("etc/epkg/repos.d");
+        let repos_dir = env_root_repos_d(env_root);
         lfs::create_dir_all(&repos_dir)?;
         let dest_repo_path = repos_dir.join(format!("{}.yaml", repo));
         lfs::copy(&src_repo_yaml_path, &dest_repo_path)?;
@@ -664,12 +664,17 @@ fn copy_repo_configs(sources_path: &Path, env_root: &Path, distro_name: &str) ->
 /// Also copies additional repo configurations to etc/epkg/repos.d/
 fn copy_channel_configs(env_root: &Path) -> Result<()> {
     let sources_path = get_epkg_src_path().join("assets/repos");
+    let (distro_name, distro_version) = parse_channel_option();
 
-    // On Windows, the source path may not exist if running from a standalone binary
-    // In that case, create a default Conda channel configuration
+    // On Windows, the source path may not exist if running from a standalone binary.
+    // Use embedded channel YAML for msys2 (pacman); otherwise default to Conda.
     if !sources_path.exists() {
         #[cfg(windows)]
         {
+            if distro_name == "msys2" {
+                create_default_msys2_channel_config(env_root)?;
+                return Ok(());
+            }
             create_default_conda_channel_config(env_root)?;
             return Ok(());
         }
@@ -682,11 +687,22 @@ fn copy_channel_configs(env_root: &Path) -> Result<()> {
         }
     }
 
-    let (distro_name, distro_version) = parse_channel_option();
-
     copy_main_channel_config(&sources_path, env_root, &distro_name, distro_version.as_deref())?;
     copy_repo_configs(&sources_path, env_root, &distro_name)?;
 
+    Ok(())
+}
+
+/// Create MSYS2 channel configuration from embedded assets (standalone Windows binary).
+#[cfg(windows)]
+fn create_default_msys2_channel_config(env_root: &Path) -> Result<()> {
+    let channel_content = include_str!("../assets/repos/msys2.yaml");
+
+    let dest_channel_path = env_root_channel_yaml(env_root);
+    lfs::create_dir_all(dest_channel_path.parent().unwrap())?;
+    lfs::write(&dest_channel_path, channel_content)?;
+
+    println!("Created MSYS2 (pacman) channel configuration");
     Ok(())
 }
 
@@ -707,7 +723,7 @@ amend_index_urls:
   noarch: $mirror/pkgs/$repo/noarch/$conda_repofile
 "#;
 
-    let dest_channel_path = env_root.join("etc/epkg/channel.yaml");
+    let dest_channel_path = env_root_channel_yaml(env_root);
     lfs::create_dir_all(dest_channel_path.parent().unwrap())?;
     lfs::write(&dest_channel_path, channel_content)?;
 

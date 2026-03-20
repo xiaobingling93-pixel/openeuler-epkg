@@ -162,7 +162,7 @@ fn collect_env_configs(
     in_use_packages: &mut HashSet<String>
 ) -> Result<()> {
     // Load channel config
-    let channel_config_path = env_path.join("etc/epkg/channel.yaml");
+    let channel_config_path = env_root_channel_yaml(&env_path);
     if lfs::exists_in_env(&channel_config_path) {
         if let Ok(mut channel_config) = io::read_yaml_file::<ChannelConfig>(&channel_config_path) {
             // Set defaults to populate channel field from distro:version
@@ -176,7 +176,7 @@ fn collect_env_configs(
     }
 
     // Load env config
-    let env_config_path = env_path.join("etc").join("epkg").join("env.yaml");
+    let env_config_path = env_root_env_yaml(env_path);
     if lfs::exists_in_env(&env_config_path) {
         if io::read_yaml_file::<EnvConfig>(&env_config_path).is_ok() {
             // Load installed packages

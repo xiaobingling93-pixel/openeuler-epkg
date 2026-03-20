@@ -7,7 +7,14 @@ versions:
 - "latest"
 repos:
   msys:
+  mingw64:
+  ucrt64:
+  clang64:
+  clangarm64:
 index_url: $mirror/$repo/$arch/$repo.files.tar.zst
 
 # Example URLs:
 # https://mirrors.ustc.edu.cn/msys2/msys/x86_64/msys.files.tar.zst
+#
+# Epkg skips repos that do not exist for the selected $arch (mingw64/ucrt64/clang64
+# are x86_64-only; clangarm64 is used on aarch64 Windows).
