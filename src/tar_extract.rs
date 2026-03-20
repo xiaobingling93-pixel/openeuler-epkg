@@ -124,6 +124,7 @@ pub fn extract_archive_with_policy<R: Read>(
         // Check if this is a hard link entry
         let header = entry.header();
         let is_hard_link = matches!(header.entry_type(), tar::EntryType::Link);
+        let is_symlink = matches!(header.entry_type(), tar::EntryType::Symlink);
         let mode = header.mode().unwrap_or(0o644);
         let is_dir = matches!(header.entry_type(), tar::EntryType::Directory);
 
@@ -162,7 +163,11 @@ pub fn extract_archive_with_policy<R: Read>(
 
         // Extract the file
         entry.unpack(&target_path)?;
-        utils::fixup_file_permissions_with_mode(&target_path, mode, is_dir);
+        // Skip permission fixup for symlinks - their permissions are meaningless (always lrwxrwxrwx)
+        // and on Windows, setting EA on a symlink might affect the target instead
+        if !is_symlink {
+            utils::fixup_file_permissions_with_mode(&target_path, mode, is_dir);
+        }
 
         // Cache directory path for future entries
         if is_dir {
@@ -232,6 +237,7 @@ pub fn extract_archive<R: Read>(
         // Get header info for hard link detection and permission fixup
         let header = entry.header();
         let is_hard_link = matches!(header.entry_type(), tar::EntryType::Link);
+        let is_symlink = matches!(header.entry_type(), tar::EntryType::Symlink);
         let mode = header.mode().unwrap_or(0o644);
         let is_dir = matches!(header.entry_type(), tar::EntryType::Directory);
 
@@ -264,7 +270,11 @@ pub fn extract_archive<R: Read>(
 
         // Extract the file
         entry.unpack(&target_path)?;
-        utils::fixup_file_permissions_with_mode(&target_path, mode, is_dir);
+        // Skip permission fixup for symlinks - their permissions are meaningless (always lrwxrwxrwx)
+        // and on Windows, setting EA on a symlink might affect the target instead
+        if !is_symlink {
+            utils::fixup_file_permissions_with_mode(&target_path, mode, is_dir);
+        }
 
         // Cache directory path for future entries
         if is_dir {
