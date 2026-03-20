@@ -389,6 +389,15 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
             if cmd_in_root.exists() {
                 return Ok(cmd_in_root);
             }
+
+            // Check MSYS2 MinGW subdirectories (ucrt64/bin, mingw64/bin, etc.)
+            // Order follows MSYS2's default priority: ucrt64 > mingw64 > mingw32 > clang* > msys
+            for msys2_prefix in &["ucrt64", "mingw64", "mingw32", "clang64", "clang32", "clangarm64"] {
+                let cmd_in_msys2 = env_root.join(msys2_prefix).join("bin").join(cmd_name);
+                if cmd_in_msys2.exists() {
+                    return Ok(cmd_in_msys2);
+                }
+            }
         }
 
         if lfs::exists_on_host(Path::new(&run_options.command)) {
