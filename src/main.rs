@@ -45,8 +45,11 @@ mod package;
 mod packages_stream;
 mod index_html;
 // Windows-specific: NTFS Extended Attributes for POSIX metadata
+// Re-use libkrun's implementation to avoid code duplication
 #[cfg(windows)]
-mod ntfs_ea;
+mod ntfs_ea {
+    include!("../git/libkrun/src/devices/src/virtio/fs/windows/ntfs_ea.rs");
+}
 // Linux package formats - now cross-platform for VM execution
 mod deb_repo;
 mod deb_pkg;
