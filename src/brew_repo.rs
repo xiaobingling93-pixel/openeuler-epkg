@@ -348,15 +348,16 @@ pub fn get_bottle_tag() -> String {
         return "ventura".to_string();
     }
 
-    #[cfg(target_os = "linux")]
-    {
-        #[cfg(target_arch = "aarch64")]
-        return "arm64_linux".to_string();
-        #[cfg(target_arch = "x86_64")]
-        return "x86_64_linux".to_string();
-    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    return "arm64_linux".to_string();
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    return "x86_64_linux".to_string();
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(not(any(
+        target_os = "macos",
+        all(target_os = "linux", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64"),
+    )))]
     {
         "x86_64_linux".to_string()
     }
