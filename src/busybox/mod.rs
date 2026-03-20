@@ -400,22 +400,64 @@ fn is_musl_build() -> bool {
     }
 }
 
+/// Determine which epkg binary to use for applet symlinks.
+///
+/// On Windows/macOS hosts:
+/// - For Linux-format packages (deb/rpm/arch/apk): use epkg-linux-$arch for VM execution
+/// - For native formats (conda/brew/msys2): use native epkg
+///
+/// On Linux hosts: always use native epkg
+fn determine_epkg_binary_for_env(env_root: &Path, pkg_format: &PackageFormat) -> Result<std::path::PathBuf> {
+    // Check if this is a Linux-format package that requires VM on non-Linux hosts
+    #[cfg(not(target_os = "linux"))]
+    {
+        let needs_vm = matches!(pkg_format,
+            PackageFormat::Deb | PackageFormat::Rpm | PackageFormat::Apk |
+            PackageFormat::Pacman // Note: Pacman includes MSYS2 which is native on Windows
+        );
+
+        // For Arch Linux (not MSYS2), we need VM
+        let is_arch_linux = *pkg_format == PackageFormat::Pacman &&
+            crate::models::channel_config().distro != "msys2";
+
+        if needs_vm || is_arch_linux {
+            // Try to use epkg-linux-$arch for VM execution
+            let arch = &crate::config().common.arch;
+            let epkg_linux = crate::dirs::path_join(env_root, &["usr", "bin", &format!("epkg-linux-{}", arch)]);
+            if epkg_linux.exists() {
+                log::debug!("Using epkg-linux binary for VM execution: {}", epkg_linux.display());
+                return Ok(epkg_linux);
+            } else {
+                log::warn!("epkg-linux-{} not found at {}, falling back to native epkg", arch, epkg_linux.display());
+            }
+        }
+    }
+
+    // Silence unused warning on Linux
+    #[cfg(target_os = "linux")]
+    let _ = pkg_format;
+
+    // Default: use native epkg binary
+    let epkg_exe = crate::dirs::path_join(env_root, &["usr", "bin", "epkg"]);
+    if epkg_exe.exists() {
+        log::debug!("Using native epkg binary at {}", epkg_exe.display());
+        Ok(epkg_exe)
+    } else {
+        let current_exe = std::env::current_exe()
+            .with_context(|| "Failed to get current executable path")?;
+        log::debug!("Using current executable at {}", current_exe.display());
+        Ok(current_exe)
+    }
+}
+
 /// Create symlinks for all registered applets in the environment
 /// This automatically discovers all applets and places them in the appropriate directory (bin or sbin)
 pub fn create_all_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -> Result<()> {
     log::debug!("Creating busybox applet links for format {:?}", pkg_format);
 
-    // First try to use the epkg binary symlink within the environment
-    let epkg_exe = crate::dirs::path_join(env_root, &["usr", "bin", "epkg"]);
-    let epkg_exe = if epkg_exe.exists() {
-        log::debug!("Using epkg binary symlink at {}", epkg_exe.display());
-        epkg_exe
-    } else {
-        let current_exe = std::env::current_exe()
-            .with_context(|| "Failed to get current executable path")?;
-        log::debug!("Using current executable at {}", current_exe.display());
-        current_exe
-    };
+    // Determine which epkg binary to use for applet symlinks
+    // On Windows/macOS with Linux-format packages, use epkg-linux-$arch for VM execution
+    let epkg_exe = determine_epkg_binary_for_env(env_root, pkg_format)?;
 
     // On Alpine (APK format) with a glibc-linked epkg binary, the binary will
     // not run at all. All static builds currently use musl, so only create
