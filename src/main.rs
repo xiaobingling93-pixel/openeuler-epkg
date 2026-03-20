@@ -24,7 +24,6 @@ mod link;
 mod expose;
 #[cfg(target_os = "linux")]
 mod xdesktop;
-#[cfg(unix)]
 mod transaction;
 mod world;
 mod utils;
@@ -45,6 +44,9 @@ mod location;
 mod package;
 mod packages_stream;
 mod index_html;
+// Windows-specific: NTFS Extended Attributes for POSIX metadata
+#[cfg(windows)]
+mod ntfs_ea;
 // Linux-only package formats
 #[cfg(target_os = "linux")]
 mod deb_repo;

@@ -100,6 +100,8 @@ junction = "1.2"
 remove_dir_all = "1.0"
 # Use static linking for liblzma to avoid missing DLL dependencies
 liblzma = { version = "0.4", features = ["parallel", "static"], default-features = false }
+# For NTFS Extended Attributes (POSIX permissions support via ntdll.dll)
+libloading = "0.8"
 
 # Optional but recommended for better progress bars
 [dependencies.console]
