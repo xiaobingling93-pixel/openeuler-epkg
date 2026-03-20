@@ -152,6 +152,38 @@ run_test_suite() {
             echo "=== Test 10: Garbage Collection ==="
             test_suite_gc
             ;;
+        upgrade)
+            echo "=== Test 11: Package Upgrade ==="
+            test_suite_upgrade
+            ;;
+        list)
+            echo "=== Test 12: List Variants ==="
+            test_suite_list_variants
+            ;;
+        env)
+            echo "=== Test 13: Environment Management ==="
+            test_suite_env
+            ;;
+        repo)
+            echo "=== Test 14: Repo Commands ==="
+            test_suite_repo
+            ;;
+        run)
+            echo "=== Test 15: Run Variants ==="
+            test_suite_run
+            ;;
+        search)
+            echo "=== Test 16: Search Variants ==="
+            test_suite_search
+            ;;
+        info)
+            echo "=== Test 17: Info Variants ==="
+            test_suite_info
+            ;;
+        dryrun)
+            echo "=== Test 18: Dry Run ==="
+            test_suite_dry_run
+            ;;
         *)
             echo "Unknown test suite: $suite" >&2
             return 1

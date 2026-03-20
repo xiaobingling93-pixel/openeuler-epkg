@@ -113,4 +113,68 @@ echo "=== Test 10: Garbage Collection ==="
 
 test_suite_gc
 
+#========================================
+# Test 11: Package Upgrade
+#========================================
+echo ""
+echo "=== Test 11: Package Upgrade ==="
+
+test_suite_upgrade
+
+#========================================
+# Test 12: List Variants
+#========================================
+echo ""
+echo "=== Test 12: List Variants ==="
+
+test_suite_list_variants
+
+#========================================
+# Test 13: Environment Management
+#========================================
+echo ""
+echo "=== Test 13: Environment Management ==="
+
+test_suite_env
+
+#========================================
+# Test 14: Repo Commands
+#========================================
+echo ""
+echo "=== Test 14: Repo Commands ==="
+
+test_suite_repo
+
+#========================================
+# Test 15: Run Variants
+#========================================
+echo ""
+echo "=== Test 15: Run Variants ==="
+
+test_suite_run
+
+#========================================
+# Test 16: Search Variants
+#========================================
+echo ""
+echo "=== Test 16: Search Variants ==="
+
+test_suite_search
+
+#========================================
+# Test 17: Info Variants
+#========================================
+echo ""
+echo "=== Test 17: Info Variants ==="
+
+test_suite_info
+
+#========================================
+# Test 18: Dry Run
+#========================================
+echo ""
+echo "=== Test 18: Dry Run ==="
+
+test_suite_dry_run
+
 channel_ok
