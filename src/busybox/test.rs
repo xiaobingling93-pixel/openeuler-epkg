@@ -2,6 +2,7 @@ use clap::{Arg, Command};
 use color_eyre::Result;
 use std::fs;
 use std::path::Path;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 pub struct TestOptions {
@@ -44,46 +45,28 @@ fn eval_unary(op: &str, operand: &str) -> bool {
         "-s" => fs::metadata(operand).map(|m| m.len() > 0).unwrap_or(false),
         "-r" => {
             match fs::metadata(operand) {
-                Ok(metadata) => {
-                    #[cfg(unix)]
-                    {
-                        metadata.permissions().mode() & 0o400 != 0
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        true
-                    }
-                }
+                #[cfg(unix)]
+                Ok(m) => m.permissions().mode() & 0o400 != 0,
+                #[cfg(not(unix))]
+                Ok(_) => true,
                 Err(_) => false,
             }
         }
         "-w" => {
             match fs::metadata(operand) {
-                Ok(metadata) => {
-                    #[cfg(unix)]
-                    {
-                        metadata.permissions().mode() & 0o200 != 0
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        true
-                    }
-                }
+                #[cfg(unix)]
+                Ok(m) => m.permissions().mode() & 0o200 != 0,
+                #[cfg(not(unix))]
+                Ok(_) => true,
                 Err(_) => false,
             }
         }
         "-x" => {
             match fs::metadata(operand) {
-                Ok(metadata) => {
-                    #[cfg(unix)]
-                    {
-                        metadata.permissions().mode() & 0o100 != 0
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        true
-                    }
-                }
+                #[cfg(unix)]
+                Ok(m) => m.permissions().mode() & 0o100 != 0,
+                #[cfg(not(unix))]
+                Ok(_) => true,
                 Err(_) => false,
             }
         }

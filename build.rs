@@ -2,13 +2,35 @@ use std::process::Command;
 use std::fs;
 use std::path::Path;
 
-/// Linux 专用 applets - only available on Linux
+// Applet gating (see `generate_busybox_modules()`):
+//   • neither list     → built on all targets (incl. Windows)
+//   • UNIX_ONLY        → `#[cfg(unix)]` (macOS + Linux, not Windows)
+//   • LINUX_ONLY       → `#[cfg(target_os = "linux")]` (checked first; do not duplicate names in UNIX_ONLY)
+//
+// LINUX_ONLY = Linux kernel ioctl/syscall ABI, mount(8) Linux flags, Debian/RPM integration
+//              here. Account applets that edit passwd/group via userdb live in UNIX_ONLY (macOS too).
+
+/// Applets wired to Linux-only behavior or ship only in Linux package workflows.
 const LINUX_ONLY: &[&str] = &[
-    "addgroup",
-    "adduser",
+    // init / VM guest plumbing (`#![cfg(target_os = "linux")]` in sources)
+    "init",
+    "vm_daemon",
+
+    // Kernel modules: finit_module / init_module syscalls, /lib/modules, modules.dep
+    "insmod",
+    "modprobe",
+
+    // mount(2) + linux/mount.h MsFlags; umount2; mountpoint uses rdev major/minor Linux-style
+    "mount",
+    "mountpoint",
+    "umount",
+
+    // IPv4 ifreq / rtentry ioctl layout — Linux ABI, not BSD/macOS-compatible as written
+    "ifconfig",
+    "route",
+
+    // Debian: dpkg, systemd helpers, update-alternatives tree
     "deb_systemd_helper",
-    "delgroup",
-    "deluser",
     "dpkg",
     "dpkg_divert",
     "dpkg_maintscript_helper",
@@ -16,57 +38,56 @@ const LINUX_ONLY: &[&str] = &[
     "dpkg_realpath",
     "dpkg_statoverride",
     "dpkg_trigger",
-    "groupadd",
-    "ifconfig",
-    "init",
-    "insmod",
-    "modprobe",
-    "mount",
-    "mountpoint",
+    "update_alternatives",
+
+    // RPM query/install path and Lua scriptlets (epkg Linux RPM story)
     "rpm",
-    "route",
     "rpmlua",
-    "sync",
+
     "systemd_sysusers",
     "systemd_tmpfiles",
-    "umount",
-    "update_alternatives",
-    "vm_daemon",
 ];
 
-/// Unix 专用 applets - not available on Windows
+/// Applets that use POSIX / Unix APIs not available on Windows (no stable substitute in-tree).
 const UNIX_ONLY: &[&str] = &[
+    // Ownership and mode bits
     "chgrp",
     "chmod",
     "chown",
+
+    // Privileged root relocation
     "chroot",
-    "cp",
-    "df",
+
+    // Passwd/group via userdb: Debian-style adduser/addgroup/del*, groupadd and shadow-ish user*
+    "addgroup",
+    "adduser",
+    "delgroup",
+    "deluser",
+    "groupadd",
     "groupdel",
-    "install",
+    "useradd",
+    "userdel",
+    "usermod",
+
+    // Signals, priorities, tty session
     "kill",
     "killall",
-    "logname",
-    "ls",
-    "mkdir",
-    "mkfifo",
-    "mktemp",
-    "mv",
     "nice",
     "nohup",
     "pidof",
     "pkill",
+
+    // Mount tables, metadata, device nodes, archives; install uses chmod/chown semantics.
+    // sync: POSIX sync(2)/fsync; --file-system uses syncfs(2) on Linux only (see sync.rs).
+    "df",
+    "install",
+    "ls",
+    "mkfifo",
     "stat",
+    "sync",
     "tar",
-    "test",
-    "touch",
-    "truncate",
+
     "tty",
-    "uname",
-    "useradd",
-    "userdel",
-    "usermod",
-    "whoami",
 ];
 
 fn main() {

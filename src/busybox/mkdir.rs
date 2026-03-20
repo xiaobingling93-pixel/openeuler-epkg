@@ -1,7 +1,10 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
+#[cfg(unix)]
 use color_eyre::eyre::eyre;
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use crate::lfs;
@@ -54,12 +57,18 @@ pub fn command() -> Command {
 }
 
 fn set_directory_permissions(path: &Path, mode_str: &str) -> Result<()> {
-    let octal_mode = u32::from_str_radix(mode_str, 8)
-        .map_err(|_| eyre!("mkdir: invalid mode '{}'", mode_str))?;
+    #[cfg(unix)]
+    {
+        let octal_mode = u32::from_str_radix(mode_str, 8)
+            .map_err(|_| eyre!("mkdir: invalid mode '{}'", mode_str))?;
 
-    let permissions = fs::Permissions::from_mode(octal_mode);
-    lfs::set_permissions(path, permissions)?;
-
+        let permissions = fs::Permissions::from_mode(octal_mode);
+        lfs::set_permissions(path, permissions)?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode_str);
+    }
     Ok(())
 }
 

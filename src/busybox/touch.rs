@@ -4,7 +4,10 @@ use color_eyre::eyre::eyre;
 use std::ffi::OsString;
 use std::fs::File;
 use std::path::Path;
+#[cfg(unix)]
 use crate::posix::posix_utime;
+#[cfg(windows)]
+use filetime::{set_file_times, FileTime};
 
 pub struct TouchOptions {
     pub files: Vec<OsString>,
@@ -39,13 +42,29 @@ pub fn command() -> Command {
             .required(true))
 }
 
+#[cfg(windows)]
+fn utimes_now(path: &Path) -> Result<()> {
+    let now = FileTime::now();
+    set_file_times(path, now, now).map_err(|e| eyre!("touch: cannot touch '{}': {}", path.display(), e))?;
+    Ok(())
+}
+
 pub fn run(options: TouchOptions) -> Result<()> {
     for file_path in &options.files {
         let path = Path::new(file_path);
 
         if path.exists() {
-            posix_utime(path, None, None)
-                .map_err(|e| eyre!("touch: cannot touch '{}': {:?}", path.display(), e))?;
+            #[cfg(unix)]
+            {
+                posix_utime(path, None, None)
+                    .map_err(|e| eyre!("touch: cannot touch '{}': {:?}", path.display(), e))?;
+            }
+            #[cfg(windows)]
+            utimes_now(path)?;
+            #[cfg(all(not(unix), not(windows)))]
+            {
+                return Err(eyre!("touch: not supported on this platform"));
+            }
         } else if !options.no_create {
             File::create(path)
                 .map_err(|e| eyre!("touch: cannot touch '{}': {}", path.display(), e))?;

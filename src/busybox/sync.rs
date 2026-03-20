@@ -41,7 +41,7 @@ pub fn command() -> Command {
         .arg(Arg::new("file-system")
             .short('f')
             .long("file-system")
-            .help("sync the file systems that contain the files")
+            .help("Sync filesystems containing the files (Linux syncfs(2) only; unsupported on macOS and others)")
             .action(clap::ArgAction::SetTrue))
         .arg(Arg::new("files")
             .num_args(0..)
@@ -57,6 +57,14 @@ pub fn run(options: SyncOptions) -> Result<()> {
         return Ok(());
     }
 
+    #[cfg(not(target_os = "linux"))]
+    if options.file_system {
+        return Err(eyre!(
+            "sync: --file-system is not supported on this platform (requires Linux syncfs(2)); \
+             omit -f, or use plain `sync` with no file operands"
+        ));
+    }
+
     // Process each file
     for file_path in &options.files {
         let path = Path::new(file_path);
@@ -70,11 +78,13 @@ pub fn run(options: SyncOptions) -> Result<()> {
         let fd = file.as_raw_fd();
 
         if options.file_system {
-            // Sync the entire file system containing this file
-            let result = unsafe { libc::syncfs(fd) };
-            if result != 0 {
-                let err = std::io::Error::last_os_error();
-                return Err(eyre!("sync: failed to sync file system for '{}': {}", file_path, err));
+            #[cfg(target_os = "linux")]
+            {
+                let result = unsafe { libc::syncfs(fd) };
+                if result != 0 {
+                    let err = std::io::Error::last_os_error();
+                    return Err(eyre!("sync: failed to sync file system for '{}': {}", file_path, err));
+                }
             }
         } else if options.data_only {
             // Sync file data only (no metadata)

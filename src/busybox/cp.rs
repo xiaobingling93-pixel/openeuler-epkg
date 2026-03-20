@@ -5,9 +5,9 @@ use std::fs;
 use std::fs::File;
 use crate::lfs;
 use std::io;
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use walkdir::WalkDir;
+#[cfg(unix)]
 use filetime::{set_file_mtime, FileTime};
 
 #[derive(Default)]
@@ -250,6 +250,26 @@ pub fn command() -> Command {
         .num_args(0..)
         .help("Source files/directories and destination")
         .required(false))
+}
+
+/// Identity for hard-link deduplication when copying with `-d` / `-a`.
+fn hardlink_identity(meta: &std::fs::Metadata) -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some((meta.dev(), meta.ino()))
+    }
+    #[cfg(windows)]
+    {
+        // `file_index` / `volume_serial_number` require unstable `windows_by_handle`;
+        // without them we cannot dedupe hard links — copy each link target separately.
+        let _ = meta;
+        None
+    }
+    #[cfg(all(not(unix), not(windows)))]
+    {
+        None
+    }
 }
 
 /// Determine if we should preserve symlinks (not follow them) based on options
@@ -640,13 +660,14 @@ fn process_source(
 
     if options.no_dereference_d || options.archive {
         if let Ok(meta) = lfs::symlink_metadata(src_path) {
-            let key = (meta.dev(), meta.ino());
-            if meta.is_file() && !meta.file_type().is_symlink() {
-                if let Some(existing) = hardlink_map.get(&key) {
-                    lfs::hard_link(existing, &dst_path)?;
-                    return Ok(());
+            if let Some(key) = hardlink_identity(&meta) {
+                if meta.is_file() && !meta.file_type().is_symlink() {
+                    if let Some(existing) = hardlink_map.get(&key) {
+                        lfs::hard_link(existing, &dst_path)?;
+                        return Ok(());
+                    }
+                    hardlink_map.insert(key, dst_path.clone());
                 }
-                hardlink_map.insert(key, dst_path.clone());
             }
         }
     }

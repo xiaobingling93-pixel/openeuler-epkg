@@ -1,11 +1,13 @@
 //! uname - print system information
 //!
 //! Compatible with coreutils/busybox uname: -s (kernel name, default), -n (nodename),
-//! -r (release), -v (version), -m (machine), -a (all). Uses libc uname(2) via posix_uname.
+//! -r (release), -v (version), -m (machine), -a (all). On Unix uses libc uname(2) via
+//! `posix_uname`; on Windows uses environment and `std::env::consts`.
 
 use clap::{Arg, Command};
 use color_eyre::Result;
 
+#[cfg(unix)]
 use crate::posix::posix_uname;
 
 #[derive(Debug)]
@@ -16,6 +18,55 @@ pub struct UnameOptions {
     pub kernel_release: bool,
     pub kernel_version: bool,
     pub machine: bool,
+}
+
+#[derive(Debug)]
+struct UnameFields {
+    sysname: String,
+    nodename: String,
+    release: String,
+    version: String,
+    machine: String,
+}
+
+fn fetch_uname() -> Result<UnameFields> {
+    #[cfg(unix)]
+    {
+        let u = posix_uname().map_err(|e| color_eyre::eyre::eyre!("uname: {:?}", e))?;
+        Ok(UnameFields {
+            sysname: u.sysname,
+            nodename: u.nodename,
+            release: u.release,
+            version: u.version,
+            machine: u.machine,
+        })
+    }
+    #[cfg(windows)]
+    {
+        use std::env;
+
+        let nodename = env::var("COMPUTERNAME").unwrap_or_else(|_| "localhost".to_string());
+        let release = env::var("OS").unwrap_or_else(|_| "Windows_NT".to_string());
+        Ok(UnameFields {
+            sysname: "Windows_NT".to_string(),
+            nodename,
+            release,
+            version: format!("{} {}", env::consts::OS, env::consts::ARCH),
+            machine: env::consts::ARCH.to_string(),
+        })
+    }
+    #[cfg(all(not(unix), not(windows)))]
+    {
+        use std::env;
+
+        Ok(UnameFields {
+            sysname: env::consts::OS.to_string(),
+            nodename: "localhost".to_string(),
+            release: "unknown".to_string(),
+            version: format!("{} {}", env::consts::OS, env::consts::ARCH),
+            machine: env::consts::ARCH.to_string(),
+        })
+    }
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<UnameOptions> {
@@ -84,7 +135,7 @@ pub fn command() -> Command {
 }
 
 pub fn run(options: UnameOptions) -> Result<()> {
-    let u = posix_uname().map_err(|e| color_eyre::eyre::eyre!("uname: {:?}", e))?;
+    let u = fetch_uname()?;
 
     let any_flag = options.kernel_name
         || options.nodename

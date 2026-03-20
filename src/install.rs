@@ -410,7 +410,7 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
             .filter_map(|op| op.new_pkgkey.as_ref())
             .filter(|pkgkey| plan.batch.new_pkgkeys.contains(*pkgkey))
             .filter_map(|pkgkey| {
-                pkgkey2new_pkg_info(plan, pkgkey).map(|info| {
+                crate::plan::pkgkey2new_pkg_info(plan, pkgkey).map(|info| {
                     (pkgkey.clone(), plan.store_root.join(&info.pkgline).join("fs"))
                 })
             })

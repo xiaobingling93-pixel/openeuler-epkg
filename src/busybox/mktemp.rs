@@ -3,6 +3,10 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use std::env;
 use std::fs::OpenOptions;
+#[cfg(not(unix))]
+use std::io::ErrorKind;
+use std::path::Path;
+#[cfg(unix)]
 use crate::posix::posix_mkstemp;
 
 const MIN_X_COUNT: usize = 3;
@@ -70,7 +74,7 @@ pub fn command() -> Command {
         .arg(Arg::new("tmpdir")
             .short('p')
             .long("tmpdir")
-            .help("interpret TEMPLATE relative to DIR; if DIR not specified, use $TMPDIR if set, else /tmp")
+            .help("interpret TEMPLATE relative to DIR; if DIR not specified, use $TMPDIR/$TMP/$TEMP or system temp")
             .value_name("DIR")
             .num_args(0..=1))
         .arg(Arg::new("t")
@@ -83,27 +87,51 @@ pub fn command() -> Command {
             .help("TEMPLATE must contain at least 3 consecutive 'X's in last component; default tmp.XXXXXXXXXX with --tmpdir implied"))
 }
 
+fn fallback_tmpdir() -> String {
+    #[cfg(unix)]
+    {
+        "/tmp".to_string()
+    }
+    #[cfg(windows)]
+    {
+        env::temp_dir().to_string_lossy().into_owned()
+    }
+    #[cfg(all(not(unix), not(windows)))]
+    {
+        env::temp_dir().to_string_lossy().into_owned()
+    }
+}
+
+fn env_tmpdir_chain() -> String {
+    env::var("TMPDIR")
+        .or_else(|_| env::var("TMP"))
+        .or_else(|_| env::var("TEMP"))
+        .unwrap_or_else(|_| fallback_tmpdir())
+}
+
 fn get_tmpdir(options: &MktempOptions) -> String {
     if options.tmpdir_requested {
         options
             .tmpdir_value
             .clone()
-            .unwrap_or_else(|| env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string()))
+            .unwrap_or_else(env_tmpdir_chain)
     } else {
-        env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string())
+        env_tmpdir_chain()
     }
 }
 
 fn default_template(options: &MktempOptions) -> String {
     let tmpdir = get_tmpdir(options);
-    let mut p = std::path::PathBuf::from(tmpdir);
-    p.push(DEFAULT_TEMPLATE);
-    p.into_os_string().into_string().unwrap_or_else(|_| "/tmp/tmp.XXXXXXXXXX".to_string())
+    Path::new(&tmpdir).join(DEFAULT_TEMPLATE).to_string_lossy().into_owned()
 }
 
-/// Last path component (after final /).
+/// Last path component (handles `/` and `\\`).
 fn last_component(template: &str) -> &str {
-    template.rsplit('/').next().unwrap_or(template)
+    let trimmed = template.trim_end_matches(&['/', '\\'][..]);
+    Path::new(trimmed)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(trimmed)
 }
 
 /// Count consecutive 'X's at the end of the string.
@@ -140,22 +168,14 @@ fn replace_trailing_x_with_random(template: &str, x_count: usize) -> Result<Stri
     const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let (base, _) = template.split_at(template.len() - x_count);
 
-    #[cfg(unix)]
-    {
-        let mut bytes = vec![0u8; x_count];
-        getrandom::fill(&mut bytes)
-            .map_err(|e| eyre!("mktemp: getrandom failed: {}", e))?;
-        let suffix: String = bytes
-            .iter()
-            .map(|&b| CHARS[(b as usize) % 62] as char)
-            .collect();
-        Ok(format!("{}{}", base, suffix))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (template, x_count);
-        Err(eyre!("mktemp: dry-run not supported on this platform"))
-    }
+    let mut bytes = vec![0u8; x_count];
+    getrandom::fill(&mut bytes)
+        .map_err(|e| eyre!("mktemp: getrandom failed: {}", e))?;
+    let suffix: String = bytes
+        .iter()
+        .map(|&b| CHARS[(b as usize) % 62] as char)
+        .collect();
+    Ok(format!("{}{}", base, suffix))
 }
 
 fn create_temp_file(
@@ -195,15 +215,48 @@ fn create_temp_file(
     }
 
     let tpl = template_for_mkstemp(template);
-    let (path, file) = posix_mkstemp(&tpl).map_err(|e| {
-        if quiet {
+    #[cfg(unix)]
+    {
+        let (path, file) = posix_mkstemp(&tpl).map_err(|e| {
+            if quiet {
+                eyre!("")
+            } else {
+                eyre!("mktemp: failed to create file via template '{}': {:?}", template, e)
+            }
+        })?;
+        drop(file);
+        return Ok(path);
+    }
+    #[cfg(not(unix))]
+    {
+        let x_ct = count_trailing_x(&tpl);
+        for _ in 0..128 {
+            let path = replace_trailing_x_with_random(&tpl, x_ct)?;
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => {
+                    drop(file);
+                    return Ok(path);
+                }
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+                Err(e) if quiet => return Err(eyre!("")),
+                Err(e) => {
+                    return Err(eyre!(
+                        "mktemp: failed to create file '{}': {}",
+                        path,
+                        e
+                    ));
+                }
+            }
+        }
+        return Err(if quiet {
             eyre!("")
         } else {
-            eyre!("mktemp: failed to create file via template '{}': {:?}", template, e)
-        }
-    })?;
-    drop(file);
-    Ok(path)
+            eyre!(
+                "mktemp: failed to create unique file for template '{}'",
+                template
+            )
+        });
+    }
 }
 
 fn create_temp_dir(
@@ -262,8 +315,31 @@ fn create_temp_dir(
     }
     #[cfg(not(unix))]
     {
-        let _ = (template, quiet);
-        Err(eyre!("mktemp: directory mode not supported on this platform"))
+        let tpl = template_for_mkstemp(template);
+        let x_ct = count_trailing_x(&tpl);
+        for _ in 0..128 {
+            let path = replace_trailing_x_with_random(&tpl, x_ct)?;
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Ok(path),
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+                Err(e) if quiet => return Err(eyre!("")),
+                Err(e) => {
+                    return Err(eyre!(
+                        "mktemp: failed to create directory '{}': {}",
+                        path,
+                        e
+                    ));
+                }
+            }
+        }
+        Err(if quiet {
+            eyre!("")
+        } else {
+            eyre!(
+                "mktemp: failed to create unique directory for template '{}'",
+                template
+            )
+        })
     }
 }
 
@@ -286,17 +362,15 @@ pub fn run(options: MktempOptions) -> Result<()> {
             return Err(eyre!("mktemp: with -t, TEMPLATE must not contain a slash: {}", template));
         }
 
-        if options.tmpdir_requested && template.starts_with('/') {
+        if options.tmpdir_requested && Path::new(template).is_absolute() {
             return Err(eyre!("mktemp: with --tmpdir, TEMPLATE must not be an absolute name: {}", template));
         }
 
         let effective_template = if options.t_flag || (use_tmpdir_implied && options.tmpdir_requested) {
             let base = if options.t_flag { template.as_str() } else { DEFAULT_TEMPLATE };
-            let mut p = std::path::PathBuf::from(&tmpdir);
-            p.push(base);
-            p.into_os_string().into_string().unwrap_or_else(|_| format!("{}/{}", tmpdir, base))
+            Path::new(&tmpdir).join(base).to_string_lossy().into_owned()
         } else if options.tmpdir_requested && !template.is_empty() {
-            format!("{}/{}", tmpdir, template)
+            Path::new(&tmpdir).join(template).to_string_lossy().into_owned()
         } else {
             template.clone()
         };
