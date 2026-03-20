@@ -1221,13 +1221,7 @@ fn create_filelists_symlink(revise: &RepoReleaseItem, output_path: &PathBuf) -> 
         lfs::remove_file(&output_path)?;
     }
 
-    #[cfg(unix)]
     lfs::symlink(&revise.download_path, output_path)?;
-
-    #[cfg(windows)]
-    std::os::windows::fs::symlink_file(revise.download_path.clone(), output_path)
-        .with_context(|| format!("Failed to create symlink from {} to {}",
-            revise.download_path.display(), output_path.display()))?;
 
     Ok(())
 }
