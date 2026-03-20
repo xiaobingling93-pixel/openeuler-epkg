@@ -307,6 +307,13 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
         }
     }
 
+    // Download epkg-linux for VM usage on Windows/macOS hosts
+    if let Some(ref epkg_linux_plan) = init_plan.epkg_linux {
+        println!("Downloading epkg-linux (for VM) from {}", epkg_linux_plan.url);
+        let sha_url = epkg_linux_plan.sha_url();
+        urls.extend(vec![epkg_linux_plan.url.clone(), sha_url]);
+    }
+
     if urls.is_empty() {
         return Ok(());
     }
@@ -328,6 +335,9 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
     #[cfg(feature = "libkrun")]
     if let Some(ref vmlinux_plan) = init_plan.vmlinux {
         sha256_files_to_delete.push(vmlinux_plan.sha_path(epkg_download_dir)?);
+    }
+    if let Some(ref epkg_linux_plan) = init_plan.epkg_linux {
+        sha256_files_to_delete.push(epkg_linux_plan.sha_path(epkg_download_dir)?);
     }
     for sha256_path in &sha256_files_to_delete {
         if sha256_path.exists() {
@@ -355,6 +365,12 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
         let epkg_sha_path = epkg_plan.sha_path(epkg_download_dir)?;
         utils::verify_sha256sum(&epkg_sha_path)
             .context("Failed to verify epkg binary checksum")?;
+    }
+
+    if let Some(ref epkg_linux_plan) = init_plan.epkg_linux {
+        let epkg_linux_sha_path = epkg_linux_plan.sha_path(epkg_download_dir)?;
+        utils::verify_sha256sum(&epkg_linux_sha_path)
+            .context("Failed to verify epkg-linux checksum")?;
     }
 
     if init_plan.need_download_epkg_src && !init_plan.epkg_src_path.exists() {
@@ -475,6 +491,18 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
             .path
             .clone();
         copy_epkg_binary_atomically(&elf_loader_path, &elf_loader_target, false)?;
+    }
+
+    // Copy epkg-linux binary for VM usage on Windows/macOS hosts
+    if let Some(ref epkg_linux_plan) = init_plan.epkg_linux {
+        if epkg_linux_plan.path.exists() {
+            let arch = &config().common.arch;
+            let epkg_linux_target = usr_bin.join(format!("epkg-linux-{}", arch));
+            copy_epkg_binary_atomically(&epkg_linux_plan.path, &epkg_linux_target, false)?;
+            log::info!("Installed epkg-linux for VM: {}", epkg_linux_target.display());
+        } else {
+            log::warn!("epkg-linux binary not found at {}", epkg_linux_plan.path.display());
+        }
     }
 
     // Create symlink to epkg binary in the first valid PATH component (Unix only)
@@ -883,6 +911,8 @@ struct InitPlan {
     // Self-update assets (epkg + optional elf-loader + optional vmlinux)
     epkg_binary: Option<AssetDownloadPlan>,
     elf_loader: Option<AssetDownloadPlan>,
+    /// Linux ELF epkg binary for VM usage on Windows/macOS hosts
+    epkg_linux: Option<AssetDownloadPlan>,
     #[cfg(feature = "libkrun")]
     vmlinux: Option<AssetDownloadPlan>,
     #[cfg(feature = "libkrun")]
@@ -1199,9 +1229,11 @@ fn zstd_decompress_file(path: &Path) -> Result<Vec<u8>> {
 
 /// Check for updates and return initialization plan
 struct ResolvedAssets {
-    new_version: EpkgVersionInfo,
-    epkg_binary_url: String,
-    elf_loader_url: Option<String>,
+    new_version:      EpkgVersionInfo,
+    epkg_binary_url:  String,
+    elf_loader_url:   Option<String>,
+    /// Linux ELF epkg binary for VM usage on Windows/macOS hosts
+    epkg_linux_url:   Option<String>,
 }
 
 fn resolve_assets_for_os(
@@ -1237,6 +1269,7 @@ fn resolve_assets_for_os(
             new_version,
             epkg_binary_url,
             elf_loader_url,
+            epkg_linux_url: None, // Not needed in local dev mode
         });
     }
 
@@ -1273,10 +1306,28 @@ fn resolve_assets_for_os(
         return Err(eyre::eyre!("Unsupported OS for asset resolution: {}", os));
     };
 
+    // On Windows/macOS, also resolve epkg-linux-$arch for VM usage.
+    // This binary will be used as /usr/bin/init inside the Linux VM.
+    let epkg_linux_url = if !is_linux {
+        match epkg_release.find_asset_urls_for_arch_with_prefixes(&["epkg-linux", "epkg"], arch) {
+            Ok((linux_url, _)) => {
+                log::debug!("Resolved epkg-linux URL for VM: {}", linux_url);
+                Some(linux_url)
+            }
+            Err(e) => {
+                log::warn!("Could not resolve epkg-linux binary for VM: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     Ok(ResolvedAssets {
         new_version,
         epkg_binary_url,
         elf_loader_url,
+        epkg_linux_url,
     })
 }
 
@@ -1333,6 +1384,7 @@ fn check_for_updates() -> Result<InitPlan> {
         new_version,
         epkg_binary_url,
         elf_loader_url,
+        epkg_linux_url,
     } = resolve_assets_for_os(
         &current_version,
         arch,
@@ -1398,6 +1450,20 @@ fn check_for_updates() -> Result<InitPlan> {
         None
     };
 
+    // On Windows/macOS, download epkg-linux-$arch for VM usage.
+    // This binary will be used as /usr/bin/init inside the Linux VM.
+    let epkg_linux_plan: Option<AssetDownloadPlan> = if let Some(linux_url) = epkg_linux_url {
+        let linux_path =
+            mirror::Mirrors::remote_url_to_path(&linux_url, &epkg_download_dir, "epkg")?;
+        log::debug!("epkg-linux download plan: {} -> {}", linux_url, linux_path.display());
+        Some(AssetDownloadPlan {
+            url: linux_url,
+            path: linux_path,
+        })
+    } else {
+        None
+    };
+
     Ok(InitPlan {
         current: current_version,
         new: new_version,
@@ -1405,6 +1471,7 @@ fn check_for_updates() -> Result<InitPlan> {
         epkg_src_path,
         epkg_binary: epkg_binary_plan,
         elf_loader: elf_loader_plan,
+        epkg_linux: epkg_linux_plan,
         #[cfg(feature = "libkrun")]
         vmlinux: vmlinux_plan,
         #[cfg(feature = "libkrun")]
