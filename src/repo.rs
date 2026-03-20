@@ -136,10 +136,11 @@ pub fn download_file_with_repodata_name(url: &str, repodata_name: &str) -> Resul
 }
 
 /// MSYS2 mirrors host different repo names per CPU arch; skip combinations that 404.
+/// Possible repo names: msys2, clang32, clang64, clangarm64, mingw32, mingw64, mingwarm64, ucrt64
 fn msys2_repo_applies_to_arch(repo_name: &str, arch: &str) -> bool {
     match arch {
-        "x86_64" => repo_name != "clangarm64",
-        "aarch64" => !matches!(repo_name, "mingw64" | "ucrt64" | "clang64"),
+        "x86_64" => !repo_name.contains("arm64"),
+        "aarch64" => repo_name.contains("arm64"),
         _ => repo_name == "msys",
     }
 }
