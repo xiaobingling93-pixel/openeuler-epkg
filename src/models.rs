@@ -28,9 +28,15 @@ use color_eyre::eyre;
 use color_eyre::eyre::WrapErr;
 
 
+#[cfg(target_os = "linux")]
+pub const DEFAULT_CHANNEL: &str = &"alpine";
+#[cfg(target_os = "macos")]
+pub const DEFAULT_CHANNEL: &str = &"brew";
+#[cfg(target_os = "windows")]
+pub const DEFAULT_CHANNEL: &str = &"msys2";
+
 pub const SUPPORT_ARCH_LIST: &[&str] = &["aarch64", "x86_64", "riscv64", "loongarch64"];
 pub const PURE_ENV_SUFFIX: char = '!';
-pub const DEFAULT_CHANNEL: &str = &"alpine";
 pub const DEFAULT_COMMIT:  &str = &env!("EPKG_VERSION_TAG"); // epkg self install will download this commit from gitee
 
 pub const SELF_ENV: &str = &"self"; // holds epkg, elf-loader, package-manager source files; does NOT install regular packages
