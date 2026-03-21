@@ -15,8 +15,9 @@ opt-level = "z"  # Optimize for size.
 # strip = true
 # panic = "abort"
 
-# [patch.crates-io]
-# vm-memory = { version = "0.18.0" }
+[patch.crates-io]
+# Fork: epkg/patches @ v0.17.1 (empty default features + Windows File without rawfd). See git/vm-memory.
+vm-memory = { path = "git/vm-memory" }
 
 [dependencies]
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
@@ -107,6 +108,8 @@ windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
     "Win32_Security",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
 ] }
 
 # Optional but recommended for better progress bars
