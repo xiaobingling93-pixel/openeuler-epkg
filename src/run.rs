@@ -155,6 +155,41 @@ pub fn resolve_vm_memory_mib(run_options: &RunOptions) -> u32 {
         .unwrap_or(2048)
 }
 
+/// Fail fast when `/dev/kvm` is missing or unusable so libkrun and QEMU (`-enable-kvm`) surface a
+/// clear fix instead of stalling (vsock wait) or panicking (libkrun).
+#[cfg(target_os = "linux")]
+pub fn ensure_linux_kvm_ready_for_vm() -> Result<()> {
+    use std::fs::OpenOptions;
+
+    const KVM_DEVICE: &str = "/dev/kvm";
+    if !Path::new(KVM_DEVICE).exists() {
+        return Err(eyre::eyre!(
+            "KVM is not available: {} is missing (VM backends need the host KVM device).\n\
+             Typical fix (as root): `modprobe kvm` and `modprobe kvm_intel` or `modprobe kvm_amd` for your CPU.\n\
+             If the file is still missing, enable virtualization in firmware/BIOS; \
+             if this machine is already a VM, enable nested virtualization.",
+            KVM_DEVICE
+        ));
+    }
+    match OpenOptions::new().read(true).write(true).open(KVM_DEVICE) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err(eyre::eyre!(
+            "Cannot access {}: permission denied. Add your user to the `kvm` group, then re-login or `newgrp kvm`.",
+            KVM_DEVICE
+        )),
+        Err(e) => Err(eyre::eyre!(
+            "Cannot open {}: {}. VM backends require read/write access to KVM.",
+            KVM_DEVICE,
+            e
+        )),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn ensure_linux_kvm_ready_for_vm() -> Result<()> {
+    Ok(())
+}
+
 /// Minimum MiB required for libkrun: kernel is loaded at 0x2000_0000 (512 MiB), so RAM must be
 /// at least 512 MiB + kernel size.
 #[allow(dead_code)]

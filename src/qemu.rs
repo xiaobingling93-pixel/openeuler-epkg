@@ -761,6 +761,7 @@ pub fn run_command_in_qemu(
     guest_cmd_path: &Path,
     existing_socket_path: Option<&Path>,
 ) -> Result<()> {
+    crate::run::ensure_linux_kvm_ready_for_vm()?;
     let (kernel, initrd, qemu_bin, virtiofsd_bin, extra_qemu_args) = parse_vmm_config(run_options)?;
 
     let (cmd_parts, init_cmd) = build_guest_command(&guest_cmd_path, &run_options.args)?;

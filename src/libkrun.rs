@@ -658,6 +658,7 @@ pub fn run_command_in_krun(
     run_options: &RunOptions,
     guest_cmd_path: &Path,
 ) -> Result<()> {
+    crate::run::ensure_linux_kvm_ready_for_vm()?;
     let config = build_libkrun_config(env_root, run_options, guest_cmd_path)?;
     let vm_ctx = create_and_configure_vm(env_root, run_options, &config)?;
 
