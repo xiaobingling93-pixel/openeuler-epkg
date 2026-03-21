@@ -269,8 +269,14 @@ pub fn same_filesystem(
     fs2: &crate::plan::FilesystemInfo,
 ) -> bool {
     // Check if either filesystem info is invalid (fsid == 0)
+    // On Windows, fsid is always 0 (statvfs not available), so this is expected
+    if fs1.fsid == 0 && fs2.fsid == 0 {
+        log::warn!("Cannot determine filesystem ID for '{}' and '{}', assuming different filesystems",
+                fs1.path.display(), fs2.path.display());
+        return false;
+    }
     if fs1.fsid == 0 || fs2.fsid == 0 {
-        log::warn!("Filesystem info incomplete on comparing '{}' (fsid={}) with '{}' (fsid={}), assuming different filesystems",
+        log::warn!("Filesystem info incomplete: '{}' (fsid={}) vs '{}' (fsid={}), assuming different filesystems",
                 fs1.path.display(), fs1.fsid,
                 fs2.path.display(), fs2.fsid);
         return false;

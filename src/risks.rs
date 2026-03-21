@@ -102,9 +102,63 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
 
         info
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        // Non-Unix platforms: return default struct with fsid=0
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceW;
+        use windows::Win32::Storage::FileSystem::GetVolumeInformationW;
+
+        // Default struct with fsid = 0 (failure/default)
+        let mut info = FilesystemInfo {
+            path: mount_point.to_path_buf(),
+            fsid: 0,
+            free_space: u64::MAX,
+            free_inodes: u64::MAX,
+        };
+
+        // Get the root path (e.g., "C:\")
+        let root_path = mount_point.ancestors().last().unwrap_or(mount_point);
+        let path_wide: Vec<u16> = root_path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+
+        unsafe {
+            // Get volume serial number as fsid
+            let mut serial_number: u32 = 0;
+            let result = GetVolumeInformationW(
+                windows::core::PCWSTR(path_wide.as_ptr()),
+                None,
+                None,
+                Some(&mut serial_number),
+                None,
+                None,
+                None,
+            );
+
+            if result.is_ok() && serial_number != 0 {
+                info.fsid = serial_number as u64;
+            }
+
+            // Get free space
+            let mut free_clusters: u64 = 0;
+            let mut total_clusters: u64 = 0;
+            let mut bytes_per_sector: u32 = 0;
+            let mut sectors_per_cluster: u32 = 0;
+
+            if GetDiskFreeSpaceW(
+                windows::core::PCWSTR(path_wide.as_ptr()),
+                Some(&mut sectors_per_cluster),
+                Some(&mut bytes_per_sector),
+                Some(&mut free_clusters as *mut u64 as *mut u32),
+                Some(&mut total_clusters as *mut u64 as *mut u32),
+            ).is_ok() {
+                info.free_space = sectors_per_cluster as u64 * bytes_per_sector as u64 * free_clusters;
+            }
+        }
+
+        info
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        // Other platforms: return default struct with fsid=0
         FilesystemInfo {
             path: mount_point.to_path_buf(),
             fsid: 0,
