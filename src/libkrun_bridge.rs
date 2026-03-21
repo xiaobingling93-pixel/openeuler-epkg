@@ -46,33 +46,52 @@ pub fn setup_vsock_ready_listener() -> Result<Option<std::os::unix::net::UnixLis
 #[cfg(unix)]
 pub fn wait_guest_ready_unix(
     listener: &std::os::unix::net::UnixListener,
+    vm_start_failed_rx: Option<&std::sync::mpsc::Receiver<()>>,
 ) -> Result<()> {
     let listener_fd = listener.as_raw_fd();
-    let mut poll_fds = [libc::pollfd {
-        fd:      listener_fd,
-        events:  libc::POLLIN,
-        revents: 0,
-    }];
 
-    const READY_TIMEOUT_MS: i32 = 30_000;
-    let poll_result = unsafe { libc::poll(poll_fds.as_mut_ptr(), 1, READY_TIMEOUT_MS) };
+    // Poll with shorter intervals to check for VM start failure
+    const POLL_INTERVAL_MS: i32 = 100;
+    const TOTAL_TIMEOUT_MS: i32 = 30_000;
+    let mut elapsed_ms: i32 = 0;
 
-    match poll_result {
-        0 => {
-            log::error!("libkrun: timeout waiting for VM to become ready");
-            Err(eyre::eyre!("Timeout waiting for VM to start"))
+    loop {
+        // Check if VM start failed
+        if let Some(ref failed_rx) = vm_start_failed_rx {
+            if failed_rx.try_recv().is_ok() {
+                return Err(eyre::eyre!("VM failed to start (krun_start_enter error)"));
+            }
         }
-        n if n < 0 => {
-            log::error!("libkrun: poll error on ready socket");
-            Err(eyre::eyre!("Poll error on ready socket"))
-        }
-        _ => {
-            let (stream, _addr) = listener
-                .accept()
-                .map_err(|e| eyre::eyre!("Failed to accept on ready socket: {}", e))?;
-            log::debug!("libkrun: guest connected to ready socket, guest is ready!");
-            drop(stream);
-            Ok(())
+
+        let mut poll_fds = [libc::pollfd {
+            fd:      listener_fd,
+            events:  libc::POLLIN,
+            revents: 0,
+        }];
+
+        let poll_result = unsafe { libc::poll(poll_fds.as_mut_ptr(), 1, POLL_INTERVAL_MS) };
+
+        match poll_result {
+            0 => {
+                // Timeout on this poll, continue checking
+                elapsed_ms += POLL_INTERVAL_MS;
+                if elapsed_ms >= TOTAL_TIMEOUT_MS {
+                    log::error!("libkrun: timeout waiting for VM to become ready");
+                    return Err(eyre::eyre!("Timeout waiting for VM to start"));
+                }
+            }
+            n if n < 0 => {
+                log::error!("libkrun: poll error on ready socket");
+                return Err(eyre::eyre!("Poll error on ready socket"));
+            }
+            _ => {
+                let (stream, _addr) = listener
+                    .accept()
+                    .map_err(|e| eyre::eyre!("Failed to accept on ready socket: {}", e))?;
+                log::debug!("libkrun: guest connected to ready socket, guest is ready!");
+                drop(stream);
+                return Ok(());
+            }
         }
     }
 }
@@ -190,7 +209,10 @@ pub fn setup_vsock_ready_listener() -> Result<Option<WindowsReadyPipe>> {
 }
 
 #[cfg(windows)]
-pub fn wait_guest_ready_windows(pipe: &WindowsReadyPipe) -> Result<()> {
+pub fn wait_guest_ready_windows(
+    pipe: &WindowsReadyPipe,
+    vm_start_failed_rx: Option<&std::sync::mpsc::Receiver<()>>,
+) -> Result<()> {
     use std::sync::mpsc;
     use std::thread;
 
@@ -201,19 +223,49 @@ pub fn wait_guest_ready_windows(pipe: &WindowsReadyPipe) -> Result<()> {
         let r = unsafe { ConnectNamedPipe(handle, None) };
         let _ = tx.send(r);
     });
-    let out = match rx.recv_timeout(Duration::from_secs(30)) {
-        Ok(Ok(())) => {
-            log::debug!("libkrun: guest connected to ready pipe, guest is ready!");
-            Ok(())
+
+    // Poll for either pipe connection or VM start failure
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_secs(30);
+    let check_interval = Duration::from_millis(100);
+
+    loop {
+        // Check if VM start failed
+        if let Some(ref failed_rx) = vm_start_failed_rx {
+            if failed_rx.try_recv().is_ok() {
+                let _ = jh.join();
+                return Err(eyre::eyre!("VM failed to start (krun_start_enter error)"));
+            }
         }
-        Ok(Err(e)) => Err(eyre::eyre!("ConnectNamedPipe failed: {}", e)),
-        Err(_) => {
+
+        // Check if pipe connected
+        match rx.try_recv() {
+            Ok(Ok(())) => {
+                log::debug!("libkrun: guest connected to ready pipe, guest is ready!");
+                let _ = jh.join();
+                return Ok(());
+            }
+            Ok(Err(e)) => {
+                let _ = jh.join();
+                return Err(eyre::eyre!("ConnectNamedPipe failed: {}", e));
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                // Not ready yet, continue waiting
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                let _ = jh.join();
+                return Err(eyre::eyre!("Pipe thread disconnected unexpectedly"));
+            }
+        }
+
+        if start.elapsed() >= timeout {
             log::error!("libkrun: timeout waiting for VM to become ready");
-            Err(eyre::eyre!("Timeout waiting for VM to start"))
+            let _ = jh.join();
+            return Err(eyre::eyre!("Timeout waiting for VM to start"));
         }
-    };
-    let _ = jh.join();
-    out
+
+        std::thread::sleep(check_interval);
+    }
 }
 
 #[cfg(windows)]

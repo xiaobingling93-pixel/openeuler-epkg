@@ -524,12 +524,14 @@ fn create_and_configure_vm(
 }
 
 #[cfg(feature = "libkrun")]
-fn start_libkrun_vm(ctx: KrunContext) -> std::thread::JoinHandle<i32> {
+fn start_libkrun_vm(ctx: KrunContext, start_failed_tx: std::sync::mpsc::Sender<()>) -> std::thread::JoinHandle<i32> {
     thread::spawn(move || {
         unsafe {
             let status = ctx.start_enter();
             if status < 0 {
                 log::error!("krun_start_enter failed with status {}", status);
+                // Signal failure to main thread so it doesn't wait for timeout
+                let _ = start_failed_tx.send(());
             } else {
                 log::debug!("libkrun: krun_start_enter returned status {}", status);
             }
@@ -914,13 +916,16 @@ pub fn run_command_in_krun(
             .vsock_sock_path
             .clone()
             .ok_or_else(|| eyre::eyre!("libkrun: missing vsock socket path"))?;
-        let vm_thread = start_libkrun_vm(vm_ctx.ctx);
+
+        // Channel to signal VM start failure to avoid waiting 30s on error
+        let (start_failed_tx, start_failed_rx) = std::sync::mpsc::channel();
+        let vm_thread = start_libkrun_vm(vm_ctx.ctx, start_failed_tx);
 
         log::debug!("libkrun: waiting for guest to be ready (with timeout)...");
         #[cfg(unix)]
-        libkrun_bridge::wait_guest_ready_unix(&ready_listener)?;
+        libkrun_bridge::wait_guest_ready_unix(&ready_listener, Some(&start_failed_rx))?;
         #[cfg(windows)]
-        libkrun_bridge::wait_guest_ready_windows(&ready_pipe)?;
+        libkrun_bridge::wait_guest_ready_windows(&ready_pipe, Some(&start_failed_rx))?;
 
         let exit_code = libkrun_stream::send_command_via_vsock(
             &config.cmd_parts,
@@ -952,7 +957,9 @@ pub fn run_command_in_krun(
     let vm_ctx = create_and_configure_vm(env_root, run_options, &config)?;
     log::debug!("libkrun: starting VM thread...");
     let ctx_id = vm_ctx.ctx.ctx_id;
-    let vm_thread = start_libkrun_vm(vm_ctx.ctx);
+    // Channel for signaling VM start failure (unused in no-vsock path)
+    let (start_failed_tx, _start_failed_rx) = std::sync::mpsc::channel();
+    let vm_thread = start_libkrun_vm(vm_ctx.ctx, start_failed_tx);
 
     krun_no_vsock_join_vm_thread_exit(vm_thread, ctx_id);
 }
