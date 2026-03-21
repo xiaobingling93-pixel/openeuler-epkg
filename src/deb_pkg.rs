@@ -162,9 +162,8 @@ fn extract_tar<P: AsRef<Path>>(tar_path: P, target_dir: P) -> Result<()> {
     {
         archive.unpack(target_dir)
             .wrap_err_with(|| format!("Failed to extract tar archive: {}", tar_path.display()))?;
+        return Ok(());
     }
-
-    Ok(())
 }
 
 /// Maps Debian scriptlet names to common scriptlet names and moves them to info/install/

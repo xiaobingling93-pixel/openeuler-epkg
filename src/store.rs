@@ -1362,7 +1362,9 @@ pub fn fill_pkglines_in_plan(
             matched_count += 1;
             log::trace!("fill_pkglines_in_plan: matched skipped reinstall {} -> pkgline {}", pkgkey, info_arc.pkgline);
         } else {
-            log::warn!("fill_pkglines_in_plan: no match found for skipped reinstall {}", pkgkey);
+            // This is expected for packages with Move link type (conda on Windows):
+            // after installation, files are moved to env leaving store fs empty.
+            log::debug!("fill_pkglines_in_plan: no match found for skipped reinstall {} (expected if package is already in env)", pkgkey);
         }
     }
 
