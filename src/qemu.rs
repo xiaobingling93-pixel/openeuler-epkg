@@ -646,7 +646,9 @@ fn spawn_qemu(
     // Conditionally log QEMU output based on RUST_LOG level
     // If debug/trace logging is enabled, redirect to log file for debugging
     // Otherwise, send to null to keep terminal clean
+    // For vsock mode, always capture stderr to detect early failures
     let log_qemu_output = log::log_enabled!(log::Level::Debug);
+    let need_stderr_for_error_detection = use_vsock;
     if log_qemu_output {
         use std::fs::File;
         let stdout_log = File::create(qemu_log_path.with_extension("stdout.log"))
@@ -662,6 +664,16 @@ fn spawn_qemu(
                 Stdio::null()
             });
         qemu_cmd.stdout(stdout_log).stderr(stderr_log);
+    } else if need_stderr_for_error_detection {
+        // For vsock mode, capture stderr to detect QEMU early failures
+        use std::fs::File;
+        let stderr_log = File::create(qemu_log_path.with_extension("stderr.log"))
+            .map(Stdio::from)
+            .unwrap_or_else(|e| {
+                log::warn!("Failed to create QEMU stderr log: {}", e);
+                Stdio::null()
+            });
+        qemu_cmd.stdout(Stdio::null()).stderr(stderr_log);
     } else {
         qemu_cmd.stdout(Stdio::null()).stderr(Stdio::null());
     }
@@ -692,13 +704,23 @@ fn handle_guest_execution(
     use_vsock: bool,
     cmd_parts: &[String],
     io_mode: crate::models::IoMode,
+    qemu_log_path: &std::path::Path,
 ) -> Result<i32> {
     if use_vsock {
         // Vsock control plane: wait for guest ready, then connect to command port.
         // QEMU uses AF_VSOCK, so pass None for unix_socket_path.
         // The ready notification uses AF_VSOCK port 10001.
         // VM reuse across host commands is only implemented for libkrun; QEMU stays one-shot.
-        match vm_client::wait_ready_and_send_command(cmd_parts, io_mode, 10000, None, false) {
+        let qemu_stderr_path = qemu_log_path.with_extension("stderr.log");
+        match vm_client::wait_ready_and_send_command_with_qemu(
+            cmd_parts,
+            io_mode,
+            10000,
+            None,
+            false,
+            qemu_child,
+            &qemu_stderr_path,
+        ) {
             Ok(cmd_exit_code) => {
                 log::debug!("qemu: command completed with exit code {}, waiting for QEMU to exit", cmd_exit_code);
                 let _ = qemu_child
@@ -808,6 +830,7 @@ pub fn run_command_in_qemu(
         use_vsock,
         &cmd_parts,
         run_options.io_mode,
+        &qemu_log_path,
     )?;
 
     cleanup_rootfs(rootfs_mode);

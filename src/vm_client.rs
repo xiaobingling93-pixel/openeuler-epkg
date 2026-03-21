@@ -329,6 +329,7 @@ fn send_command_via_vsock_impl(
 /// The mode is determined by `unix_socket_path.is_none()`:
 /// - None → QEMU mode (native AF_VSOCK)
 /// - Some(_) → libkrun mode (Unix socket bridge)
+#[allow(dead_code)]
 pub fn wait_ready_and_send_command(
     cmd_parts: &[String],
     io_mode: IoMode,
@@ -336,7 +337,20 @@ pub fn wait_ready_and_send_command(
     unix_socket_path: Option<&std::path::Path>,
     reuse_vm: bool,
 ) -> Result<i32> {
-    wait_ready_and_send_command_impl(cmd_parts, io_mode, cmd_port, unix_socket_path, reuse_vm)
+    wait_ready_and_send_command_impl(cmd_parts, io_mode, cmd_port, unix_socket_path, reuse_vm, None, None)
+}
+
+/// Extended version with QEMU process monitoring for early failure detection.
+pub fn wait_ready_and_send_command_with_qemu(
+    cmd_parts: &[String],
+    io_mode: IoMode,
+    cmd_port: u32,
+    unix_socket_path: Option<&std::path::Path>,
+    reuse_vm: bool,
+    qemu_child: &mut std::process::Child,
+    qemu_stderr_path: &std::path::Path,
+) -> Result<i32> {
+    wait_ready_and_send_command_impl(cmd_parts, io_mode, cmd_port, unix_socket_path, reuse_vm, Some(qemu_child), Some(qemu_stderr_path))
 }
 
 fn wait_ready_and_send_command_impl(
@@ -345,6 +359,8 @@ fn wait_ready_and_send_command_impl(
     cmd_port: u32,
     unix_socket_path: Option<&std::path::Path>,
     reuse_vm: bool,
+    mut qemu_child: Option<&mut std::process::Child>,
+    qemu_stderr_path: Option<&std::path::Path>,
 ) -> Result<i32> {
     let (use_pty, is_batch) = resolve_io_mode(io_mode);
     log::debug!(
@@ -406,8 +422,86 @@ fn wait_ready_and_send_command_impl(
             .map_err(|e| eyre::eyre!("Failed to listen on ready vsock port: {}", e))?;
 
         log::debug!("vm_client: waiting for guest to connect to ready port {}...", READY_PORT);
-        let client_fd = socket::accept(raw_fd)
-            .map_err(|e| eyre::eyre!("Failed to accept on ready vsock port: {}", e))?;
+
+        // Use poll with timeout to detect QEMU early failures
+        let poll_timeout_ms = 100;  // Check every 0.1 second for faster failure detection
+        let max_wait_ms = 60000;    // Max 60 seconds total
+        let mut total_waited_ms = 0;
+
+        let client_fd = loop {
+            // Check if QEMU has exited prematurely
+            if let Some(ref mut child) = qemu_child {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        // QEMU exited, read stderr for error message
+                        let error_msg = if let Some(stderr_path) = qemu_stderr_path {
+                            std::fs::read_to_string(stderr_path).unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+                        let exit_info = status.code()
+                            .map(|c| format!("exit code {}", c))
+                            .unwrap_or_else(|| "killed by signal".to_string());
+
+                        // Extract key error from stderr
+                        let key_error = error_msg.lines()
+                            .find(|line| line.contains("error") || line.contains("failed") || line.contains("unable to"))
+                            .map(|s| s.trim().to_string())
+                            .unwrap_or_else(|| error_msg.lines().last().map(|s| s.trim().to_string()).unwrap_or_default());
+
+                        return Err(eyre::eyre!(
+                            "QEMU exited prematurely ({}): {}\n\
+                             If vsock CID conflict, kill existing VM processes: pkill -f qemu-system\n\
+                             Log: {}",
+                            exit_info,
+                            key_error,
+                            qemu_stderr_path.map(|p| p.display().to_string()).unwrap_or_default()
+                        ));
+                    }
+                    Ok(None) => {} // Still running
+                    Err(e) => {
+                        log::debug!("vm_client: try_wait error: {}", e);
+                    }
+                }
+            }
+
+            // Poll for connection with timeout
+            let mut pfd = [libc::pollfd {
+                fd:      raw_fd,
+                events:  libc::POLLIN,
+                revents: 0,
+            }];
+            let ready = unsafe { libc::poll(pfd.as_mut_ptr(), 1, poll_timeout_ms as i32) };
+
+            total_waited_ms += poll_timeout_ms;
+            if total_waited_ms > max_wait_ms {
+                return Err(eyre::eyre!("Timeout waiting for guest to connect to ready port"));
+            }
+
+            match ready {
+                0 => {
+                    // Timeout, continue waiting (and check QEMU status)
+                    log::trace!("vm_client: poll timeout, continuing to wait...");
+                    continue;
+                }
+                n if n > 0 => {
+                    // Ready for accept
+                    if (pfd[0].revents & libc::POLLIN) != 0 {
+                        break socket::accept(raw_fd)
+                            .map_err(|e| eyre::eyre!("Failed to accept on ready vsock port: {}", e))?;
+                    }
+                    // Check for errors
+                    if (pfd[0].revents & (libc::POLLERR | libc::POLLHUP)) != 0 {
+                        return Err(eyre::eyre!("Ready socket error during poll"));
+                    }
+                }
+                _ => {
+                    // Negative return from poll (error)
+                    continue;
+                }
+            }
+        };
+
         log::debug!("vm_client: guest connected to ready vsock port, guest is ready!");
 
         // Close the ready connection and listener
