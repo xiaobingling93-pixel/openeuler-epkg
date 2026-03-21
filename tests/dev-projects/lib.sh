@@ -49,7 +49,22 @@ run_in_env() {
 run_with_timeout() {
     local t="$1"
     shift
-    timeout --foreground "$t" "$@"
+    case "$(uname -s)" in
+        CYGWIN*|MINGW*|MSYS*)
+            # Windows MSYS2 timeout doesn't support --foreground
+            timeout "$t" "$@"
+            ;;
+        Linux*)
+            timeout --foreground "$t" "$@"
+            ;;
+        Darwin*)
+            # macOS doesn't have timeout, use perl as fallback
+            perl -e 'alarm shift; exec @ARGV' "$t" "$@"
+            ;;
+        *)
+            timeout --foreground "$t" "$@"
+            ;;
+    esac
 }
 
 log() {
