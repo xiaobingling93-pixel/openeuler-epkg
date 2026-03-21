@@ -2284,6 +2284,120 @@ fn emit_line_output(
     }
 }
 
+fn process_input_read_first_line(
+    reader: &mut dyn std::io::BufRead,
+    buffer: &mut String,
+    file_path: Option<&str>,
+) -> Result<bool> {
+    let bytes_read = reader
+        .read_line(buffer)
+        .map_err(|e| sed_read_line_error(file_path, e))?;
+    Ok(bytes_read != 0)
+}
+
+/// Peek the following line into `next_buffer` unless `skip_swap` (n/N left the next line in `buffer`).
+fn process_input_peek_next_line(
+    reader: &mut dyn std::io::BufRead,
+    file_path: Option<&str>,
+    next_buffer: &mut String,
+    skip_swap: bool,
+    next_bytes: &mut usize,
+) -> Result<()> {
+    if !skip_swap {
+        next_buffer.clear();
+        *next_bytes = reader
+            .read_line(next_buffer)
+            .map_err(|e| sed_read_line_error(file_path, e))?;
+    }
+    Ok(())
+}
+
+fn process_input_line_from_buffer(
+    buffer: &str,
+    is_last_file: bool,
+    next_bytes: usize,
+    line_number: u64,
+) -> (Option<u64>, bool, String) {
+    let total_lines = if is_last_file && next_bytes == 0 {
+        Some(line_number)
+    } else {
+        None
+    };
+    let has_newline = buffer.ends_with('\n');
+    let line = if has_newline {
+        buffer.trim_end_matches('\n')
+    } else {
+        buffer.trim_end_matches('\r')
+    }
+    .to_string();
+    (total_lines, has_newline, line)
+}
+
+fn process_input_make_apply_input<'a>(
+    line: &'a str,
+    line_number: u64,
+    total_lines: Option<u64>,
+    has_newline: bool,
+    commands: &'a [AddressedCommand],
+    options: &'a SedOptions,
+    cycle_start_line_number: u64,
+) -> ApplyCommandsInput<'a> {
+    ApplyCommandsInput {
+        line,
+        commands,
+        extended_regex: options.extended_regex,
+        quiet: options.quiet,
+        line_number,
+        total_lines,
+        line_has_newline: has_newline,
+        start_index: 0,
+        cycle_start_line_number,
+        parent_group_index: None,
+    }
+}
+
+/// After `handle_n_append_loop`, move the next line into `buffer` and refresh `next_bytes`.
+fn process_input_refill_after_n_append(
+    reader: &mut dyn std::io::BufRead,
+    file_path: Option<&str>,
+    buffer: &mut String,
+    next_buffer: &mut String,
+) -> Result<usize> {
+    if next_buffer.is_empty() {
+        next_buffer.clear();
+        reader
+            .read_line(buffer)
+            .map_err(|e| sed_read_line_error(file_path, e))
+    } else {
+        std::mem::swap(buffer, next_buffer);
+        next_buffer.clear();
+        reader
+            .read_line(next_buffer)
+            .map_err(|e| sed_read_line_error(file_path, e))
+    }
+}
+
+/// Swap peek buffer into current line for the next cycle; returns new `swapped_then_read_zero`.
+fn process_input_swap_peek_to_current(
+    skip_swap: bool,
+    buffer: &mut String,
+    next_buffer: &mut String,
+    line_number: &mut u64,
+    n_append_consumed: &mut bool,
+) -> bool {
+    if !skip_swap && !next_buffer.is_empty() {
+        std::mem::swap(buffer, next_buffer);
+        #[allow(unused_assignments)]
+        {
+            *n_append_consumed = true;
+        }
+        *line_number += 1;
+        true
+    } else {
+        false
+    }
+}
+
 fn process_input(
     reader: &mut dyn std::io::BufRead,
     commands: &[AddressedCommand],
@@ -2297,10 +2411,7 @@ fn process_input(
     let mut line_number = 0u64;
     let mut buffer = String::new();
     let mut next_buffer = String::new();
-    // Read first line
-    let bytes_read = reader.read_line(&mut buffer)
-        .map_err(|e| sed_read_line_error(file_path, e))?;
-    if bytes_read == 0 {
+    if !process_input_read_first_line(reader, &mut buffer, file_path)? {
         return Ok(());
     }
     let mut skip_swap = false; // true after n/N consumed line(s): don't clear next_buffer at top of loop
@@ -2312,39 +2423,23 @@ fn process_input(
             line_number += 1;
         }
         state.test_flag = false;
-        // Peek next line (unless we already have it from previous n/N)
-        if !skip_swap {
-            next_buffer.clear();
-            next_bytes = reader.read_line(&mut next_buffer)
-                .map_err(|e| sed_read_line_error(file_path, e))?;
-        }
-        // $ matches only last line of last file (sed.c: get_next_line spans files)
-        let total_lines = if is_last_file && next_bytes == 0 {
-            Some(line_number)
-        } else {
-            None
-        };
-        let has_newline = buffer.ends_with('\n');
-        let line = if has_newline {
-            buffer.trim_end_matches('\n')
-        } else {
-            buffer.trim_end_matches('\r')
-        }.to_string();
+        process_input_peek_next_line(reader, file_path, &mut next_buffer, skip_swap, &mut next_bytes)?;
+
+        let (total_lines, has_newline, line) =
+            process_input_line_from_buffer(&buffer, is_last_file, next_bytes, line_number);
 
         state.cycle_start_line_number = line_number;
-        let input = ApplyCommandsInput {
-            line: line.as_str(),
-            commands,
-            extended_regex: options.extended_regex,
-            quiet: options.quiet,
+        let input = process_input_make_apply_input(
+            line.as_str(),
             line_number,
             total_lines,
-            line_has_newline: has_newline,
-            start_index: 0,
-            cycle_start_line_number: state.cycle_start_line_number,
-            parent_group_index: None,
-        };
-        let (mut processed, mut should_print, mut prints, mut inserts, mut appends, mut should_quit, mut should_next) = apply_commands(&input, state, Some(last_puts_char), write_file_last)?;
+            has_newline,
+            commands,
+            options,
+            state.cycle_start_line_number,
+        );
+        let (mut processed, mut should_print, mut prints, mut inserts, mut appends, mut should_quit, mut should_next) =
+            apply_commands(&input, state, Some(last_puts_char), write_file_last)?;
 
         let broke_for_n_append = state.n_append_pending; // don't output unmerged line when we're about to do N
         let mut skip_swap_this = false; // n: don't swap (buffer already set). N: swap so buffer = next line
@@ -2368,16 +2463,7 @@ fn process_input(
         // Swap so buffer has the next line to process; if next_buffer was left empty (N read 0),
         // read the next line into buffer so we don't reprocess the same line forever.
         if n_append_consumed {
-            if next_buffer.is_empty() {
-                next_buffer.clear();
-                next_bytes = reader.read_line(&mut buffer)
-                    .map_err(|e| sed_read_line_error(file_path, e))?;
-            } else {
-                std::mem::swap(&mut buffer, &mut next_buffer);
-                next_buffer.clear();
-                next_bytes = reader.read_line(&mut next_buffer)
-                    .map_err(|e| sed_read_line_error(file_path, e))?;
-            }
+            next_bytes = process_input_refill_after_n_append(reader, file_path, &mut buffer, &mut next_buffer)?;
         }
 
         if state.n_append_hit_eof {
@@ -2439,16 +2525,13 @@ fn process_input(
         // Next iteration: use peeked line as current. When skip_swap we already have it in buffer.
         // When next_buffer is empty (e.g. N read 0 and we read next line into buffer) don't swap
         // or we'd overwrite buffer and lose the line we just read.
-        if !skip_swap && !next_buffer.is_empty() {
-            std::mem::swap(&mut buffer, &mut next_buffer);
-            // Set for next iteration's read in N-handling and should_output
-            #[allow(unused_assignments)]
-            {
-                n_append_consumed = true;
-            }
-            swapped_then_read_zero = true; // so if next read gets 0 we don't break before processing buffer
-            line_number += 1; // buffer now holds the next line
-        }
+        swapped_then_read_zero = process_input_swap_peek_to_current(
+            skip_swap,
+            &mut buffer,
+            &mut next_buffer,
+            &mut line_number,
+            &mut n_append_consumed,
+        );
     }
 
     Ok(())
