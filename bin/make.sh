@@ -20,8 +20,9 @@ set -e
 #   -------------|-------------------|--------
 #   Linux        | x86_64/aarch64/riscv64 | enabled (static linked)
 #   Linux        | loongarch64       | disabled (not supported)
-#   macOS        | all architectures | enabled (static linked)
-#   Windows      | all architectures | disabled (not supported)
+#   macOS        | aarch64           | enabled (static linked)
+#   Windows      | x86_64            | enabled (static linked)
+#   Windows      | other archs       | disabled
 #
 # User Override:
 #   - FEATURES="auto"   : auto-enable libkrun for supported platforms (default)
@@ -868,7 +869,7 @@ add_musl_compat_to_mlua() {
 # Platform support matrix:
 # - Linux: x86_64, aarch64, riscv64 (all enabled)
 # - macOS: aarch64 only (Hypervisor.framework limitation)
-# - Windows: not supported
+# - Windows: x86_64 only
 should_enable_libkrun() {
     local arch="$1"
     local os="$2"  # linux, darwin, windows
@@ -896,8 +897,10 @@ should_enable_libkrun() {
             esac
             ;;
         windows)
-            # libkrun not supported on Windows
-            return 1
+            case "$arch" in
+                x86_64) return 0 ;;
+                *) return 1 ;;
+            esac
             ;;
         *)
             return 1
@@ -1028,9 +1031,9 @@ build_static() {
 
     # If we're building with libkrun support, ensure kernel is available.
     # Note: On macOS, libkrun doesn't need a kernel image (it uses hypervisor framework)
-    # Note: On Windows, libkrun is not supported
+    # Note: On Linux and Windows hosts, install_kernel_for_libkrun prepares the guest kernel
     if [[ "$cargo_features" == *"libkrun"* ]]; then
-        if [[ "$is_macos" == "false" && "$is_windows" == "false" ]]; then
+        if [[ "$is_macos" == "false" ]]; then
             install_kernel_for_libkrun "$arch"
         fi
     fi
@@ -1291,21 +1294,23 @@ cross-windows() {
 
     setup_cross_env "$target"
 
-    # libkrun is not supported on Windows
     # Note: FEATURES="" means user explicitly wants no features
     local cargo_features=""
     if [[ "$FEATURES" == "auto" ]]; then
-        # No features for Windows (libkrun not supported)
-        cargo_features=""
+        cargo_features="$(get_default_cargo_features "$arch" "windows")"
+        if [[ -n "$cargo_features" ]]; then
+            echo "Auto-enabling libkrun feature for Windows $arch"
+        fi
     else
         cargo_features="${FEATURES:-}"
-        if [[ "$cargo_features" == *"libkrun"* ]]; then
-            echo "Warning: libkrun is not supported on Windows, ignoring libkrun feature"
-            cargo_features="${cargo_features//libkrun/}"
-            cargo_features="${cargo_features//,,/,}"  # Remove double commas
-            cargo_features="${cargo_features#,}"      # Remove leading comma
-            cargo_features="${cargo_features%,}"      # Remove trailing comma
-        fi
+    fi
+
+    if [[ "$cargo_features" == *"libkrun"* ]] && ! should_enable_libkrun "$arch" "windows"; then
+        echo "Warning: libkrun is not supported on Windows $arch, build may fail"
+    fi
+
+    if [[ "$cargo_features" == *"libkrun"* ]]; then
+        install_kernel_for_libkrun "$arch"
     fi
 
     local cargo_feature_args=()
@@ -1698,9 +1703,10 @@ case $cmd in
         echo ""
         echo "libkrun auto-enable matrix:"
         echo "  Linux x86_64/aarch64/riscv64: enabled"
-        echo "  macOS (all archs):            enabled"
+        echo "  macOS aarch64:                enabled"
+        echo "  Windows x86_64:               enabled"
         echo "  Linux loongarch64:            disabled (not supported)"
-        echo "  Windows:                      disabled (not supported)"
+        echo "  macOS x86_64 / Windows !x86_64: disabled"
         echo ""
         echo "Set FEATURES to override default features."
         exit 1

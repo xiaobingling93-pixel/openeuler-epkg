@@ -12,6 +12,7 @@ All 8 tasks have been implemented and committed:
 6. ✅ init.rs: Download epkg-linux-$arch on Windows/macOS for VM usage
 7. ✅ create_applet_symlinks(): Link to correct epkg binary based on env distro
 8. ✅ Run Linux scriptlets in VM when installing on Windows/macOS
+9. ✅ **libkrun on Windows**：宿主 Windows 构建启用 `libkrun` Cargo feature 时，与 macOS 一样可作为 `IsolateMode::Vm` 后端（virtiofs、NTFS EA、sandbox-kernel 等依赖见 `docs/design-notes/sandbox-vmm.md`）
 
 ## Additional Fix: cfg Hygiene
 
