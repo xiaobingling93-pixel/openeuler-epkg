@@ -419,8 +419,7 @@ fn register_file_posix_functions(lua: &Lua, posix_table: &mut Table) -> LuaResul
     Ok(())
 }
 
-/// Register environment variable POSIX functions
-fn register_env_posix_functions(lua: &Lua, posix_table: &mut Table) -> LuaResult<()> {
+fn register_posix_env_var_bindings(lua: &Lua, posix_table: &mut Table) -> LuaResult<()> {
     // posix.getenv([name]) - get environment variable or all env vars
     posix_table.set("getenv", lua.create_function(|lua, name: Option<String>| -> LuaResult<mlua::Value> {
         if let Some(n) = name {
@@ -468,6 +467,10 @@ fn register_env_posix_functions(lua: &Lua, posix_table: &mut Table) -> LuaResult
         Ok(ret)
     })?)?;
 
+    Ok(())
+}
+
+fn register_posix_passwd_group_bindings(lua: &Lua, posix_table: &mut Table) -> LuaResult<()> {
     // posix.getpasswd([name_or_id], [selector]) - get password entry (supports selector)
     posix_table.set("getpasswd", lua.create_function(|lua, (name_or_id, selector): (Option<mlua::Value>, Option<String>)| -> LuaResult<mlua::Value> {
         let passwd = match name_or_id {
@@ -549,6 +552,13 @@ fn register_env_posix_functions(lua: &Lua, posix_table: &mut Table) -> LuaResult
         }
     })?)?;
 
+    Ok(())
+}
+
+/// Register environment variable POSIX functions
+fn register_env_posix_functions(lua: &Lua, posix_table: &mut Table) -> LuaResult<()> {
+    register_posix_env_var_bindings(lua, posix_table)?;
+    register_posix_passwd_group_bindings(lua, posix_table)?;
     Ok(())
 }
 

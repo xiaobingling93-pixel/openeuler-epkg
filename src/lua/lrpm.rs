@@ -1,14 +1,11 @@
-use mlua::{Lua, Result as LuaResult, Value, MultiValue};
+use mlua::{Lua, Result as LuaResult, Table, Value, MultiValue};
 use crate::version_compare;
 use crate::lua::lposix::{pushresult, pusherror_with_code};
 use glob::glob;
 
 /// Compatible with /c/rpm-software-management/rpm/rpmio/rpmlua.cc lua funcs in rpmlib[]
 
-/// Register rpm.* namespace functions
-pub fn register_rpm_extensions(lua: &Lua) -> LuaResult<()> {
-    let rpm_table = lua.create_table()?;
-
+fn register_rpm_vercmp(lua: &Lua, rpm_table: &Table) -> LuaResult<()> {
     // rpm.vercmp(v1, v2) - Version comparison
     // Returns: -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2
     rpm_table.set("vercmp", lua.create_function(|_lua, (v1, v2): (String, String)| {
@@ -27,7 +24,10 @@ pub fn register_rpm_extensions(lua: &Lua) -> LuaResult<()> {
             }
         }
     })?)?;
+    Ok(())
+}
 
+fn register_rpm_glob(lua: &Lua, rpm_table: &Table) -> LuaResult<()> {
     // rpm.glob(pattern, flags?) - Glob pattern matching
     // Returns: A Lua table of matching paths (empty table if no matches)
     // flags: Optional string containing 'c' for NOCHECK (return pattern if no match)
@@ -62,7 +62,10 @@ pub fn register_rpm_extensions(lua: &Lua) -> LuaResult<()> {
             }
         }
     })?)?;
+    Ok(())
+}
 
+fn register_rpm_spawn(lua: &Lua, rpm_table: &Table) -> LuaResult<()> {
     // rpm.spawn(args, options) - spawn a process with optional redirections
     // args: table of command arguments (first is the program to execute)
     // options: optional table with redirections (stdin, stdout, stderr)
@@ -197,9 +200,15 @@ pub fn register_rpm_extensions(lua: &Lua) -> LuaResult<()> {
         // Return exit status (which should be 0 for success)
         pushresult(lua, libc::WEXITSTATUS(status), None)
     })?)?;
+    Ok(())
+}
 
-    // Register as global 'rpm' table
+/// Register rpm.* namespace functions
+pub fn register_rpm_extensions(lua: &Lua) -> LuaResult<()> {
+    let rpm_table = lua.create_table()?;
+    register_rpm_vercmp(lua, &rpm_table)?;
+    register_rpm_glob(lua, &rpm_table)?;
+    register_rpm_spawn(lua, &rpm_table)?;
     lua.globals().set("rpm", rpm_table)?;
-
     Ok(())
 }
