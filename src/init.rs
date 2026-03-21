@@ -1216,7 +1216,7 @@ fn zstd_decompress_file(path: &Path) -> Result<Vec<u8>> {
     use std::io::Read;
     use zstd::stream::Decoder;
 
-    let file = fs::File::open(path)
+    let file = std::fs::File::open(path)
         .context("Failed to open zst file")?;
     let mut decoder = Decoder::new(file)
         .context("Failed to create zstd decoder")?;

@@ -136,7 +136,7 @@ pub fn resolve_vm_cpus(run_options: &RunOptions) -> u8 {
     if let Some(cpus) = run_options.vm_cpus {
         return cpus;
     }
-    env::var("EPKG_VM_CPUS")
+    std::env::var("EPKG_VM_CPUS")
         .ok()
         .and_then(|s| s.parse::<u8>().ok())
         .unwrap_or(2)
@@ -154,7 +154,7 @@ pub fn resolve_vm_memory_mib(run_options: &RunOptions) -> u32 {
     if let Some(mib) = run_options.vm_memory_mib {
         return mib;
     }
-    env::var("EPKG_VM_MEMORY")
+    std::env::var("EPKG_VM_MEMORY")
         .ok()
         .and_then(|s| {
             if let Some(bytes) = crate::utils::parse_size_bytes_opt(&s) {

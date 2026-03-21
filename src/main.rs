@@ -44,13 +44,9 @@ mod location;
 mod package;
 mod packages_stream;
 mod index_html;
-// Windows-specific: NTFS Extended Attributes for POSIX metadata
-// When libkrun feature is enabled, use the already-compiled version from devices crate
-// Otherwise, include the source directly (for Windows builds without libkrun/VM support)
-#[cfg(all(windows, feature = "libkrun"))]
-pub use devices::virtio::fs::ntfs_ea;
-#[cfg(all(windows, not(feature = "libkrun")))]
-mod ntfs_ea {
+// Windows-specific: NTFS Extended Attributes for POSIX metadata (shared with libkrun virtiofs sources).
+#[cfg(windows)]
+pub mod ntfs_ea {
     #![allow(dead_code)]
     include!("../git/libkrun/src/devices/src/virtio/fs/windows/ntfs_ea.rs");
 }

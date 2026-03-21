@@ -1,8 +1,9 @@
 use std::ffi::CString;
-use std::io::{Read, Write};
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
+#[cfg(not(target_os = "linux"))]
+use std::io::Write;
 use std::path::Path;
 use std::ptr;
+#[cfg(not(target_os = "linux"))]
 use std::sync::Mutex;
 use std::thread;
 
@@ -11,6 +12,13 @@ use color_eyre::Result;
 
 use crate::lfs;
 use crate::run::RunOptions;
+
+#[cfg(feature = "libkrun")]
+#[path = "libkrun_bridge.rs"]
+mod libkrun_bridge;
+#[cfg(feature = "libkrun")]
+#[path = "libkrun_stream.rs"]
+mod libkrun_stream;
 
 #[cfg(feature = "libkrun")]
 extern crate krun as krun_crate;
@@ -57,20 +65,33 @@ unsafe extern "C" {
         c_tag: *const std::ffi::c_char,
         c_path: *const std::ffi::c_char,
     ) -> i32;
-    /// Add a vsock port mapping to a Unix socket on the host.
-    /// This allows host processes to connect to guest vsock via Unix socket.
-    /// listen=true means host initiates connections to guest.
+    /// Get the eventfd for triggering VM shutdown from host.
+    /// Writing 1u64 to this fd will cause the VM to exit gracefully.
+    fn krun_get_shutdown_eventfd(ctx_id: u32) -> i32;
+}
+
+// Map vsock port to a Unix socket path (host). Not exported on Windows builds of libkrun.
+#[cfg(all(feature = "libkrun", unix))]
+#[allow(dead_code)]
+unsafe extern "C" {
     fn krun_add_vsock_port2(
         ctx_id: u32,
         port: u32,
         c_filepath: *const std::ffi::c_char,
         listen: bool,
     ) -> i32;
-    /// Get the eventfd for triggering VM shutdown from host.
-    /// Writing 1u64 to this fd will cause the VM to exit gracefully.
-    fn krun_get_shutdown_eventfd(ctx_id: u32) -> i32;
 }
 
+// Map vsock port to `\\.\pipe\<stem>` on the host (Windows libkrun only).
+#[cfg(all(feature = "libkrun", windows))]
+#[allow(dead_code)]
+unsafe extern "C" {
+    fn krun_add_vsock_port_windows(
+        ctx_id: u32,
+        port: u32,
+        c_pipe_name: *const std::ffi::c_char,
+    ) -> i32;
+}
 
 // Force the staticlib to be linked when we only reference it via extern "C".
 #[cfg(feature = "libkrun")]
@@ -437,23 +458,51 @@ fn create_and_configure_vm(
             lfs::create_dir_all(sock_path.parent().unwrap())?;
             let _ = std::fs::remove_file(&sock_path);
 
-            let sock_path_c = CString::new(sock_path.to_string_lossy().as_bytes())
-                .map_err(|e| eyre::eyre!("invalid socket path: {}", e))?;
-            check_status("krun_add_vsock_port2",
-                krun_add_vsock_port2(ctx.ctx_id, 10000, sock_path_c.as_ptr(), true)
-            )?;
-            log::debug!("libkrun: vsock port 10000 mapped to Unix socket {}", sock_path.display());
+            #[cfg(unix)]
+            {
+                let sock_path_c = CString::new(sock_path.to_string_lossy().as_bytes())
+                    .map_err(|e| eyre::eyre!("invalid socket path: {}", e))?;
+                check_status(
+                    "krun_add_vsock_port2",
+                    krun_add_vsock_port2(ctx.ctx_id, 10000, sock_path_c.as_ptr(), true),
+                )?;
+            }
+            #[cfg(windows)]
+            {
+                let stem = libkrun_bridge::pipe_name_from_sock_path(&sock_path)?;
+                let stem_c = CString::new(stem)
+                    .map_err(|e| eyre::eyre!("invalid vsock pipe name: {}", e))?;
+                check_status(
+                    "krun_add_vsock_port_windows",
+                    krun_add_vsock_port_windows(ctx.ctx_id, 10000, stem_c.as_ptr()),
+                )?;
+            }
+            log::debug!("libkrun: vsock port 10000 mapped to {}", sock_path.display());
 
             let ready_path = crate::models::dirs().epkg_cache
                 .join("vmm-logs")
                 .join(format!("ready-{}.sock", std::process::id()));
             let _ = std::fs::remove_file(&ready_path);
-            let ready_path_c = CString::new(ready_path.to_string_lossy().as_bytes())
-                .map_err(|e| eyre::eyre!("invalid ready socket path: {}", e))?;
-            check_status("krun_add_vsock_port2",
-                krun_add_vsock_port2(ctx.ctx_id, 10001, ready_path_c.as_ptr(), false)
-            )?;
-            log::debug!("libkrun: ready port 10001 mapped to Unix socket {}", ready_path.display());
+            #[cfg(unix)]
+            {
+                let ready_path_c = CString::new(ready_path.to_string_lossy().as_bytes())
+                    .map_err(|e| eyre::eyre!("invalid ready socket path: {}", e))?;
+                check_status(
+                    "krun_add_vsock_port2",
+                    krun_add_vsock_port2(ctx.ctx_id, 10001, ready_path_c.as_ptr(), false),
+                )?;
+            }
+            #[cfg(windows)]
+            {
+                let stem = libkrun_bridge::pipe_name_from_sock_path(&ready_path)?;
+                let stem_c = CString::new(stem)
+                    .map_err(|e| eyre::eyre!("invalid ready pipe name: {}", e))?;
+                check_status(
+                    "krun_add_vsock_port_windows",
+                    krun_add_vsock_port_windows(ctx.ctx_id, 10001, stem_c.as_ptr()),
+                )?;
+            }
+            log::debug!("libkrun: ready port 10001 mapped to {}", ready_path.display());
 
             let vsock_sock_path = Some(sock_path);
             let shutdown_fd = ctx.get_shutdown_eventfd()
@@ -468,38 +517,6 @@ fn create_and_configure_vm(
     log::debug!("libkrun: shutdown_eventfd = {}", shutdown_fd);
 
     Ok(VmContext { ctx, shutdown_fd, vsock_sock_path: None })
-}
-
-#[cfg(feature = "libkrun")]
-fn setup_vsock_ready_listener() -> Result<Option<std::os::unix::net::UnixListener>> {
-    let vmm_logs_dir = crate::models::dirs().epkg_cache.join("vmm-logs");
-    if let Ok(entries) = std::fs::read_dir(&vmm_logs_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("vsock-") && name.ends_with(".sock") {
-                let _ = std::fs::remove_file(entry.path());
-                log::trace!("libkrun: cleaned up stale socket {}", name);
-            }
-            if name.starts_with("ready-") && name.ends_with(".sock") {
-                let _ = std::fs::remove_file(entry.path());
-                log::trace!("libkrun: cleaned up stale socket {}", name);
-            }
-        }
-    }
-
-    let _pid = std::process::id();
-    let _sock_path = vmm_logs_dir.join(format!("vsock-{}.sock", _pid));
-    let ready_path = vmm_logs_dir.join(format!("ready-{}.sock", _pid));
-    let _ = std::fs::remove_file(&ready_path);
-
-    log::debug!("libkrun: creating ready listener on {}", ready_path.display());
-    let listener = std::os::unix::net::UnixListener::bind(&ready_path)
-        .map_err(|e| eyre::eyre!("Failed to bind ready socket {}: {}", ready_path.display(), e))?;
-
-    listener.set_nonblocking(true)
-        .map_err(|e| eyre::eyre!("Failed to set non-blocking on ready socket: {}", e))?;
-
-    Ok(Some(listener))
 }
 
 #[cfg(feature = "libkrun")]
@@ -691,13 +708,13 @@ fn try_reuse_existing_krun_session(
         }
         let sock = session.vsock_sock_path.clone();
         drop(guard);
-        let code = send_command_via_unix_socket(
+        let code = libkrun_stream::send_command_via_vsock(
             &config.cmd_parts,
             run_options.use_pty,
             run_options.reuse_vm,
             &sock,
         )
-        .map_err(|e| eyre::eyre!("Failed to send command via Unix socket: {}", e))?;
+        .map_err(|e| eyre::eyre!("Failed to send command via vsock bridge: {}", e))?;
         Ok(Some(code))
     } else {
         Ok(None)
@@ -715,15 +732,25 @@ fn try_reuse_existing_krun_session(
 
 #[cfg(all(feature = "libkrun", not(target_os = "linux")))]
 fn send_session_done_unix(sock_path: &Path) -> Result<()> {
-    let mut stream = connect_unix_socket_with_retry(sock_path, 30)?;
-    let req = build_command_request(
+    let req = serde_json::to_vec(&libkrun_stream::build_command_request(
         &[crate::run::VM_SESSION_DONE_CMD.to_string()],
         false,
         false,
-    );
-    stream.write_all(&serde_json::to_vec(&req)?)?;
-    stream.write_all(b"\n")?;
-    stream.flush()?;
+    ))?;
+    #[cfg(unix)]
+    {
+        let mut stream = libkrun_bridge::connect_vsock_bridge(sock_path, 30)?;
+        stream.write_all(&req)?;
+        stream.write_all(b"\n")?;
+        stream.flush()?;
+    }
+    #[cfg(windows)]
+    {
+        let mut stream = libkrun_bridge::connect_vsock_bridge(sock_path, 30)?;
+        stream.write_all(&req)?;
+        stream.write_all(b"\n")?;
+        stream.flush()?;
+    }
     Ok(())
 }
 
@@ -732,13 +759,11 @@ fn shutdown_krun_session_impl(session: VmReuseSession) -> Result<()> {
     log::debug!("libkrun: shutting down reuse VM session");
     send_session_done_unix(&session.vsock_sock_path)?;
     let buf = 1u64.to_le_bytes();
-    let write_result = unsafe {
-        libc::write(
-            session.shutdown_fd,
-            buf.as_ptr() as *const _,
-            buf.len(),
-        )
-    };
+    #[cfg(unix)]
+    let write_len = buf.len();
+    #[cfg(windows)]
+    let write_len = buf.len() as u32;
+    let write_result = unsafe { libc::write(session.shutdown_fd, buf.as_ptr() as *const _, write_len) };
     if write_result < 0 {
         log::warn!(
             "libkrun: failed to write shutdown eventfd: {}",
@@ -804,7 +829,11 @@ pub fn run_command_in_krun(
 
         let vm_ctx = create_and_configure_vm(env_root, run_options, &config)?;
 
-        let ready_listener = setup_vsock_ready_listener()?
+        #[cfg(unix)]
+        let ready_listener = libkrun_bridge::setup_vsock_ready_listener()?
+            .ok_or_else(|| eyre::eyre!("libkrun: missing ready listener"))?;
+        #[cfg(windows)]
+        let ready_pipe = libkrun_bridge::setup_vsock_ready_listener()?
             .ok_or_else(|| eyre::eyre!("libkrun: missing ready listener"))?;
 
         log::debug!("libkrun: starting VM thread...");
@@ -817,42 +846,18 @@ pub fn run_command_in_krun(
         let vm_thread = start_libkrun_vm(vm_ctx.ctx);
 
         log::debug!("libkrun: waiting for guest to be ready (with timeout)...");
-        let listener = ready_listener;
-        let listener_fd = listener.as_raw_fd();
-        let mut poll_fds = [libc::pollfd {
-            fd:      listener_fd,
-            events:  libc::POLLIN,
-            revents: 0,
-        }];
+        #[cfg(unix)]
+        libkrun_bridge::wait_guest_ready_unix(&ready_listener)?;
+        #[cfg(windows)]
+        libkrun_bridge::wait_guest_ready_windows(&ready_pipe)?;
 
-        const READY_TIMEOUT_MS: i32 = 30_000;
-        let poll_result = unsafe { libc::poll(poll_fds.as_mut_ptr(), 1, READY_TIMEOUT_MS) };
-
-        match poll_result {
-            0 => {
-                log::error!("libkrun: timeout waiting for VM to become ready");
-                return Err(eyre::eyre!("Timeout waiting for VM to start"));
-            }
-            n if n < 0 => {
-                log::error!("libkrun: poll error on ready socket");
-                return Err(eyre::eyre!("Poll error on ready socket"));
-            }
-            _ => {
-                let (stream, _addr) = listener
-                    .accept()
-                    .map_err(|e| eyre::eyre!("Failed to accept on ready socket: {}", e))?;
-                log::debug!("libkrun: guest connected to ready socket, guest is ready!");
-                drop(stream);
-            }
-        }
-
-        let exit_code = send_command_via_unix_socket(
+        let exit_code = libkrun_stream::send_command_via_vsock(
             &config.cmd_parts,
             run_options.use_pty,
             run_options.reuse_vm,
             &vsock_sock_path,
         )
-        .map_err(|e| eyre::eyre!("Failed to send command via Unix socket: {}", e))?;
+        .map_err(|e| eyre::eyre!("Failed to send command via vsock bridge: {}", e))?;
         log::debug!("libkrun: vsock command completed with exit code {}", exit_code);
 
         if run_options.reuse_vm {
@@ -872,8 +877,11 @@ pub fn run_command_in_krun(
 
         log::debug!("libkrun: triggering VM shutdown via eventfd...");
         let buf = 1u64.to_le_bytes();
-        let write_result =
-            unsafe { libc::write(shutdown_fd, buf.as_ptr() as *const _, buf.len()) };
+        #[cfg(unix)]
+        let write_len = buf.len();
+        #[cfg(windows)]
+        let write_len = buf.len() as u32;
+        let write_result = unsafe { libc::write(shutdown_fd, buf.as_ptr() as *const _, write_len) };
         if write_result < 0 {
             log::warn!(
                 "libkrun: failed to write shutdown eventfd: {}",
@@ -945,7 +953,6 @@ pub fn run_command_in_krun(
 /// ```
 fn setup_console_output(ctx_id: u32) -> Result<()> {
     use std::ffi::CString;
-    use std::os::unix::fs::symlink;
 
     let base_log_dir = crate::models::dirs().epkg_cache.join("vmm-logs");
     lfs::create_dir_all(&base_log_dir)
@@ -962,11 +969,20 @@ fn setup_console_output(ctx_id: u32) -> Result<()> {
     )?;
     log::debug!("libkrun: console output -> {}", console_log_path.display());
 
-    // Create/update symlink for easy access to latest log
     let latest_log_symlink = base_log_dir.join("latest-console.log");
-    let _ = std::fs::remove_file(&latest_log_symlink); // ignore error if not exists
-    if let Err(e) = symlink(&console_log_path, &latest_log_symlink) {
-        log::warn!("libkrun: failed to create symlink: {}", e);
+    let _ = std::fs::remove_file(&latest_log_symlink);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        if let Err(e) = symlink(&console_log_path, &latest_log_symlink) {
+            log::warn!("libkrun: failed to create symlink: {}", e);
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Err(e) = std::os::windows::fs::symlink_file(&console_log_path, &latest_log_symlink) {
+            log::warn!("libkrun: failed to create symlink: {}", e);
+        }
     }
 
     Ok(())
@@ -1007,259 +1023,3 @@ fn percent_encode(s: &str) -> String {
     }
     result
 }
-
-// ============================================================================
-// Unix socket vsock emulation (for libkrun on macOS/Linux)
-// ============================================================================
-
-use std::io::BufRead;
-use std::time::Duration;
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
-use console::Term;
-use lazy_static::lazy_static;
-use nix::sys::signal::{signal, Signal, SigHandler};
-use nix::sys::termios;
-use serde::{Deserialize, Serialize};
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
-
-lazy_static! {
-    static ref RESIZE_PENDING: AtomicBool = AtomicBool::new(false);
-}
-
-extern "C" fn handle_sigwinch(_: i32) {
-    RESIZE_PENDING.store(true, Ordering::SeqCst);
-}
-
-/// Streaming message types for interactive/TUI modes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-enum StreamMessage {
-    #[serde(rename = "stdin")]
-    Stdin { data: String, seq: u64 },
-    #[serde(rename = "stdout")]
-    Stdout { data: String, seq: u64 },
-    #[serde(rename = "stderr")]
-    Stderr { data: String, seq: u64 },
-    #[serde(rename = "resize")]
-    Resize { cols: u16, rows: u16 },
-    #[serde(rename = "exit")]
-    Exit { code: i32 },
-    #[serde(rename = "signal")]
-    Signal { sig: i32 },
-    #[serde(rename = "error")]
-    Error { message: String },
-}
-
-/// Build command request for vm-daemon.
-fn build_command_request(cmd_parts: &[String], use_pty: bool, reuse_vm: bool) -> serde_json::Value {
-    let mut m = serde_json::Map::new();
-    m.insert("type".to_string(), serde_json::json!("command"));
-    m.insert(
-        "command".to_string(),
-        serde_json::Value::Array(
-            cmd_parts
-                .iter()
-                .map(|s| serde_json::Value::String(s.clone()))
-                .collect(),
-        ),
-    );
-    m.insert("pty".to_string(), serde_json::Value::Bool(use_pty));
-    if reuse_vm {
-        m.insert("reuse_vm".to_string(), serde_json::Value::Bool(true));
-    }
-    serde_json::Value::Object(m)
-}
-
-/// Connect to Unix socket with retry logic (for libkrun vsock emulation).
-fn connect_unix_socket_with_retry(sock_path: &Path, max_retries: u32) -> Result<std::net::TcpStream> {
-    let mut retry_count = 0;
-    let mut last_error = None;
-    while retry_count < max_retries {
-        match std::os::unix::net::UnixStream::connect(sock_path) {
-            Ok(unix_stream) => {
-                let raw_fd = unix_stream.into_raw_fd();
-                // SAFETY: raw_fd is a valid, connected Unix stream socket
-                let stream = unsafe { std::net::TcpStream::from_raw_fd(raw_fd) };
-                return Ok(stream);
-            }
-            Err(e) => {
-                last_error = Some(e);
-                retry_count += 1;
-                if retry_count >= max_retries {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
-        }
-    }
-    Err(eyre::eyre!(
-        "Failed to connect to Unix socket {} after {} retries: {}",
-        sock_path.display(),
-        max_retries,
-        last_error.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "connection failed"))
-    ))
-}
-
-/// Resolve use_pty option, auto-detecting if None.
-fn resolve_use_pty(use_pty: Option<bool>) -> bool {
-    use std::io::IsTerminal;
-    use_pty.unwrap_or_else(|| std::io::stdin().is_terminal())
-}
-
-/// Send command via Unix socket (libkrun vsock emulation).
-fn send_command_via_unix_socket(
-    cmd_parts: &[String],
-    use_pty: Option<bool>,
-    reuse_vm: bool,
-    sock_path: &Path,
-) -> Result<i32> {
-    let should_use_pty = resolve_use_pty(use_pty);
-    log::debug!(
-        "libkrun: use_pty={:?}, should_use_pty={}, reuse_vm={}",
-        use_pty,
-        should_use_pty,
-        reuse_vm
-    );
-
-    let mut stream = connect_unix_socket_with_retry(sock_path, 30)?;
-    log::debug!("libkrun: Unix socket connected, sending command {:?}", cmd_parts);
-
-    let request = build_command_request(cmd_parts, should_use_pty, reuse_vm);
-    let request_json = serde_json::to_vec(&request)?;
-    stream.write_all(&request_json)?;
-    stream.write_all(b"\n")?;
-    log::debug!("libkrun: request sent ({} bytes)", request_json.len());
-
-    handle_streaming(&mut stream, should_use_pty)
-}
-
-/// Handle streaming I/O for PTY mode.
-fn handle_streaming(stream: &mut std::net::TcpStream, use_pty: bool) -> Result<i32> {
-    if !use_pty {
-        // Simple mode: just read response
-        let mut response = String::new();
-        stream.read_to_string(&mut response)?;
-        let msg: StreamMessage = serde_json::from_str(&response)
-            .unwrap_or_else(|_| StreamMessage::Exit { code: 0 });
-        match msg {
-            StreamMessage::Exit { code } => return Ok(code),
-            StreamMessage::Error { message } => return Err(eyre::eyre!("VM error: {}", message)),
-            _ => return Ok(0),
-        }
-    }
-
-    // PTY mode: streaming I/O
-    let term = Term::stdout();
-    let original_mode = termios::tcgetattr(std::io::stdin())
-        .ok();
-
-    // Set raw mode
-    if let Some(ref orig) = original_mode {
-        let mut raw = orig.clone();
-        termios::cfmakeraw(&mut raw);
-        let _ = termios::tcsetattr(std::io::stdin(), termios::SetArg::TCSANOW, &raw);
-    }
-
-    // Setup signal handlers
-    unsafe {
-        let _ = signal(Signal::SIGWINCH, SigHandler::Handler(handle_sigwinch));
-        let _ = signal(Signal::SIGINT, SigHandler::SigIgn);
-        let _ = signal(Signal::SIGTERM, SigHandler::SigIgn);
-    }
-
-    let stdin_fd = std::io::stdin().as_raw_fd();
-    let stream_clone = stream.try_clone()?;
-    let exit_code = Arc::new(Mutex::new(None));
-    let exit_code_clone = exit_code.clone();
-
-    // Reader thread
-    let reader = thread::spawn(move || {
-        let mut reader = std::io::BufReader::new(&stream_clone);
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) => {
-                    if let Ok(msg) = serde_json::from_str::<StreamMessage>(&line) {
-                        match msg {
-                            StreamMessage::Stdout { data, .. } => {
-                                if let Ok(decoded) = STANDARD.decode(&data) {
-                                    let _ = std::io::stdout().write_all(&decoded);
-                                    let _ = std::io::stdout().flush();
-                                }
-                            }
-                            StreamMessage::Stderr { data, .. } => {
-                                if let Ok(decoded) = STANDARD.decode(&data) {
-                                    let _ = std::io::stderr().write_all(&decoded);
-                                    let _ = std::io::stderr().flush();
-                                }
-                            }
-                            StreamMessage::Exit { code } => {
-                                *exit_code_clone.lock().unwrap() = Some(code);
-                                break;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
-    // Main loop: read stdin and forward to VM
-    let mut seq: u64 = 0;
-    let mut buf = [0u8; 4096];
-    loop {
-        // Check for exit
-        if exit_code.lock().unwrap().is_some() {
-            break;
-        }
-
-        // Check for resize
-        if RESIZE_PENDING.swap(false, Ordering::SeqCst) {
-            let (cols, rows) = term.size();
-            let resize_msg = StreamMessage::Resize { cols, rows };
-            if let Ok(json) = serde_json::to_string(&resize_msg) {
-                let _ = stream.write_all(json.as_bytes());
-                let _ = stream.write_all(b"\n");
-            }
-        }
-
-        // Read stdin with timeout
-        let mut pfd = [libc::pollfd {
-            fd: stdin_fd,
-            events: libc::POLLIN,
-            revents: 0,
-        }];
-        let ready = unsafe { libc::poll(pfd.as_mut_ptr(), 1, 50) };
-        if ready > 0 && (pfd[0].revents & libc::POLLIN) != 0 {
-            match std::io::stdin().read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let data = STANDARD.encode(&buf[..n]);
-                    let msg = StreamMessage::Stdin { data, seq };
-                    seq += 1;
-                    if let Ok(json) = serde_json::to_string(&msg) {
-                        let _ = stream.write_all(json.as_bytes());
-                        let _ = stream.write_all(b"\n");
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    }
-
-    reader.join().ok();
-
-    // Restore terminal
-    if let Some(orig) = original_mode {
-        let _ = termios::tcsetattr(std::io::stdin(), termios::SetArg::TCSANOW, &orig);
-    }
-
-    let code = exit_code.lock().unwrap().unwrap_or(0);
-    Ok(code)
-}
-
