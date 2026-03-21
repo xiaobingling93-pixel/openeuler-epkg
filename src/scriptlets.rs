@@ -468,6 +468,114 @@ pub fn run_trans_scriptlets(
     Ok(())
 }
 
+/// Try each interpreter for one script path; returns `true` if one run succeeded.
+/// Scriptlets run in namespace isolation: only env paths are visible; `/usr/bin` symlinks are resolved in-env.
+fn try_scriptlet_interpreter_loop(
+    env_root: &std::path::Path,
+    store_root: &std::path::Path,
+    package_format: PackageFormat,
+    scriptlet_type: ScriptletType,
+    pkgkey: &str,
+    package_info: &InstalledPackageInfo,
+    script_path: &std::path::Path,
+    interpreters: &[&'static str],
+    params: Vec<String>,
+) -> Result<bool> {
+    let mut script_executed = false;
+    for interpreter in interpreters {
+        let interpreter_path = crate::dirs::path_join(env_root, &["usr", "bin"]).join(interpreter);
+        if lfs::resolve_symlink_in_env(&interpreter_path, env_root).is_none() {
+            log::debug!(
+                "Interpreter {} not found in environment, trying next interpreter",
+                interpreter
+            );
+            continue;
+        }
+
+        let script_path_to_run: std::path::PathBuf = if package_format == PackageFormat::Deb {
+            std::fs::canonicalize(script_path).unwrap_or_else(|_| script_path.to_path_buf())
+        } else {
+            script_path.to_path_buf()
+        };
+        let mut script_args = vec![script_path_to_run.to_string_lossy().to_string()];
+        script_args.extend(params.clone());
+
+        let mut env_vars = std::collections::HashMap::new();
+        env_vars
+            .entry("PATH".to_string())
+            .or_insert("/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string());
+
+        if package_format == PackageFormat::Deb {
+            setup_deb_env_vars(&mut env_vars, pkgkey, package_info, scriptlet_type, env_root);
+        } else if package_format == PackageFormat::Rpm {
+            setup_rpm_env_vars(&mut env_vars, pkgkey, package_info, store_root);
+        } else if package_format == PackageFormat::Apk {
+            setup_apk_env_vars(&mut env_vars, pkgkey, package_info, scriptlet_type);
+        }
+        if package_format == PackageFormat::Conda {
+            setup_conda_env_vars(&mut env_vars, pkgkey, package_info, store_root, env_root);
+        }
+
+        let run_options = crate::run::RunOptions {
+            command: interpreter_path.to_string_lossy().to_string(),
+            args: script_args,
+            env_vars,
+            no_exit: true,
+            chdir_to_env_root: true,
+            timeout: 60,
+            ..Default::default()
+        };
+
+        match crate::run::fork_and_execute(env_root, &run_options) {
+            Ok(None) => {
+                log::debug!(
+                    "{:?} scriptlet completed successfully for package {} using {}",
+                    scriptlet_type,
+                    pkgkey,
+                    interpreter
+                );
+                script_executed = true;
+                break;
+            }
+            Ok(Some(_)) => {
+                unreachable!("Foreground process should not return PID")
+            }
+            Err(e) => {
+                let error_msg = format!("{}", e);
+                if error_msg.contains("dpkg-divert") && error_msg.contains("clashes") {
+                    log::warn!(
+                        "Diversion conflict in {:?} scriptlet for package {}: {}. Continuing installation.",
+                        scriptlet_type,
+                        pkgkey,
+                        e
+                    );
+                    script_executed = true;
+                    break;
+                } else if should_ignore_scriptlet_error(&error_msg, scriptlet_type) {
+                    log::warn!(
+                        "Ignoring recoverable error in {:?} scriptlet for package {}: {}",
+                        scriptlet_type,
+                        pkgkey,
+                        e
+                    );
+                    script_executed = true;
+                    break;
+                } else {
+                    log::debug!(
+                        "Failed to execute {:?} scriptlet for package {} using {}: {}, trying next interpreter",
+                        scriptlet_type,
+                        pkgkey,
+                        interpreter,
+                        e
+                    );
+                    continue;
+                }
+            }
+        }
+    }
+    Ok(script_executed)
+}
+
 /// Run a single scriptlet for one package
 pub fn run_scriptlet(
     plan: &InstallationPlan,
@@ -513,119 +621,20 @@ pub fn run_scriptlet(
                 script_path.display()
             );
 
-            // Get interpreters to try for this script
             let interpreters = get_interpreters_for_script(script_name);
-            let mut script_executed = false;
-
-            // Get parameters based on package format and scenario
             let params = scriptlet_type.get_script_params(package_format, is_upgrade, old_version.as_deref(), new_version.as_deref());
 
-            for interpreter in interpreters {
-                // Scriptlets run in namespace isolation, so only environment paths are accessible.
-                // System paths (/usr/bin/*) are not available since we're in a chroot environment.
-                // We validate symlinks properly to handle cases where environment symlinks point to valid targets.
-                let interpreter_path = crate::dirs::path_join(env_root, &["usr", "bin"]).join(interpreter);
-                if lfs::resolve_symlink_in_env(&interpreter_path, env_root).is_none() {
-                    log::debug!(
-                        "Interpreter {} not found in environment, trying next interpreter",
-                        interpreter
-                    );
-                    continue;
-                }
-
-                // For Deb, use resolved path so debconf frontend sees .../postinst and finds sibling templates
-                let script_path_to_run: std::path::PathBuf = if package_format == PackageFormat::Deb {
-                    std::fs::canonicalize(&script_path).unwrap_or_else(|_| script_path.clone())
-                } else {
-                    script_path.clone()
-                };
-                let mut script_args = vec![script_path_to_run.to_string_lossy().to_string()];
-                script_args.extend(params.clone());
-
-                // Create RunOptions for scriptlet execution with namespace isolation
-                // Set up environment variables required by package scripts
-                let mut env_vars = std::collections::HashMap::new();
-
-                // Set PATH to ensure applets like rpm, rpmlua, etc. are accessible
-                // Inside the environment, /usr/bin and /usr/sbin contain epkg applet symlinks
-                env_vars.entry("PATH".to_string())
-                    .or_insert("/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string());
-
-                // Add environment variables for package scripts based on format.
-                // Same vars are needed when scriptlets run in a Linux VM from macOS/Windows hosts.
-                if package_format == PackageFormat::Deb {
-                    setup_deb_env_vars(&mut env_vars, pkgkey, package_info, scriptlet_type, env_root);
-                } else if package_format == PackageFormat::Rpm {
-                    setup_rpm_env_vars(&mut env_vars, pkgkey, package_info, store_root);
-                } else if package_format == PackageFormat::Apk {
-                    setup_apk_env_vars(&mut env_vars, pkgkey, package_info, scriptlet_type);
-                }
-                if package_format == PackageFormat::Conda {
-                    setup_conda_env_vars(&mut env_vars, pkgkey, package_info, store_root, env_root);
-                }
-
-                // Execute scriptlet using fork_and_execute for namespace isolation
-                {
-                    let run_options = crate::run::RunOptions {
-                        command: interpreter_path.to_string_lossy().to_string(),
-                        args: script_args,
-                        env_vars,
-                        no_exit: true,           // Don't exit on scriptlet failures, just warn
-                        chdir_to_env_root: true, // Scriptlets should run relative to environment root
-                        timeout: 60,             // 60 second timeout for scriptlets
-                        ..Default::default()
-                    };
-
-                    // Execute the scriptlet using fork_and_execute for namespace isolation
-                    match crate::run::fork_and_execute(env_root, &run_options) {
-                        Ok(None) => {
-                            log::debug!(
-                                "{:?} scriptlet completed successfully for package {} using {}",
-                                scriptlet_type,
-                                pkgkey,
-                                interpreter
-                            );
-                            script_executed = true;
-                            break; // Successfully executed, break out of paths loop
-                        }
-                        Ok(Some(_)) => {
-                            unreachable!("Foreground process should not return PID")
-                        }
-                        Err(e) => {
-                            // Check if this is a diversion conflict or other known recoverable error
-                            let error_msg = format!("{}", e);
-                            if error_msg.contains("dpkg-divert") && error_msg.contains("clashes") {
-                                log::warn!(
-                                    "Diversion conflict in {:?} scriptlet for package {}: {}. Continuing installation.",
-                                    scriptlet_type,
-                                    pkgkey,
-                                    e
-                                );
-                                script_executed = true;
-                                break; // Treat diversion conflicts as non-fatal
-                            } else if should_ignore_scriptlet_error(&error_msg, scriptlet_type) {
-                                log::warn!(
-                                    "Ignoring recoverable error in {:?} scriptlet for package {}: {}",
-                                    scriptlet_type,
-                                    pkgkey,
-                                    e
-                                );
-                                script_executed = true;
-                                break;
-                            } else {
-                                log::debug!(
-                                    "Failed to execute {:?} scriptlet for package {} using {}: {}, trying next interpreter",
-                                    scriptlet_type,
-                                    pkgkey,
-                                    interpreter,
-                                    e
-                                );
-                                continue; // Try next interpreter
-                            }
-                        }
-                    }
-                }
-            }
+            let script_executed = try_scriptlet_interpreter_loop(
+                env_root,
+                store_root,
+                package_format,
+                scriptlet_type,
+                pkgkey,
+                package_info,
+                &script_path,
+                &interpreters,
+                params,
+            )?;
 
             if !script_executed {
                 log::warn!(
