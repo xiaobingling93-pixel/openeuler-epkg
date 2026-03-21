@@ -407,6 +407,37 @@ pub enum NamespaceStrategy {
     Clone,
 }
 
+/// I/O mode for `epkg run` command execution in VM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IoMode {
+    /// Auto-detect based on terminal: tty if stdin is TTY, otherwise stream.
+    #[default]
+    Auto,
+    /// Allocate PTY for interactive terminal applications (bash, vim, htop).
+    Tty,
+    /// Stream output progressively (default for non-interactive).
+    Stream,
+    /// Batch mode: collect all output and return in single response.
+    Batch,
+}
+
+impl std::str::FromStr for IoMode {
+    type Err = eyre::Report;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "auto"   => Ok(IoMode::Auto),
+            "tty"    => Ok(IoMode::Tty),
+            "stream" => Ok(IoMode::Stream),
+            "batch"  => Ok(IoMode::Batch),
+            _ => Err(eyre::eyre!(
+                "Invalid I/O mode '{}', expected auto, tty, stream, or batch",
+                s
+            )),
+        }
+    }
+}
+
 impl std::str::FromStr for IsolateMode {
     type Err = eyre::Report;
     fn from_str(s: &str) -> Result<Self, Self::Err> {

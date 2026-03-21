@@ -691,14 +691,14 @@ fn handle_guest_execution(
     use_control_channel: bool,
     use_vsock: bool,
     cmd_parts: &[String],
-    use_pty: Option<bool>,
+    io_mode: crate::models::IoMode,
 ) -> Result<i32> {
     if use_vsock {
         // Vsock control plane: wait for guest ready, then connect to command port.
         // QEMU uses AF_VSOCK, so pass None for unix_socket_path.
         // The ready notification uses AF_VSOCK port 10001.
         // VM reuse across host commands is only implemented for libkrun; QEMU stays one-shot.
-        match vm_client::wait_ready_and_send_command(cmd_parts, use_pty, 10000, None, false) {
+        match vm_client::wait_ready_and_send_command(cmd_parts, io_mode, 10000, None, false) {
             Ok(cmd_exit_code) => {
                 log::debug!("qemu: command completed with exit code {}, waiting for QEMU to exit", cmd_exit_code);
                 let _ = qemu_child
@@ -718,7 +718,7 @@ fn handle_guest_execution(
             }
         }
     } else if use_control_channel {
-        match vm_client::send_command_via_tcp(cmd_parts, use_pty) {
+        match vm_client::send_command_via_tcp(cmd_parts, io_mode) {
             Ok(cmd_exit_code) => {
                 let _ = qemu_child
                     .wait()
@@ -807,7 +807,7 @@ pub fn run_command_in_qemu(
         use_control_channel,
         use_vsock,
         &cmd_parts,
-        run_options.use_pty,
+        run_options.io_mode,
     )?;
 
     cleanup_rootfs(rootfs_mode);

@@ -710,7 +710,7 @@ fn try_reuse_existing_krun_session(
         drop(guard);
         let code = libkrun_stream::send_command_via_vsock(
             &config.cmd_parts,
-            run_options.use_pty,
+            run_options.io_mode,
             run_options.reuse_vm,
             &sock,
         )
@@ -853,7 +853,7 @@ pub fn run_command_in_krun(
 
         let exit_code = libkrun_stream::send_command_via_vsock(
             &config.cmd_parts,
-            run_options.use_pty,
+            run_options.io_mode,
             run_options.reuse_vm,
             &vsock_sock_path,
         )

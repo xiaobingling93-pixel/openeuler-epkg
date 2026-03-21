@@ -2,7 +2,7 @@
 
 use color_eyre::eyre;
 use color_eyre::Result;
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -10,6 +10,7 @@ use std::thread;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use crate::models::IoMode;
 
 #[cfg(unix)]
 use std::os::fd::FromRawFd;
@@ -48,7 +49,11 @@ enum StreamMessage {
     Error { message: String },
 }
 
-pub(crate) fn build_command_request(cmd_parts: &[String], use_pty: bool, reuse_vm: bool) -> serde_json::Value {
+pub(crate) fn build_command_request(cmd_parts: &[String], io_mode: IoMode, reuse_vm: bool) -> serde_json::Value {
+    let use_pty = matches!(io_mode, IoMode::Tty) ||
+        (matches!(io_mode, IoMode::Auto) && std::io::stdin().is_terminal());
+    let is_batch = matches!(io_mode, IoMode::Batch);
+
     let mut m = serde_json::Map::new();
     m.insert("type".to_string(), serde_json::json!("command"));
     m.insert(
@@ -61,21 +66,53 @@ pub(crate) fn build_command_request(cmd_parts: &[String], use_pty: bool, reuse_v
         ),
     );
     m.insert("pty".to_string(), serde_json::Value::Bool(use_pty));
+    if is_batch {
+        m.insert("batch".to_string(), serde_json::Value::Bool(true));
+    }
     if reuse_vm {
         m.insert("reuse_vm".to_string(), serde_json::Value::Bool(true));
     }
     serde_json::Value::Object(m)
 }
 
-fn resolve_use_pty(use_pty: Option<bool>) -> bool {
-    use std::io::IsTerminal;
-    use_pty.unwrap_or_else(|| std::io::stdin().is_terminal())
+fn resolve_io_mode(io_mode: IoMode) -> (bool, bool) {
+    match io_mode {
+        IoMode::Auto => {
+            let is_tty = std::io::stdin().is_terminal();
+            (is_tty, false)
+        }
+        IoMode::Tty => (true, false),
+        IoMode::Stream => (false, false),
+        IoMode::Batch => (false, true),
+    }
 }
 
-fn handle_streaming_simple(stream: &mut impl Read, use_pty: bool) -> Result<i32> {
-    if !use_pty {
-        let mut response = String::new();
-        stream.read_to_string(&mut response)?;
+fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32> {
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+
+    if is_batch {
+        // Batch mode: expect {exit_code, stdout, stderr}
+        #[derive(Deserialize)]
+        struct BatchResult {
+            exit_code: i32,
+            stdout: String,
+            stderr: String,
+        }
+        let result: BatchResult = serde_json::from_str(&response)
+            .map_err(|e| eyre::eyre!("Failed to parse batch response: {} ({:?})", e, response))?;
+
+        if !result.stdout.is_empty() {
+            let stdout_bytes = STANDARD.decode(&result.stdout)?;
+            std::io::stdout().write_all(&stdout_bytes)?;
+        }
+        if !result.stderr.is_empty() {
+            let stderr_bytes = STANDARD.decode(&result.stderr)?;
+            std::io::stderr().write_all(&stderr_bytes)?;
+        }
+        Ok(result.exit_code)
+    } else {
+        // Stream mode: expect exit message
         let msg: StreamMessage = serde_json::from_str(&response)
             .unwrap_or_else(|_| StreamMessage::Exit { code: 0 });
         match msg {
@@ -83,15 +120,13 @@ fn handle_streaming_simple(stream: &mut impl Read, use_pty: bool) -> Result<i32>
             StreamMessage::Error { message } => Err(eyre::eyre!("VM error: {}", message)),
             _ => Ok(0),
         }
-    } else {
-        Err(eyre::eyre!("internal: PTY path should not call handle_streaming_simple"))
     }
 }
 
 #[cfg(unix)]
 pub fn send_command_via_vsock(
     cmd_parts: &[String],
-    use_pty: Option<bool>,
+    io_mode: IoMode,
     reuse_vm: bool,
     sock_path: &Path,
 ) -> Result<i32> {
@@ -99,11 +134,12 @@ pub fn send_command_via_vsock(
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
 
-    let should_use_pty = resolve_use_pty(use_pty);
+    let (use_pty, is_batch) = resolve_io_mode(io_mode);
     log::debug!(
-        "libkrun: use_pty={:?}, should_use_pty={}, reuse_vm={}",
+        "libkrun: io_mode={:?}, use_pty={}, is_batch={}, reuse_vm={}",
+        io_mode,
         use_pty,
-        should_use_pty,
+        is_batch,
         reuse_vm
     );
 
@@ -139,26 +175,26 @@ pub fn send_command_via_vsock(
 
     log::debug!("libkrun: Unix socket connected, sending command {:?}", cmd_parts);
 
-    let request = build_command_request(cmd_parts, should_use_pty, reuse_vm);
+    let request = build_command_request(cmd_parts, io_mode, reuse_vm);
     let request_json = serde_json::to_vec(&request)?;
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
     log::debug!("libkrun: request sent ({} bytes)", request_json.len());
 
-    handle_streaming_unix(&mut stream, should_use_pty)
+    if use_pty {
+        handle_streaming_unix(&mut stream)
+    } else {
+        handle_streaming_simple(&mut stream, is_batch)
+    }
 }
 
 #[cfg(unix)]
-fn handle_streaming_unix(stream: &mut std::net::TcpStream, use_pty: bool) -> Result<i32> {
+fn handle_streaming_unix(stream: &mut std::net::TcpStream) -> Result<i32> {
     use std::os::unix::io::AsRawFd;
 
     use console::Term;
     use nix::sys::signal::{signal, SigHandler, Signal};
     use nix::sys::termios;
-
-    if !use_pty {
-        return handle_streaming_simple(stream, false);
-    }
 
     let term = Term::stdout();
     let original_mode = termios::tcgetattr(std::io::stdin()).ok();
@@ -267,38 +303,39 @@ fn handle_streaming_unix(stream: &mut std::net::TcpStream, use_pty: bool) -> Res
 #[cfg(windows)]
 pub fn send_command_via_vsock(
     cmd_parts: &[String],
-    use_pty: Option<bool>,
+    io_mode: IoMode,
     reuse_vm: bool,
     sock_path: &Path,
 ) -> Result<i32> {
-    let should_use_pty = resolve_use_pty(use_pty);
+    let (use_pty, is_batch) = resolve_io_mode(io_mode);
     log::debug!(
-        "libkrun: use_pty={:?}, should_use_pty={}, reuse_vm={}",
+        "libkrun: io_mode={:?}, use_pty={}, is_batch={}, reuse_vm={}",
+        io_mode,
         use_pty,
-        should_use_pty,
+        is_batch,
         reuse_vm
     );
 
     let mut stream = super::libkrun_bridge::connect_vsock_bridge(sock_path, 30)?;
     log::debug!("libkrun: named pipe connected, sending command {:?}", cmd_parts);
 
-    let request = build_command_request(cmd_parts, should_use_pty, reuse_vm);
+    let request = build_command_request(cmd_parts, io_mode, reuse_vm);
     let request_json = serde_json::to_vec(&request)?;
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
     log::debug!("libkrun: request sent ({} bytes)", request_json.len());
 
-    handle_streaming_windows(&mut stream, should_use_pty)
+    if use_pty {
+        handle_streaming_windows(&mut stream)
+    } else {
+        handle_streaming_simple(&mut stream, is_batch)
+    }
 }
 
 #[cfg(windows)]
-fn handle_streaming_windows(stream: &mut std::fs::File, use_pty: bool) -> Result<i32> {
+fn handle_streaming_windows(stream: &mut std::fs::File) -> Result<i32> {
     use std::sync::mpsc;
     use std::time::Duration;
-
-    if !use_pty {
-        return handle_streaming_simple(stream, false);
-    }
 
     let stream_clone = stream.try_clone()?;
     let exit_code = Arc::new(Mutex::new(None));

@@ -172,12 +172,12 @@ sequenceDiagram
 
 | Goal | Command |
 |------|---------|
-| Interactive shell (PTY) | `epkg -e myenv run --isolate=vm --tty bash` |
+| Interactive shell (PTY) | `epkg -e myenv run --isolate=vm --io=tty bash` |
 | Run one command, see output | `epkg -e myenv run --isolate=vm ls /` |
-| Capture output in a variable | `out=$(epkg -e myenv run --isolate=vm --no-tty cat /etc/os-release)` |
+| Capture output in a variable | `out=$(epkg -e myenv run --isolate=vm --io=batch cat /etc/os-release)` |
 | Cmdline (no guest network) | `EPKG_VM_NO_DAEMON=1 epkg -e myenv run --isolate=vm ls /` |
 | With timeout (avoid hang) | `timeout 30 epkg -e myenv run --isolate=vm python3 script.py` |
-| Debug host and guest | `RUST_LOG=debug epkg -e myenv run --isolate=vm --tty bash` |
+| Debug host and guest | `RUST_LOG=debug epkg -e myenv run --isolate=vm --io=tty bash` |
 
 ### Selecting the VMM backend (`--vmm`)
 
@@ -273,7 +273,7 @@ ls -la ~/.cache/epkg/vmm-logs/*.stdout.log ~/.cache/epkg/vmm-logs/*.stderr.log
 
 - **VMM logs**: Under `{epkg_cache}/vmm-logs/` (e.g. `~/.cache/epkg/vmm-logs/`). PID-based files: `qemu-<pid>.log`, `virtiofsd-<pid>.log`; symlinks `latest-qemu.log`, `latest-virtiofsd.log` point to the most recent run. When `RUST_LOG` is at debug or trace, QEMU stdout/stderr are also written to `*.stdout.log` and `*.stderr.log`.
 - **Serial**: QEMU serial output is written to the same path as the QEMU log (serial log path is the qemu log path in the current implementation).
-- **Debug**: Run with `RUST_LOG=debug epkg run --isolate=vm --tty bash` to see host and guest logs. In PTY mode, `env_logger` writes to stderr and may look misaligned with raw terminal output; that's expected.
+- **Debug**: Run with `RUST_LOG=debug epkg run --isolate=vm --io=tty bash` to see host and guest logs. In PTY mode, `env_logger` writes to stderr and may look misaligned with raw terminal output; that's expected.
 - **Timeouts**: Use `timeout 10 epkg run --isolate=vm ...` to avoid hanging if the guest never connects or never exits.
 
 ## Optional and future work

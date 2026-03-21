@@ -142,7 +142,7 @@ use crate::run::{command_run, command_busybox};
 use color_eyre::Result;
 use color_eyre::eyre;
 use color_eyre::eyre::WrapErr;
-use clap::{arg, ArgAction, Command};
+use clap::{arg, Arg, ArgAction, Command};
 use ctrlc;
 use env_logger;
 use log::LevelFilter;
@@ -851,8 +851,14 @@ fn add_run_subcommand(cmd: Command) -> Command {
                         .value_parser(clap::value_parser!(String))
                 )
                 .arg(arg!(--timeout <SECONDS> "Timeout in seconds (0 = no timeout)").value_parser(clap::value_parser!(String)))
-                .arg(arg!(-t --tty "Allocate a pseudo-TTY (force PTY allocation)").conflicts_with("no-tty"))
-                .arg(arg!(-T --"no-tty" "Disable pseudo-TTY allocation (force no PTY)").conflicts_with("tty"))
+                .arg(
+                    Arg::new("io")
+                        .short('i')
+                        .long("io")
+                        .value_name("MODE")
+                        .help("I/O mode: auto (default), tty (PTY), stream (progressive), or batch (one-shot)")
+                        .value_parser(["auto", "tty", "stream", "batch"])
+                )
                 .arg(arg!(<command> "Command to execute"))
                 .arg(arg!([args] ... "Arguments to pass to the command (use '--' to separate from epkg options)"))
                 .allow_hyphen_values(true)

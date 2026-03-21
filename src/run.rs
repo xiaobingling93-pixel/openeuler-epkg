@@ -61,7 +61,7 @@ pub struct RunOptions {
     pub timeout: u64, // Timeout in seconds, 0 means no timeout
     pub background: bool, // Run in background and return PID instead of waiting
     pub redirect_stdio: bool, // Redirect stdin/stdout/stderr to /dev/null for daemon processes
-    pub use_pty: Option<bool>, // None=auto-detect (isatty(stdin)), Some(true)=force PTY, Some(false)=force no-PTY
+    pub io_mode: crate::models::IoMode, // I/O mode: auto, tty, stream, or batch
 
     /// Optional external kernel image for VM backends that support it (e.g. libkrun, qemu).
     /// Can be provided via `--kernel`.
@@ -1240,8 +1240,8 @@ pub fn parse_options_run(options: &mut EPKGConfig, sub_matches: &clap::ArgMatche
     if command.starts_with('-') {
         return Err(eyre::eyre!(
             "Command looks like an option ('{}'). Put the command after options, e.g. \
-             epkg run --isolate=vm --vmm=qemu --no-tty -- whoami \
-             or epkg run whoami --isolate=vm --vmm=qemu --no-tty",
+             epkg run --isolate=vm --vmm=qemu --io=stream -- whoami \
+             or epkg run whoami --isolate=vm --vmm=qemu",
             command
         ));
     }
@@ -1320,13 +1320,10 @@ pub fn parse_options_run(options: &mut EPKGConfig, sub_matches: &clap::ArgMatche
             _ => unreachable!("clap validates clone|unshare"),
         });
 
-    let use_pty = if sub_matches.get_flag("tty") {
-        Some(true)
-    } else if sub_matches.get_flag("no-tty") {
-        Some(false)
-    } else {
-        None
-    };
+    let io_mode = sub_matches
+        .get_one::<String>("io")
+        .map(|s| s.parse::<crate::models::IoMode>().expect("clap validates auto|tty|stream|batch"))
+        .unwrap_or_default();
 
     // Create sandbox options from CLI inputs
     let sandbox = crate::models::SandboxOptions {
@@ -1345,7 +1342,7 @@ pub fn parse_options_run(options: &mut EPKGConfig, sub_matches: &clap::ArgMatche
         vm_memory_mib,
         kernel_args,
         initrd,
-        use_pty,
+        io_mode,
         sandbox,
         vmm_order,
         ..Default::default()

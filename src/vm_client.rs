@@ -28,6 +28,7 @@ use nix::sys::socket::{self, AddressFamily, SockType, SockFlag, VsockAddr};
 use nix::poll::{poll, PollFd, PollFlags};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use crate::models::IoMode;
 
 lazy_static! {
     static ref RESIZE_PENDING: AtomicBool = AtomicBool::new(false);
@@ -173,7 +174,7 @@ fn connect_vsock_once(port: u32) -> std::io::Result<TcpStream> {
 }
 
 /// Build JSON command request for guest execution.
-fn build_command_request(cmd_parts: &[String], should_use_pty: bool, reuse_vm: bool) -> serde_json::Map<String, serde_json::Value> {
+fn build_command_request(cmd_parts: &[String], io_mode: IoMode, reuse_vm: bool) -> serde_json::Map<String, serde_json::Value> {
     let mut request = serde_json::Map::new();
     request.insert("command".to_string(), serde_json::Value::Array(
         cmd_parts.iter().map(|s| serde_json::Value::String(s.clone())).collect()
@@ -182,7 +183,11 @@ fn build_command_request(cmd_parts: &[String], should_use_pty: bool, reuse_vm: b
     request.insert("env".to_string(), serde_json::Value::Object(serde_json::Map::new()));
     request.insert("stdin".to_string(), serde_json::Value::String("".to_string()));
 
-    if should_use_pty {
+    // Determine PTY and batch mode
+    let use_pty = matches!(io_mode, IoMode::Tty) ||
+        (matches!(io_mode, IoMode::Auto) && std::io::stdin().is_terminal());
+
+    if use_pty {
         request.insert("pty".to_string(), serde_json::Value::Bool(true));
         // Try to get terminal size
         let (rows, cols) = Term::stdout().size();
@@ -195,52 +200,59 @@ fn build_command_request(cmd_parts: &[String], should_use_pty: bool, reuse_vm: b
     } else {
         request.insert("pty".to_string(), serde_json::Value::Bool(false));
     }
+
+    // Batch mode: collect output and return in single response
+    if matches!(io_mode, IoMode::Batch) {
+        request.insert("batch".to_string(), serde_json::Value::Bool(true));
+    }
+
     if reuse_vm {
         request.insert("reuse_vm".to_string(), serde_json::Value::Bool(true));
     }
     request
 }
 
-/// Resolve use_pty option to actual PTY usage.
-/// - `Some(true)` → force PTY
-/// - `Some(false)` → force no PTY
-/// - `None` → auto-detect based on stdin.is_terminal()
-fn resolve_use_pty(use_pty: Option<bool>) -> bool {
-    match use_pty {
-        Some(true) => true,
-        Some(false) => false,
-        None => std::io::stdin().is_terminal(),
+/// Resolve IoMode to actual PTY usage.
+/// Returns (use_pty, is_batch) tuple.
+fn resolve_io_mode(io_mode: IoMode) -> (bool, bool) {
+    match io_mode {
+        IoMode::Auto => {
+            let is_tty = std::io::stdin().is_terminal();
+            (is_tty, false)
+        }
+        IoMode::Tty => (true, false),
+        IoMode::Stream => (false, false),
+        IoMode::Batch => (false, true),
     }
 }
 
 /// Helper to send a command via TCP to the guest VM.
-/// If `use_pty` is `None`, auto-detects based on stdin.is_terminal().
-/// Use `Some(true)` to force PTY, `Some(false)` to force no PTY.
-pub fn send_command_via_tcp(cmd_parts: &[String], use_pty: Option<bool>) -> Result<i32> {
-    send_command_via_tcp_impl(cmd_parts, use_pty, false)
+pub fn send_command_via_tcp(cmd_parts: &[String], io_mode: IoMode) -> Result<i32> {
+    send_command_via_tcp_impl(cmd_parts, io_mode, false)
 }
 
-fn send_command_via_tcp_impl(cmd_parts: &[String], use_pty: Option<bool>, reuse_vm: bool) -> Result<i32> {
-    let should_use_pty = resolve_use_pty(use_pty);
-    log::debug!("vm_client: use_pty={:?}, should_use_pty={}, reuse_vm={}", use_pty, should_use_pty, reuse_vm);
+fn send_command_via_tcp_impl(cmd_parts: &[String], io_mode: IoMode, reuse_vm: bool) -> Result<i32> {
+    let (use_pty, is_batch) = resolve_io_mode(io_mode);
+    log::debug!("vm_client: io_mode={:?}, use_pty={}, is_batch={}, reuse_vm={}", io_mode, use_pty, is_batch, reuse_vm);
     // Connect to guest TCP server with retry
     let mut stream = connect_with_retry(60)?;
     log::debug!("vm_client: TCP connected, sending command {:?}", cmd_parts);
 
     // Build and send JSON request
-    let request = build_command_request(cmd_parts, should_use_pty, reuse_vm);
+    let request = build_command_request(cmd_parts, io_mode, reuse_vm);
     let request_json = serde_json::to_vec(&request)?;
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
-    log::debug!("vm_client: request sent ({} bytes), pty={}", request_json.len(), should_use_pty);
+    log::debug!("vm_client: request sent ({} bytes), pty={}, batch={}", request_json.len(), use_pty, is_batch);
 
-    // Use streaming protocol for both PTY and non-PTY modes
-    handle_streaming(&mut stream, should_use_pty)
+    if is_batch {
+        handle_batch(&mut stream)
+    } else {
+        handle_streaming(&mut stream, use_pty)
+    }
 }
 
 /// Helper to send a command via vsock to the guest VM.
-/// If `use_pty` is `None`, auto-detects based on stdin.is_terminal().
-/// Use `Some(true)` to force PTY, `Some(false)` to force no PTY.
 ///
 /// For libkrun, pass `unix_socket_path` to connect via Unix socket instead of AF_VSOCK.
 /// For QEMU, pass `None` to use AF_VSOCK.
@@ -248,25 +260,26 @@ fn send_command_via_tcp_impl(cmd_parts: &[String], use_pty: Option<bool>, reuse_
 #[allow(dead_code)]
 pub fn send_command_via_vsock(
     cmd_parts: &[String],
-    use_pty: Option<bool>,
+    io_mode: IoMode,
     port: u32,
     unix_socket_path: Option<&std::path::Path>,
 ) -> Result<i32> {
-    send_command_via_vsock_impl(cmd_parts, use_pty, port, unix_socket_path, false)
+    send_command_via_vsock_impl(cmd_parts, io_mode, port, unix_socket_path, false)
 }
 
 fn send_command_via_vsock_impl(
     cmd_parts: &[String],
-    use_pty: Option<bool>,
+    io_mode: IoMode,
     port: u32,
     unix_socket_path: Option<&std::path::Path>,
     reuse_vm: bool,
 ) -> Result<i32> {
-    let should_use_pty = resolve_use_pty(use_pty);
+    let (use_pty, is_batch) = resolve_io_mode(io_mode);
     log::debug!(
-        "vm_client: use_pty={:?}, should_use_pty={} (vsock port {}), reuse_vm={}",
+        "vm_client: io_mode={:?}, use_pty={}, is_batch={} (vsock port {}), reuse_vm={}",
+        io_mode,
         use_pty,
-        should_use_pty,
+        is_batch,
         port,
         reuse_vm
     );
@@ -281,18 +294,23 @@ fn send_command_via_vsock_impl(
     };
     log::debug!("vm_client: vsock connected, sending command {:?}", cmd_parts);
 
-    let request = build_command_request(cmd_parts, should_use_pty, reuse_vm);
+    let request = build_command_request(cmd_parts, io_mode, reuse_vm);
     let request_json = serde_json::to_vec(&request)?;
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
     log::debug!(
-        "vm_client: vsock request sent ({} bytes), pty={}, port={}",
+        "vm_client: vsock request sent ({} bytes), pty={}, batch={}, port={}",
         request_json.len(),
-        should_use_pty,
+        use_pty,
+        is_batch,
         port
     );
 
-    handle_streaming(&mut stream, should_use_pty)
+    if is_batch {
+        handle_batch(&mut stream)
+    } else {
+        handle_streaming(&mut stream, use_pty)
+    }
 }
 
 /// Wait for guest to signal readiness, then send command via vsock.
@@ -313,26 +331,27 @@ fn send_command_via_vsock_impl(
 /// - Some(_) → libkrun mode (Unix socket bridge)
 pub fn wait_ready_and_send_command(
     cmd_parts: &[String],
-    use_pty: Option<bool>,
+    io_mode: IoMode,
     cmd_port: u32,
     unix_socket_path: Option<&std::path::Path>,
     reuse_vm: bool,
 ) -> Result<i32> {
-    wait_ready_and_send_command_impl(cmd_parts, use_pty, cmd_port, unix_socket_path, reuse_vm)
+    wait_ready_and_send_command_impl(cmd_parts, io_mode, cmd_port, unix_socket_path, reuse_vm)
 }
 
 fn wait_ready_and_send_command_impl(
     cmd_parts: &[String],
-    use_pty: Option<bool>,
+    io_mode: IoMode,
     cmd_port: u32,
     unix_socket_path: Option<&std::path::Path>,
     reuse_vm: bool,
 ) -> Result<i32> {
-    let should_use_pty = resolve_use_pty(use_pty);
+    let (use_pty, is_batch) = resolve_io_mode(io_mode);
     log::debug!(
-        "vm_client: use_pty={:?}, should_use_pty={} (cmd port {}), reuse_vm={}",
+        "vm_client: io_mode={:?}, use_pty={}, is_batch={} (cmd port {}), reuse_vm={}",
+        io_mode,
         use_pty,
-        should_use_pty,
+        is_batch,
         cmd_port,
         reuse_vm
     );
@@ -361,7 +380,7 @@ fn wait_ready_and_send_command_impl(
         drop(listener);
 
         // Now connect to command port
-        return send_command_via_vsock_impl(cmd_parts, use_pty, cmd_port, Some(cmd_path), reuse_vm);
+        return send_command_via_vsock_impl(cmd_parts, io_mode, cmd_port, Some(cmd_path), reuse_vm);
     }
 
     // For QEMU mode with AF_VSOCK ready notification
@@ -396,11 +415,11 @@ fn wait_ready_and_send_command_impl(
         let _ = nix::unistd::close(raw_fd);
 
         // Now connect to command port
-        return send_command_via_vsock_impl(cmd_parts, use_pty, cmd_port, None, reuse_vm);
+        return send_command_via_vsock_impl(cmd_parts, io_mode, cmd_port, None, reuse_vm);
     }
 
     // Fallback: no ready notification configured
-    send_command_via_vsock_impl(cmd_parts, use_pty, cmd_port, unix_socket_path, reuse_vm)
+    send_command_via_vsock_impl(cmd_parts, io_mode, cmd_port, unix_socket_path, reuse_vm)
 }
 
 /// Guard for raw terminal mode restoration.
@@ -749,4 +768,36 @@ fn handle_streaming(stream: &mut TcpStream, use_pty: bool) -> Result<i32> {
     stop_flag.store(true, Ordering::SeqCst);
 
     result
+}
+
+/// Batch mode response from vm-daemon.
+#[derive(Debug, Deserialize)]
+struct BatchResult {
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+}
+
+/// Handle batch mode: read single JSON response with all output.
+fn handle_batch(stream: &mut TcpStream) -> Result<i32> {
+    let mut response = String::new();
+    let mut reader = BufReader::new(stream);
+    reader.read_line(&mut response)?;
+
+    let result: BatchResult = serde_json::from_str(response.trim())
+        .map_err(|e| eyre::eyre!("Failed to parse batch response: {} ({:?})", e, response))?;
+
+    // Decode and write stdout
+    if !result.stdout.is_empty() {
+        let stdout_bytes = STANDARD.decode(&result.stdout)?;
+        std::io::stdout().write_all(&stdout_bytes)?;
+    }
+
+    // Decode and write stderr
+    if !result.stderr.is_empty() {
+        let stderr_bytes = STANDARD.decode(&result.stderr)?;
+        std::io::stderr().write_all(&stderr_bytes)?;
+    }
+
+    Ok(result.exit_code)
 }

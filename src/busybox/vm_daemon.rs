@@ -75,9 +75,9 @@
 //! # Expected Behavior
 //! ## Debug Commands (for testing)
 //! ```bash
-//! epkg run --isolate=vm [--tty] bash /
-//! timeout 10 epkg run --isolate=vm [--tty|--no-tty] ls /
-//! file_list=$(timeout 10 epkg run --isolate=vm [--no-tty] ls /)
+//! epkg run --isolate=vm [--io=tty] bash /
+//! timeout 10 epkg run --isolate=vm [--io=tty|--io=stream|--io=batch] ls /
+//! file_list=$(timeout 10 epkg run --isolate=vm --io=batch ls /)
 //! ```
 //!
 //! ## Success Criteria
@@ -99,7 +99,7 @@
 //! - Check network connectivity in VM: verify virtio_net module is loaded
 //! - On verifying a bug, always run epkg with timeout 10 to avoid being blocked.
 //!
-//! - With debug logs (RUST_LOG=debug epkg run --isolate=vm --tty bash):
+//! - With debug logs (RUST_LOG=debug epkg run --isolate=vm --io=tty bash):
 //!   debug log lines will be misaligned because env_logger writes directly to stderr while
 //!   the terminal is raw (bypasses our translation). This is expected and harmless.
 //!
@@ -318,6 +318,8 @@ struct CommandRequest {
     stdin: String,
     #[serde(default)]
     pty: bool,
+    #[serde(default)]
+    batch: bool,
     #[serde(default)]
     terminal: Option<TerminalConfig>,
 }
@@ -895,6 +897,54 @@ fn execute_without_pty(request: &CommandRequest, stream: &mut TcpStream, initial
     send_exit_and_flush(stream, exit_code)
 }
 
+/// Execute command in batch mode: collect all output and return in single JSON response.
+fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32> {
+    log::debug!("execute_batch: starting");
+
+    let (child, stdin_pipe, stdout_pipe, stderr_pipe) = match spawn_child_piped(request, stream)? {
+        SpawnOutcome::SpawnFailedExitSent(code) => return Ok(code),
+        SpawnOutcome::Spawned(c, si, so, se)    => (c, si, so, se),
+    };
+
+    // Write stdin if provided, then close it
+    if !request.stdin.is_empty() {
+        use std::io::Write;
+        let mut stdin_ref = &stdin_pipe;
+        stdin_ref.write_all(request.stdin.as_bytes())?;
+    }
+    drop(stdin_pipe);
+
+    // Wait for child to complete
+    let child_pid = Pid::from_raw(child.id() as i32);
+    let status = waitpid(child_pid, None)?;
+    let exit_code = exit_code_from_wait_status(status);
+
+    // Collect all output
+    use std::io::Read;
+    let mut stdout_data = Vec::new();
+    let mut stderr_data = Vec::new();
+    let mut stdout_pipe = stdout_pipe;
+    let mut stderr_pipe = stderr_pipe;
+    stdout_pipe.read_to_end(&mut stdout_data)?;
+    stderr_pipe.read_to_end(&mut stderr_data)?;
+
+    log::debug!("execute_batch: exit_code={}, stdout={} bytes, stderr={} bytes",
+                exit_code, stdout_data.len(), stderr_data.len());
+
+    // Send batch response
+    let response = serde_json::json!({
+        "exit_code": exit_code,
+        "stdout": STANDARD.encode(&stdout_data),
+        "stderr": STANDARD.encode(&stderr_data),
+    });
+    let json = serde_json::to_string(&response)?;
+    stream.write_all(json.as_bytes())?;
+    stream.write_all(b"\n")?;
+    stream.flush()?;
+
+    Ok(exit_code)
+}
+
 fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
     log::debug!("handle_connection: new connection");
     let mut buf = [0; TCP_LINE_BUF_SIZE];
@@ -941,7 +991,10 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
             log::debug!("Received command: {:?}", request.command);
 
             // Execute command
-            if request.pty {
+            if request.batch {
+                log::debug!("Using batch mode");
+                let _exit_code = execute_batch(&request, &mut stream)?;
+            } else if request.pty {
                 log::debug!("Using PTY mode");
                 let _exit_code = execute_with_pty(&request, &mut stream, Some(leftover_bytes))?;
             } else {
