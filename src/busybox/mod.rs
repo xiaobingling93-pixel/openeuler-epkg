@@ -407,7 +407,9 @@ fn is_musl_build() -> bool {
 /// - For native formats (conda/brew/msys2): use native epkg
 ///
 /// On Linux hosts: always use native epkg
-fn determine_epkg_binary_for_env(env_root: &Path, pkg_format: &PackageFormat) -> Result<std::path::PathBuf> {
+///
+/// Returns None if the appropriate binary is not found (e.g., epkg-linux-$arch missing for VM env)
+fn determine_epkg_binary_for_env(env_root: &Path, pkg_format: &PackageFormat) -> Option<std::path::PathBuf> {
     // Check if this is a Linux-format package that requires VM on non-Linux hosts
     #[cfg(not(target_os = "linux"))]
     {
@@ -420,15 +422,26 @@ fn determine_epkg_binary_for_env(env_root: &Path, pkg_format: &PackageFormat) ->
             crate::models::channel_config().distro != "msys2";
 
         if needs_vm || is_arch_linux {
-            // Try to use epkg-linux-$arch for VM execution
+            // Must use epkg-linux-$arch for VM execution
             let arch = &crate::config().common.arch;
+
+            // First check in target env, then in self env
             let epkg_linux = crate::dirs::path_join(env_root, &["usr", "bin", &format!("epkg-linux-{}", arch)]);
             if epkg_linux.exists() {
-                log::debug!("Using epkg-linux binary for VM execution: {}", epkg_linux.display());
-                return Ok(epkg_linux);
-            } else {
-                log::warn!("epkg-linux-{} not found at {}, falling back to native epkg", arch, epkg_linux.display());
+                log::debug!("Using epkg-linux binary from target env: {}", epkg_linux.display());
+                return Some(epkg_linux);
             }
+
+            // Check in self environment
+            let self_env = crate::dirs().user_envs.join("self");
+            let self_epkg_linux = crate::dirs::path_join(&self_env, &["usr", "bin", &format!("epkg-linux-{}", arch)]);
+            if self_epkg_linux.exists() {
+                log::debug!("Using epkg-linux binary from self env: {}", self_epkg_linux.display());
+                return Some(self_epkg_linux);
+            }
+
+            log::debug!("epkg-linux-{} not found in target env or self env, skipping applet symlinks", arch);
+            return None;
         }
     }
 
@@ -440,12 +453,13 @@ fn determine_epkg_binary_for_env(env_root: &Path, pkg_format: &PackageFormat) ->
     let epkg_exe = crate::dirs::path_join(env_root, &["usr", "bin", "epkg"]);
     if epkg_exe.exists() {
         log::debug!("Using native epkg binary at {}", epkg_exe.display());
-        Ok(epkg_exe)
+        Some(epkg_exe)
     } else {
-        let current_exe = std::env::current_exe()
-            .with_context(|| "Failed to get current executable path")?;
-        log::debug!("Using current executable at {}", current_exe.display());
-        Ok(current_exe)
+        let current_exe = std::env::current_exe().ok();
+        if let Some(exe) = &current_exe {
+            log::debug!("Using current executable at {}", exe.display());
+        }
+        current_exe
     }
 }
 
@@ -456,7 +470,13 @@ pub fn create_all_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -
 
     // Determine which epkg binary to use for applet symlinks
     // On Windows/macOS with Linux-format packages, use epkg-linux-$arch for VM execution
-    let epkg_exe = determine_epkg_binary_for_env(env_root, pkg_format)?;
+    let epkg_exe = match determine_epkg_binary_for_env(env_root, pkg_format) {
+        Some(exe) => exe,
+        None => {
+            log::debug!("No suitable epkg binary found, skipping applet symlinks");
+            return Ok(());
+        }
+    };
 
     // On Alpine (APK format) with a glibc-linked epkg binary, the binary will
     // not run at all. All static builds currently use musl, so only create
