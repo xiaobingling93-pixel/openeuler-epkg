@@ -412,12 +412,14 @@ pub fn create_package_dirs<P: AsRef<Path>>(
 ///
 /// On Windows, each entry path is passed through [`lfs::sanitize_path_for_windows`]
 /// so POSIX names with `:` and other illegal characters extract successfully
-/// (same behavior as `utils` tar paths). On other platforms this delegates to
+/// (same behavior as `utils` tar paths). Hard links are collected and created
+/// after all regular files are extracted. On other platforms this delegates to
 /// [`tar::Archive::unpack`].
 pub fn unpack_tar_archive<R: Read>(archive: &mut Archive<R>, dest: &Path) -> Result<()> {
     #[cfg(windows)]
     {
         lfs::create_dir_all(dest)?;
+        let mut hard_links: Vec<(PathBuf, PathBuf)> = Vec::new();
         for entry_result in archive.entries()? {
             let mut entry = entry_result?;
             let entry_path = entry.path()?.to_path_buf();
@@ -430,11 +432,23 @@ pub fn unpack_tar_archive<R: Read>(archive: &mut Archive<R>, dest: &Path) -> Res
                 );
             }
             let dest_path = dest.join(&sanitized_path);
+
+            // Handle hard links: collect for deferred creation
+            let header = entry.header();
+            if matches!(header.entry_type(), tar::EntryType::Link) {
+                if let Ok(Some(link_path)) = entry.link_name() {
+                    let source_path = dest.join(lfs::sanitize_path_for_windows(&link_path));
+                    hard_links.push((source_path, dest_path));
+                    continue;
+                }
+            }
+
             if let Some(parent) = dest_path.parent() {
                 lfs::create_dir_all(parent)?;
             }
             entry.unpack(&dest_path)?;
         }
+        create_hard_links(&hard_links)?;
     }
     #[cfg(not(windows))]
     {
