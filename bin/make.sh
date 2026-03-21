@@ -699,6 +699,7 @@ clone_repos() {
     clone_or_update_repo "https://gitee.com/wu_fengguang/resolvo"
     clone_or_update_repo "https://gitee.com/wu_fengguang/elf-loader"
     clone_or_update_repo "https://gitee.com/wu_fengguang/libkrun"
+    clone_or_update_repo "https://gitee.com/wu_fengguang/vm-memory"
     clone_or_update_repo "https://gitee.com/wu_fengguang/imago"
     clone_or_update_repo "https://gitee.com/wu_fengguang/sandbox-kernel"
 
