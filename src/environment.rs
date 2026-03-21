@@ -296,6 +296,9 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     lfs::create_dir_all(crate::dirs::path_join(env_root, &["usr", "share"]))?;
     lfs::create_dir_all(crate::dirs::path_join(env_root, &["usr", "include"]))?;
     lfs::create_dir_all(crate::dirs::path_join(env_root, &["usr", "local", "bin"]))?;
+    // Create usr/bin and usr/sbin for usr-merge symlinks (needed for Windows junctions)
+    lfs::create_dir_all(crate::dirs::path_join(env_root, &["usr", "bin"]))?;
+    lfs::create_dir_all(crate::dirs::path_join(env_root, &["usr", "sbin"]))?;
     lfs::create_dir_all(env_root.join("var"))?;
     lfs::create_dir_all(crate::dirs::path_join(env_root, &["opt", "epkg"]))?;
     lfs::create_dir_all(env_root_etc_epkg(env_root))?;

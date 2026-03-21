@@ -171,13 +171,26 @@ fn symlink_windows_existing_file(original: &Path, link: &Path, resolved_original
 }
 
 #[cfg(windows)]
-fn symlink_windows_missing_target(resolved_original: &Path, link: &Path) -> Result<()> {
+fn symlink_windows_missing_target(original: &Path, link: &Path) -> Result<()> {
+    // When target doesn't exist, we can't create a junction (needs existing target).
+    // Try to create a directory symlink first (requires Developer Mode or admin),
+    // fall back to file symlink if that fails.
+    use std::os::windows::fs::{symlink_dir, symlink_file};
+
     log::debug!(
-        "Skipping symlink creation at {}: resolved target {} does not exist",
+        "Creating symlink at {} -> {} (target doesn't exist yet)",
         link.display(),
-        resolved_original.display()
+        original.display()
     );
-    Ok(())
+
+    // Try directory symlink first (for paths like bin, sbin, lib, etc.)
+    if symlink_dir(original, link).is_ok() {
+        return Ok(());
+    }
+
+    // Fall back to file symlink
+    symlink_file(original, link)
+        .wrap_err_with(|| format!("Failed to create symlink from {} to {}", original.display(), link.display()))
 }
 
 #[cfg(windows)]
@@ -193,7 +206,7 @@ pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<(
     } else if resolved_original.is_file() {
         symlink_windows_existing_file(original, link, &resolved_original)
     } else {
-        symlink_windows_missing_target(&resolved_original, link)
+        symlink_windows_missing_target(original, link)
     }
 }
 

@@ -14,8 +14,12 @@ pub struct PackageLine {
 
 /// Formats a package line string from its components.
 /// pkgline format: {ca_hash}__{pkgname}__{version}__{arch}
+///
+/// Note: Windows doesn't allow ':' in filenames, so we replace it with '~'.
+/// This handles RPM epoch in version strings like "1:3.0.12-22.oe2509".
 pub fn format_pkgline(ca_hash: &str, pkgname: &str, version: &str, arch: &str) -> String {
-    format!("{}__{}__{}__{}", ca_hash, pkgname, version, arch)
+    let safe_version = version.replace(':', "~");
+    format!("{}__{}__{}__{}", ca_hash, pkgname, safe_version, arch)
 }
 
 // Function to parse a pkgline into a PackageLine
@@ -25,18 +29,23 @@ pub fn parse_pkgline(pkgline: &str) -> Result<PackageLine> {
         bail!("Invalid package line format: {}", pkgline);
     }
 
+    // Restore ':' from '~' in version (for RPM epoch)
+    let version = parts[2].replace('~', ":");
+
     let spec = PackageLine {
         ca_hash: parts[0].to_string(),
         pkgname: parts[1].to_string(),
-        version: parts[2].to_string(),
+        version,
         arch:    parts[3].to_string(),
     };
     Ok(spec)
 }
 
 // pkgkey format: {pkgname}__{version}__{arch}
+// Note: Windows doesn't allow ':' in filenames, so we replace it with '~'.
 pub fn format_pkgkey(pkgname: &str, version: &str, arch: &str) -> String {
-    format!("{}__{}__{}", pkgname, version, arch)
+    let safe_version = version.replace(':', "~");
+    format!("{}__{}__{}", pkgname, safe_version, arch)
 }
 
 // Helper function to parse pkgkey, handling pkgnames that start with "__"
