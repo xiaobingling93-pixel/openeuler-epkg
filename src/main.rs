@@ -109,7 +109,6 @@ mod busybox;
 mod info;
 mod list;
 mod search;
-#[cfg(unix)]
 mod gc;
 #[cfg(unix)]
 mod service;
@@ -248,7 +247,6 @@ fn main() -> Result<()> {
         Some(("run",        sub_matches))  =>  command_run(sub_matches)?,
         Some(("busybox",    sub_matches))  =>  command_busybox(sub_matches)?,
         Some(("search",     sub_matches))  =>  command_search(sub_matches)?,
-        #[cfg(unix)]
         Some(("gc",         sub_matches))  =>  command_gc(sub_matches)?,
         #[cfg(unix)]
         Some(("service",    sub_matches))  =>  command_service(sub_matches)?,
@@ -2151,7 +2149,6 @@ fn command_search(_sub_matches: &clap::ArgMatches) -> Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
 fn command_gc(sub_matches: &clap::ArgMatches) -> Result<()> {
     let old_downloads_days = sub_matches.get_one::<u64>("old-downloads").copied();
     gc::gc_epkg(old_downloads_days)?;
