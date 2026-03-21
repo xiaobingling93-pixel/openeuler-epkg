@@ -259,6 +259,156 @@ fn link_state_path(link_src: &str, user: bool, root: &Path) -> PathBuf {
     state_dir.join(rel.trim_start_matches('/'))
 }
 
+fn dsh_action_enable(
+    root: &Path,
+    user: bool,
+    unit_name: &str,
+    service_path: &Path,
+) -> Result<()> {
+    let mut visited = HashSet::new();
+    let links = get_link_closure(
+        root,
+        service_path,
+        etc_systemd_instance(user),
+        &mut visited,
+    )?;
+    let dsh_state = dsh_state_path(unit_name, user, root);
+    for link in &links {
+        record_in_statefile(&dsh_state, &link.src)?;
+        let link_full = root_join(root, &link.src);
+        if link_full.exists() {
+            continue;
+        }
+        if let Some(parent) = link_full.parent() {
+            lfs::create_dir_all(parent)?;
+        }
+        let _target = Path::new(&link.dest);
+        #[cfg(unix)]
+        {
+            lfs::symlink(_target, &link_full)?;
+        }
+        #[cfg(not(unix))]
+        {
+            return Err(eyre!("symlink not supported on this platform"));
+        }
+    }
+    for link in &links {
+        let statefile = link_state_path(&link.src, user, root);
+        if let Some(p) = statefile.parent() {
+            lfs::create_dir_all(p).ok();
+        }
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&statefile)
+            .ok();
+    }
+    Ok(())
+}
+
+fn dsh_action_disable(root: &Path, user: bool, unit_name: &str, purge: bool) -> Result<()> {
+    let dsh_state = dsh_state_path(unit_name, user, root);
+    let entries = state_file_entries(&dsh_state);
+    if purge && dsh_state.exists() {
+        lfs::remove_file(&dsh_state).ok();
+    }
+    for link_src in &entries {
+        let link_state = link_state_path(link_src, user, root);
+        if purge || link_state.exists() {
+            lfs::remove_file(&link_state).ok();
+        }
+        let link_full = root_join(root, link_src);
+        if link_full.is_symlink() {
+            let _ = lfs::remove_file(&link_full);
+        }
+    }
+    Ok(())
+}
+
+/// Returns `true` if the caller should `continue` to the next unit.
+fn dsh_action_unmask(root: &Path, user: bool, unit_name: &str) -> Result<bool> {
+    let basename = Path::new(unit_name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(unit_name);
+    let mask_link = root_join(
+        root,
+        &format!(
+            "/etc/systemd/{}/{}",
+            etc_systemd_instance(user),
+            basename
+        ),
+    );
+    if !mask_link.exists() {
+        return Ok(true);
+    }
+    let target = fs::read_link(&mask_link).ok();
+    if target.as_ref().map(|t| t != Path::new("/dev/null")).unwrap_or(true) {
+        return Ok(true);
+    }
+    let statefile = masked_state_dir(user, root).join(basename);
+    if statefile.exists() {
+        lfs::remove_file(&mask_link).ok();
+        lfs::remove_file(&statefile).ok();
+    }
+    Ok(false)
+}
+
+fn dsh_action_update_state(
+    root: &Path,
+    user: bool,
+    unit_name: &str,
+    service_path: &Path,
+) -> Result<()> {
+    let mut visited = HashSet::new();
+    let links = get_link_closure(
+        root,
+        service_path,
+        etc_systemd_instance(user),
+        &mut visited,
+    )?;
+    let dsh_state = dsh_state_path(unit_name, user, root);
+    if let Some(parent) = dsh_state.parent() {
+        lfs::create_dir_all(parent)?;
+    }
+    let mut f = lfs::file_create(&dsh_state)?;
+    for link in &links {
+        writeln!(f, "{}", link.src).wrap_err("write state")?;
+    }
+    Ok(())
+}
+
+fn dsh_action_was_enabled(
+    root: &Path,
+    user: bool,
+    unit_name: &str,
+    quiet: bool,
+    exit_rc: &mut i32,
+) -> Result<()> {
+    let dsh_state = dsh_state_path(unit_name, user, root);
+    let entries = state_file_entries(&dsh_state);
+    let all_present = entries
+        .iter()
+        .all(|link_src| root_join(root, link_src).is_symlink());
+    if all_present && !entries.is_empty() {
+        *exit_rc = 0;
+        if !quiet {
+            eprintln!("enabled");
+        }
+    } else if !quiet {
+        eprintln!("disabled");
+    }
+    Ok(())
+}
+
+fn dsh_action_debian_installed(root: &Path, user: bool, unit_name: &str, exit_rc: &mut i32) -> Result<()> {
+    let dsh_state = dsh_state_path(unit_name, user, root);
+    if dsh_state.exists() {
+        *exit_rc = 0;
+    }
+    Ok(())
+}
+
 pub fn run(options: DebSystemdHelperOptions) -> Result<()> {
     require_maintscript()?;
 
@@ -291,126 +441,30 @@ pub fn run(options: DebSystemdHelperOptions) -> Result<()> {
 
         match action {
             "enable" => {
-                let mut visited = HashSet::new();
-                let links = get_link_closure(
-                    &root,
-                    &service_path,
-                    etc_systemd_instance(options.user),
-                    &mut visited,
-                )?;
-                let dsh_state = dsh_state_path(unit_name, options.user, &root);
-                for link in &links {
-                    record_in_statefile(&dsh_state, &link.src)?;
-                    let link_full = root_join(&root, &link.src);
-                    if link_full.exists() {
-                        continue;
-                    }
-                    if let Some(parent) = link_full.parent() {
-                        lfs::create_dir_all(parent)?;
-                    }
-                    let _target = Path::new(&link.dest);
-                    #[cfg(unix)]
-                    {
-                        lfs::symlink(_target, &link_full)?;
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        return Err(eyre!("symlink not supported on this platform"));
-                    }
-                }
-                for link in &links {
-                    let statefile = link_state_path(&link.src, options.user, &root);
-                    if let Some(p) = statefile.parent() {
-                        lfs::create_dir_all(p).ok();
-                    }
-                    fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&statefile)
-                        .ok();
-                }
+                dsh_action_enable(&root, options.user, unit_name, &service_path)?;
             }
             "disable" => {
-                let dsh_state = dsh_state_path(unit_name, options.user, &root);
-                let entries = state_file_entries(&dsh_state);
-                if purge && dsh_state.exists() {
-                    lfs::remove_file(&dsh_state).ok();
-                }
-                for link_src in &entries {
-                    let link_state = link_state_path(link_src, options.user, &root);
-                    if purge || link_state.exists() {
-                        lfs::remove_file(&link_state).ok();
-                    }
-                    let link_full = root_join(&root, link_src);
-                    if link_full.is_symlink() {
-                        let _ = lfs::remove_file(&link_full);
-                    }
-                }
+                dsh_action_disable(&root, options.user, unit_name, purge)?;
             }
             "unmask" => {
-                let basename = Path::new(unit_name)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(unit_name);
-                let mask_link = root_join(
-                    &root,
-                    &format!(
-                        "/etc/systemd/{}/{}",
-                        etc_systemd_instance(options.user),
-                        basename
-                    ),
-                );
-                if !mask_link.exists() {
+                if dsh_action_unmask(&root, options.user, unit_name)? {
                     continue;
-                }
-                let target = fs::read_link(&mask_link).ok();
-                if target.as_ref().map(|t| t != Path::new("/dev/null")).unwrap_or(true) {
-                    continue;
-                }
-                let statefile = masked_state_dir(options.user, &root)
-                    .join(basename);
-                if statefile.exists() {
-                    lfs::remove_file(&mask_link).ok();
-                    lfs::remove_file(&statefile).ok();
                 }
             }
             "update-state" => {
-                let mut visited = HashSet::new();
-                let links = get_link_closure(
-                    &root,
-                    &service_path,
-                    etc_systemd_instance(options.user),
-                    &mut visited,
-                )?;
-                let dsh_state = dsh_state_path(unit_name, options.user, &root);
-                if let Some(parent) = dsh_state.parent() {
-                    lfs::create_dir_all(parent)?;
-                }
-                let mut f = lfs::file_create(&dsh_state)?;
-                for link in &links {
-                    writeln!(f, "{}", link.src).wrap_err("write state")?;
-                }
+                dsh_action_update_state(&root, options.user, unit_name, &service_path)?;
             }
             "was-enabled" => {
-                let dsh_state = dsh_state_path(unit_name, options.user, &root);
-                let entries = state_file_entries(&dsh_state);
-                let all_present = entries.iter().all(|link_src| {
-                    root_join(&root, link_src).is_symlink()
-                });
-                if all_present && !entries.is_empty() {
-                    exit_rc = 0;
-                    if !options.quiet {
-                        eprintln!("enabled");
-                    }
-                } else if !options.quiet {
-                    eprintln!("disabled");
-                }
+                dsh_action_was_enabled(
+                    &root,
+                    options.user,
+                    unit_name,
+                    options.quiet,
+                    &mut exit_rc,
+                )?;
             }
             "debian-installed" => {
-                let dsh_state = dsh_state_path(unit_name, options.user, &root);
-                if dsh_state.exists() {
-                    exit_rc = 0;
-                }
+                dsh_action_debian_installed(&root, options.user, unit_name, &mut exit_rc)?;
             }
             _ => {}
         }

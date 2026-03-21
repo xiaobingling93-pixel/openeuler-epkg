@@ -407,162 +407,250 @@ pub fn command() -> Command {
         .arg(Arg::new("query").long("query").num_args(1).value_name("name"))
 }
 
+fn run_install_action(
+    options: &UpdateAlternativesOptions,
+    root: &Path,
+    adm: &Path,
+    altdir: &str,
+) -> Result<()> {
+    let link = options
+        .install_link
+        .as_ref()
+        .ok_or_else(|| eyre!("--install needs <link> <name> <path> <priority>"))?;
+    let name = options
+        .install_name
+        .as_ref()
+        .ok_or_else(|| eyre!("--install needs name"))?;
+    let path = options
+        .install_path
+        .as_ref()
+        .ok_or_else(|| eyre!("--install needs path"))?;
+    let priority = options
+        .install_priority
+        .ok_or_else(|| eyre!("--install needs priority"))?;
+    if !path_exists(root, path) {
+        return Err(eyre!("alternative path {} does not exist", path));
+    }
+    let mut a = read_admin_file(adm, name, root)?.unwrap_or_else(|| Alternative {
+        master_name: name.clone(),
+        master_link: link.clone(),
+        status: "auto".to_string(),
+        current: None,
+        slaves: Vec::new(),
+        choices: Vec::new(),
+    });
+    a.master_link = link.clone();
+    for (slink, sname, _spath) in &options.slaves {
+        if !a.slaves.iter().any(|s| s.name == *sname) {
+            a.slaves.push(SlaveLink {
+                name: sname.clone(),
+                link: slink.clone(),
+            });
+        }
+    }
+    let mut slave_files = HashMap::new();
+    for (_, sname, spath) in &options.slaves {
+        slave_files.insert(sname.clone(), spath.clone());
+    }
+    let mut found = false;
+    for c in &mut a.choices {
+        if c.master_file == *path {
+            c.priority = priority;
+            for (k, v) in &slave_files {
+                c.slave_files.insert(k.clone(), v.clone());
+            }
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        a.choices.push(Choice {
+            master_file: path.clone(),
+            priority,
+            slave_files,
+        });
+    }
+    let new_current = if a.status == "auto" {
+        best_choice(&a).map(|c| c.master_file.clone())
+    } else {
+        a.current.clone()
+    };
+    if let Some(ref cur) = new_current {
+        apply_alternative(root, altdir, &a, cur, options.force)?;
+    }
+    a.current = new_current;
+    write_admin_file(adm, &a)?;
+    Ok(())
+}
+
+fn run_remove_action(
+    options: &UpdateAlternativesOptions,
+    root: &Path,
+    adm: &Path,
+    altdir: &str,
+) -> Result<()> {
+    let name = options
+        .name
+        .as_ref()
+        .ok_or_else(|| eyre!("--remove needs <name> <path>"))?;
+    let path = options
+        .path
+        .as_ref()
+        .ok_or_else(|| eyre!("--remove needs path"))?;
+    let mut a = read_admin_file(adm, name, root)?
+        .ok_or_else(|| eyre!("no alternatives for {}", name))?;
+    a.choices.retain(|c| c.master_file != *path);
+    let new_current = if a.status == "auto" {
+        best_choice(&a).map(|c| c.master_file.clone())
+    } else if a.current.as_deref() == Some(path.as_str()) {
+        best_choice(&a).map(|c| c.master_file.clone())
+    } else {
+        a.current.clone()
+    };
+    if a.choices.is_empty() {
+        remove_links(root, altdir, &a)?;
+        lfs::remove_file(adm.join(name)).ok();
+    } else if let Some(ref cur) = new_current {
+        apply_alternative(root, altdir, &a, cur, options.force)?;
+        a.current = new_current;
+        write_admin_file(adm, &a)?;
+    }
+    Ok(())
+}
+
+fn run_remove_all_action(
+    options: &UpdateAlternativesOptions,
+    root: &Path,
+    adm: &Path,
+    altdir: &str,
+) -> Result<()> {
+    let name = options
+        .name
+        .as_ref()
+        .ok_or_else(|| eyre!("--remove-all needs <name>"))?;
+    if let Some(a) = read_admin_file(adm, name, root)? {
+        remove_links(root, altdir, &a)?;
+    }
+    lfs::remove_file(adm.join(name)).ok();
+    Ok(())
+}
+
+fn run_auto_action(
+    options: &UpdateAlternativesOptions,
+    root: &Path,
+    adm: &Path,
+    altdir: &str,
+) -> Result<()> {
+    let name = options
+        .name
+        .as_ref()
+        .ok_or_else(|| eyre!("--auto needs <name>"))?;
+    let mut a = read_admin_file(adm, name, root)?
+        .ok_or_else(|| eyre!("no alternatives for {}", name))?;
+    a.status = "auto".to_string();
+    if let Some(best) = best_choice(&a) {
+        let cur = best.master_file.clone();
+        apply_alternative(root, altdir, &a, &cur, options.force)?;
+        a.current = Some(cur);
+    }
+    write_admin_file(adm, &a)?;
+    Ok(())
+}
+
+fn run_display_action(options: &UpdateAlternativesOptions, adm: &Path, root: &Path) -> Result<()> {
+    let name = options
+        .name
+        .as_ref()
+        .ok_or_else(|| eyre!("--display needs <name>"))?;
+    let a = read_admin_file(adm, name, root)?
+        .ok_or_else(|| eyre!("no alternatives for {}", name))?;
+    let best = best_choice(&a);
+    if !options.quiet {
+        println!(
+            "{} - {}",
+            a.master_name,
+            if a.status == "auto" {
+                "auto mode"
+            } else {
+                "manual mode"
+            }
+        );
+        if let Some(b) = best {
+            println!("  link best version is {}", b.master_file);
+        }
+        println!(
+            "  link currently points to {}",
+            a.current.as_deref().unwrap_or("(none)")
+        );
+        println!("  link {} is {}", a.master_name, a.master_link);
+        for sl in &a.slaves {
+            println!("  slave {} is {}", sl.name, sl.link);
+        }
+        for c in &a.choices {
+            println!("{} - priority {}", c.master_file, c.priority);
+        }
+    }
+    Ok(())
+}
+
+fn run_list_action(options: &UpdateAlternativesOptions, adm: &Path, root: &Path) -> Result<()> {
+    let name = options
+        .name
+        .as_ref()
+        .ok_or_else(|| eyre!("--list needs <name>"))?;
+    let a = read_admin_file(adm, name, root)?
+        .ok_or_else(|| eyre!("no alternatives for {}", name))?;
+    for c in &a.choices {
+        println!("{}", c.master_file);
+    }
+    Ok(())
+}
+
+fn run_query_action(options: &UpdateAlternativesOptions, adm: &Path, root: &Path) -> Result<()> {
+    let name = options
+        .name
+        .as_ref()
+        .ok_or_else(|| eyre!("--query needs <name>"))?;
+    let a = read_admin_file(adm, name, root)?
+        .ok_or_else(|| eyre!("no alternatives for {}", name))?;
+    let best = best_choice(&a);
+    println!("Name: {}", a.master_name);
+    println!("Link: {}", a.master_link);
+    if !a.slaves.is_empty() {
+        print!("Slaves:");
+        for sl in &a.slaves {
+            print!(" {} {}", sl.name, sl.link);
+        }
+        println!();
+    }
+    println!("Status: {}", a.status);
+    if let Some(b) = best {
+        println!("Best: {}", b.master_file);
+    }
+    println!("Value: {}", a.current.as_deref().unwrap_or("none"));
+    for c in &a.choices {
+        println!();
+        println!("Alternative: {}", c.master_file);
+        println!("Priority: {}", c.priority);
+    }
+    Ok(())
+}
+
 pub fn run(options: UpdateAlternativesOptions) -> Result<()> {
     let root = instdir();
     let adm = admindir();
     let altdir = DEFAULT_ALTDIR;
 
     match options.action.as_str() {
-        "install" => {
-            let link = options.install_link.as_ref().ok_or_else(|| eyre!("--install needs <link> <name> <path> <priority>"))?;
-            let name = options.install_name.as_ref().ok_or_else(|| eyre!("--install needs name"))?;
-            let path = options.install_path.as_ref().ok_or_else(|| eyre!("--install needs path"))?;
-            let priority = options.install_priority.ok_or_else(|| eyre!("--install needs priority"))?;
-            if !path_exists(&root, path) {
-                return Err(eyre!("alternative path {} does not exist", path));
-            }
-            let mut a = read_admin_file(&adm, name, &root)?.unwrap_or_else(|| Alternative {
-                master_name: name.clone(),
-                master_link: link.clone(),
-                status: "auto".to_string(),
-                current: None,
-                slaves: Vec::new(),
-                choices: Vec::new(),
-            });
-            a.master_link = link.clone();
-            for (slink, sname, _spath) in &options.slaves {
-                if !a.slaves.iter().any(|s| s.name == *sname) {
-                    a.slaves.push(SlaveLink { name: sname.clone(), link: slink.clone() });
-                }
-            }
-            let mut slave_files = HashMap::new();
-            for (_, sname, spath) in &options.slaves {
-                slave_files.insert(sname.clone(), spath.clone());
-            }
-            let mut found = false;
-            for c in &mut a.choices {
-                if c.master_file == *path {
-                    c.priority = priority;
-                    for (k, v) in &slave_files {
-                        c.slave_files.insert(k.clone(), v.clone());
-                    }
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
-                a.choices.push(Choice {
-                    master_file: path.clone(),
-                    priority,
-                    slave_files,
-                });
-            }
-            let new_current = if a.status == "auto" {
-                best_choice(&a).map(|c| c.master_file.clone())
-            } else {
-                a.current.clone()
-            };
-            if let Some(ref cur) = new_current {
-                apply_alternative(&root, altdir, &a, cur, options.force)?;
-            }
-            a.current = new_current;
-            write_admin_file(&adm, &a)?;
-        }
-        "remove" => {
-            let name = options.name.as_ref().ok_or_else(|| eyre!("--remove needs <name> <path>"))?;
-            let path = options.path.as_ref().ok_or_else(|| eyre!("--remove needs path"))?;
-            let mut a = read_admin_file(&adm, name, &root)?
-                .ok_or_else(|| eyre!("no alternatives for {}", name))?;
-            a.choices.retain(|c| c.master_file != *path);
-            let new_current = if a.status == "auto" {
-                best_choice(&a).map(|c| c.master_file.clone())
-            } else if a.current.as_deref() == Some(path.as_str()) {
-                best_choice(&a).map(|c| c.master_file.clone())
-            } else {
-                a.current.clone()
-            };
-            if a.choices.is_empty() {
-                remove_links(&root, altdir, &a)?;
-                lfs::remove_file(adm.join(name)).ok();
-            } else if let Some(ref cur) = new_current {
-                apply_alternative(&root, altdir, &a, cur, options.force)?;
-                a.current = new_current;
-                write_admin_file(&adm, &a)?;
-            }
-        }
-        "remove-all" => {
-            let name = options.name.as_ref().ok_or_else(|| eyre!("--remove-all needs <name>"))?;
-            if let Some(a) = read_admin_file(&adm, name, &root)? {
-                remove_links(&root, altdir, &a)?;
-            }
-            lfs::remove_file(adm.join(name)).ok();
-        }
-        "auto" => {
-            let name = options.name.as_ref().ok_or_else(|| eyre!("--auto needs <name>"))?;
-            let mut a = read_admin_file(&adm, name, &root)?
-                .ok_or_else(|| eyre!("no alternatives for {}", name))?;
-            a.status = "auto".to_string();
-            if let Some(best) = best_choice(&a) {
-                let cur = best.master_file.clone();
-                apply_alternative(&root, altdir, &a, &cur, options.force)?;
-                a.current = Some(cur);
-            }
-            write_admin_file(&adm, &a)?;
-        }
-        "display" => {
-            let name = options.name.as_ref().ok_or_else(|| eyre!("--display needs <name>"))?;
-            let a = read_admin_file(&adm, name, &root)?
-                .ok_or_else(|| eyre!("no alternatives for {}", name))?;
-            let best = best_choice(&a);
-            if !options.quiet {
-                println!("{} - {}", a.master_name, if a.status == "auto" { "auto mode" } else { "manual mode" });
-                if let Some(b) = best {
-                    println!("  link best version is {}", b.master_file);
-                }
-                println!("  link currently points to {}", a.current.as_deref().unwrap_or("(none)"));
-                println!("  link {} is {}", a.master_name, a.master_link);
-                for sl in &a.slaves {
-                    println!("  slave {} is {}", sl.name, sl.link);
-                }
-                for c in &a.choices {
-                    println!("{} - priority {}", c.master_file, c.priority);
-                }
-            }
-        }
-        "list" => {
-            let name = options.name.as_ref().ok_or_else(|| eyre!("--list needs <name>"))?;
-            let a = read_admin_file(&adm, name, &root)?
-                .ok_or_else(|| eyre!("no alternatives for {}", name))?;
-            for c in &a.choices {
-                println!("{}", c.master_file);
-            }
-        }
-        "query" => {
-            let name = options.name.as_ref().ok_or_else(|| eyre!("--query needs <name>"))?;
-            let a = read_admin_file(&adm, name, &root)?
-                .ok_or_else(|| eyre!("no alternatives for {}", name))?;
-            let best = best_choice(&a);
-            println!("Name: {}", a.master_name);
-            println!("Link: {}", a.master_link);
-            if !a.slaves.is_empty() {
-                print!("Slaves:");
-                for sl in &a.slaves {
-                    print!(" {} {}", sl.name, sl.link);
-                }
-                println!();
-            }
-            println!("Status: {}", a.status);
-            if let Some(b) = best {
-                println!("Best: {}", b.master_file);
-            }
-            println!("Value: {}", a.current.as_deref().unwrap_or("none"));
-            for c in &a.choices {
-                println!();
-                println!("Alternative: {}", c.master_file);
-                println!("Priority: {}", c.priority);
-            }
-        }
-        _ => return Err(eyre!("need --install, --remove, --remove-all, --auto, --display, --list or --query")),
+        "install" => run_install_action(&options, &root, &adm, altdir),
+        "remove" => run_remove_action(&options, &root, &adm, altdir),
+        "remove-all" => run_remove_all_action(&options, &root, &adm, altdir),
+        "auto" => run_auto_action(&options, &root, &adm, altdir),
+        "display" => run_display_action(&options, &adm, &root),
+        "list" => run_list_action(&options, &adm, &root),
+        "query" => run_query_action(&options, &adm, &root),
+        _ => Err(eyre!(
+            "need --install, --remove, --remove-all, --auto, --display, --list or --query"
+        )),
     }
-    Ok(())
 }

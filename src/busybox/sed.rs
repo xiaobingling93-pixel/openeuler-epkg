@@ -7,6 +7,11 @@ use std::io;
 use std::collections::HashMap;
 use crate::lfs;
 
+fn sed_read_line_error(file_path: Option<&str>, e: io::Error) -> color_eyre::Report {
+    let file_info = file_path.map(|p| format!(" '{}'", p)).unwrap_or_default();
+    eyre!("sed: error reading{}: {}", file_info, e)
+}
+
 pub struct SedOptions {
     pub scripts: Vec<String>,
     pub inplace: bool,
@@ -2016,10 +2021,7 @@ fn handle_n_append_loop(
             }.to_string();
             next_buffer.clear();
             let nb = reader.read_line(next_buffer)
-                .map_err(|e| {
-                    let file_info = file_path.map(|p| format!(" '{}'", p)).unwrap_or_default();
-                    eyre!("sed: error reading{}: {}", file_info, e)
-                })?;
+                .map_err(|e| sed_read_line_error(file_path, e))?;
             **next_bytes = nb;
             **skip_swap_this = true;
             **n_append_consumed = true;
@@ -2027,10 +2029,7 @@ fn handle_n_append_loop(
         } else {
             let mut read_buf = String::new();
             let bytes_read = reader.read_line(&mut read_buf)
-                .map_err(|e| {
-                    let file_info = file_path.map(|p| format!(" '{}'", p)).unwrap_or_default();
-                    eyre!("sed: error reading{}: {}", file_info, e)
-                })?;
+                .map_err(|e| sed_read_line_error(file_path, e))?;
             if bytes_read == 0 {
                 state.n_append_pending = false;
                 state.n_append_hit_eof = true;
@@ -2156,20 +2155,14 @@ fn handle_n_command_loop(
             }.to_string();
             next_buffer.clear();
             let _nb = reader.read_line(next_buffer)
-                .map_err(|e| {
-                    let file_info = file_path.map(|p| format!(" '{}'", p)).unwrap_or_default();
-                    eyre!("sed: error reading{}: {}", file_info, e)
-                })?;
+                .map_err(|e| sed_read_line_error(file_path, e))?;
             **next_bytes = _nb;
             **skip_swap_this = true;
             (line, has_nl)
         } else {
             let mut read_buf = String::new();
             let bytes_read = reader.read_line(&mut read_buf)
-                .map_err(|e| {
-                    let file_info = file_path.map(|p| format!(" '{}'", p)).unwrap_or_default();
-                    eyre!("sed: error reading{}: {}", file_info, e)
-                })?;
+                .map_err(|e| sed_read_line_error(file_path, e))?;
             if bytes_read == 0 {
                 state.n_command_pending = false;
                 state.next_command_index = None;
@@ -2317,10 +2310,7 @@ fn process_input(
     let mut next_buffer = String::new();
     // Read first line
     let bytes_read = reader.read_line(&mut buffer)
-        .map_err(|e| {
-            let file_info = file_path.map(|p| format!(" '{}'", p)).unwrap_or_default();
-            eyre!("sed: error reading{}: {}", file_info, e)
-        })?;
+        .map_err(|e| sed_read_line_error(file_path, e))?;
     if bytes_read == 0 {
         return Ok(());
     }
@@ -2337,10 +2327,7 @@ fn process_input(
         if !skip_swap {
             next_buffer.clear();
             next_bytes = reader.read_line(&mut next_buffer)
-                .map_err(|e| {
-                    let file_info = file_path.map(|p| format!(" '{}'", p)).unwrap_or_default();
-                    eyre!("sed: error reading{}: {}", file_info, e)
-                })?;
+                .map_err(|e| sed_read_line_error(file_path, e))?;
         }
         // $ matches only last line of last file (sed.c: get_next_line spans files)
         let total_lines = if is_last_file && next_bytes == 0 {
@@ -2395,18 +2382,12 @@ fn process_input(
             if next_buffer.is_empty() {
                 next_buffer.clear();
                 next_bytes = reader.read_line(&mut buffer)
-                    .map_err(|e| {
-                        let file_info = file_path.map(|p| format!(" '{}'", p)).unwrap_or_default();
-                        eyre!("sed: error reading{}: {}", file_info, e)
-                    })?;
+                    .map_err(|e| sed_read_line_error(file_path, e))?;
             } else {
                 std::mem::swap(&mut buffer, &mut next_buffer);
                 next_buffer.clear();
                 next_bytes = reader.read_line(&mut next_buffer)
-                    .map_err(|e| {
-                        let file_info = file_path.map(|p| format!(" '{}'", p)).unwrap_or_default();
-                        eyre!("sed: error reading{}: {}", file_info, e)
-                    })?;
+                    .map_err(|e| sed_read_line_error(file_path, e))?;
             }
         }
 
