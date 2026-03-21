@@ -276,6 +276,195 @@ pub(crate) fn download_task(
 // download_file_with_retries():
 //   - Pure retry wrapper around download_file()
 //   - Only handles retry logic and error handling
+
+/// Returns `Ok(true)` if the caller should skip download entirely.
+fn download_prepare_validate_and_recover(task: &DownloadTask) -> Result<bool> {
+    match validate_existing_file(task)? {
+        ValidationResult::SkipDownload(reason) => {
+            send_file_to_channel(task)
+                .with_context(|| format!("Failed to send existing file to channel: {}", task.final_path.display()))?;
+
+            log::info!("Skipping download: {}", reason);
+            return Ok(true);
+        }
+        ValidationResult::ResumeFromPartial => {
+            log::info!("Resuming from partial file at {}", task.chunk_path.display());
+        }
+        ValidationResult::CorruptionDetected => {
+            log::warn!("Corruption detected in {}, handling...", task.chunk_path.display());
+            handle_corruption_detection(task)?;
+        }
+        ValidationResult::StartFresh => {
+            log::info!("Starting fresh download for {}", task.get_resolved_url());
+        }
+    }
+
+    match recover_parto_files(task)? {
+        ValidationResult::ResumeFromPartial => {
+            log::info!("Recovered partial files for resumption at {}", task.chunk_path.display());
+        }
+        _ => {}
+    }
+
+    Ok(false)
+}
+
+enum DownloadFailureAction {
+    /// Treat download as finished successfully.
+    TreatSuccess,
+    /// Propagate the original error (no retry), e.g. disk errors.
+    Propagate,
+    /// Schedule another attempt; preserve `.part` when true.
+    Retry { skip_file_cleanup: bool },
+}
+
+fn classify_download_failure_for_retry(
+    e: &color_eyre::Report,
+    task: &DownloadTask,
+    resolved_url: &str,
+) -> DownloadFailureAction {
+    let Some(download_err) = e.downcast_ref::<DownloadError>() else {
+        log::debug!("download_file_with_retries got error for {}: {}", resolved_url, e);
+        return DownloadFailureAction::Retry {
+            skip_file_cleanup: false,
+        };
+    };
+
+    match download_err {
+        DownloadError::Fatal { code, message } => {
+            log::debug!(
+                "download_file_with_retries got fatal error {} for {} (saving to {}): {}",
+                code,
+                resolved_url,
+                task.chunk_path.display(),
+                message
+            );
+        }
+        DownloadError::Network { details } => {
+            log::debug!(
+                "download_file_with_retries got network error for {} (saving to {}): {}",
+                resolved_url,
+                task.chunk_path.display(),
+                details
+            );
+        }
+        DownloadError::ContentValidation { expected, actual } => {
+            log::debug!(
+                "download_file_with_retries got content validation error for {} (saving to {}): expected {}, got {}",
+                resolved_url,
+                task.chunk_path.display(),
+                expected,
+                actual
+            );
+        }
+        DownloadError::ContentIncomplete { expected, actual } => {
+            log::debug!(
+                "download_file_with_retries got ContentIncomplete for {} (have {} of {} bytes) – will retry with resume without deleting .part",
+                resolved_url,
+                actual,
+                expected
+            );
+            return DownloadFailureAction::Retry {
+                skip_file_cleanup: true,
+            };
+        }
+        DownloadError::MirrorResolution { details } => {
+            log::debug!(
+                "download_file_with_retries got mirror resolution error for {}: {}",
+                resolved_url,
+                details
+            );
+        }
+        DownloadError::UnexpectedResponse { code, details } => {
+            log::debug!(
+                "download_file_with_retries got unexpected response {} for {}: {}",
+                code,
+                resolved_url,
+                details
+            );
+        }
+        DownloadError::AlreadyComplete => {
+            log::debug!(
+                "download_file_with_retries got already complete response for {}",
+                resolved_url
+            );
+            return DownloadFailureAction::TreatSuccess;
+        }
+        DownloadError::TooManyRequests => {
+            log::debug!(
+                "download_file_with_retries got too many requests error for {}",
+                resolved_url
+            );
+        }
+        DownloadError::DiskError { details } => {
+            log::debug!(
+                "download_file_with_retries got disk error for {} (saving to {}): {}",
+                resolved_url,
+                task.chunk_path.display(),
+                details
+            );
+            return DownloadFailureAction::Propagate;
+        }
+        DownloadError::NoRangeSupport => {
+            log::debug!(
+                "download_file_with_retries got NoRangeSupport error for {} (saving to {})",
+                resolved_url,
+                task.chunk_path.display()
+            );
+            if !task.url.contains("$mirror") {
+                log::debug!("URL {} is pinned to specific mirror, setting skip_chunking for retry without Range", task.url);
+                task.skip_chunking.store(true, Ordering::Relaxed);
+                if let Ok(mut guard) = task.chunk_tasks.lock() {
+                    if !guard.is_empty() {
+                        log::debug!("Clearing {} chunk tasks for NoRangeSupport retry", guard.len());
+                        guard.clear();
+                        let file_size = task.file_size.load(Ordering::Relaxed);
+                        if file_size > 0 {
+                            task.chunk_size.store(file_size, Ordering::Relaxed);
+                        }
+                    }
+                }
+                if let Err(e2) = task.set_chunk_status(ChunkStatus::NoChunk) {
+                    log::warn!("Failed to reset chunk_status to NoChunk: {}", e2);
+                }
+            }
+        }
+    }
+
+    DownloadFailureAction::Retry {
+        skip_file_cleanup: false,
+    }
+}
+
+fn reset_chunk_state_before_download_retry(task: &DownloadTask) {
+    if let Ok(mut guard) = task.chunk_tasks.lock() {
+        if !guard.is_empty() {
+            log::debug!("Clearing {} stale chunk tasks before retry", guard.len());
+            guard.clear();
+            let file_size = task.file_size.load(Ordering::Relaxed);
+            if file_size > 0 {
+                task.chunk_size.store(file_size, Ordering::Relaxed);
+            }
+        }
+    }
+    if let Err(e2) = task.set_chunk_status(ChunkStatus::NoChunk) {
+        log::warn!("Failed to reset chunk_status to NoChunk: {}", e2);
+    }
+}
+
+fn sleep_with_retry_message(task: &DownloadTask, retries: usize, max_retries: usize, resolved_url: &str) {
+    let delay = Duration::from_secs(2u64.pow(retries as u32));
+    thread::sleep(delay);
+    task.set_message(format!(
+        "Retrying (attempt {}/{} after {}s delay): {}",
+        retries + 1,
+        max_retries + 1,
+        delay.as_secs(),
+        resolved_url
+    ));
+    thread::sleep(Duration::from_secs(1));
+}
+
 fn download_file_with_retries(
     task: &DownloadTask,
 ) -> Result<()> {
@@ -284,38 +473,8 @@ fn download_file_with_retries(
 
     let mut retries = 0;
 
-    // Validate existing files and determine appropriate download action
-    match validate_existing_file(task)? {
-        ValidationResult::SkipDownload(reason) => {
-            send_file_to_channel(task)
-                .with_context(|| format!("Failed to send existing file to channel: {}", task.final_path.display()))?;
-
-            log::info!("Skipping download: {}", reason);
-            return Ok(());
-        }
-        ValidationResult::ResumeFromPartial => {
-            log::info!("Resuming from partial file at {}", task.chunk_path.display());
-            // Continue with existing partial file
-        }
-        ValidationResult::CorruptionDetected => {
-            log::warn!("Corruption detected in {}, handling...", task.chunk_path.display());
-            handle_corruption_detection(task)?;
-            // Continue with fresh download
-        }
-        ValidationResult::StartFresh => {
-            log::info!("Starting fresh download for {}", task.get_resolved_url());
-            // Continue with fresh download
-        }
-    }
-
-    // Recover any existing part files for resumption
-    match recover_parto_files(task)? {
-        ValidationResult::ResumeFromPartial => {
-            log::info!("Recovered partial files for resumption at {}", task.chunk_path.display());
-        }
-        _ => {
-            // No recovery needed or recovery failed
-        }
+    if download_prepare_validate_and_recover(task)? {
+        return Ok(());
     }
 
     loop {
@@ -327,166 +486,36 @@ fn download_file_with_retries(
         match download_result {
             Ok(()) => {
                 log::debug!("download_file_with_retries completed successfully for {}, dropping channel", &resolved_url);
-
-
                 return Ok(());
-            },
+            }
             Err(e) => {
-                // Track whether we should preserve the existing .part file so the next attempt
-                // can resume (for resumable incomplete content).
-                let mut skip_file_cleanup = false;
-
-                // Check if this is one of our custom download errors to avoid logging stack traces
-                if let Some(download_err) = e.downcast_ref::<DownloadError>() {
-                    match download_err {
-                        DownloadError::Fatal { code, message } => {
-                            log::debug!(
-                                "download_file_with_retries got fatal error {} for {} (saving to {}): {}",
-                                code,
-                                resolved_url,
-                                task.chunk_path.display(),
-                                message
-                            );
-                        },
-                        DownloadError::Network { details } => {
-                            log::debug!(
-                                "download_file_with_retries got network error for {} (saving to {}): {}",
-                                resolved_url,
-                                task.chunk_path.display(),
-                                details
-                            );
-                        },
-                        // File system errors are now handled as io::Error
-                        DownloadError::ContentValidation { expected, actual } => {
-                            log::debug!(
-                                "download_file_with_retries got content validation error for {} (saving to {}): expected {}, got {}",
-                                resolved_url,
-                                task.chunk_path.display(),
-                                expected,
-                                actual
-                            );
-                        },
-                        DownloadError::ContentIncomplete { expected, actual } => {
-                            log::debug!(
-                                "download_file_with_retries got ContentIncomplete for {} (have {} of {} bytes) – will retry with resume without deleting .part",
-                                resolved_url,
-                                actual,
-                                expected
-                            );
-                            // Preserve existing partial so the next attempt can resume.
-                            skip_file_cleanup = true;
-                        },
-                        DownloadError::MirrorResolution { details } => {
-                            log::debug!(
-                                "download_file_with_retries got mirror resolution error for {}: {}",
-                                resolved_url,
-                                details
-                            );
-                        },
-                        DownloadError::UnexpectedResponse { code, details } => {
-                            log::debug!(
-                                "download_file_with_retries got unexpected response {} for {}: {}",
-                                code,
-                                resolved_url,
-                                details
-                            );
-                        },
-                        DownloadError::AlreadyComplete => {
-                            log::debug!(
-                                "download_file_with_retries got already complete response for {}",
-                                resolved_url
-                            );
-                            return Ok(());
-                        },
-                        DownloadError::TooManyRequests => {
-                            log::debug!(
-                                "download_file_with_retries got too many requests error for {}",
-                                resolved_url
-                            );
-                        },
-                        DownloadError::DiskError { details } => {
-                            log::debug!(
-                                "download_file_with_retries got disk error for {} (saving to {}): {}",
-                                resolved_url,
-                                task.chunk_path.display(),
-                                details
-                            );
-                            // Don't mark mirror as bad for disk errors - they're local issues
-                            return Err(e);
-                        },
-                        DownloadError::NoRangeSupport => {
-                            log::debug!(
-                                "download_file_with_retries got NoRangeSupport error for {} (saving to {})",
-                                resolved_url,
-                                task.chunk_path.display()
-                            );
-                            // Set skip_chunking if the URL is concrete single-site, so can't try another mirror.
-                            if !task.url.contains("$mirror") {
-                                log::debug!("URL {} is pinned to specific mirror, setting skip_chunking for retry without Range", task.url);
-                                task.skip_chunking.store(true, Ordering::Relaxed);
-                                // Also reset chunk state for clean retry
-                                if let Ok(mut guard) = task.chunk_tasks.lock() {
-                                    if !guard.is_empty() {
-                                        log::debug!("Clearing {} chunk tasks for NoRangeSupport retry", guard.len());
-                                        guard.clear();
-                                        let file_size = task.file_size.load(Ordering::Relaxed);
-                                        if file_size > 0 {
-                                            task.chunk_size.store(file_size, Ordering::Relaxed);
-                                        }
-                                    }
-                                }
-                                if let Err(e2) = task.set_chunk_status(ChunkStatus::NoChunk) {
-                                    log::warn!("Failed to reset chunk_status to NoChunk: {}", e2);
-                                }
-                            }
-                            // Otherwise, let normal mirror retry logic handle it
-                        },
-                    }
-                } else {
-                    log::debug!("download_file_with_retries got error for {}: {}", resolved_url, e);
-                }
-
-                if retries >= max_retries {
-                    return Err(eyre!("Max retries ({}) exceeded for {}: {}", max_retries, resolved_url, e));
-                }
-
-                // Reset stale chunk tasks and remove bad part file(s) so the next retry starts fresh.
-                // For resumable ContentIncomplete errors we intentionally skip file cleanup so that
-                // the next attempt can resume from the existing partial download.
-                {
-                    if let Ok(mut guard) = task.chunk_tasks.lock() {
-                        if !guard.is_empty() {
-                            log::debug!("Clearing {} stale chunk tasks before retry", guard.len());
-                            guard.clear();
-                            // Restore master expected size to full file so the next attempt
-                            // resumes correctly (ondemand had reduced it to the parent range only).
-                            let file_size = task.file_size.load(Ordering::Relaxed);
-                            if file_size > 0 {
-                                task.chunk_size.store(file_size, Ordering::Relaxed);
-                            }
+                let action = classify_download_failure_for_retry(&e, task, &resolved_url);
+                match action {
+                    DownloadFailureAction::TreatSuccess => return Ok(()),
+                    DownloadFailureAction::Propagate => return Err(e),
+                    DownloadFailureAction::Retry { skip_file_cleanup } => {
+                        if retries >= max_retries {
+                            return Err(eyre!("Max retries ({}) exceeded for {}: {}", max_retries, resolved_url, e));
                         }
-                    }
-                    if let Err(e2) = task.set_chunk_status(ChunkStatus::NoChunk) {
-                        log::warn!("Failed to reset chunk_status to NoChunk: {}", e2);
-                    }
-                    if !skip_file_cleanup {
-                        cleanup_main_part_file(task)?;
-                        cleanup_chunk_files(task)?;
+
+                        // Reset stale chunk tasks and remove bad part file(s) so the next retry starts fresh.
+                        // For resumable ContentIncomplete errors we intentionally skip file cleanup so that
+                        // the next attempt can resume from the existing partial download.
+                        reset_chunk_state_before_download_retry(task);
+                        if !skip_file_cleanup {
+                            cleanup_main_part_file(task)?;
+                            cleanup_chunk_files(task)?;
+                        }
+
+                        task.attempt_number.fetch_add(1, Ordering::SeqCst);
+                        retries += 1;
+                        if retries < max_retries / 2 {
+                            continue;
+                        }
+
+                        sleep_with_retry_message(task, retries, max_retries, &resolved_url);
                     }
                 }
-
-                task.attempt_number.fetch_add(1, Ordering::SeqCst);
-                retries += 1;
-                if retries < max_retries / 2 {
-                    // no delay, to quickly try another mirror
-                    continue;
-                }
-
-                let delay = Duration::from_secs(2u64.pow(retries as u32));
-                // Keep showing the original error message in pb for some time
-                thread::sleep(delay);
-                task.set_message(format!("Retrying (attempt {}/{} after {}s delay): {}", retries + 1, max_retries + 1, delay.as_secs(), resolved_url));
-                thread::sleep(Duration::from_secs(1));
             }
         }
     }
