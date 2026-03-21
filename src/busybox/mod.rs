@@ -438,10 +438,15 @@ fn determine_epkg_binary_for_env(env_root: &Path, pkg_format: &PackageFormat) ->
             crate::models::channel_config().distro != "msys2";
 
         if needs_vm || is_arch_linux {
-            // Must use epkg-linux-$arch for VM execution
-            let arch = &crate::config().common.arch;
+            // First check if 'epkg' symlink exists in target env - prefer it for simpler relative paths
+            let epkg_symlink = crate::dirs::path_join(env_root, &["usr", "bin", crate::dirs::EPKG_USR_BIN_NAME]);
+            if epkg_symlink.exists() {
+                log::debug!("Using epkg symlink from target env: {}", epkg_symlink.display());
+                return Some(epkg_symlink);
+            }
 
-            // First check in target env, then in self env
+            // Fallback: check epkg-linux-$arch in target env, then in self env
+            let arch = &crate::config().common.arch;
             let epkg_linux = crate::dirs::path_join(env_root, &["usr", "bin", &format!("epkg-linux-{}", arch)]);
             if epkg_linux.exists() {
                 log::debug!("Using epkg-linux binary from target env: {}", epkg_linux.display());
@@ -502,13 +507,25 @@ pub fn create_all_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -
         return Ok(());
     }
 
-    fn applet_symlink_filename(cmd_name: &str) -> String {
-        #[cfg(windows)]
-        {
-            format!("{}.exe", cmd_name)
+    // Determine if the target environment is Windows-based (needs .exe suffix).
+    // For Linux-format packages, never add .exe suffix even on Windows host.
+    fn is_windows_target(pkg_format: &PackageFormat) -> bool {
+        match pkg_format {
+            PackageFormat::Deb | PackageFormat::Rpm | PackageFormat::Apk => false,
+            PackageFormat::Pacman => crate::models::channel_config().distro == "msys2",
+            PackageFormat::Conda | PackageFormat::Brew | PackageFormat::Python | PackageFormat::Epkg => {
+                #[cfg(windows)]
+                { true }
+                #[cfg(not(windows))]
+                { false }
+            }
         }
-        #[cfg(not(windows))]
-        {
+    }
+
+    fn applet_symlink_filename(cmd_name: &str, pkg_format: &PackageFormat) -> String {
+        if is_windows_target(pkg_format) {
+            format!("{}.exe", cmd_name)
+        } else {
             cmd_name.to_string()
         }
     }
@@ -517,7 +534,7 @@ pub fn create_all_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -
     for cmd in applet_commands {
         let cmd_name = cmd.get_name();
         let subdir = if is_sbin_command(cmd_name) { "sbin" } else { "bin" };
-        let symlink_path = env_root.join("usr").join(subdir).join(applet_symlink_filename(cmd_name));
+        let symlink_path = env_root.join("usr").join(subdir).join(applet_symlink_filename(cmd_name, pkg_format));
         let target = if let Some(parent) = symlink_path.parent() {
             pathdiff::diff_paths(&epkg_exe, parent).unwrap_or(epkg_exe.clone())
         } else {
@@ -526,11 +543,8 @@ pub fn create_all_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -
         force_symlink_to_file(&target, &symlink_path)
             .with_context(|| format!("Failed to create {} symlink in {}", cmd_name, symlink_path.display()))?;
     }
-    #[cfg(windows)]
-    let bracket_leaf: &str = "[.exe";
-    #[cfg(not(windows))]
-    let bracket_leaf: &str = "[";
-    let bracket_path = crate::dirs::path_join(env_root, &["usr", "bin", bracket_leaf]);
+    let bracket_leaf = applet_symlink_filename("[", pkg_format);
+    let bracket_path = crate::dirs::path_join(env_root, &["usr", "bin", &bracket_leaf]);
     let bracket_target = if let Some(parent) = bracket_path.parent() {
         pathdiff::diff_paths(&epkg_exe, parent).unwrap_or(epkg_exe.clone())
     } else {
