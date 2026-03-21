@@ -1071,8 +1071,9 @@ fn create_common_symlinks(env_root: &Path) -> Result<()> {
                     lfs::create_dir_all(parent)?;
                 }
                 // Use the original target string for the symlink (relative or absolute as specified)
+                // All symlinks in this function point to executables (files), use symlink_to_file
                 log::debug!("  Creating symlink {} -> {}", link_path.display(), target);
-                lfs::symlink(target, &link_path)?;
+                lfs::symlink_to_file(target, &link_path)?;
                 break;
             }
         }
