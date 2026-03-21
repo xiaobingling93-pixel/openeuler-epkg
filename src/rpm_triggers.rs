@@ -19,6 +19,7 @@ const TRIGGER_PRIORITY_MID: u32 = 10_000;
 
 /// Data extracted for modern file triggers processing
 struct ModernTriggerData {
+    pkg_name: String,
     script_contents: Vec<String>,
     type_strings: Vec<String>,
     paths_per_trigger: Vec<Vec<String>>,
@@ -531,10 +532,10 @@ fn convert_trigger_type_int(type_val: u32, is_transaction: bool) -> String {
 
 /// Extract trigger type strings from RPM metadata header for modern triggers
 /// Returns vector of type strings ("in", "un", "postun"), one per trigger
-fn extract_trigger_type_strings(metadata: &rpm::PackageMetadata, type_tag: IndexTag, is_transaction: bool) -> Vec<String> {
+fn extract_trigger_type_strings(metadata: &rpm::PackageMetadata, type_tag: IndexTag, is_transaction: bool, pkg_name: &str) -> Vec<String> {
     // Default type closure
     let default_type = || {
-        log::warn!("Cannot read trigger type tag, using default");
+        log::warn!("Cannot read trigger type tag for package {}, using default", pkg_name);
         default_trigger_type(is_transaction)
     };
 
@@ -1213,6 +1214,9 @@ fn extract_modern_trigger_data(
         return Ok(None);
     }
 
+    // Get package name for logging
+    let pkg_name = metadata.get_name().unwrap_or("unknown").to_string();
+
     // Get script contents (array, one per trigger)
     let script_contents = extract_script_contents(metadata, scripts_tag);
     if script_contents.is_empty() {
@@ -1221,7 +1225,7 @@ fn extract_modern_trigger_data(
     log::debug!("Found {} script(s)", script_contents.len());
 
     // Get trigger type strings (array, one per trigger)
-    let mut type_strings = extract_trigger_type_strings(metadata, type_tag, is_transaction);
+    let mut type_strings = extract_trigger_type_strings(metadata, type_tag, is_transaction, &pkg_name);
     if type_strings.is_empty() {
         return Ok(None);
     }
@@ -1266,6 +1270,7 @@ fn extract_modern_trigger_data(
     let (program_array, flags_option) = extract_program_and_flags(metadata, prog_tag, flags_tag);
 
     Ok(Some(ModernTriggerData {
+        pkg_name,
         script_contents,
         type_strings,
         paths_per_trigger,
@@ -1287,7 +1292,8 @@ fn process_single_modern_trigger(
     let script_content = if i < data.script_contents.len() {
         data.script_contents[i].clone()
     } else {
-        log::warn!("Missing script for trigger index {}, skipping", i);
+        let paths = data.paths_per_trigger.get(i).map(|p| p.join(",")).unwrap_or_default();
+        log::warn!("Missing script for trigger index {} in package {}, paths: [{}], skipping", i, data.pkg_name, paths);
         return Ok(());
     };
 
@@ -1295,7 +1301,8 @@ fn process_single_modern_trigger(
     let type_str = if i < data.type_strings.len() {
         &data.type_strings[i]
     } else {
-        log::warn!("Missing type for trigger index {}, skipping", i);
+        let paths = data.paths_per_trigger.get(i).map(|p| p.join(",")).unwrap_or_default();
+        log::warn!("Missing type for trigger index {} in package {}, paths: [{}], skipping", i, data.pkg_name, paths);
         return Ok(());
     };
 
@@ -1303,7 +1310,8 @@ fn process_single_modern_trigger(
     let (trigger_type, when_str, op_str) = match map_type_to_trigger_details(type_str, is_transaction) {
         Some(details) => details,
         None => {
-            log::warn!("Unknown trigger type: {} at index {}, skipping", type_str, i);
+            let paths = data.paths_per_trigger.get(i).map(|p| p.join(",")).unwrap_or_default();
+            log::warn!("Unknown trigger type: {} at index {} in package {}, paths: [{}], skipping", type_str, i, data.pkg_name, paths);
             return Ok(());
         }
     };
