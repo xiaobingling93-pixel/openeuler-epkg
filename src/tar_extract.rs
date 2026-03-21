@@ -322,20 +322,27 @@ fn calculate_target_path(path: &Path, config: &ExtractConfig) -> Result<PathBuf>
     // Strip leading components from the path
     let stripped_path = strip_path_components(path, config.strip_components);
 
-    // Handle dot files (metadata files starting with ".")
+    // Handle metadata routing:
+    // - Dot files (metadata files starting with ".") go to meta_dir
+    // - For conda packages, "info/*" directory contents also go to meta_dir
     let result = if let Some(ref meta_dir) = config.meta_dir {
+        // Check if this is a dot file
         if let Some(file_name) = stripped_path.file_name() {
             let name_str = file_name.to_string_lossy();
             if name_str.starts_with('.') {
                 // This is a metadata file, place it in meta_dir
-                let file_name_only = stripped_path.file_name().unwrap();
-                meta_dir.join(file_name_only)
-            } else {
-                config.target_dir.join(&stripped_path)
+                return Ok(meta_dir.join(stripped_path));
             }
-        } else {
-            config.target_dir.join(&stripped_path)
         }
+
+        // Check if this is an info/ directory entry (for conda packages)
+        // Route info/* to meta_dir (e.g., info/index.json -> meta_dir/index.json)
+        if stripped_path.starts_with("info") {
+            let relative = stripped_path.strip_prefix("info").unwrap_or(&stripped_path);
+            return Ok(meta_dir.join(relative));
+        }
+
+        config.target_dir.join(&stripped_path)
     } else {
         config.target_dir.join(&stripped_path)
     };
