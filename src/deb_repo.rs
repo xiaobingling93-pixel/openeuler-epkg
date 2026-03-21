@@ -327,12 +327,14 @@ fn try_parse_release_hash_line(ctx: &ReleaseParseCtx, line: &str) -> Option<Repo
     // ------------------------------------------------
 
     let download_location = if ctx.acquire_by_hash {
-        std::path::Path::new(&location)
+        // Build path with forward slashes for URL compatibility
+        // On Windows, Path::join() uses '\' which breaks URLs
+        let parent = std::path::Path::new(&location)
             .parent()
             .unwrap()
-            .join(format!("by-hash/{}/{}", ctx.hash_type, hash))
-            .display()
-            .to_string()
+            .to_str()
+            .unwrap_or("");
+        format!("{}/by-hash/{}/{}", parent, ctx.hash_type, hash)
     } else {
         location.clone()
     };
