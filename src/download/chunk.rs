@@ -335,6 +335,32 @@ use crate::download::file_ops::extract_offset;
 ///
 /// Returns a vector of chunk tasks if chunks were created, empty vector otherwise
 
+/// Next 1 MiB-aligned boundary after `resumed` for master chunk sizing (see `create_chunk_tasks`).
+fn next_chunk_boundary_after_resume(resumed: u64) -> u64 {
+    if resumed == 0 {
+        PGET_CHUNK_SIZE
+    } else if (resumed & PGET_CHUNK_MASK) == 0 {
+        resumed + PGET_CHUNK_SIZE
+    } else {
+        (resumed + PGET_CHUNK_MASK) & !PGET_CHUNK_MASK
+    }
+}
+
+/// Split `remaining_bytes` into full 1 MiB chunks and a remainder, optionally merging a tiny last piece.
+fn split_remaining_into_chunk_sizes(remaining_bytes: u64) -> (u64, u64) {
+    let full_chunks = remaining_bytes / PGET_CHUNK_SIZE;
+    let last_chunk_size = remaining_bytes % PGET_CHUNK_SIZE;
+    if last_chunk_size > 0 && last_chunk_size < CHUNK_MERGE_THRESHOLD {
+        if full_chunks > 0 {
+            (full_chunks - 1, PGET_CHUNK_SIZE + last_chunk_size)
+        } else {
+            (0, last_chunk_size)
+        }
+    } else {
+        (full_chunks, last_chunk_size)
+    }
+}
+
 pub(crate) fn create_chunk_tasks(task: &DownloadTask) -> Result<()> {
     let chunk_count = {
         let chunks_guard = task.chunk_tasks.lock()
@@ -379,14 +405,7 @@ pub(crate) fn create_chunk_tasks(task: &DownloadTask) -> Result<()> {
     // Calculate the next chunk boundary after the chunk start offset. If we are
     // exactly on a 1 MiB boundary we need to move to the _next_ boundary, otherwise we
     // would produce a zero-length master chunk (next_boundary == resumed).
-    let next_boundary = if resumed == 0 {
-        PGET_CHUNK_SIZE
-    } else if (resumed & PGET_CHUNK_MASK) == 0 {
-        resumed + PGET_CHUNK_SIZE
-    } else {
-        // Round up to the next 1 MiB boundary
-        (resumed + PGET_CHUNK_MASK) & !PGET_CHUNK_MASK
-    };
+    let next_boundary = next_chunk_boundary_after_resume(resumed);
 
     // Validate next_boundary calculation to prevent 416 errors
     if next_boundary <= resumed {
@@ -425,39 +444,18 @@ pub(crate) fn create_chunk_tasks(task: &DownloadTask) -> Result<()> {
     // Starting offset for additional chunks is the next boundary
     let offset = next_boundary;
 
-    // Create chunk tasks for the remaining parts of the file
-    let mut chunk_tasks = Vec::new();
-
-    // Calculate the number of full chunks we'll have
     let remaining_bytes = file_size_val - offset;
-    let full_chunks = remaining_bytes / PGET_CHUNK_SIZE;
-    let last_chunk_size = remaining_bytes % PGET_CHUNK_SIZE;
+    let (full_chunks, last_chunk_size) = split_remaining_into_chunk_sizes(remaining_bytes);
 
-    // If the last chunk would be too small, merge it with the previous chunk
-    let (full_chunks, last_chunk_size) = if last_chunk_size > 0 && last_chunk_size < CHUNK_MERGE_THRESHOLD {
-        if full_chunks > 0 {
-            // Merge the small last chunk with the last full chunk
-            (full_chunks - 1, PGET_CHUNK_SIZE + last_chunk_size)
-        } else {
-            // If this is the only chunk, just use it as is
-            (0, last_chunk_size)
-        }
-    } else {
-        (full_chunks, last_chunk_size)
-    };
-
-    // Create all full chunks
+    let mut chunk_tasks = Vec::new();
     for i in 0..full_chunks {
         let chunk_offset = offset + (i as u64 * PGET_CHUNK_SIZE);
-
         let chunk_task = task.create_chunk_task(chunk_offset, PGET_CHUNK_SIZE);
         chunk_tasks.push(chunk_task);
     }
 
-    // Handle the last chunk if there are remaining bytes
     if last_chunk_size > 0 {
         let chunk_offset = offset + (full_chunks as u64 * PGET_CHUNK_SIZE);
-
         let chunk_task = task.create_chunk_task(chunk_offset, last_chunk_size);
         chunk_tasks.push(chunk_task);
     }
@@ -500,27 +498,37 @@ fn add_chunk_tasks(parent_task: &DownloadTask, chunk_tasks: Vec<Arc<DownloadTask
     Ok(())
 }
 
-fn validate_chunk_tasks(parent_task: &DownloadTask, chunk_tasks: &Vec<Arc<DownloadTask>>, chunk_status: ChunkStatus) -> Result<()> {
-    let mut error_messages = Vec::new();
-
-    // Debug dump of input parameters
+fn validate_chunk_tasks_print_header(
+    parent_task: &DownloadTask,
+    chunk_tasks: &[Arc<DownloadTask>],
+    chunk_status: &ChunkStatus,
+) {
     println!("add_chunk_tasks called with:");
-    println!("  parent_task: {} (is_master: {}, is_chunk: {})",
-                parent_task.url, parent_task.is_master_task(), parent_task.is_chunk_task());
+    println!(
+        "  parent_task: {} (is_master: {}, is_chunk: {})",
+        parent_task.url,
+        parent_task.is_master_task(),
+        parent_task.is_chunk_task()
+    );
     println!("  chunk_tasks count: {}", chunk_tasks.len());
     println!("  requested chunk_status: {:?}", chunk_status);
     println!("  parent_task current chunk_status: {:?}", parent_task.get_chunk_status());
     println!("  parent_task chunk_path: {}", parent_task.chunk_path.display());
     println!("  parent_task final_path: {}", parent_task.final_path.display());
+}
 
-    // Show on-disk file size for parent task if chunk_path exists
+fn validate_parent_chunk_path_on_disk(parent_task: &DownloadTask, error_messages: &mut Vec<String>) {
     if parent_task.chunk_path.exists() {
         match std::fs::metadata(&parent_task.chunk_path) {
             Ok(metadata) => {
                 let size = metadata.len();
                 let chunk_size = parent_task.chunk_size.load(Ordering::Relaxed);
-                println!("  parent_task on-disk size: {} bytes (chunk_size: {} bytes, {}% of chunk_size)",
-                         size, chunk_size, (size as f64 / chunk_size as f64 * 100.0) as u64);
+                println!(
+                    "  parent_task on-disk size: {} bytes (chunk_size: {} bytes, {}% of chunk_size)",
+                    size,
+                    chunk_size,
+                    (size as f64 / chunk_size as f64 * 100.0) as u64
+                );
 
                 // Validate size doesn't exceed chunk size
                 if size > chunk_size && chunk_size > 0 {
@@ -537,42 +545,45 @@ fn validate_chunk_tasks(parent_task: &DownloadTask, chunk_tasks: &Vec<Arc<Downlo
             }
         }
     }
+}
 
-    // Validation 1: Check if chunk_tasks is empty
-    if chunk_tasks.is_empty() {
-        println!("add_chunk_tasks: chunk_tasks is empty, returning early");
-        return Ok(());
-    }
-
-    // Validation 2: Validate each chunk task
+fn validate_each_chunk_task_properties(
+    parent_task: &DownloadTask,
+    chunk_tasks: &[Arc<DownloadTask>],
+    error_messages: &mut Vec<String>,
+) {
     for (i, chunk_task) in chunk_tasks.iter().enumerate() {
         let chunk_offset = chunk_task.chunk_offset.load(Ordering::Relaxed);
         let chunk_size = chunk_task.chunk_size.load(Ordering::Relaxed);
-        let current_size = chunk_task.chunk_path.metadata()
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let current_size = chunk_task.chunk_path.metadata().map(|m| m.len()).unwrap_or(0);
 
-        // Get the chunk name for display
-        let display_name = chunk_task.chunk_path.file_name()
+        let display_name = chunk_task
+            .chunk_path
+            .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("<invalid-path>");
 
-        println!("  Validating chunk {}: {} (offset: {}, size: {}, current: {} bytes) for parent {}",
-                   i, display_name,
-                   chunk_offset,
-                   chunk_size,
-                   current_size,
-                   parent_task.chunk_path.display());
+        println!(
+            "  Validating chunk {}: {} (offset: {}, size: {}, current: {} bytes) for parent {}",
+            i,
+            display_name,
+            chunk_offset,
+            chunk_size,
+            current_size,
+            parent_task.chunk_path.display()
+        );
 
-        // Ensure chunk tasks are actually chunk tasks
         if !chunk_task.is_chunk_task() {
-            let error_msg = format!("add_chunk_tasks: chunk {} is not a chunk task (is_master: {}, is_chunk: {})",
-                                   i, chunk_task.is_master_task(), chunk_task.is_chunk_task());
+            let error_msg = format!(
+                "add_chunk_tasks: chunk {} is not a chunk task (is_master: {}, is_chunk: {})",
+                i,
+                chunk_task.is_master_task(),
+                chunk_task.is_chunk_task()
+            );
             log::error!("{}", error_msg);
             error_messages.push(error_msg);
         }
 
-        // Validate size doesn't exceed chunk size
         if current_size > chunk_size && chunk_size > 0 {
             let error_msg = format!(
                 "chunk {} on-disk size {} bytes exceeds chunk_size {} bytes",
@@ -582,14 +593,12 @@ fn validate_chunk_tasks(parent_task: &DownloadTask, chunk_tasks: &Vec<Arc<Downlo
             error_messages.push(error_msg);
         }
 
-        // Validate chunk offset and size are reasonable
         if chunk_size == 0 {
             let error_msg = format!("add_chunk_tasks: chunk {} has zero size", i);
             log::error!("{}", error_msg);
             error_messages.push(error_msg);
         }
 
-        // Validate chunk path format
         let chunk_path_str = chunk_task.chunk_path.to_string_lossy();
         if !chunk_path_str.contains(".part-O") {
             let error_msg = format!("add_chunk_tasks: chunk {} has invalid path format: {}", i, chunk_path_str);
@@ -597,35 +606,40 @@ fn validate_chunk_tasks(parent_task: &DownloadTask, chunk_tasks: &Vec<Arc<Downlo
             error_messages.push(error_msg);
         }
     }
+}
 
-    // Validation 3: Check for duplicate offsets
-    let mut offsets: Vec<u64> = chunk_tasks.iter()
+fn validate_chunk_duplicate_offsets(chunk_tasks: &[Arc<DownloadTask>], error_messages: &mut Vec<String>) {
+    let mut offsets: Vec<u64> = chunk_tasks
+        .iter()
         .map(|ct| ct.chunk_offset.load(Ordering::Relaxed))
         .collect();
     offsets.sort();
     for i in 1..offsets.len() {
-        if offsets[i] == offsets[i-1] {
+        if offsets[i] == offsets[i - 1] {
             let error_msg = format!("add_chunk_tasks: duplicate chunk offset detected: {}", offsets[i]);
             log::error!("{}", error_msg);
             error_messages.push(error_msg);
         }
     }
+}
 
-    // Validation 4: Check for overlapping chunks and gaps (including parent task range)
-    let mut sorted_chunks: Vec<_> = chunk_tasks.iter().collect();
-    sorted_chunks.sort_by_key(|ct| ct.chunk_offset.load(Ordering::Relaxed));
+fn validate_chunk_adjacency_and_parent_range(
+    parent_task: &DownloadTask,
+    sorted_chunks: &[&Arc<DownloadTask>],
+    parent_offset: u64,
+    parent_end: u64,
+    error_messages: &mut Vec<String>,
+) {
+    println!(
+        "Parent task range: [{}, {}) bytes ({} bytes) for {}",
+        parent_offset,
+        parent_end,
+        parent_task.chunk_size.load(Ordering::Relaxed),
+        parent_task.chunk_path.display()
+    );
 
-    // Get parent task's chunk range
-    let parent_offset = parent_task.chunk_offset.load(Ordering::Relaxed);
-    let parent_size = parent_task.chunk_size.load(Ordering::Relaxed);
-    let parent_end = parent_offset + parent_size;
-
-    println!("Parent task range: [{}, {}) bytes ({} bytes) for {}",
-             parent_offset, parent_end, parent_size, parent_task.chunk_path.display());
-
-    // Check for overlapping chunks among new chunks
     for i in 1..sorted_chunks.len() {
-        let prev_chunk = sorted_chunks[i-1];
+        let prev_chunk = sorted_chunks[i - 1];
         let curr_chunk = sorted_chunks[i];
 
         let prev_offset = prev_chunk.chunk_offset.load(Ordering::Relaxed);
@@ -634,61 +648,84 @@ fn validate_chunk_tasks(parent_task: &DownloadTask, chunk_tasks: &Vec<Arc<Downlo
 
         let prev_end = prev_offset + prev_size;
 
-        // Check for overlapping chunks
         if curr_offset < prev_end {
-            let error_msg = format!("add_chunk_tasks: overlapping chunks detected: chunk at offset {} ends at {}, but next chunk starts at {}",
-                                   prev_offset, prev_end, curr_offset);
+            let error_msg = format!(
+                "add_chunk_tasks: overlapping chunks detected: chunk at offset {} ends at {}, but next chunk starts at {}",
+                prev_offset, prev_end, curr_offset
+            );
             log::error!("{}", error_msg);
             error_messages.push(error_msg);
         }
 
-        // Check for gaps (optional - depends on requirements)
         if curr_offset > prev_end {
-            log::warn!("add_chunk_tasks: gap detected between chunks: chunk at offset {} ends at {}, but next chunk starts at {} (gap: {} bytes)",
-                      prev_offset, prev_end, curr_offset, curr_offset - prev_end);
+            log::warn!(
+                "add_chunk_tasks: gap detected between chunks: chunk at offset {} ends at {}, but next chunk starts at {} (gap: {} bytes)",
+                prev_offset,
+                prev_end,
+                curr_offset,
+                curr_offset - prev_end
+            );
         }
     }
 
-    // Check for overlap with parent task range
-    if !sorted_chunks.is_empty() {
-        let first_chunk_offset = sorted_chunks[0].chunk_offset.load(Ordering::Relaxed);
-        let last_chunk = sorted_chunks.last().unwrap();
-        let last_chunk_offset = last_chunk.chunk_offset.load(Ordering::Relaxed);
-        let last_chunk_size = last_chunk.chunk_size.load(Ordering::Relaxed);
-        let last_chunk_end = last_chunk_offset + last_chunk_size;
-
-        // Check if new chunks overlap with parent task range
-        if first_chunk_offset < parent_end && last_chunk_end > parent_offset {
-            let error_msg = format!("add_chunk_tasks: new chunks overlap with parent task range: parent [{}, {}), chunks [{}, {})",
-                                   parent_offset, parent_end, first_chunk_offset, last_chunk_end);
-            log::error!("{}", error_msg);
-            error_messages.push(error_msg);
-        }
-
-        // Check for gaps between parent task and new chunks
-        if first_chunk_offset > parent_end {
-            log::warn!("add_chunk_tasks: gap detected between parent task and new chunks: parent ends at {}, but first chunk starts at {} (gap: {} bytes) for {}",
-                      parent_end, first_chunk_offset, first_chunk_offset - parent_end, parent_task.chunk_path.display());
-        } else if last_chunk_end < parent_offset {
-            log::warn!("add_chunk_tasks: gap detected between new chunks and parent task: last chunk ends at {}, but parent starts at {} (gap: {} bytes) for {}",
-                      last_chunk_end, parent_offset, parent_offset - last_chunk_end, parent_task.chunk_path.display());
-        }
+    if sorted_chunks.is_empty() {
+        return;
     }
 
-    // Validation 5: Validate parent task and chunk size constraints
-    let parent_size = parent_task.chunk_size.load(Ordering::Relaxed);
-    let resumed_size = parent_task.resumed_bytes.load(Ordering::Relaxed);
-    let file_size = parent_task.file_size.load(Ordering::Relaxed);
+    let first_chunk_offset = sorted_chunks[0].chunk_offset.load(Ordering::Relaxed);
+    let last_chunk = sorted_chunks.last().unwrap();
+    let last_chunk_offset = last_chunk.chunk_offset.load(Ordering::Relaxed);
+    let last_chunk_size = last_chunk.chunk_size.load(Ordering::Relaxed);
+    let last_chunk_end = last_chunk_offset + last_chunk_size;
 
-    // Check that parent size >= resumed size
-    if parent_size < resumed_size {
-        let error_msg = format!("add_chunk_tasks: parent size {} < resumed size {} - parent task cannot be smaller than what's already downloaded for {}",
-                               parent_size, resumed_size, parent_task.chunk_path.display());
+    if first_chunk_offset < parent_end && last_chunk_end > parent_offset {
+        let error_msg = format!(
+            "add_chunk_tasks: new chunks overlap with parent task range: parent [{}, {}), chunks [{}, {})",
+            parent_offset, parent_end, first_chunk_offset, last_chunk_end
+        );
         log::error!("{}", error_msg);
         error_messages.push(error_msg);
     }
 
-    // Check that chunks don't extend beyond file size
+    if first_chunk_offset > parent_end {
+        log::warn!(
+            "add_chunk_tasks: gap detected between parent task and new chunks: parent ends at {}, but first chunk starts at {} (gap: {} bytes) for {}",
+            parent_end,
+            first_chunk_offset,
+            first_chunk_offset - parent_end,
+            parent_task.chunk_path.display()
+        );
+    } else if last_chunk_end < parent_offset {
+        log::warn!(
+            "add_chunk_tasks: gap detected between new chunks and parent task: last chunk ends at {}, but parent starts at {} (gap: {} bytes) for {}",
+            last_chunk_end,
+            parent_offset,
+            parent_offset - last_chunk_end,
+            parent_task.chunk_path.display()
+        );
+    }
+}
+
+fn validate_parent_resumed_and_file_extent(
+    parent_task: &DownloadTask,
+    sorted_chunks: &[&Arc<DownloadTask>],
+    error_messages: &mut Vec<String>,
+) {
+    let parent_size = parent_task.chunk_size.load(Ordering::Relaxed);
+    let resumed_size = parent_task.resumed_bytes.load(Ordering::Relaxed);
+    let file_size = parent_task.file_size.load(Ordering::Relaxed);
+
+    if parent_size < resumed_size {
+        let error_msg = format!(
+            "add_chunk_tasks: parent size {} < resumed size {} - parent task cannot be smaller than what's already downloaded for {}",
+            parent_size,
+            resumed_size,
+            parent_task.chunk_path.display()
+        );
+        log::error!("{}", error_msg);
+        error_messages.push(error_msg);
+    }
+
     if !sorted_chunks.is_empty() && file_size > 0 {
         let last_chunk = sorted_chunks.last().unwrap();
         let last_chunk_offset = last_chunk.chunk_offset.load(Ordering::Relaxed);
@@ -696,19 +733,28 @@ fn validate_chunk_tasks(parent_task: &DownloadTask, chunk_tasks: &Vec<Arc<Downlo
         let last_chunk_end = last_chunk_offset + last_chunk_size;
 
         if last_chunk_end > file_size {
-            let error_msg = format!("add_chunk_tasks: last chunk extends beyond file size: chunk [{}, {}) > file size {}",
-                                   last_chunk_offset, last_chunk_end, file_size);
+            let error_msg = format!(
+                "add_chunk_tasks: last chunk extends beyond file size: chunk [{}, {}) > file size {}",
+                last_chunk_offset, last_chunk_end, file_size
+            );
             log::error!("{}", error_msg);
             error_messages.push(error_msg);
         }
     }
+}
 
-    // Validation 6: Check chunk status transitions and prevent adding when already has chunks
+fn validate_chunk_status_for_add(
+    parent_task: &DownloadTask,
+    chunk_status: ChunkStatus,
+    error_messages: &mut Vec<String>,
+) {
     let current_status = parent_task.get_chunk_status();
 
-    // Prevent adding chunks if already has chunks (unless it's the same type and we want to add more)
     if matches!(current_status, ChunkStatus::HasBeforehandChunk | ChunkStatus::HasOndemandChunk) {
-        let error_msg = format!("add_chunk_tasks: parent task already has chunks (status: {:?}), cannot add more", current_status);
+        let error_msg = format!(
+            "add_chunk_tasks: parent task already has chunks (status: {:?}), cannot add more",
+            current_status
+        );
         log::error!("{}", error_msg);
         error_messages.push(error_msg);
     }
@@ -721,13 +767,55 @@ fn validate_chunk_tasks(parent_task: &DownloadTask, chunk_tasks: &Vec<Arc<Downlo
     };
 
     if !valid_transitions.contains(&chunk_status) {
-        let error_msg = format!("add_chunk_tasks: invalid chunk status transition from {:?} to {:?}",
-                               current_status, chunk_status);
+        let error_msg = format!(
+            "add_chunk_tasks: invalid chunk status transition from {:?} to {:?}",
+            current_status, chunk_status
+        );
         log::error!("{}", error_msg);
         error_messages.push(error_msg);
     }
+}
 
-    // Return all collected errors if any exist
+fn validate_chunk_tasks(parent_task: &DownloadTask, chunk_tasks: &Vec<Arc<DownloadTask>>, chunk_status: ChunkStatus) -> Result<()> {
+    let mut error_messages = Vec::new();
+
+    validate_chunk_tasks_print_header(parent_task, chunk_tasks, &chunk_status);
+    validate_parent_chunk_path_on_disk(parent_task, &mut error_messages);
+
+    // Validation 1: Check if chunk_tasks is empty
+    if chunk_tasks.is_empty() {
+        println!("add_chunk_tasks: chunk_tasks is empty, returning early");
+        return Ok(());
+    }
+
+    // Validation 2: Validate each chunk task
+    validate_each_chunk_task_properties(parent_task, chunk_tasks, &mut error_messages);
+
+    // Validation 3: Check for duplicate offsets
+    validate_chunk_duplicate_offsets(chunk_tasks, &mut error_messages);
+
+    // Validation 4: Check for overlapping chunks and gaps (including parent task range)
+    let mut sorted_chunks: Vec<_> = chunk_tasks.iter().collect();
+    sorted_chunks.sort_by_key(|ct| ct.chunk_offset.load(Ordering::Relaxed));
+
+    let parent_offset = parent_task.chunk_offset.load(Ordering::Relaxed);
+    let parent_size = parent_task.chunk_size.load(Ordering::Relaxed);
+    let parent_end = parent_offset + parent_size;
+
+    validate_chunk_adjacency_and_parent_range(
+        parent_task,
+        &sorted_chunks,
+        parent_offset,
+        parent_end,
+        &mut error_messages,
+    );
+
+    // Validation 5: Validate parent task and chunk size constraints
+    validate_parent_resumed_and_file_extent(parent_task, &sorted_chunks, &mut error_messages);
+
+    // Validation 6: Check chunk status transitions and prevent adding when already has chunks
+    validate_chunk_status_for_add(parent_task, chunk_status, &mut error_messages);
+
     if !error_messages.is_empty() {
         let combined_error = error_messages.join("; ");
         return Err(eyre!(combined_error));
