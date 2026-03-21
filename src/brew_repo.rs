@@ -477,6 +477,64 @@ fn extract_json_array_from_jws(data: &[u8]) -> Result<Vec<u8>> {
     Ok(data.to_vec())
 }
 
+fn brew_package_entry_lines(package: &Package) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push(format!("pkgname: {}", package.pkgname));
+    lines.push(format!("version: {}", package.version));
+    lines.push(format!("arch: {}", package.arch));
+    if let Some(ref tag) = package.tag {
+        lines.push(format!("tag: {}", tag));
+    }
+    lines.push(format!("location: {}", package.location));
+    if let Some(ref sha256) = package.sha256sum {
+        lines.push(format!("sha256: {}", sha256));
+    }
+    if !package.requires.is_empty() {
+        lines.push(format!("requires: {}", package.requires.join(", ")));
+    }
+    if !package.build_requires.is_empty() {
+        lines.push(format!("buildRequires: {}", package.build_requires.join(", ")));
+    }
+    if !package.check_requires.is_empty() {
+        lines.push(format!("checkRequires: {}", package.check_requires.join(", ")));
+    }
+    if !package.recommends.is_empty() {
+        lines.push(format!("recommends: {}", package.recommends.join(", ")));
+    }
+    if !package.suggests.is_empty() {
+        lines.push(format!("suggests: {}", package.suggests.join(", ")));
+    }
+    if !package.conflicts.is_empty() {
+        lines.push(format!("conflicts: {}", package.conflicts.join(", ")));
+    }
+    if !package.provides.is_empty() {
+        lines.push(format!("provides: {}", package.provides.join(", ")));
+    }
+    if !package.summary.is_empty() {
+        lines.push(format!("summary: {}", package.summary));
+    }
+    if !package.homepage.is_empty() {
+        lines.push(format!("homepage: {}", package.homepage));
+    }
+    if let Some(ref license) = package.license {
+        lines.push(format!("license: {}", license));
+    }
+    if let Some(ref caveats) = package.caveats {
+        let caveats_lines: Vec<String> = caveats.lines().enumerate().map(|(i, line)| {
+            if i == 0 {
+                format!("caveats: {}", line)
+            } else {
+                format!(" {}", line)
+            }
+        }).collect();
+        lines.push(caveats_lines.join("\n"));
+    }
+    if let Some(ref service_json) = package.service_json {
+        lines.push(format!("serviceJson: {}", service_json));
+    }
+    lines
+}
+
 /// Process brew formulas and convert to packages.txt format
 fn process_brew_formulas(repo_dir: &PathBuf, revise: &RepoReleaseItem, formulas: Vec<BrewFormula>) -> Result<PackagesFileInfo> {
     use std::io::Write;
@@ -517,66 +575,7 @@ fn process_brew_formulas(repo_dir: &PathBuf, revise: &RepoReleaseItem, formulas:
                     .push(pkgname.clone());
             }
 
-            // Write package entry in packages.txt format
-            // Build the output string with all available fields
-            let mut lines = Vec::new();
-            lines.push(format!("pkgname: {}", package.pkgname));
-            lines.push(format!("version: {}", package.version));
-            lines.push(format!("arch: {}", package.arch));
-            if let Some(ref tag) = package.tag {
-                lines.push(format!("tag: {}", tag));
-            }
-            lines.push(format!("location: {}", package.location));
-            if let Some(ref sha256) = package.sha256sum {
-                lines.push(format!("sha256: {}", sha256));
-            }
-            if !package.requires.is_empty() {
-                lines.push(format!("requires: {}", package.requires.join(", ")));
-            }
-            if !package.build_requires.is_empty() {
-                lines.push(format!("buildRequires: {}", package.build_requires.join(", ")));
-            }
-            if !package.check_requires.is_empty() {
-                lines.push(format!("checkRequires: {}", package.check_requires.join(", ")));
-            }
-            if !package.recommends.is_empty() {
-                lines.push(format!("recommends: {}", package.recommends.join(", ")));
-            }
-            if !package.suggests.is_empty() {
-                lines.push(format!("suggests: {}", package.suggests.join(", ")));
-            }
-            if !package.conflicts.is_empty() {
-                lines.push(format!("conflicts: {}", package.conflicts.join(", ")));
-            }
-            // Write provides (includes pkgname, aliases, and oldnames)
-            if !package.provides.is_empty() {
-                lines.push(format!("provides: {}", package.provides.join(", ")));
-            }
-            if !package.summary.is_empty() {
-                lines.push(format!("summary: {}", package.summary));
-            }
-            if !package.homepage.is_empty() {
-                lines.push(format!("homepage: {}", package.homepage));
-            }
-            if let Some(ref license) = package.license {
-                lines.push(format!("license: {}", license));
-            }
-            if let Some(ref caveats) = package.caveats {
-                // Write multi-line caveats with space-prefixed continuation lines
-                let caveats_lines: Vec<String> = caveats.lines().enumerate().map(|(i, line)| {
-                    if i == 0 {
-                        format!("caveats: {}", line)
-                    } else {
-                        format!(" {}", line) // continuation line starts with space
-                    }
-                }).collect();
-                lines.push(caveats_lines.join("\n"));
-            }
-            if let Some(ref service_json) = package.service_json {
-                // Write service definition as single-line JSON
-                lines.push(format!("serviceJson: {}", service_json));
-            }
-
+            let lines = brew_package_entry_lines(&package);
             let pkg_block = lines.join("\n") + "\n\n"; // End with blank line between packages
 
             file.write_all(pkg_block.as_bytes())
