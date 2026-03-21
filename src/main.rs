@@ -90,7 +90,7 @@ mod dpkg_db;
 mod rpm_triggers;
 #[cfg(target_os = "linux")]
 mod lua;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod risks;
 mod run;
 #[cfg(target_os = "linux")]

@@ -248,20 +248,9 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     lfs::create_dir_all(&download_cache)?;
 
     // Get filesystem info for all mount points and store in plan
-    #[cfg(unix)]
-    {
-        plan.env_root_fs = crate::risks::get_filesystem_info(&env_root);
-    }
-    #[cfg(not(unix))]
-    let _ = env_root; // suppress unused warning on non-Unix platforms
-    #[cfg(unix)]
-    {
-        plan.store_root_fs = crate::risks::get_filesystem_info(&store_root);
-    }
-    #[cfg(unix)]
-    {
-        plan.download_cache_fs = crate::risks::get_filesystem_info(&download_cache);
-    }
+    plan.env_root_fs = crate::risks::get_filesystem_info(&env_root);
+    plan.store_root_fs = crate::risks::get_filesystem_info(&store_root);
+    plan.download_cache_fs = crate::risks::get_filesystem_info(&download_cache);
 
     // Copy link type from EnvConfig to InstallationPlan
     // Downgrade hardlink to symlink if store and env are on different filesystems

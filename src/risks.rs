@@ -126,7 +126,6 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
             let result = GetVolumeInformationW(
                 windows::core::PCWSTR(path_wide.as_ptr()),
                 None,
-                None,
                 Some(&mut serial_number),
                 None,
                 None,

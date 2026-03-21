@@ -525,6 +525,12 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
         }
 
         // Skip files under info/ directory (metadata files that are commonly duplicated)
+        // Normalize path separators to forward slashes for cross-platform consistency
+        // On Windows, to_string_lossy() returns backslash separators which would be
+        // incorrectly escaped by escape_mtree_path() and cause path resolution issues
+        #[cfg(windows)]
+        let relative_path_str = relative_path.to_string_lossy().replace('\\', "/");
+        #[cfg(not(windows))]
         let relative_path_str = relative_path.to_string_lossy().to_string();
         if relative_path_str.starts_with("info/") {
             continue;
