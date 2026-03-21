@@ -401,6 +401,105 @@ pub fn detect_package_format(package_file: &Path) -> Result<PackageFormat> {
         .wrap_err_with(|| format!("Unknown package format for file: {}", file_name))
 }
 
+/// One mtree line (including trailing newline) for a path under the package `fs/` tree.
+fn filelist_mtree_line_for_entry(path: &Path, relative_path_str: &str) -> Result<String> {
+    let metadata = lfs::symlink_metadata(path)?;
+    let file_type = metadata.file_type();
+
+    let mut attrs = Vec::new();
+
+    // File type
+    if file_type.is_file() {
+        attrs.push("type=file".to_string());
+
+        // Add mode if not default (644)
+        #[cfg(unix)]
+        {
+            let mode = metadata.permissions().mode() & 0o777;
+            if mode != 0o644 {
+                attrs.push(format!("mode={:o}", mode));
+            }
+        }
+
+        // Add SHA256 hash for regular files
+        if metadata.len() > 0 {
+            let hash = calculate_file_sha256(path)
+                .wrap_err_with(|| format!("Failed to calculate SHA256 hash for: {}", path.display()))?;
+            attrs.push(format!("sha256={}", hash));
+        }
+    } else if file_type.is_dir() {
+        attrs.push("type=dir".to_string());
+
+        // Add mode if not default (755)
+        #[cfg(unix)]
+        {
+            let mode = metadata.permissions().mode() & 0o777;
+            if mode != 0o755 {
+                attrs.push(format!("mode={:o}", mode));
+            }
+        }
+    } else if file_type.is_symlink() {
+        attrs.push("type=link".to_string());
+
+        // Add link target
+        if let Ok(target) = fs::read_link(path) {
+            let target_str = target.to_string_lossy();
+            // Note: mtree specification is ambiguous about whether link targets should be escaped.
+            // While pathnames require escaping of backslashes and non-printable ASCII,
+            // some mtree implementations allow unescaped spaces in link targets.
+            // We follow the pathname escaping rules for consistency.
+            // IMPORTANT: Since we don't escape spaces (0x20), link targets containing spaces
+            // will produce unparseable mtree output (spaces separate tokens in mtree format).
+            // Link targets with spaces are effectively not supported by this implementation.
+            // Alternative: escape spaces as \040 would support link targets with spaces,
+            // but violates the mtree specification.
+            attrs.push(format!("link={}", escape_mtree_path(&target_str)));
+        }
+    } else {
+        // Handle special files
+        #[cfg(unix)]
+        {
+            if metadata.file_type().is_char_device() {
+                attrs.push("type=char".to_string());
+            } else if metadata.file_type().is_block_device() {
+                attrs.push("type=block".to_string());
+            } else if metadata.file_type().is_fifo() {
+                attrs.push("type=fifo".to_string());
+            } else if metadata.file_type().is_socket() {
+                attrs.push("type=socket".to_string());
+            }
+        }
+    }
+
+    // Add owner/group if not root
+    #[cfg(unix)]
+    {
+        let uid = metadata.uid();
+        let gid = metadata.gid();
+        let euid = unistd::geteuid();
+        let egid = unistd::getegid();
+
+        if uid != 0 && uid != euid.as_raw() {
+            if let Ok(username) = userdb::get_username_by_uid(uid, None) {
+                attrs.push(format!("uname={}", username));
+            }
+        }
+
+        if gid != 0 && gid != egid.as_raw() {
+            if let Ok(groupname) = userdb::get_groupname_by_gid(gid, None) {
+                attrs.push(format!("gname={}", groupname));
+            }
+        }
+    }
+
+    let attrs_str = attrs.join(" ");
+    let mut escaped_path = escape_mtree_path(relative_path_str);
+    if file_type.is_dir() {
+        escaped_path.push('/');
+    }
+    Ok(format!("{} {}\n", escaped_path, attrs_str))
+}
+
 /// Creates filelist.txt in mtree format from the filesystem layout
 pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
@@ -431,104 +530,7 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
             continue;
         }
 
-        let metadata = lfs::symlink_metadata(path)?;
-        let file_type = metadata.file_type();
-
-        // Build attributes string
-        let mut attrs = Vec::new();
-
-        // File type
-        if file_type.is_file() {
-            attrs.push("type=file".to_string());
-
-            // Add mode if not default (644)
-            #[cfg(unix)]
-            {
-                let mode = metadata.permissions().mode() & 0o777;
-                if mode != 0o644 {
-                    attrs.push(format!("mode={:o}", mode));
-                }
-            }
-
-            // Add SHA256 hash for regular files
-            if metadata.len() > 0 {
-                let hash = calculate_file_sha256(path)
-                    .wrap_err_with(|| format!("Failed to calculate SHA256 hash for: {}", path.display()))?;
-                attrs.push(format!("sha256={}", hash));
-            }
-        } else if file_type.is_dir() {
-            attrs.push("type=dir".to_string());
-
-
-            // Add mode if not default (755)
-            #[cfg(unix)]
-            {
-                let mode = metadata.permissions().mode() & 0o777;
-                if mode != 0o755 {
-                    attrs.push(format!("mode={:o}", mode));
-                }
-            }
-        } else if file_type.is_symlink() {
-            attrs.push("type=link".to_string());
-
-            // Add link target
-            if let Ok(target) = fs::read_link(path) {
-                let target_str = target.to_string_lossy();
-                // Note: mtree specification is ambiguous about whether link targets should be escaped.
-                // While pathnames require escaping of backslashes and non-printable ASCII,
-                // some mtree implementations allow unescaped spaces in link targets.
-                // We follow the pathname escaping rules for consistency.
-                // IMPORTANT: Since we don't escape spaces (0x20), link targets containing spaces
-                // will produce unparseable mtree output (spaces separate tokens in mtree format).
-                // Link targets with spaces are effectively not supported by this implementation.
-                // Alternative: escape spaces as \040 would support link targets with spaces,
-                // but violates the mtree specification.
-                attrs.push(format!("link={}", escape_mtree_path(&target_str)));
-            }
-        } else {
-            // Handle special files
-            #[cfg(unix)]
-            {
-                if metadata.file_type().is_char_device() {
-                    attrs.push("type=char".to_string());
-                } else if metadata.file_type().is_block_device() {
-                    attrs.push("type=block".to_string());
-                } else if metadata.file_type().is_fifo() {
-                    attrs.push("type=fifo".to_string());
-                } else if metadata.file_type().is_socket() {
-                    attrs.push("type=socket".to_string());
-                }
-            }
-        }
-
-        // Add owner/group if not root
-        #[cfg(unix)]
-        {
-            let uid = metadata.uid();
-            let gid = metadata.gid();
-            let euid = unistd::geteuid();
-            let egid = unistd::getegid();
-
-            if uid != 0 && uid != euid.as_raw() {
-                if let Ok(username) = userdb::get_username_by_uid(uid, None) {
-                    attrs.push(format!("uname={}", username));
-                }
-            }
-
-            if gid != 0 && gid != egid.as_raw() {
-                if let Ok(groupname) = userdb::get_groupname_by_gid(gid, None) {
-                    attrs.push(format!("gname={}", groupname));
-                }
-            }
-        }
-
-        // Write entry to filelist
-        let attrs_str = attrs.join(" ");
-        let mut escaped_path = escape_mtree_path(&relative_path_str);
-        if file_type.is_dir() {
-            escaped_path.push('/');
-        }
-        output.push_str(&format!("{} {}\n", escaped_path, attrs_str));
+        output.push_str(&filelist_mtree_line_for_entry(path, &relative_path_str)?);
     }
 
     lfs::write(&filelist_path, output)?;

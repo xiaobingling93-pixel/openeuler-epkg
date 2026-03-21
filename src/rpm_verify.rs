@@ -414,6 +414,155 @@ fn handle_directory_mismatch(
     }
 }
 
+fn run_rpm2archive_tar_pipeline(rpm_file_path: &Path, official_outdir_path: &Path) -> Result<()> {
+    let mut rpm2archive_cmd = Command::new("rpm2archive")
+        .arg(rpm_file_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .wrap_err_with(|| format!("Failed to spawn rpm2archive for {}", rpm_file_path.display()))?;
+
+    let rpm2archive_stdout = rpm2archive_cmd
+        .stdout
+        .take()
+        .ok_or_else(|| eyre!("Failed to capture stdout from rpm2archive"))?;
+
+    let tar_cmd = Command::new("tar")
+        .arg("-xzf")
+        .arg("-")
+        .arg("-C")
+        .arg(official_outdir_path)
+        .stdin(rpm2archive_stdout)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .wrap_err("Failed to execute tar command")?;
+
+    let tar_output = tar_cmd.wait_with_output().wrap_err("Failed to wait for tar process")?;
+    let rpm2archive_output = rpm2archive_cmd
+        .wait_with_output()
+        .wrap_err("Failed to wait for rpm2archive process")?;
+
+    if !tar_output.status.success() {
+        let tar_stderr_str = String::from_utf8_lossy(&tar_output.stderr);
+        log::error!("tar command failed with status: {}. Stderr:\n{}", tar_output.status, tar_stderr_str);
+        if !rpm2archive_output.status.success() {
+            let rpm2archive_stderr_str = String::from_utf8_lossy(&rpm2archive_output.stderr);
+            log::error!(
+                "rpm2archive also failed with status: {}. Stderr:\n{}",
+                rpm2archive_output.status, rpm2archive_stderr_str
+            );
+        }
+        return Err(eyre!(
+            "rpm2archive | tar pipeline failed. tar exit: {}, rpm2archive exit: {}. Official dir: {}",
+            tar_output.status,
+            rpm2archive_output.status,
+            official_outdir_path.display()
+        ));
+    }
+
+    if !rpm2archive_output.status.success() {
+        let rpm2archive_stderr_str = String::from_utf8_lossy(&rpm2archive_output.stderr);
+
+        if rpm2archive_output.status.signal() == Some(13) {
+            log::debug!(
+                "rpm2archive received SIGPIPE (signal 13) - this is normal when tar finishes reading. Stderr:\n{}",
+                rpm2archive_stderr_str
+            );
+        } else if rpm2archive_stderr_str.contains("Write error") {
+            log::debug!(
+                "rpm2archive write error - this is normal when tar finishes reading first. Stderr:\n{}",
+                rpm2archive_stderr_str
+            );
+        } else {
+            log::warn!(
+                "rpm2archive command finished with non-success status: {} (but tar succeeded). Stderr:\n{}",
+                rpm2archive_output.status, rpm2archive_stderr_str
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn verify_rpm_compare_extractions(
+    rpm_file_path: &Path,
+    epkg_extracted_fs_dir: &Path,
+    official_outdir_path: &Path,
+) -> Result<()> {
+    log::info!(
+        "Comparing epkg extraction at {} with official extraction at {}",
+        epkg_extracted_fs_dir.display(),
+        official_outdir_path.display()
+    );
+
+    match compare_directories(official_outdir_path, epkg_extracted_fs_dir) {
+        Ok(comp_result) => {
+            let filtered_mismatches = filter_known_false_positives(comp_result.mismatches, epkg_extracted_fs_dir);
+            let are_identical_after_filtering = filtered_mismatches.is_empty();
+
+            if are_identical_after_filtering {
+                log::info!(
+                    "Verification successful: epkg extraction matches official extraction for {}.",
+                    rpm_file_path.display()
+                );
+                log::debug!(
+                    "Removing successfully verified official extraction directory: {}",
+                    official_outdir_path.display()
+                );
+
+                let output = Command::new("find")
+                    .arg(official_outdir_path)
+                    .arg("-type")
+                    .arg("d")
+                    .arg("-exec")
+                    .arg("chmod")
+                    .arg("u+rwx")
+                    .arg("{}")
+                    .arg(";")
+                    .output()
+                    .wrap_err_with(|| format!("Failed to run find command on {}", official_outdir_path.display()))?;
+
+                if !output.status.success() {
+                    log::warn!("Failed to set permissions on some files: {}", String::from_utf8_lossy(&output.stderr));
+                }
+
+                if let Err(e) = fs::remove_dir_all(official_outdir_path) {
+                    log::warn!(
+                        "Failed to remove official extraction directory {}: {}. Manual cleanup may be required.",
+                        official_outdir_path.display(),
+                        e
+                    );
+                }
+            } else {
+                log::warn!(
+                    "Verification FAILED for {}: Mismatches found between epkg and official extraction.",
+                    rpm_file_path.display()
+                );
+                for mismatch in filtered_mismatches {
+                    log::warn!("  Mismatch: {:?}", mismatch);
+                }
+
+                match handle_directory_mismatch(epkg_extracted_fs_dir, official_outdir_path) {
+                    Ok(_should_keep_temp) => {}
+                    Err(e) => {
+                        log::error!("Error handling directory mismatch: {}", e);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            log::error!("Error during directory comparison for {}: {}", rpm_file_path.display(), e);
+            log::warn!(
+                "The official extraction directory {} might be incomplete or problematic. Preserving for inspection.",
+                official_outdir_path.display()
+            );
+            return Err(e.wrap_err("Directory comparison failed"));
+        }
+    }
+    Ok(())
+}
+
 pub fn verify_rpm_extraction(rpm_file_path: &Path, epkg_extracted_fs_dir: &Path) -> Result<()> {
     log::debug!("Starting RPM extraction verification for: {}", rpm_file_path.display());
 
@@ -451,124 +600,8 @@ pub fn verify_rpm_extraction(rpm_file_path: &Path, epkg_extracted_fs_dir: &Path)
 
     log::debug!("Official extraction directory: {}", official_outdir_path.display());
 
-    let mut rpm2archive_cmd = Command::new("rpm2archive")
-        .arg(rpm_file_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .wrap_err_with(|| format!("Failed to spawn rpm2archive for {}", rpm_file_path.display()))?;
-
-    let rpm2archive_stdout = rpm2archive_cmd.stdout.take().ok_or_else(|| eyre!("Failed to capture stdout from rpm2archive"))?;
-
-    let tar_cmd = Command::new("tar")
-        .arg("-xzf")
-        .arg("-")
-        .arg("-C")
-        .arg(&official_outdir_path)
-        .stdin(rpm2archive_stdout)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .wrap_err("Failed to execute tar command")?;
-
-    // Wait for tar to finish first
-    let tar_output = tar_cmd.wait_with_output().wrap_err("Failed to wait for tar process")?;
-
-    // Then wait for rpm2archive to finish
-    let rpm2archive_output = rpm2archive_cmd.wait_with_output().wrap_err("Failed to wait for rpm2archive process")?;
-
-    if !tar_output.status.success() {
-        let tar_stderr_str = String::from_utf8_lossy(&tar_output.stderr);
-        log::error!("tar command failed with status: {}. Stderr:\n{}", tar_output.status, tar_stderr_str);
-        if !rpm2archive_output.status.success() {
-            let rpm2archive_stderr_str = String::from_utf8_lossy(&rpm2archive_output.stderr);
-            log::error!("rpm2archive also failed with status: {}. Stderr:\n{}", rpm2archive_output.status, rpm2archive_stderr_str);
-        }
-        // Preserve directory on failure
-        return Err(eyre!(
-            "rpm2archive | tar pipeline failed. tar exit: {}, rpm2archive exit: {}. Official dir: {}",
-            tar_output.status, rpm2archive_output.status, official_outdir_path.display()
-        ));
-    }
-
-    if !rpm2archive_output.status.success() {
-        // tar might succeed even if rpm2archive had non-fatal errors (e.g., warnings to stderr)
-        let rpm2archive_stderr_str = String::from_utf8_lossy(&rpm2archive_output.stderr);
-
-        // Check if it's a SIGPIPE error, which is expected when tar finishes reading
-        if rpm2archive_output.status.signal() == Some(13) { // SIGPIPE = 13
-            log::debug!(
-                "rpm2archive received SIGPIPE (signal 13) - this is normal when tar finishes reading. Stderr:\n{}",
-                rpm2archive_stderr_str
-            );
-        } else if rpm2archive_stderr_str.contains("Write error") {
-            // This is expected when tar finishes reading before rpm2archive finishes writing
-            log::debug!(
-                "rpm2archive write error - this is normal when tar finishes reading first. Stderr:\n{}",
-                rpm2archive_stderr_str
-            );
-        } else {
-            log::warn!(
-                "rpm2archive command finished with non-success status: {} (but tar succeeded). Stderr:\n{}",
-                rpm2archive_output.status, rpm2archive_stderr_str
-            );
-        }
-    }
-
+    run_rpm2archive_tar_pipeline(rpm_file_path, &official_outdir_path)?;
     log::debug!("Official extraction via rpm2archive and tar completed.");
-    log::info!("Comparing epkg extraction at {} with official extraction at {}", epkg_extracted_fs_dir.display(), official_outdir_path.display());
 
-    match compare_directories(&official_outdir_path, epkg_extracted_fs_dir) {
-        Ok(comp_result) => {
-            // Filter out known false positives
-            let filtered_mismatches = filter_known_false_positives(comp_result.mismatches, epkg_extracted_fs_dir);
-            let are_identical_after_filtering = filtered_mismatches.is_empty();
-
-            if are_identical_after_filtering {
-                log::info!("Verification successful: epkg extraction matches official extraction for {}.", rpm_file_path.display());
-                log::debug!("Removing successfully verified official extraction directory: {}", official_outdir_path.display());
-
-                // Fix directory permissions before removal to avoid "Permission denied" errors
-                let output = Command::new("find")
-                    .arg(&official_outdir_path)
-                    .arg("-type")
-                    .arg("d")
-                    .arg("-exec")
-                    .arg("chmod")
-                    .arg("u+rwx")
-                    .arg("{}")
-                    .arg(";")
-                    .output()
-                    .wrap_err_with(|| format!("Failed to run find command on {}", official_outdir_path.display()))?;
-
-                if !output.status.success() {
-                    log::warn!("Failed to set permissions on some files: {}", String::from_utf8_lossy(&output.stderr));
-                }
-
-                if let Err(e) = fs::remove_dir_all(&official_outdir_path) {
-                    log::warn!("Failed to remove official extraction directory {}: {}. Manual cleanup may be required.", official_outdir_path.display(), e);
-                }
-            } else {
-                log::warn!("Verification FAILED for {}: Mismatches found between epkg and official extraction.", rpm_file_path.display());
-                for mismatch in filtered_mismatches {
-                    log::warn!("  Mismatch: {:?}", mismatch);
-                }
-
-                // Handle directory mismatch as requested
-                match handle_directory_mismatch(epkg_extracted_fs_dir, &official_outdir_path) {
-                    Ok(_should_keep_temp) => {
-                    }
-                    Err(e) => {
-                        log::error!("Error handling directory mismatch: {}", e);
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            log::error!("Error during directory comparison for {}: {}", rpm_file_path.display(), e);
-            log::warn!("The official extraction directory {} might be incomplete or problematic. Preserving for inspection.", official_outdir_path.display());
-            return Err(e.wrap_err("Directory comparison failed"));
-        }
-    }
-    Ok(())
+    verify_rpm_compare_extractions(rpm_file_path, epkg_extracted_fs_dir, &official_outdir_path)
 }

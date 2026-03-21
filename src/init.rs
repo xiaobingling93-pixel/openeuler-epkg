@@ -8,7 +8,7 @@ use std::fs::OpenOptions;
 use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 
-use color_eyre::eyre::{self, WrapErr};
+use color_eyre::eyre::{self, Context};
 use color_eyre::Result;
 #[cfg(unix)]
 use nix::unistd::{fork, ForkResult};
@@ -249,6 +249,58 @@ fn download_and_install_epkg_binary_from_release(
     Ok(())
 }
 
+fn remove_stale_init_sha256_files(init_plan: &InitPlan, epkg_download_dir: &Path) -> Result<()> {
+    #[allow(unused_mut)]
+    let mut sha256_files_to_delete: Vec<std::path::PathBuf> = if let Some(ref epkg_plan) = init_plan.epkg_binary {
+        vec![epkg_plan.sha_path(epkg_download_dir)?]
+    } else {
+        Vec::new()
+    };
+
+    if init_plan.local_elf_loader_path.is_none() && init_plan.need_download_elf_loader {
+        if let Some(ref elf_plan) = init_plan.elf_loader {
+            sha256_files_to_delete.push(elf_plan.sha_path(epkg_download_dir)?);
+        }
+    }
+    #[cfg(feature = "libkrun")]
+    if let Some(ref vmlinux_plan) = init_plan.vmlinux {
+        sha256_files_to_delete.push(vmlinux_plan.sha_path(epkg_download_dir)?);
+    }
+    if let Some(ref epkg_linux_plan) = init_plan.epkg_linux {
+        sha256_files_to_delete.push(epkg_linux_plan.sha_path(epkg_download_dir)?);
+    }
+    for sha256_path in &sha256_files_to_delete {
+        if sha256_path.exists() {
+            lfs::remove_file(sha256_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn verify_init_download_checksums(init_plan: &InitPlan, epkg_download_dir: &Path) -> Result<()> {
+    if init_plan.local_elf_loader_path.is_none() && init_plan.need_download_elf_loader {
+        if let Some(ref elf_plan) = init_plan.elf_loader {
+            let elf_sha_path = elf_plan.sha_path(epkg_download_dir)?;
+            utils::verify_sha256sum(&elf_sha_path)
+                .context("Failed to verify elf-loader checksum")?;
+        }
+    }
+
+    if let Some(ref epkg_plan) = init_plan.epkg_binary {
+        let epkg_sha_path = epkg_plan.sha_path(epkg_download_dir)?;
+        utils::verify_sha256sum(&epkg_sha_path)
+            .context("Failed to verify epkg binary checksum")?;
+    }
+
+    if let Some(ref epkg_linux_plan) = init_plan.epkg_linux {
+        let epkg_linux_sha_path = epkg_linux_plan.sha_path(epkg_download_dir)?;
+        utils::verify_sha256sum(&epkg_linux_sha_path)
+            .context("Failed to verify epkg-linux checksum")?;
+    }
+
+    Ok(())
+}
+
 fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
     // Collect urls for downloading in parallel
     let mut urls = Vec::new();
@@ -319,30 +371,7 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
 
     // Delete .sha256 files first: gitee.com HTTP headers have no file timestamp,
     // so download.rs would think "File unchanged" based on file size matching.
-    #[allow(unused_mut)]
-    let mut sha256_files_to_delete: Vec<std::path::PathBuf> = if let Some(ref epkg_plan) = init_plan.epkg_binary {
-        vec![epkg_plan.sha_path(epkg_download_dir)?]
-    } else {
-        Vec::new()
-    };
-
-    if init_plan.local_elf_loader_path.is_none() && init_plan.need_download_elf_loader {
-        if let Some(ref elf_plan) = init_plan.elf_loader {
-            sha256_files_to_delete.push(elf_plan.sha_path(epkg_download_dir)?);
-        }
-    }
-    #[cfg(feature = "libkrun")]
-    if let Some(ref vmlinux_plan) = init_plan.vmlinux {
-        sha256_files_to_delete.push(vmlinux_plan.sha_path(epkg_download_dir)?);
-    }
-    if let Some(ref epkg_linux_plan) = init_plan.epkg_linux {
-        sha256_files_to_delete.push(epkg_linux_plan.sha_path(epkg_download_dir)?);
-    }
-    for sha256_path in &sha256_files_to_delete {
-        if sha256_path.exists() {
-            lfs::remove_file(sha256_path)?;
-        }
-    }
+    remove_stale_init_sha256_files(init_plan, epkg_download_dir)?;
 
     // Download to the new epkg subdirectory within downloads cache
     // Use the base directory - download_urls will construct nested paths internally
@@ -351,26 +380,7 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
         result.with_context(|| "Failed to download package manager files")?;
     }
 
-    // Verify checksums
-    if init_plan.local_elf_loader_path.is_none() && init_plan.need_download_elf_loader {
-        if let Some(ref elf_plan) = init_plan.elf_loader {
-            let elf_sha_path = elf_plan.sha_path(epkg_download_dir)?;
-            utils::verify_sha256sum(&elf_sha_path)
-                .context("Failed to verify elf-loader checksum")?;
-        }
-    }
-
-    if let Some(ref epkg_plan) = init_plan.epkg_binary {
-        let epkg_sha_path = epkg_plan.sha_path(epkg_download_dir)?;
-        utils::verify_sha256sum(&epkg_sha_path)
-            .context("Failed to verify epkg binary checksum")?;
-    }
-
-    if let Some(ref epkg_linux_plan) = init_plan.epkg_linux {
-        let epkg_linux_sha_path = epkg_linux_plan.sha_path(epkg_download_dir)?;
-        utils::verify_sha256sum(&epkg_linux_sha_path)
-            .context("Failed to verify epkg-linux checksum")?;
-    }
+    verify_init_download_checksums(init_plan, epkg_download_dir)?;
 
     if init_plan.need_download_epkg_src && !init_plan.epkg_src_path.exists() {
         return Err(eyre::eyre!("Failed to download epkg source code tar file from {}", init_plan.epkg_src_url));

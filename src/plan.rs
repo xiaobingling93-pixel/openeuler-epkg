@@ -550,6 +550,14 @@ pub fn prepare_installation_plan(
     Ok(plan)
 }
 
+fn pkgkey_is_essential(pkgkey: &str) -> bool {
+    if let Ok(pkgname) = package::pkgkey2pkgname(pkgkey) {
+        mmio::is_essential_pkgname(&pkgname)
+    } else {
+        false
+    }
+}
+
 /// Find orphaned packages that should be removed
 /// An orphaned package is one that has no remaining reverse dependencies
 /// (i.e., no other installed package depends on it)
@@ -560,14 +568,6 @@ fn find_orphaned_packages(
     skipped_reinstalls: &InstalledPackagesMap,
 ) -> Result<InstalledPackagesMap> {
     let mut old_removes = InstalledPackagesMap::new();
-    // Helper function to check if a package is essential
-    let is_essential = |pkgkey: &str| -> bool {
-        if let Ok(pkgname) = package::pkgkey2pkgname(pkgkey) {
-            mmio::is_essential_pkgname(&pkgname)
-        } else {
-            false
-        }
-    };
 
     // Calculate possible orphans: installed packages that are not being skipped or upgraded
     // Exclude packages with depend_depth=0 (user-requested packages) and essential packages
@@ -578,7 +578,7 @@ fn find_orphaned_packages(
             !skipped_reinstalls.contains_key(*pkgkey) &&
             !upgrades_old.contains(*pkgkey) &&
             pkg_info.depend_depth > 0 &&    // Exclude user-requested packages (depend_depth=0)
-            !is_essential(pkgkey)           // Exclude essential packages
+            !pkgkey_is_essential(pkgkey)           // Exclude essential packages
         })
         .map(|(pkgkey, _)| pkgkey.clone())
         .collect();
@@ -643,7 +643,7 @@ fn find_orphaned_packages(
                 rdepends.is_empty() && {
                     // Double-check that it's not a user-requested package or essential package
                     if let Some(pkg_info) = installed.get(*pkgkey) {
-                        pkg_info.depend_depth > 0 && !is_essential(pkgkey)
+                        pkg_info.depend_depth > 0 && !pkgkey_is_essential(pkgkey)
                     } else {
                         false
                     }
