@@ -37,12 +37,6 @@ const REPO_ELF_LOADER:  &str = &"elf-loader";
 #[cfg(feature = "libkrun")]
 const REPO_VMLINUX:     &str = &"sandbox-kernel";
 
-// Installed epkg binary name inside `.../usr/bin/`.
-#[cfg(windows)]
-const EPKG_BIN_NAME: &str = "epkg.exe";
-#[cfg(not(windows))]
-const EPKG_BIN_NAME: &str = "epkg";
-
 fn print_banner() {
     println!(r#"         ____  _  ______   "#);
     println!(r#"   ____ |  _ \| |/ / ___|  "#);
@@ -483,7 +477,7 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
 
     lfs::create_dir_all(&usr_bin)?;
 
-    let target_epkg = usr_bin.join(EPKG_BIN_NAME);
+    let target_epkg = usr_bin.join(crate::dirs::EPKG_USR_BIN_NAME);
 
     // Use downloaded epkg binary only when a version differs and we decided to download it.
     let epkg_source = if let Some(ref epkg_plan) = init_plan.epkg_binary {

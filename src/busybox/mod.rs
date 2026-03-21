@@ -247,6 +247,20 @@ pub fn extract_reference_metadata(_ref_path: &Path) -> Result<(u32, u32, u32)> {
     Ok((uid, gid, mode))
 }
 
+#[cfg(windows)]
+fn strip_windows_exe_suffix(name: String) -> String {
+    if name.len() > 4 && name[name.len() - 4..].eq_ignore_ascii_case(".exe") {
+        name[..name.len() - 4].to_string()
+    } else {
+        name
+    }
+}
+
+#[cfg(not(windows))]
+fn strip_windows_exe_suffix(name: String) -> String {
+    name
+}
+
 /// Get the applet name from the invocation (if any)
 /// Returns None if not invoked as an applet
 fn get_applet_name_from_invocation() -> Option<String> {
@@ -270,6 +284,8 @@ fn get_applet_name_from_invocation() -> Option<String> {
         Some(name) => name,
         None => return None,
     };
+
+    let applet_name = strip_windows_exe_suffix(applet_name);
 
     // Don't treat "epkg" itself as an applet
     if applet_name == "epkg" {
@@ -450,7 +466,7 @@ fn determine_epkg_binary_for_env(env_root: &Path, pkg_format: &PackageFormat) ->
     let _ = pkg_format;
 
     // Default: use native epkg binary
-    let epkg_exe = crate::dirs::path_join(env_root, &["usr", "bin", "epkg"]);
+    let epkg_exe = crate::dirs::path_join(env_root, &["usr", "bin", crate::dirs::EPKG_USR_BIN_NAME]);
     if epkg_exe.exists() {
         log::debug!("Using native epkg binary at {}", epkg_exe.display());
         Some(epkg_exe)
@@ -486,11 +502,22 @@ pub fn create_all_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -
         return Ok(());
     }
 
+    fn applet_symlink_filename(cmd_name: &str) -> String {
+        #[cfg(windows)]
+        {
+            format!("{}.exe", cmd_name)
+        }
+        #[cfg(not(windows))]
+        {
+            cmd_name.to_string()
+        }
+    }
+
     let applet_commands = busybox_subcommands();
     for cmd in applet_commands {
         let cmd_name = cmd.get_name();
         let subdir = if is_sbin_command(cmd_name) { "sbin" } else { "bin" };
-        let symlink_path = env_root.join("usr").join(subdir).join(cmd_name);
+        let symlink_path = env_root.join("usr").join(subdir).join(applet_symlink_filename(cmd_name));
         let target = if let Some(parent) = symlink_path.parent() {
             pathdiff::diff_paths(&epkg_exe, parent).unwrap_or(epkg_exe.clone())
         } else {
@@ -499,7 +526,11 @@ pub fn create_all_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -
         force_symlink_to_file(&target, &symlink_path)
             .with_context(|| format!("Failed to create {} symlink in {}", cmd_name, symlink_path.display()))?;
     }
-    let bracket_path = crate::dirs::path_join(env_root, &["usr", "bin", "["]);
+    #[cfg(windows)]
+    let bracket_leaf: &str = "[.exe";
+    #[cfg(not(windows))]
+    let bracket_leaf: &str = "[";
+    let bracket_path = crate::dirs::path_join(env_root, &["usr", "bin", bracket_leaf]);
     let bracket_target = if let Some(parent) = bracket_path.parent() {
         pathdiff::diff_paths(&epkg_exe, parent).unwrap_or(epkg_exe.clone())
     } else {

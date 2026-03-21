@@ -342,7 +342,17 @@ pub fn create_epkg_symlink(env_root: &Path, pkg_format: &PackageFormat) -> Resul
 
     // Try to find appropriate epkg binary in self environment
     if let Some(self_env_root) = find_env_root(SELF_ENV) {
-        let epkg_symlink = crate::dirs::path_join(env_root, &["usr", "bin", "epkg"]);
+        // Skip if this IS the self environment - the binary is already installed by setup_common_binaries()
+        // Creating a symlink here would either be redundant or create a self-referencing symlink
+        // Use canonicalize for comparison to handle Windows \\?\ prefix differences
+        let env_root_normalized = std::fs::canonicalize(env_root).unwrap_or_else(|_| env_root.to_path_buf());
+        let self_env_root_normalized = std::fs::canonicalize(&self_env_root).unwrap_or(self_env_root.clone());
+        if env_root_normalized == self_env_root_normalized {
+            log::debug!("Skipping epkg symlink creation in self environment (binary already installed)");
+            return Ok(());
+        }
+
+        let epkg_symlink = crate::dirs::path_join(env_root, &["usr", "bin", crate::dirs::EPKG_USR_BIN_NAME]);
 
         // On Windows/macOS with Linux-format packages, use epkg-linux-$arch
         #[cfg(not(target_os = "linux"))]
@@ -369,7 +379,7 @@ pub fn create_epkg_symlink(env_root: &Path, pkg_format: &PackageFormat) -> Resul
         }
 
         // Default: use native epkg binary
-        let self_epkg = crate::dirs::path_join(&self_env_root, &["usr", "bin", "epkg"]);
+        let self_epkg = crate::dirs::path_join(&self_env_root, &["usr", "bin", crate::dirs::EPKG_USR_BIN_NAME]);
         if lfs::exists_in_env(&self_epkg) {
             log::debug!("Creating epkg symlink {} -> {} (native)", epkg_symlink.display(), self_epkg.display());
             force_symlink_to_file(&self_epkg, &epkg_symlink)

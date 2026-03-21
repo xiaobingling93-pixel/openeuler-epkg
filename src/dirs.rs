@@ -25,6 +25,12 @@ pub fn path_join<P: AsRef<Path> + ?Sized>(base: &P, parts: &[&str]) -> PathBuf {
     p
 }
 
+/// Basename of the epkg binary under each environment's `usr/bin/` (matches `init` copy target).
+#[cfg(windows)]
+pub const EPKG_USR_BIN_NAME: &str = "epkg.exe";
+#[cfg(not(windows))]
+pub const EPKG_USR_BIN_NAME: &str = "epkg";
+
 #[cfg(unix)]
 impl EPKGDirs {
     pub fn build_dirs(options: &EPKGConfig) -> Result<Self> {
