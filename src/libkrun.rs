@@ -387,6 +387,68 @@ struct VmContext {
     vsock_sock_path: Option<std::path::PathBuf>,
 }
 
+/// Configure vsock ports 10000 (command) and 10001 (ready); returns host path for the command socket.
+#[cfg(feature = "libkrun")]
+fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext) -> Result<std::path::PathBuf> {
+    let sock_path = crate::models::dirs().epkg_cache
+        .join("vmm-logs")
+        .join(format!("vsock-{}.sock", std::process::id()));
+    lfs::create_dir_all(sock_path.parent().unwrap())?;
+    let _ = std::fs::remove_file(&sock_path);
+
+    let ready_path = crate::models::dirs().epkg_cache
+        .join("vmm-logs")
+        .join(format!("ready-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&ready_path);
+
+    unsafe {
+        check_status("krun_disable_implicit_vsock", krun_disable_implicit_vsock(ctx.ctx_id))?;
+        check_status("krun_add_vsock", krun_add_vsock(ctx.ctx_id, 0))?;
+
+        #[cfg(unix)]
+        {
+            let sock_path_c = CString::new(sock_path.to_string_lossy().as_bytes())
+                .map_err(|e| eyre::eyre!("invalid socket path: {}", e))?;
+            check_status(
+                "krun_add_vsock_port2",
+                krun_add_vsock_port2(ctx.ctx_id, 10000, sock_path_c.as_ptr(), true),
+            )?;
+        }
+        #[cfg(windows)]
+        {
+            let stem = libkrun_bridge::pipe_name_from_sock_path(&sock_path)?;
+            let stem_c = CString::new(stem).map_err(|e| eyre::eyre!("invalid vsock pipe name: {}", e))?;
+            check_status(
+                "krun_add_vsock_port_windows",
+                krun_add_vsock_port_windows(ctx.ctx_id, 10000, stem_c.as_ptr()),
+            )?;
+        }
+        #[cfg(unix)]
+        {
+            let ready_path_c = CString::new(ready_path.to_string_lossy().as_bytes())
+                .map_err(|e| eyre::eyre!("invalid ready socket path: {}", e))?;
+            check_status(
+                "krun_add_vsock_port2",
+                krun_add_vsock_port2(ctx.ctx_id, 10001, ready_path_c.as_ptr(), false),
+            )?;
+        }
+        #[cfg(windows)]
+        {
+            let stem = libkrun_bridge::pipe_name_from_sock_path(&ready_path)?;
+            let stem_c = CString::new(stem).map_err(|e| eyre::eyre!("invalid ready pipe name: {}", e))?;
+            check_status(
+                "krun_add_vsock_port_windows",
+                krun_add_vsock_port_windows(ctx.ctx_id, 10001, stem_c.as_ptr()),
+            )?;
+        }
+    }
+
+    log::debug!("libkrun: vsock port 10000 mapped to {}", sock_path.display());
+    log::debug!("libkrun: ready port 10001 mapped to {}", ready_path.display());
+
+    Ok(sock_path)
+}
+
 #[cfg(feature = "libkrun")]
 fn create_and_configure_vm(
     env_root: &Path,
@@ -445,65 +507,7 @@ fn create_and_configure_vm(
         setup_console_output(ctx.ctx_id)?;
 
         if config.use_vsock {
-            check_status("krun_disable_implicit_vsock",
-                krun_disable_implicit_vsock(ctx.ctx_id)
-            )?;
-            check_status("krun_add_vsock",
-                krun_add_vsock(ctx.ctx_id, 0)
-            )?;
-
-            let sock_path = crate::models::dirs().epkg_cache
-                .join("vmm-logs")
-                .join(format!("vsock-{}.sock", std::process::id()));
-            lfs::create_dir_all(sock_path.parent().unwrap())?;
-            let _ = std::fs::remove_file(&sock_path);
-
-            #[cfg(unix)]
-            {
-                let sock_path_c = CString::new(sock_path.to_string_lossy().as_bytes())
-                    .map_err(|e| eyre::eyre!("invalid socket path: {}", e))?;
-                check_status(
-                    "krun_add_vsock_port2",
-                    krun_add_vsock_port2(ctx.ctx_id, 10000, sock_path_c.as_ptr(), true),
-                )?;
-            }
-            #[cfg(windows)]
-            {
-                let stem = libkrun_bridge::pipe_name_from_sock_path(&sock_path)?;
-                let stem_c = CString::new(stem)
-                    .map_err(|e| eyre::eyre!("invalid vsock pipe name: {}", e))?;
-                check_status(
-                    "krun_add_vsock_port_windows",
-                    krun_add_vsock_port_windows(ctx.ctx_id, 10000, stem_c.as_ptr()),
-                )?;
-            }
-            log::debug!("libkrun: vsock port 10000 mapped to {}", sock_path.display());
-
-            let ready_path = crate::models::dirs().epkg_cache
-                .join("vmm-logs")
-                .join(format!("ready-{}.sock", std::process::id()));
-            let _ = std::fs::remove_file(&ready_path);
-            #[cfg(unix)]
-            {
-                let ready_path_c = CString::new(ready_path.to_string_lossy().as_bytes())
-                    .map_err(|e| eyre::eyre!("invalid ready socket path: {}", e))?;
-                check_status(
-                    "krun_add_vsock_port2",
-                    krun_add_vsock_port2(ctx.ctx_id, 10001, ready_path_c.as_ptr(), false),
-                )?;
-            }
-            #[cfg(windows)]
-            {
-                let stem = libkrun_bridge::pipe_name_from_sock_path(&ready_path)?;
-                let stem_c = CString::new(stem)
-                    .map_err(|e| eyre::eyre!("invalid ready pipe name: {}", e))?;
-                check_status(
-                    "krun_add_vsock_port_windows",
-                    krun_add_vsock_port_windows(ctx.ctx_id, 10001, stem_c.as_ptr()),
-                )?;
-            }
-            log::debug!("libkrun: ready port 10001 mapped to {}", ready_path.display());
-
+            let sock_path = setup_libkrun_vsock_host_sockets(&ctx)?;
             let vsock_sock_path = Some(sock_path);
             let shutdown_fd = ctx.get_shutdown_eventfd()
                 .map_err(|e| eyre::eyre!("Failed to get shutdown eventfd: {}", e))?;
@@ -802,6 +806,73 @@ pub fn shutdown_vm_reuse_session_if_active() -> Result<()> {
     }
 }
 
+#[cfg(feature = "libkrun")]
+fn krun_vsock_shutdown_join_free_exit(
+    vm_thread: std::thread::JoinHandle<i32>,
+    shutdown_fd: i32,
+    ctx_id: u32,
+    exit_code: i32,
+) -> ! {
+    log::debug!("libkrun: triggering VM shutdown via eventfd...");
+    let buf = 1u64.to_le_bytes();
+    #[cfg(unix)]
+    let write_len = buf.len();
+    #[cfg(windows)]
+    let write_len = buf.len() as u32;
+    let write_result = unsafe { libc::write(shutdown_fd, buf.as_ptr() as *const _, write_len) };
+    if write_result < 0 {
+        log::warn!(
+            "libkrun: failed to write shutdown eventfd: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+
+    match vm_thread.join() {
+        Ok(vm_status) => {
+            log::debug!("libkrun: VM thread finished with status {}", vm_status);
+        }
+        Err(e) => {
+            log::error!("libkrun: VM thread join failed: {:?}", e);
+        }
+    }
+
+    log::debug!("libkrun: freeing context before exit...");
+    unsafe {
+        let _ = krun_free_ctx(ctx_id);
+    }
+
+    log::debug!("libkrun: exiting with code {}", exit_code);
+    std::process::exit(exit_code);
+}
+
+#[cfg(feature = "libkrun")]
+fn krun_no_vsock_join_vm_thread_exit(vm_thread: std::thread::JoinHandle<i32>, ctx_id: u32) -> ! {
+    log::debug!("libkrun: waiting for VM thread to finish...");
+    match vm_thread.join() {
+        Ok(exit_status) => {
+            log::debug!("libkrun: freeing context before exit...");
+            unsafe {
+                let _ = krun_free_ctx(ctx_id);
+            }
+
+            if exit_status < 0 {
+                log::error!("libkrun: VM failed with status {}", exit_status);
+                std::process::exit(1);
+            } else {
+                log::debug!("libkrun: VM exited with status {}", exit_status);
+                std::process::exit(exit_status);
+            }
+        }
+        Err(e) => {
+            log::error!("libkrun: VM thread join failed: {:?}", e);
+            unsafe {
+                let _ = krun_free_ctx(ctx_id);
+            }
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Run a command inside a libkrun microVM.
 ///
 /// On non-reuse paths this never returns on success; it exits the process with the
@@ -875,36 +946,7 @@ pub fn run_command_in_krun(
             }
         }
 
-        log::debug!("libkrun: triggering VM shutdown via eventfd...");
-        let buf = 1u64.to_le_bytes();
-        #[cfg(unix)]
-        let write_len = buf.len();
-        #[cfg(windows)]
-        let write_len = buf.len() as u32;
-        let write_result = unsafe { libc::write(shutdown_fd, buf.as_ptr() as *const _, write_len) };
-        if write_result < 0 {
-            log::warn!(
-                "libkrun: failed to write shutdown eventfd: {}",
-                std::io::Error::last_os_error()
-            );
-        }
-
-        match vm_thread.join() {
-            Ok(vm_status) => {
-                log::debug!("libkrun: VM thread finished with status {}", vm_status);
-            }
-            Err(e) => {
-                log::error!("libkrun: VM thread join failed: {:?}", e);
-            }
-        }
-
-        log::debug!("libkrun: freeing context before exit...");
-        unsafe {
-            let _ = krun_free_ctx(ctx_id);
-        }
-
-        log::debug!("libkrun: exiting with code {}", exit_code);
-        std::process::exit(exit_code);
+        krun_vsock_shutdown_join_free_exit(vm_thread, shutdown_fd, ctx_id, exit_code);
     }
 
     let vm_ctx = create_and_configure_vm(env_root, run_options, &config)?;
@@ -912,30 +954,7 @@ pub fn run_command_in_krun(
     let ctx_id = vm_ctx.ctx.ctx_id;
     let vm_thread = start_libkrun_vm(vm_ctx.ctx);
 
-    log::debug!("libkrun: waiting for VM thread to finish...");
-    match vm_thread.join() {
-        Ok(exit_status) => {
-            log::debug!("libkrun: freeing context before exit...");
-            unsafe {
-                let _ = krun_free_ctx(ctx_id);
-            }
-
-            if exit_status < 0 {
-                log::error!("libkrun: VM failed with status {}", exit_status);
-                std::process::exit(1);
-            } else {
-                log::debug!("libkrun: VM exited with status {}", exit_status);
-                std::process::exit(exit_status);
-            }
-        }
-        Err(e) => {
-            log::error!("libkrun: VM thread join failed: {:?}", e);
-            unsafe {
-                let _ = krun_free_ctx(ctx_id);
-            }
-            std::process::exit(1);
-        }
-    }
+    krun_no_vsock_join_vm_thread_exit(vm_thread, ctx_id);
 }
 
 /// Setup console output logging to a file for debugging kernel boot.
