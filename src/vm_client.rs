@@ -353,13 +353,150 @@ pub fn wait_ready_and_send_command_with_qemu(
     wait_ready_and_send_command_impl(cmd_parts, io_mode, cmd_port, unix_socket_path, reuse_vm, Some(qemu_child), Some(qemu_stderr_path))
 }
 
+/// libkrun: wait on Unix ready socket, then send command via vsock bridge.
+fn wait_ready_unix_socket_then_send(
+    cmd_parts: &[String],
+    io_mode: IoMode,
+    cmd_port: u32,
+    cmd_path: &std::path::Path,
+    reuse_vm: bool,
+) -> Result<i32> {
+    // Derive ready socket path from command socket path
+    // e.g., vsock-123.sock → ready-123.sock
+    let ready_path = cmd_path.parent().unwrap_or(std::path::Path::new(""))
+        .join(cmd_path.file_name().unwrap().to_string_lossy().replace("vsock-", "ready-"));
+
+    let _ = std::fs::remove_file(&ready_path);
+
+    log::debug!("vm_client: creating listener on ready socket {}", ready_path.display());
+    let listener = std::os::unix::net::UnixListener::bind(&ready_path)
+        .map_err(|e| eyre::eyre!("Failed to bind ready socket {}: {}", ready_path.display(), e))?;
+
+    log::debug!("vm_client: waiting for guest to signal ready...");
+    let (stream, _addr) = listener.accept()
+        .map_err(|e| eyre::eyre!("Failed to accept on ready socket: {}", e))?;
+    log::debug!("vm_client: guest connected to ready socket, guest is ready!");
+    drop(stream);
+    drop(listener);
+
+    send_command_via_vsock_impl(cmd_parts, io_mode, cmd_port, Some(cmd_path), reuse_vm)
+}
+
+/// QEMU: AF_VSOCK ready port, optional QEMU child monitoring, then send command.
+fn wait_ready_qemu_vsock_then_send(
+    cmd_parts: &[String],
+    io_mode: IoMode,
+    cmd_port: u32,
+    reuse_vm: bool,
+    mut qemu_child: Option<&mut std::process::Child>,
+    qemu_stderr_path: Option<&std::path::Path>,
+) -> Result<i32> {
+    const READY_PORT: u32 = 10001;
+    log::debug!("vm_client: creating AF_VSOCK listener on ready port {}", READY_PORT);
+
+    use std::os::fd::IntoRawFd;
+
+    let ready_fd = socket::socket(
+        AddressFamily::Vsock,
+        SockType::Stream,
+        SockFlag::SOCK_CLOEXEC,
+        None,
+    ).map_err(|e| eyre::eyre!("Failed to create ready vsock socket: {}", e))?;
+
+    let ready_addr = VsockAddr::new(libc::VMADDR_CID_ANY, READY_PORT);
+    let raw_fd = ready_fd.into_raw_fd();
+    socket::bind(raw_fd, &ready_addr)
+        .map_err(|e| eyre::eyre!("Failed to bind ready vsock port: {}", e))?;
+    socket::listen(unsafe { &std::os::fd::BorrowedFd::borrow_raw(raw_fd) }, socket::Backlog::new(1)?)
+        .map_err(|e| eyre::eyre!("Failed to listen on ready vsock port: {}", e))?;
+
+    log::debug!("vm_client: waiting for guest to connect to ready port {}...", READY_PORT);
+
+    let poll_timeout_ms = 100;
+    let max_wait_ms = 60000;
+    let mut total_waited_ms = 0;
+
+    let client_fd = loop {
+        if let Some(ref mut child) = qemu_child {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let error_msg = if let Some(stderr_path) = qemu_stderr_path {
+                        std::fs::read_to_string(stderr_path).unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    let exit_info = status.code()
+                        .map(|c| format!("exit code {}", c))
+                        .unwrap_or_else(|| "killed by signal".to_string());
+
+                    let key_error = error_msg.lines()
+                        .find(|line| line.contains("error") || line.contains("failed") || line.contains("unable to"))
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_else(|| error_msg.lines().last().map(|s| s.trim().to_string()).unwrap_or_default());
+
+                    return Err(eyre::eyre!(
+                        "QEMU exited prematurely ({}): {}\n\
+                         If vsock CID conflict, kill existing VM processes: pkill -f qemu-system\n\
+                         Log: {}",
+                        exit_info,
+                        key_error,
+                        qemu_stderr_path.map(|p| p.display().to_string()).unwrap_or_default()
+                    ));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    log::debug!("vm_client: try_wait error: {}", e);
+                }
+            }
+        }
+
+        let mut pfd = [libc::pollfd {
+            fd:      raw_fd,
+            events:  libc::POLLIN,
+            revents: 0,
+        }];
+        let ready = unsafe { libc::poll(pfd.as_mut_ptr(), 1, poll_timeout_ms as i32) };
+
+        total_waited_ms += poll_timeout_ms;
+        if total_waited_ms > max_wait_ms {
+            return Err(eyre::eyre!("Timeout waiting for guest to connect to ready port"));
+        }
+
+        match ready {
+            0 => {
+                log::trace!("vm_client: poll timeout, continuing to wait...");
+                continue;
+            }
+            n if n > 0 => {
+                if (pfd[0].revents & libc::POLLIN) != 0 {
+                    break socket::accept(raw_fd)
+                        .map_err(|e| eyre::eyre!("Failed to accept on ready vsock port: {}", e))?;
+                }
+                if (pfd[0].revents & (libc::POLLERR | libc::POLLHUP)) != 0 {
+                    return Err(eyre::eyre!("Ready socket error during poll"));
+                }
+            }
+            _ => {
+                continue;
+            }
+        }
+    };
+
+    log::debug!("vm_client: guest connected to ready vsock port, guest is ready!");
+
+    let _ = nix::unistd::close(client_fd);
+    let _ = nix::unistd::close(raw_fd);
+
+    send_command_via_vsock_impl(cmd_parts, io_mode, cmd_port, None, reuse_vm)
+}
+
 fn wait_ready_and_send_command_impl(
     cmd_parts: &[String],
     io_mode: IoMode,
     cmd_port: u32,
     unix_socket_path: Option<&std::path::Path>,
     reuse_vm: bool,
-    mut qemu_child: Option<&mut std::process::Child>,
+    qemu_child: Option<&mut std::process::Child>,
     qemu_stderr_path: Option<&std::path::Path>,
 ) -> Result<i32> {
     let (use_pty, is_batch) = resolve_io_mode(io_mode);
@@ -372,148 +509,18 @@ fn wait_ready_and_send_command_impl(
         reuse_vm
     );
 
-    // For libkrun mode with ready notification (Unix socket)
     if let Some(cmd_path) = unix_socket_path {
-        // Derive ready socket path from command socket path
-        // e.g., vsock-123.sock → ready-123.sock
-        let ready_path = cmd_path.parent().unwrap_or(std::path::Path::new(""))
-            .join(cmd_path.file_name().unwrap().to_string_lossy().replace("vsock-", "ready-"));
-
-        // Remove stale socket file if exists
-        let _ = std::fs::remove_file(&ready_path);
-
-        // Create listener for ready notification
-        log::debug!("vm_client: creating listener on ready socket {}", ready_path.display());
-        let listener = std::os::unix::net::UnixListener::bind(&ready_path)
-            .map_err(|e| eyre::eyre!("Failed to bind ready socket {}: {}", ready_path.display(), e))?;
-
-        // Wait for guest to connect (signals readiness)
-        log::debug!("vm_client: waiting for guest to signal ready...");
-        let (stream, _addr) = listener.accept()
-            .map_err(|e| eyre::eyre!("Failed to accept on ready socket: {}", e))?;
-        log::debug!("vm_client: guest connected to ready socket, guest is ready!");
-        drop(stream);
-        drop(listener);
-
-        // Now connect to command port
-        return send_command_via_vsock_impl(cmd_parts, io_mode, cmd_port, Some(cmd_path), reuse_vm);
+        return wait_ready_unix_socket_then_send(cmd_parts, io_mode, cmd_port, cmd_path, reuse_vm);
     }
 
-    // For QEMU mode with AF_VSOCK ready notification
-    if unix_socket_path.is_none() {
-        // Create AF_VSOCK listener on ready port
-        const READY_PORT: u32 = 10001;
-        log::debug!("vm_client: creating AF_VSOCK listener on ready port {}", READY_PORT);
-
-        use std::os::fd::IntoRawFd;
-
-        let ready_fd = socket::socket(
-            AddressFamily::Vsock,
-            SockType::Stream,
-            SockFlag::SOCK_CLOEXEC,
-            None,
-        ).map_err(|e| eyre::eyre!("Failed to create ready vsock socket: {}", e))?;
-
-        let ready_addr = VsockAddr::new(libc::VMADDR_CID_ANY, READY_PORT);
-        let raw_fd = ready_fd.into_raw_fd();
-        socket::bind(raw_fd, &ready_addr)
-            .map_err(|e| eyre::eyre!("Failed to bind ready vsock port: {}", e))?;
-        socket::listen(unsafe { &std::os::fd::BorrowedFd::borrow_raw(raw_fd) }, socket::Backlog::new(1)?)
-            .map_err(|e| eyre::eyre!("Failed to listen on ready vsock port: {}", e))?;
-
-        log::debug!("vm_client: waiting for guest to connect to ready port {}...", READY_PORT);
-
-        // Use poll with timeout to detect QEMU early failures
-        let poll_timeout_ms = 100;  // Check every 0.1 second for faster failure detection
-        let max_wait_ms = 60000;    // Max 60 seconds total
-        let mut total_waited_ms = 0;
-
-        let client_fd = loop {
-            // Check if QEMU has exited prematurely
-            if let Some(ref mut child) = qemu_child {
-                match child.try_wait() {
-                    Ok(Some(status)) => {
-                        // QEMU exited, read stderr for error message
-                        let error_msg = if let Some(stderr_path) = qemu_stderr_path {
-                            std::fs::read_to_string(stderr_path).unwrap_or_default()
-                        } else {
-                            String::new()
-                        };
-                        let exit_info = status.code()
-                            .map(|c| format!("exit code {}", c))
-                            .unwrap_or_else(|| "killed by signal".to_string());
-
-                        // Extract key error from stderr
-                        let key_error = error_msg.lines()
-                            .find(|line| line.contains("error") || line.contains("failed") || line.contains("unable to"))
-                            .map(|s| s.trim().to_string())
-                            .unwrap_or_else(|| error_msg.lines().last().map(|s| s.trim().to_string()).unwrap_or_default());
-
-                        return Err(eyre::eyre!(
-                            "QEMU exited prematurely ({}): {}\n\
-                             If vsock CID conflict, kill existing VM processes: pkill -f qemu-system\n\
-                             Log: {}",
-                            exit_info,
-                            key_error,
-                            qemu_stderr_path.map(|p| p.display().to_string()).unwrap_or_default()
-                        ));
-                    }
-                    Ok(None) => {} // Still running
-                    Err(e) => {
-                        log::debug!("vm_client: try_wait error: {}", e);
-                    }
-                }
-            }
-
-            // Poll for connection with timeout
-            let mut pfd = [libc::pollfd {
-                fd:      raw_fd,
-                events:  libc::POLLIN,
-                revents: 0,
-            }];
-            let ready = unsafe { libc::poll(pfd.as_mut_ptr(), 1, poll_timeout_ms as i32) };
-
-            total_waited_ms += poll_timeout_ms;
-            if total_waited_ms > max_wait_ms {
-                return Err(eyre::eyre!("Timeout waiting for guest to connect to ready port"));
-            }
-
-            match ready {
-                0 => {
-                    // Timeout, continue waiting (and check QEMU status)
-                    log::trace!("vm_client: poll timeout, continuing to wait...");
-                    continue;
-                }
-                n if n > 0 => {
-                    // Ready for accept
-                    if (pfd[0].revents & libc::POLLIN) != 0 {
-                        break socket::accept(raw_fd)
-                            .map_err(|e| eyre::eyre!("Failed to accept on ready vsock port: {}", e))?;
-                    }
-                    // Check for errors
-                    if (pfd[0].revents & (libc::POLLERR | libc::POLLHUP)) != 0 {
-                        return Err(eyre::eyre!("Ready socket error during poll"));
-                    }
-                }
-                _ => {
-                    // Negative return from poll (error)
-                    continue;
-                }
-            }
-        };
-
-        log::debug!("vm_client: guest connected to ready vsock port, guest is ready!");
-
-        // Close the ready connection and listener
-        let _ = nix::unistd::close(client_fd);
-        let _ = nix::unistd::close(raw_fd);
-
-        // Now connect to command port
-        return send_command_via_vsock_impl(cmd_parts, io_mode, cmd_port, None, reuse_vm);
-    }
-
-    // Fallback: no ready notification configured
-    send_command_via_vsock_impl(cmd_parts, io_mode, cmd_port, unix_socket_path, reuse_vm)
+    wait_ready_qemu_vsock_then_send(
+        cmd_parts,
+        io_mode,
+        cmd_port,
+        reuse_vm,
+        qemu_child,
+        qemu_stderr_path,
+    )
 }
 
 /// Guard for raw terminal mode restoration.
