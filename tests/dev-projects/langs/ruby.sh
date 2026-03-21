@@ -19,13 +19,13 @@ run ruby -e "puts 1+1"
 run ruby -e "puts \"ok\""
 
 run /bin/sh -c 'mkdir -p /tmp/rubyproj && cd /tmp/rubyproj && echo "puts \"hello\"" > main.rb'
-run /bin/sh -c 'cd /tmp/rubyproj && ruby main.rb' | grep -q hello
+run /bin/sh -c 'cd /tmp/rubyproj && ruby main.rb' | grep -qx hello
 
 # Set GEM_HOME and GEM_PATH to writable locations inside the environment
 # Also set XDG_CACHE_HOME to avoid permission issues with ~/.cache
 if run which gem; then
     run /bin/sh -c 'export GEM_HOME=/tmp/gem GEM_PATH=/tmp/gem XDG_CACHE_HOME=/tmp/xdg-cache && gem install json'
-    run /bin/sh -c 'export GEM_HOME=/tmp/gem GEM_PATH=/tmp/gem && ruby -e "require \"json\"; puts JSON.parse(\"{\\\"x\\\":1}\")[\"x\"]"' | grep -q 1
+    run /bin/sh -c 'export GEM_HOME=/tmp/gem GEM_PATH=/tmp/gem && ruby -e "require \"json\"; puts JSON.parse(\"{\\\"x\\\":1}\")[\"x\"]"' | grep -qx 1
 fi
 run_ebin_if gem --version
 # gem install needs XDG_CACHE_HOME set to avoid permission issues
