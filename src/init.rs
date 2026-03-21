@@ -1214,7 +1214,6 @@ fn install_vmlinux(zst_path: &Path, config_path: Option<&Path>, version: &str, a
     if vmlinux_link.exists() || lfs::is_symlink(&vmlinux_link) {
         lfs::remove_file(&vmlinux_link)?;
     }
-    #[cfg(unix)]
     lfs::symlink(&vmlinux_name, &vmlinux_link)?;
 
     println!("  Installed kernel: {} ({} bytes)", vmlinux_path.display(), kernel_data.len());
