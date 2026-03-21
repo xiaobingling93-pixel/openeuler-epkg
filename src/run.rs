@@ -596,6 +596,49 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
     }
 }
 
+/// On Windows, prepend conda env dirs to PATH so MSVC/conda binaries resolve.
+/// Build PATH with conda directories first, then Windows system directories so MSVC binaries
+/// (curl, wget, etc.) find their DLLs without interference from MSYS2/MinGW runtime DLLs.
+///
+/// Order: env_root (vcruntime*.dll), bin/usr/bin/Scripts, Library/bin, Library/mingw-w64/bin,
+/// Windows system dirs, then original PATH.
+#[cfg(all(not(target_os = "linux"), windows))]
+fn conda_windows_path_env(env_root: &Path) -> String {
+    let library_bin = env_root.join("Library").join("bin");
+    let mingw_bin = env_root.join("Library").join("mingw-w64").join("bin");
+    let scripts_bin = env_root.join("Scripts");
+    let usr_bin = env_root.join("usr").join("bin");
+    let bin_dir = env_root.join("bin");
+
+    let mut path_dirs = vec![
+        env_root.display().to_string(),
+        bin_dir.display().to_string(),
+        usr_bin.display().to_string(),
+        scripts_bin.display().to_string(),
+        library_bin.display().to_string(),
+        mingw_bin.display().to_string(),
+        "C:\\Windows\\System32".to_string(),
+        "C:\\Windows".to_string(),
+    ];
+
+    path_dirs.push(std::env::var("PATH").unwrap_or_default());
+    path_dirs.join(";")
+}
+
+/// MSYS2-style pacman env: prepend merged bin paths so .exe and MinGW DLLs resolve.
+#[cfg(all(not(target_os = "linux"), windows))]
+fn msys2_pacman_path_env(env_root: &Path) -> String {
+    let bin_dir = env_root.join("bin");
+    let usr_bin = env_root.join("usr").join("bin");
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    [
+        bin_dir.display().to_string(),
+        usr_bin.display().to_string(),
+        original_path,
+    ]
+    .join(";")
+}
+
 /// Execute command directly on the host without namespace isolation.
 /// Used for conda/homebrew/msys2 packages on non-Linux platforms.
 #[cfg(not(target_os = "linux"))]
@@ -617,72 +660,16 @@ fn fork_and_execute_direct(env_root: &Path, run_options: &RunOptions) -> Result<
     let ch = crate::models::channel_config();
     let channel_format = ch.format;
 
-    // Set CONDA_PREFIX if this is a conda environment
     if channel_format == crate::models::PackageFormat::Conda {
         env_vars.insert("CONDA_PREFIX".to_string(), env_root.display().to_string());
 
-        // On Windows, set up PATH for conda executables
         #[cfg(windows)]
-        {
-            let library_bin = env_root.join("Library").join("bin");
-            let mingw_bin = env_root.join("Library").join("mingw-w64").join("bin");
-            let scripts_bin = env_root.join("Scripts");
-            let usr_bin = env_root.join("usr").join("bin");
-            let bin_dir = env_root.join("bin");
-
-            // Build PATH with conda directories first, then Windows system directories
-            // This ensures MSVC binaries (curl, wget, etc.) can find their DLLs
-            // without interference from MSYS2/MinGW runtime DLLs
-            //
-            // Order matters:
-            // 1. env_root - contains vcruntime*.dll from vc/vc14_runtime packages
-            // 2. bin/usr/bin/Scripts - contains symlinks to executables
-            // 3. Library/bin - contains DLLs and MSVC-compiled binaries
-            // 4. Library/mingw-w64/bin - contains mingw-compiled binaries (jq, etc.)
-            // 5. Windows system directories - for system DLLs
-            let mut path_dirs = vec![
-                env_root.display().to_string(), // For vcruntime*.dll at root
-                bin_dir.display().to_string(),
-                usr_bin.display().to_string(),
-                scripts_bin.display().to_string(),
-                library_bin.display().to_string(),
-                mingw_bin.display().to_string(),
-                // Windows system directories for MSVC runtime
-                "C:\\Windows\\System32".to_string(),
-                "C:\\Windows".to_string(),
-            ];
-
-            // Check if running under MSYS2 (MSYSTEM env var is set)
-            let is_msys2 = std::env::var("MSYSTEM").is_ok();
-
-            // Get original PATH to append at the end
-            let original_path = std::env::var("PATH").unwrap_or_default();
-
-            if is_msys2 {
-                // For MSYS2: we still need MinGW paths at the end for mingw-compiled binaries
-                // (like jq in Library/mingw-w64/bin which depends on libwinpthread-1.dll)
-                // But we put Windows/conda paths first so MSVC binaries find their DLLs
-                path_dirs.push(original_path);
-            } else {
-                // For native Windows: prepend conda paths to existing PATH
-                path_dirs.push(original_path);
-            }
-            env_vars.insert("PATH".to_string(), path_dirs.join(";"));
-        }
+        env_vars.insert("PATH".to_string(), conda_windows_path_env(env_root));
     }
 
-    // MSYS2-style pacman env: prepend merged bin paths so .exe and MinGW DLLs resolve.
     #[cfg(windows)]
     if channel_format == crate::models::PackageFormat::Pacman && ch.distro == "msys2" {
-        let bin_dir = env_root.join("bin");
-        let usr_bin = env_root.join("usr").join("bin");
-        let original_path = std::env::var("PATH").unwrap_or_default();
-        let path_dirs = vec![
-            bin_dir.display().to_string(),
-            usr_bin.display().to_string(),
-            original_path,
-        ];
-        env_vars.insert("PATH".to_string(), path_dirs.join(";"));
+        env_vars.insert("PATH".to_string(), msys2_pacman_path_env(env_root));
     }
 
     // Note: Brew packages use absolute paths rewritten at link time (LinkType::Move),

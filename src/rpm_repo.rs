@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 use std::io::Read;
 use color_eyre::eyre::{self, eyre, WrapErr, Result};
-use quick_xml::events::Event;
+use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use quick_xml::escape;
 use crate::models::*;
@@ -53,6 +53,20 @@ lazy_static! {
     };
 }
 
+fn repomd_xml_attr_utf8(e: &BytesStart, attr_key: &[u8]) -> Option<String> {
+    e.attributes()
+        .find(|attr_result| matches!(attr_result, Ok(attr) if attr.key.as_ref() == attr_key))
+        .and_then(|attr_result| attr_result.ok())
+        .and_then(|attr| {
+            String::from_utf8(attr.value.into_owned())
+                .map_err(|e| {
+                    log::warn!("Failed to convert attribute value to UTF-8: {}", e);
+                    e
+                })
+                .ok()
+        })
+}
+
 pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBuf) -> Result<Vec<RepoReleaseItem>> {
     let index_url = &repo.index_url;
     let mut info = Vec::new();
@@ -82,19 +96,7 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                         current_checksum_type.clear();
                         current_size = 0;
 
-                        if let Some(data_type) = e.attributes()
-                            .find(|attr_result| {
-                                match attr_result {
-                                    Ok(attr) => attr.key.as_ref() == b"type",
-                                    Err(_) => false
-                                }
-                            })
-                            .and_then(|attr_result| attr_result.ok())
-                            .and_then(|attr| String::from_utf8(attr.value.into_owned())
-                                .map_err(|e| {
-                                    log::warn!("Failed to convert attribute value to UTF-8: {}", e);
-                                    e
-                                }).ok()) {
+                        if let Some(data_type) = repomd_xml_attr_utf8(e, b"type") {
                             current_data_type = data_type;
                         } else {
                             log::warn!("Failed to find 'type' attribute in 'data' element");
@@ -102,19 +104,7 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                     }
                     b"checksum" => {
                         // Extract checksum type from the checksum element
-                        if let Some(checksum_type) = e.attributes()
-                            .find(|attr_result| {
-                                match attr_result {
-                                    Ok(attr) => attr.key.as_ref() == b"type",
-                                    Err(_) => false
-                                }
-                            })
-                            .and_then(|attr_result| attr_result.ok())
-                            .and_then(|attr| String::from_utf8(attr.value.into_owned())
-                                .map_err(|e| {
-                                    log::warn!("Failed to convert checksum type attribute value to UTF-8: {}", e);
-                                    e
-                                }).ok()) {
+                        if let Some(checksum_type) = repomd_xml_attr_utf8(e, b"type") {
                             current_checksum_type = checksum_type.to_uppercase();
                         } else {
                             log::warn!("Failed to find 'type' attribute in 'checksum' element, defaulting to SHA256");
@@ -127,19 +117,7 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
             Ok(Event::Empty(ref e)) => {
                 // Handle self-closing elements like <location href="..."/>
                 if in_data && e.name().as_ref() == b"location" {
-                    if let Some(href) = e.attributes()
-                        .find(|attr_result| {
-                            match attr_result {
-                                Ok(attr) => attr.key.as_ref() == b"href",
-                                Err(_) => false
-                            }
-                        })
-                        .and_then(|attr_result| attr_result.ok())
-                        .and_then(|attr| String::from_utf8(attr.value.into_owned())
-                            .map_err(|e| {
-                                log::warn!("Failed to convert href attribute value to UTF-8: {}", e);
-                                e
-                            }).ok()) {
+                    if let Some(href) = repomd_xml_attr_utf8(e, b"href") {
                         current_location = href;
                     }
                 }

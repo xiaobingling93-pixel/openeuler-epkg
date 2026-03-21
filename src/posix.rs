@@ -79,46 +79,79 @@ pub fn posix_access(path: &str, mode: &str) -> PosixResult<bool> {
     }
 }
 
+fn mode_munch_parse_who_bits(p: &mut std::iter::Peekable<std::str::Chars<'_>>) -> u32 {
+    let mut affected_bits = 0u32;
+    loop {
+        match p.peek() {
+            Some(&'u') => {
+                affected_bits |= 0o4700;
+                p.next();
+            }
+            Some(&'g') => {
+                affected_bits |= 0o2070;
+                p.next();
+            }
+            Some(&'o') => {
+                affected_bits |= 0o1007;
+                p.next();
+            }
+            Some(&'a') => {
+                affected_bits |= 0o7777;
+                p.next();
+            }
+            Some(&' ') => {
+                p.next();
+            }
+            _ => break,
+        }
+    }
+    if affected_bits == 0 {
+        0o7777
+    } else {
+        affected_bits
+    }
+}
+
+fn mode_munch_try_octal_prefix(
+    mode: &mut u32,
+    p: &mut std::iter::Peekable<std::str::Chars<'_>>,
+) -> Result<bool, PosixError> {
+    if !matches!(p.peek(), Some(&c) if c >= '0' && c <= '7') {
+        return Ok(false);
+    }
+    let mut octal_str = String::new();
+    while let Some(&c) = p.peek() {
+        if c >= '0' && c <= '7' {
+            octal_str.push(p.next().unwrap());
+        } else {
+            break;
+        }
+    }
+    if p.peek().is_some() {
+        return Err(PosixError::InvalidArgument(
+            "invalid octal mode: non-octal character found".to_string(),
+        ));
+    }
+    if octal_str.is_empty() {
+        return Err(PosixError::InvalidArgument("invalid octal mode: empty string".to_string()));
+    }
+    let mode_num = u32::from_str_radix(&octal_str, 8)
+        .map_err(|_| PosixError::InvalidArgument(format!("invalid octal mode: {}", octal_str)))?;
+    *mode = mode_num;
+    Ok(true)
+}
+
 // Mode munch implementation - parses chmod-style mode strings
 pub fn mode_munch(mode: &mut u32, mode_str: &str) -> Result<(), PosixError> {
     let mut p = mode_str.chars().peekable();
     let mut done = false;
 
     while !done {
-        let mut affected_bits = 0u32;
         let mut ch_mode = 0u32;
         let op;
 
         // Step 1: Parse who's affected (u, g, o, a)
-        loop {
-            match p.peek() {
-                Some(&'u') => {
-                    affected_bits |= 0o4700;
-                    p.next();
-                }
-                Some(&'g') => {
-                    affected_bits |= 0o2070;
-                    p.next();
-                }
-                Some(&'o') => {
-                    affected_bits |= 0o1007;
-                    p.next();
-                }
-                Some(&'a') => {
-                    affected_bits |= 0o7777;
-                    p.next();
-                }
-                Some(&' ') => {
-                    p.next();
-                }
-                _ => break,
-            }
-        }
-
-        // If none specified, affect all bits
-        if affected_bits == 0 {
-            affected_bits = 0o7777;
-        }
+        let affected_bits = mode_munch_parse_who_bits(&mut p);
 
         // Check for rwxrwxrwx format (starts with 'r' or '-')
         if let Some(&ch) = p.peek() {
@@ -130,31 +163,8 @@ pub fn mode_munch(mode: &mut u32, mode_str: &str) -> Result<(), PosixError> {
         // Check for octal format (starts with digit 0-7)
         // C++ version: if (*p >= '0' && *p <= '7') { strtol(p, &e, 8); if (*p == 0 || *e != 0) return -5; }
         // This means: parse octal, and the entire remaining string must be consumed (e must point to null)
-        if let Some(&ch) = p.peek() {
-            if ch >= '0' && ch <= '7' {
-                let mut octal_str = String::new();
-                // Collect all octal digits
-                while let Some(&c) = p.peek() {
-                    if c >= '0' && c <= '7' {
-                        octal_str.push(p.next().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-                // Check if we consumed the entire remaining string (matching C++ *e != 0 check)
-                // If there are any remaining characters, it's an error
-                if p.peek().is_some() {
-                    return Err(PosixError::InvalidArgument(format!("invalid octal mode: non-octal character found")));
-                }
-                // Also check for empty string (matching C++ *p == 0 check)
-                if octal_str.is_empty() {
-                    return Err(PosixError::InvalidArgument(format!("invalid octal mode: empty string")));
-                }
-                let mode_num = u32::from_str_radix(&octal_str, 8)
-                    .map_err(|_| PosixError::InvalidArgument(format!("invalid octal mode: {}", octal_str)))?;
-                *mode = mode_num;
-                return Ok(());
-            }
+        if mode_munch_try_octal_prefix(mode, &mut p)? {
+            return Ok(());
         }
 
         // Step 2: Parse operator (+, -, =)
