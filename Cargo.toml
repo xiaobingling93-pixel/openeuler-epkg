@@ -16,7 +16,7 @@ opt-level = "z"  # Optimize for size.
 # panic = "abort"
 
 [patch.crates-io]
-# Fork: epkg/patches @ v0.17.1 (empty default features + Windows File without rawfd). See git/vm-memory.
+# Fork: git/vm-memory (libkrun/third_party/vm-memory kept unused to avoid rebase noise).
 vm-memory = { path = "git/vm-memory" }
 
 [dependencies]
