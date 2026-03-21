@@ -13,6 +13,14 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::models::*;
+
+/// Reserved argv for vm-daemon JSON requests: single-element `command` array ends install/upgrade VM reuse.
+/// Present when the guest daemon (`vm_daemon`, Linux) or libkrun host teardown (`libkrun`, non-Linux) is built.
+#[cfg(any(
+    target_os = "linux",
+    all(feature = "libkrun", not(target_os = "linux"))
+))]
+pub const VM_SESSION_DONE_CMD: &str = "__epkg_vm_session_done__";
 #[cfg(target_os = "linux")]
 use crate::namespace::{determine_process_config, build_unified_context, create_process_with_namespaces};
 use crate::lfs;
@@ -83,6 +91,9 @@ pub struct RunOptions {
     /// Preferred VMM backend order for IsolateMode::Vm.
     /// Example: ["libkrun", "qemu"] or ["qemu"].
     pub vmm_order: Vec<String>,
+    /// Keep the microVM alive between `fork_and_execute` calls (install/upgrade on non-Linux hosts).
+    /// Cleared after the transaction sends the reserved session-done command to the guest VM.
+    pub reuse_vm: bool,
 }
 
 /// Temporarily set SIGPIPE handler
@@ -185,7 +196,8 @@ pub fn ensure_linux_kvm_ready_for_vm() -> Result<()> {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+/// No-op on non-Linux: KVM device exists only on Linux hosts. Kept for `libkrun` callers on macOS/Windows.
+#[cfg(all(not(target_os = "linux"), feature = "libkrun"))]
 pub fn ensure_linux_kvm_ready_for_vm() -> Result<()> {
     Ok(())
 }
@@ -1011,6 +1023,12 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
         debug!("Auto-enabling VM sandbox for Linux package format: {:?}/{}",
                channel_format, ch.distro);
         run_options.effective_sandbox.isolate_mode = Some(IsolateMode::Vm);
+        if matches!(
+            config_guard.subcommand,
+            EpkgCommand::Install | EpkgCommand::Upgrade
+        ) {
+            run_options.reuse_vm = true;
+        }
     }
 
     // Silence unused warning on Linux

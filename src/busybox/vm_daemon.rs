@@ -11,9 +11,9 @@
 //!
 //! # Protocol Design
 //! ## Connection Model
-//! - Single connection per VM lifetime: daemon accepts exactly one TCP connection
-//! - After processing the command, the daemon powers off the guest (graceful shutdown)
-//! - This matches the "one command per VM invocation" semantic of `epkg run --isolate=vm`
+//! - Default: one command per connection; after the command the daemon may wait for more
+//!   connections (install/upgrade reuse, see `reuse_vm` and reserved `command` `__epkg_vm_session_done__`)
+//!   or power off the guest (e.g. `epkg run --isolate=vm` one-shot)
 //! - Note: vm-daemon is forked from init.rs (PID 1), not running as PID 1 itself
 //!
 //! ## Message Format
@@ -125,14 +125,19 @@ use nix::pty::{openpty, Winsize, OpenptyResult};
 use nix::sys::wait::{waitpid, WaitPidFlag};
 use nix::unistd::{fork, ForkResult, dup2, setsid, close, Pid};
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
-use std::os::fd::{OwnedFd, AsRawFd, BorrowedFd, FromRawFd};
+use std::os::fd::{OwnedFd, AsRawFd, BorrowedFd, FromRawFd, RawFd};
 use nix::sys::socket::{self, AddressFamily, SockType, SockFlag, VsockAddr, Backlog};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use crate::run::VM_SESSION_DONE_CMD;
 use crate::vm_client::StreamMessage;
 
 /// Poll timeout in milliseconds for PTY/pipe and TCP wait.
 const POLL_TIMEOUT_MS: u32 = 1000;
+
+/// When `reuse_vm` was used on the last command, wait this long for another vsock connection
+/// before shutting down the guest.
+const VM_REUSE_IDLE_TIMEOUT_MS: u32 = 30_000;
 
 /// Maximum poll loop iterations in non-PTY mode before forcing exit (safety limit).
 const MAX_POLL_ITERATIONS: u32 = 100;
@@ -300,6 +305,10 @@ pub fn command() -> Command {
 
 #[derive(Debug, Deserialize)]
 struct CommandRequest {
+    /// After this command, wait for more connections (up to [`VM_REUSE_IDLE_TIMEOUT_MS`]) instead of exiting.
+    #[serde(default)]
+    reuse_vm: bool,
+    #[serde(default)]
     command: Vec<String>,
     #[serde(default)]
     cwd: Option<String>,
@@ -311,6 +320,15 @@ struct CommandRequest {
     pty: bool,
     #[serde(default)]
     terminal: Option<TerminalConfig>,
+}
+
+/// What to do after handling one vsock connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectionDisposition {
+    /// Stop accepting; guest will power off.
+    Shutdown,
+    /// Keep listening for another command (install/upgrade VM reuse).
+    ReuseWait,
 }
 
 /// Outcome of spawning the child with pipes. Either the child and its stdio pipes, or we already sent an error and exit code.
@@ -877,7 +895,7 @@ fn execute_without_pty(request: &CommandRequest, stream: &mut TcpStream, initial
     send_exit_and_flush(stream, exit_code)
 }
 
-fn handle_connection(mut stream: TcpStream) -> Result<bool> {
+fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
     log::debug!("handle_connection: new connection");
     let mut buf = [0; TCP_LINE_BUF_SIZE];
     match stream.read(&mut buf) {
@@ -906,29 +924,61 @@ fn handle_connection(mut stream: TcpStream) -> Result<bool> {
             let request: CommandRequest = serde_json::from_str(&input)
                 .map_err(|e| eyre!("JSON parse failed: {} (input: {:?})", e, input))?;
 
+            if request.command.len() == 1 && request.command[0] == VM_SESSION_DONE_CMD {
+                log::debug!(
+                    "vm session done command ({VM_SESSION_DONE_CMD}): host finished install/upgrade"
+                );
+                return Ok(ConnectionDisposition::Shutdown);
+            }
+
+            if request.command.is_empty() {
+                return Err(eyre!(
+                    "empty command (send command [\"{0}\"] to end reuse session)",
+                    VM_SESSION_DONE_CMD
+                ));
+            }
+
             log::debug!("Received command: {:?}", request.command);
 
             // Execute command
             if request.pty {
                 log::debug!("Using PTY mode");
                 let _exit_code = execute_with_pty(&request, &mut stream, Some(leftover_bytes))?;
-                // Return true to exit daemon after PTY command
-                return Ok(true);
             } else {
                 log::debug!("Using non-PTY mode");
                 let _exit_code = execute_without_pty(&request, &mut stream, Some(leftover_bytes))?;
-                // Return true to exit daemon after command
-                return Ok(true);
+            }
+
+            if request.reuse_vm {
+                Ok(ConnectionDisposition::ReuseWait)
+            } else {
+                Ok(ConnectionDisposition::Shutdown)
             }
         }
         Ok(_) => {
             // Empty read, but still exit to avoid hanging
-            Ok(true)
+            Ok(ConnectionDisposition::Shutdown)
         }
         Err(e) => {
             eprintln!("Failed to read from socket: {}", e);
-            Ok(true) // Exit on error
+            Ok(ConnectionDisposition::Shutdown)
         }
+    }
+}
+
+/// Poll the listen socket for readability, then accept. Returns `None` on idle timeout.
+#[cfg(target_os = "linux")]
+fn accept_vsock_with_timeout(raw_fd: RawFd, timeout_ms: u32) -> Result<Option<RawFd>> {
+    let borrowed = unsafe { BorrowedFd::borrow_raw(raw_fd) };
+    let mut poll_fds = [PollFd::new(borrowed, PollFlags::POLLIN)];
+    match poll(&mut poll_fds, PollTimeout::try_from(timeout_ms).unwrap()) {
+        Ok(0) => Ok(None),
+        Ok(_) => {
+            let client_fd = socket::accept(raw_fd)
+                .map_err(|e| eyre!("vsock accept failed: {}", e))?;
+            Ok(Some(client_fd))
+        }
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -959,7 +1009,7 @@ fn run_vsock_server() -> Result<()> {
     log::debug!("vm-daemon: bind succeeded");
 
     log::debug!("vm-daemon: calling listen()...");
-    socket::listen(&fd, Backlog::new(1)?).map_err(|e| { log::debug!("vm-daemon: listen() failed: {}", e); e })?;
+    socket::listen(&fd, Backlog::new(8)?).map_err(|e| { log::debug!("vm-daemon: listen() failed: {}", e); e })?;
     log::debug!("vm-daemon: listen succeeded");
 
     // Step 2: Notify host that we're ready to accept commands.
@@ -987,29 +1037,43 @@ fn run_vsock_server() -> Result<()> {
 
     log::debug!("vm-daemon starting (vsock), listening on port {}", VSOCK_PORT);
 
-    log::debug!("vm-daemon: calling accept()...");
-    match socket::accept(raw_fd) {
-        Ok(client_fd) => {
-            log::debug!("vm-daemon: accept() succeeded, fd={}", client_fd);
-            let stream = unsafe { TcpStream::from_raw_fd(client_fd) };
-            log::debug!("vm-daemon vsock: accepted connection");
-            match handle_connection(stream) {
-                Ok(_) => {
-                    log::debug!("Command processed, powering off guest (vsock)");
-                    // Return Ok to let caller handle shutdown
-                    Ok(())
-                }
-                Err(e) => {
-                    log::debug!("Error handling vsock connection: {}", e);
-                    Err(e)
+    let mut first_accept = true;
+    loop {
+        let client_fd = if first_accept {
+            first_accept = false;
+            log::debug!("vm-daemon: calling accept()...");
+            socket::accept(raw_fd).map_err(|e| eyre!("vsock accept failed: {}", e))?
+        } else {
+            log::debug!("vm-daemon: waiting for next connection (reuse, {} ms)...", VM_REUSE_IDLE_TIMEOUT_MS);
+            match accept_vsock_with_timeout(raw_fd, VM_REUSE_IDLE_TIMEOUT_MS)? {
+                Some(fd) => fd,
+                None => {
+                    log::debug!("vm-daemon: idle timeout, powering off guest");
+                    break;
                 }
             }
-        }
-        Err(e) => {
-            log::debug!("vsock accept failed: {}", e);
-            Err(eyre!("vsock accept failed: {}", e))
+        };
+
+        log::debug!("vm-daemon: accept() succeeded, fd={}", client_fd);
+        let stream = unsafe { TcpStream::from_raw_fd(client_fd) };
+        log::debug!("vm-daemon vsock: accepted connection");
+        match handle_connection(stream) {
+            Ok(ConnectionDisposition::Shutdown) => {
+                log::debug!("vm-daemon: connection closed, powering off guest (vsock)");
+                break;
+            }
+            Ok(ConnectionDisposition::ReuseWait) => {
+                log::debug!("vm-daemon: reuse_vm — waiting for another connection");
+                continue;
+            }
+            Err(e) => {
+                log::debug!("Error handling vsock connection: {}", e);
+                return Err(e);
+            }
         }
     }
+
+    Ok(())
 }
 
 pub fn run(_options: VmDaemonOptions) -> Result<()> {

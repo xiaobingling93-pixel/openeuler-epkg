@@ -173,7 +173,7 @@ fn connect_vsock_once(port: u32) -> std::io::Result<TcpStream> {
 }
 
 /// Build JSON command request for guest execution.
-fn build_command_request(cmd_parts: &[String], should_use_pty: bool) -> serde_json::Map<String, serde_json::Value> {
+fn build_command_request(cmd_parts: &[String], should_use_pty: bool, reuse_vm: bool) -> serde_json::Map<String, serde_json::Value> {
     let mut request = serde_json::Map::new();
     request.insert("command".to_string(), serde_json::Value::Array(
         cmd_parts.iter().map(|s| serde_json::Value::String(s.clone())).collect()
@@ -192,6 +192,11 @@ fn build_command_request(cmd_parts: &[String], should_use_pty: bool) -> serde_js
             terminal.insert("cols".to_string(), serde_json::Value::Number(cols.into()));
             request.insert("terminal".to_string(), serde_json::Value::Object(terminal));
         }
+    } else {
+        request.insert("pty".to_string(), serde_json::Value::Bool(false));
+    }
+    if reuse_vm {
+        request.insert("reuse_vm".to_string(), serde_json::Value::Bool(true));
     }
     request
 }
@@ -212,14 +217,18 @@ fn resolve_use_pty(use_pty: Option<bool>) -> bool {
 /// If `use_pty` is `None`, auto-detects based on stdin.is_terminal().
 /// Use `Some(true)` to force PTY, `Some(false)` to force no PTY.
 pub fn send_command_via_tcp(cmd_parts: &[String], use_pty: Option<bool>) -> Result<i32> {
+    send_command_via_tcp_impl(cmd_parts, use_pty, false)
+}
+
+fn send_command_via_tcp_impl(cmd_parts: &[String], use_pty: Option<bool>, reuse_vm: bool) -> Result<i32> {
     let should_use_pty = resolve_use_pty(use_pty);
-    log::debug!("vm_client: use_pty={:?}, should_use_pty={}", use_pty, should_use_pty);
+    log::debug!("vm_client: use_pty={:?}, should_use_pty={}, reuse_vm={}", use_pty, should_use_pty, reuse_vm);
     // Connect to guest TCP server with retry
     let mut stream = connect_with_retry(60)?;
     log::debug!("vm_client: TCP connected, sending command {:?}", cmd_parts);
 
     // Build and send JSON request
-    let request = build_command_request(cmd_parts, should_use_pty);
+    let request = build_command_request(cmd_parts, should_use_pty, reuse_vm);
     let request_json = serde_json::to_vec(&request)?;
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
@@ -235,14 +244,32 @@ pub fn send_command_via_tcp(cmd_parts: &[String], use_pty: Option<bool>) -> Resu
 ///
 /// For libkrun, pass `unix_socket_path` to connect via Unix socket instead of AF_VSOCK.
 /// For QEMU, pass `None` to use AF_VSOCK.
+/// Vsock command execution (QEMU or explicit callers). Prefer [`wait_ready_and_send_command`] when using the ready handshake.
+#[allow(dead_code)]
 pub fn send_command_via_vsock(
     cmd_parts: &[String],
     use_pty: Option<bool>,
     port: u32,
     unix_socket_path: Option<&std::path::Path>,
 ) -> Result<i32> {
+    send_command_via_vsock_impl(cmd_parts, use_pty, port, unix_socket_path, false)
+}
+
+fn send_command_via_vsock_impl(
+    cmd_parts: &[String],
+    use_pty: Option<bool>,
+    port: u32,
+    unix_socket_path: Option<&std::path::Path>,
+    reuse_vm: bool,
+) -> Result<i32> {
     let should_use_pty = resolve_use_pty(use_pty);
-    log::debug!("vm_client: use_pty={:?}, should_use_pty={} (vsock port {})", use_pty, should_use_pty, port);
+    log::debug!(
+        "vm_client: use_pty={:?}, should_use_pty={} (vsock port {}), reuse_vm={}",
+        use_pty,
+        should_use_pty,
+        port,
+        reuse_vm
+    );
 
     let mut stream = if let Some(sock_path) = unix_socket_path {
         // libkrun mode: connect via Unix socket
@@ -254,7 +281,7 @@ pub fn send_command_via_vsock(
     };
     log::debug!("vm_client: vsock connected, sending command {:?}", cmd_parts);
 
-    let request = build_command_request(cmd_parts, should_use_pty);
+    let request = build_command_request(cmd_parts, should_use_pty, reuse_vm);
     let request_json = serde_json::to_vec(&request)?;
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
@@ -289,9 +316,26 @@ pub fn wait_ready_and_send_command(
     use_pty: Option<bool>,
     cmd_port: u32,
     unix_socket_path: Option<&std::path::Path>,
+    reuse_vm: bool,
+) -> Result<i32> {
+    wait_ready_and_send_command_impl(cmd_parts, use_pty, cmd_port, unix_socket_path, reuse_vm)
+}
+
+fn wait_ready_and_send_command_impl(
+    cmd_parts: &[String],
+    use_pty: Option<bool>,
+    cmd_port: u32,
+    unix_socket_path: Option<&std::path::Path>,
+    reuse_vm: bool,
 ) -> Result<i32> {
     let should_use_pty = resolve_use_pty(use_pty);
-    log::debug!("vm_client: use_pty={:?}, should_use_pty={} (cmd port {})", use_pty, should_use_pty, cmd_port);
+    log::debug!(
+        "vm_client: use_pty={:?}, should_use_pty={} (cmd port {}), reuse_vm={}",
+        use_pty,
+        should_use_pty,
+        cmd_port,
+        reuse_vm
+    );
 
     // For libkrun mode with ready notification (Unix socket)
     if let Some(cmd_path) = unix_socket_path {
@@ -317,7 +361,7 @@ pub fn wait_ready_and_send_command(
         drop(listener);
 
         // Now connect to command port
-        return send_command_via_vsock(cmd_parts, use_pty, cmd_port, Some(cmd_path));
+        return send_command_via_vsock_impl(cmd_parts, use_pty, cmd_port, Some(cmd_path), reuse_vm);
     }
 
     // For QEMU mode with AF_VSOCK ready notification
@@ -352,11 +396,11 @@ pub fn wait_ready_and_send_command(
         let _ = nix::unistd::close(raw_fd);
 
         // Now connect to command port
-        return send_command_via_vsock(cmd_parts, use_pty, cmd_port, None);
+        return send_command_via_vsock_impl(cmd_parts, use_pty, cmd_port, None, reuse_vm);
     }
 
     // Fallback: no ready notification configured
-    send_command_via_vsock(cmd_parts, use_pty, cmd_port, unix_socket_path)
+    send_command_via_vsock_impl(cmd_parts, use_pty, cmd_port, unix_socket_path, reuse_vm)
 }
 
 /// Guard for raw terminal mode restoration.

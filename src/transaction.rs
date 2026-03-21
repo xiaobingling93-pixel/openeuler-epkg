@@ -323,6 +323,11 @@ pub fn run_transaction_batch(
     // This runs AFTER all file operations complete (RPM behavior)
     end_transaction(plan)?;
 
+    #[cfg(feature = "libkrun")]
+    {
+        crate::libkrun::shutdown_vm_reuse_session_if_active()?;
+    }
+
     // Follow-up batches will see is_first=false
     plan.batch.is_first = false;
 

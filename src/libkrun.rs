@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 use std::path::Path;
 use std::ptr;
+use std::sync::Mutex;
 use std::thread;
 
 use color_eyre::eyre;
@@ -646,10 +647,142 @@ impl Drop for KrunContext {
     }
 }
 
+/// Active libkrun VM for install/upgrade reuse on non-Linux hosts (one session per epkg process).
+#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+struct VmReuseSession {
+    ctx_id:            u32,
+    shutdown_fd:       i32,
+    vsock_sock_path:   std::path::PathBuf,
+    vm_thread:         thread::JoinHandle<i32>,
+    env_root:          std::path::PathBuf,
+}
+
+#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+static VM_REUSE_SESSION: Mutex<Option<VmReuseSession>> = Mutex::new(None);
+
+#[cfg(feature = "libkrun")]
+fn apply_krun_exit_policy(exit_code: i32, run_options: &RunOptions) -> Result<()> {
+    if exit_code != 0 {
+        if run_options.no_exit {
+            eprintln!(
+                "Command exited with code {} (no_exit=true, continuing)",
+                exit_code
+            );
+        } else {
+            std::process::exit(exit_code);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+fn try_reuse_existing_krun_session(
+    env_root: &Path,
+    config: &LibkrunConfig,
+    run_options: &RunOptions,
+) -> Result<Option<i32>> {
+    let mut guard = VM_REUSE_SESSION.lock().unwrap();
+    if let Some(session) = guard.as_ref() {
+        if session.env_root != env_root {
+            let old = guard.take().unwrap();
+            drop(guard);
+            shutdown_krun_session_impl(old)?;
+            return Ok(None);
+        }
+        let sock = session.vsock_sock_path.clone();
+        drop(guard);
+        let code = send_command_via_unix_socket(
+            &config.cmd_parts,
+            run_options.use_pty,
+            run_options.reuse_vm,
+            &sock,
+        )
+        .map_err(|e| eyre::eyre!("Failed to send command via Unix socket: {}", e))?;
+        Ok(Some(code))
+    } else {
+        Ok(None)
+    }
+}
+
+#[cfg(all(feature = "libkrun", target_os = "linux"))]
+fn try_reuse_existing_krun_session(
+    _env_root: &Path,
+    _config: &LibkrunConfig,
+    _run_options: &RunOptions,
+) -> Result<Option<i32>> {
+    Ok(None)
+}
+
+#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+fn send_session_done_unix(sock_path: &Path) -> Result<()> {
+    let mut stream = connect_unix_socket_with_retry(sock_path, 30)?;
+    let req = build_command_request(
+        &[crate::run::VM_SESSION_DONE_CMD.to_string()],
+        false,
+        false,
+    );
+    stream.write_all(&serde_json::to_vec(&req)?)?;
+    stream.write_all(b"\n")?;
+    stream.flush()?;
+    Ok(())
+}
+
+#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+fn shutdown_krun_session_impl(session: VmReuseSession) -> Result<()> {
+    log::debug!("libkrun: shutting down reuse VM session");
+    send_session_done_unix(&session.vsock_sock_path)?;
+    let buf = 1u64.to_le_bytes();
+    let write_result = unsafe {
+        libc::write(
+            session.shutdown_fd,
+            buf.as_ptr() as *const _,
+            buf.len(),
+        )
+    };
+    if write_result < 0 {
+        log::warn!(
+            "libkrun: failed to write shutdown eventfd: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    match session.vm_thread.join() {
+        Ok(vm_status) => {
+            log::debug!("libkrun: VM thread finished with status {}", vm_status);
+        }
+        Err(e) => {
+            log::error!("libkrun: VM thread join failed: {:?}", e);
+        }
+    }
+    unsafe {
+        let _ = krun_free_ctx(session.ctx_id);
+    }
+    Ok(())
+}
+
+/// End a reuse VM session after install/upgrade completes (non-Linux + libkrun only).
+#[cfg(feature = "libkrun")]
+pub fn shutdown_vm_reuse_session_if_active() -> Result<()> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut guard = VM_REUSE_SESSION.lock().unwrap();
+        let Some(session) = guard.take() else {
+            return Ok(());
+        };
+        drop(guard);
+        shutdown_krun_session_impl(session)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Ok(())
+    }
+}
+
 /// Run a command inside a libkrun microVM.
 ///
-/// This function never returns on success; it exits the process with the
+/// On non-reuse paths this never returns on success; it exits the process with the
 /// guest's exit code, similar to the QEMU backend.
+///
+/// With `reuse_vm`, returns to the caller so another command can run in the same VM.
 ///
 /// The kernel is provided by sandbox-kernel as an ELF vmlinux file.
 #[cfg(feature = "libkrun")]
@@ -660,22 +793,31 @@ pub fn run_command_in_krun(
 ) -> Result<()> {
     crate::run::ensure_linux_kvm_ready_for_vm()?;
     let config = build_libkrun_config(env_root, run_options, guest_cmd_path)?;
-    let vm_ctx = create_and_configure_vm(env_root, run_options, &config)?;
-
-    let ready_listener = if config.use_vsock {
-        setup_vsock_ready_listener()?
-    } else {
-        None
-    };
-
-    log::debug!("libkrun: starting VM thread...");
-    // Save ctx_id before moving ctx to thread, so we can free it later
-    let ctx_id = vm_ctx.ctx.ctx_id;
-    let vm_thread = start_libkrun_vm(vm_ctx.ctx);
 
     if config.use_vsock {
+        if run_options.reuse_vm {
+            if let Some(code) = try_reuse_existing_krun_session(env_root, &config, run_options)? {
+                log::debug!("libkrun: reused VM session, exit code {}", code);
+                return apply_krun_exit_policy(code, run_options);
+            }
+        }
+
+        let vm_ctx = create_and_configure_vm(env_root, run_options, &config)?;
+
+        let ready_listener = setup_vsock_ready_listener()?
+            .ok_or_else(|| eyre::eyre!("libkrun: missing ready listener"))?;
+
+        log::debug!("libkrun: starting VM thread...");
+        let ctx_id = vm_ctx.ctx.ctx_id;
+        let shutdown_fd = vm_ctx.shutdown_fd;
+        let vsock_sock_path = vm_ctx
+            .vsock_sock_path
+            .clone()
+            .ok_or_else(|| eyre::eyre!("libkrun: missing vsock socket path"))?;
+        let vm_thread = start_libkrun_vm(vm_ctx.ctx);
+
         log::debug!("libkrun: waiting for guest to be ready (with timeout)...");
-        let listener = ready_listener.unwrap();
+        let listener = ready_listener;
         let listener_fd = listener.as_raw_fd();
         let mut poll_fds = [libc::pollfd {
             fd:      listener_fd,
@@ -696,7 +838,8 @@ pub fn run_command_in_krun(
                 return Err(eyre::eyre!("Poll error on ready socket"));
             }
             _ => {
-                let (stream, _addr) = listener.accept()
+                let (stream, _addr) = listener
+                    .accept()
                     .map_err(|e| eyre::eyre!("Failed to accept on ready socket: {}", e))?;
                 log::debug!("libkrun: guest connected to ready socket, guest is ready!");
                 drop(stream);
@@ -706,16 +849,36 @@ pub fn run_command_in_krun(
         let exit_code = send_command_via_unix_socket(
             &config.cmd_parts,
             run_options.use_pty,
-            vm_ctx.vsock_sock_path.as_deref().unwrap(),
+            run_options.reuse_vm,
+            &vsock_sock_path,
         )
         .map_err(|e| eyre::eyre!("Failed to send command via Unix socket: {}", e))?;
         log::debug!("libkrun: vsock command completed with exit code {}", exit_code);
 
+        if run_options.reuse_vm {
+            #[cfg(not(target_os = "linux"))]
+            {
+                *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
+                    ctx_id,
+                    shutdown_fd,
+                    vsock_sock_path,
+                    vm_thread,
+                    env_root: env_root.to_path_buf(),
+                });
+                log::debug!("libkrun: VM session kept alive for reuse");
+                return apply_krun_exit_policy(exit_code, run_options);
+            }
+        }
+
         log::debug!("libkrun: triggering VM shutdown via eventfd...");
         let buf = 1u64.to_le_bytes();
-        let write_result = unsafe { libc::write(vm_ctx.shutdown_fd, buf.as_ptr() as *const _, buf.len()) };
+        let write_result =
+            unsafe { libc::write(shutdown_fd, buf.as_ptr() as *const _, buf.len()) };
         if write_result < 0 {
-            log::warn!("libkrun: failed to write shutdown eventfd: {}", std::io::Error::last_os_error());
+            log::warn!(
+                "libkrun: failed to write shutdown eventfd: {}",
+                std::io::Error::last_os_error()
+            );
         }
 
         match vm_thread.join() {
@@ -727,10 +890,6 @@ pub fn run_command_in_krun(
             }
         }
 
-        // Explicitly free the context before exit to release KVM resources.
-        // std::process::exit() does NOT call Drop on local variables, so we must
-        // manually clean up to avoid resource leaks that cause "Out of memory" errors
-        // in subsequent runs.
         log::debug!("libkrun: freeing context before exit...");
         unsafe {
             let _ = krun_free_ctx(ctx_id);
@@ -740,11 +899,14 @@ pub fn run_command_in_krun(
         std::process::exit(exit_code);
     }
 
+    let vm_ctx = create_and_configure_vm(env_root, run_options, &config)?;
+    log::debug!("libkrun: starting VM thread...");
+    let ctx_id = vm_ctx.ctx.ctx_id;
+    let vm_thread = start_libkrun_vm(vm_ctx.ctx);
+
     log::debug!("libkrun: waiting for VM thread to finish...");
     match vm_thread.join() {
         Ok(exit_status) => {
-            // Explicitly free the context before exit to release KVM resources.
-            // std::process::exit() does NOT call Drop on local variables.
             log::debug!("libkrun: freeing context before exit...");
             unsafe {
                 let _ = krun_free_ctx(ctx_id);
@@ -852,7 +1014,7 @@ fn percent_encode(s: &str) -> String {
 
 use std::io::BufRead;
 use std::time::Duration;
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 use console::Term;
 use lazy_static::lazy_static;
 use nix::sys::signal::{signal, Signal, SigHandler};
@@ -890,12 +1052,23 @@ enum StreamMessage {
 }
 
 /// Build command request for vm-daemon.
-fn build_command_request(cmd_parts: &[String], use_pty: bool) -> serde_json::Value {
-    serde_json::json!({
-        "type": "command",
-        "command": cmd_parts,
-        "pty": use_pty,
-    })
+fn build_command_request(cmd_parts: &[String], use_pty: bool, reuse_vm: bool) -> serde_json::Value {
+    let mut m = serde_json::Map::new();
+    m.insert("type".to_string(), serde_json::json!("command"));
+    m.insert(
+        "command".to_string(),
+        serde_json::Value::Array(
+            cmd_parts
+                .iter()
+                .map(|s| serde_json::Value::String(s.clone()))
+                .collect(),
+        ),
+    );
+    m.insert("pty".to_string(), serde_json::Value::Bool(use_pty));
+    if reuse_vm {
+        m.insert("reuse_vm".to_string(), serde_json::Value::Bool(true));
+    }
+    serde_json::Value::Object(m)
 }
 
 /// Connect to Unix socket with retry logic (for libkrun vsock emulation).
@@ -938,15 +1111,21 @@ fn resolve_use_pty(use_pty: Option<bool>) -> bool {
 fn send_command_via_unix_socket(
     cmd_parts: &[String],
     use_pty: Option<bool>,
+    reuse_vm: bool,
     sock_path: &Path,
 ) -> Result<i32> {
     let should_use_pty = resolve_use_pty(use_pty);
-    log::debug!("libkrun: use_pty={:?}, should_use_pty={}", use_pty, should_use_pty);
+    log::debug!(
+        "libkrun: use_pty={:?}, should_use_pty={}, reuse_vm={}",
+        use_pty,
+        should_use_pty,
+        reuse_vm
+    );
 
     let mut stream = connect_unix_socket_with_retry(sock_path, 30)?;
     log::debug!("libkrun: Unix socket connected, sending command {:?}", cmd_parts);
 
-    let request = build_command_request(cmd_parts, should_use_pty);
+    let request = build_command_request(cmd_parts, should_use_pty, reuse_vm);
     let request_json = serde_json::to_vec(&request)?;
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
