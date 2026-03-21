@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::models::{dirs, Package, PackageFormat, InstalledPackageInfo};
 use crate::package;
 #[cfg(unix)] use crate::userdb;
-use crate::mtree::escape_mtree_path;
+use crate::mtree::{escape_mtree_path, unescape_mtree_path};
 use log;
 
 /// Unpack a package file
@@ -881,11 +881,13 @@ fn validate_store_integrity(pkgline: &str) -> bool {
         if parts.is_empty() {
             continue;
         }
-        let path = parts[0];
-        if path.ends_with('/') {
+        // Unescape the mtree path (e.g., "\134" -> "\")
+        let escaped_path = parts[0];
+        if escaped_path.ends_with('/') {
             continue; // Skip directories
         }
-        let file_path = fs_dir.join(path);
+        let path = unescape_mtree_path(escaped_path);
+        let file_path = fs_dir.join(&path);
         if !lfs::exists_on_host(&file_path) {
             missing += 1;
             log::trace!("validate_store_integrity: file missing in {}: {}", pkgline, path);

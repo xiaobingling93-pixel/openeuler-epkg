@@ -886,7 +886,7 @@ pub fn fixup_file_permissions_with_mode(target_path: &Path, mode: u32, is_dir: b
     {
         if let Err(e) = crate::ntfs_ea::set_posix_mode(target_path, mode, is_dir) {
             log::warn!(
-                "Failed to set POSIX mode for {}: {}",
+                "Skipping POSIX mode for {}: {}",
                 target_path.display(),
                 e
             );
