@@ -102,6 +102,122 @@ fn check_implicit_provide(
     Ok(false)
 }
 
+fn provide_remainder_has_ignored_comparison_operators(remainder_trimmed: &str) -> bool {
+    !remainder_trimmed.is_empty()
+        && (remainder_trimmed.starts_with(">=")
+            || remainder_trimmed.starts_with("<=")
+            || remainder_trimmed.starts_with(" > ")
+            || remainder_trimmed.starts_with(" < ")
+            || (remainder_trimmed.starts_with('>') && !remainder_trimmed.starts_with(">="))
+            || (remainder_trimmed.starts_with('<') && !remainder_trimmed.starts_with("<=")))
+}
+
+/// Returns `true` if this provide line alone satisfies the requirement (early exit from outer search).
+fn single_provide_entry_satisfies(
+    provider_pkgkey: &str,
+    capability: &str,
+    base_capability: &str,
+    bundled_variant: &str,
+    provider_pkg_version: &str,
+    constraints: &Vec<VersionConstraint>,
+    format: PackageFormat,
+    provide_entry: &str,
+) -> Result<bool> {
+    let provide_entry_trimmed = provide_entry.trim();
+
+    let matches_direct = provide_entry_trimmed.starts_with(base_capability);
+    let matches_bundled = provide_entry_trimmed.starts_with(bundled_variant);
+
+    if !matches_direct && !matches_bundled {
+        return Ok(false);
+    }
+
+    let matched_capability = if matches_bundled {
+        bundled_variant
+    } else {
+        base_capability
+    };
+
+    // Check if the remainder (after capability name) is valid
+    // IMPORTANT: Package 'provides' fields only support cap_with_arch or cap_with_arch EQUALS cap_version.
+    //
+    // Operators like >=, >, <=, < are artifacts from metadata parsing and should be ignored.
+    // wfg /c/epkg% gr -c '^provides: .*>' ~/.cache/epkg/channels/|g -v ':0$'
+    // /home/wfg/.cache/epkg/channels/opensuse-16.0/oss/x86_64/packages.txt:10
+    // /home/wfg/.cache/epkg/channels/fedora-42/Everything-updates/x86_64/packages.txt:11
+    // /home/wfg/.cache/epkg/channels/fedora-42/Everything/x86_64/packages.txt:12
+    // wfg /c/epkg% gr -c '^provides: .*<' ~/.cache/epkg/channels/|g -v ':0$'
+    // /home/wfg/.cache/epkg/channels/opensuse-16.0/oss/x86_64/packages.txt:10
+    // /home/wfg/.cache/epkg/channels/fedora-42/Everything-updates/x86_64/packages.txt:5
+    // /home/wfg/.cache/epkg/channels/fedora-42/Everything/x86_64/packages.txt:22
+    //
+    // Also handle library aliases like "lib.so=lib.so-64" for Arch Linux
+    let remainder = &provide_entry_trimmed[matched_capability.len()..];
+    let remainder_trimmed = remainder.trim_start();
+
+    if provide_remainder_has_ignored_comparison_operators(remainder_trimmed) {
+        return Ok(false);
+    }
+
+    if !remainder_trimmed.is_empty()
+        && !remainder_trimmed.starts_with('=')
+        && !remainder_trimmed.starts_with("(= ")
+    {
+        return Ok(false);
+    }
+
+    if format == PackageFormat::Pacman && remainder_trimmed.starts_with('=') {
+        let after_equals = &remainder_trimmed[1..];
+        if after_equals.contains(".so") && !after_equals.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            return Ok(true);
+        }
+    }
+
+    let provide_version = extract_version_from_remainder(remainder_trimmed, provide_entry);
+
+    let has_non_conditional_constraints = constraints
+        .iter()
+        .any(|c| !matches!(c.operator, Operator::IfInstall));
+    let mut used_package_version_directly = false;
+    let provided_version = if let Some((_, version_str)) = provide_version {
+        version_str.trim()
+    } else {
+        if has_non_conditional_constraints {
+            used_package_version_directly = true;
+            provider_pkg_version
+        } else {
+            return Ok(true);
+        }
+    };
+
+    if check_version_satisfies_constraints(provided_version, constraints, format)? {
+        log::debug!(
+            "Provider {} provides '{}' version '{}' satisfies all constraints",
+            provider_pkgkey, capability, provided_version
+        );
+        return Ok(true);
+    }
+
+    if !used_package_version_directly
+        && format == PackageFormat::Rpm
+        && rpm_constraints_require_release(constraints)
+        && rpm_provide_missing_release(provided_version, provider_pkg_version)
+    {
+        if check_version_satisfies_constraints(provider_pkg_version, constraints, format)? {
+            log::debug!(
+                "Provider {} fallback: using package version '{}' for capability '{}' satisfies constraints {:?}",
+                provider_pkgkey,
+                provider_pkg_version,
+                capability,
+                constraints
+            );
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
 /// Check if a provider package's provides satisfy version constraints for a capability
 pub fn check_provider_satisfies_constraints(
     provider_pkg: &Package,
@@ -120,7 +236,7 @@ pub fn check_provider_satisfies_constraints(
         capability
     };
 
-    let provider_pkg_version = provider_pkg.version.trim().to_string();
+    let provider_pkg_version = provider_pkg.version.trim();
 
     log::trace!(
         "Checking provider {} for capability '{}' (base: '{}') with constraints {:?}",
@@ -144,128 +260,17 @@ pub fn check_provider_satisfies_constraints(
         };
 
         for provide_entry in provide_items {
-            let provide_entry_trimmed = provide_entry.trim();
-
-            // Check if this provide entry matches the capability (direct or bundled)
-            // First check direct match
-            let matches_direct = provide_entry_trimmed.starts_with(base_capability);
-            // Then check bundled variant match
-            let matches_bundled = provide_entry_trimmed.starts_with(&bundled_variant);
-
-            if !matches_direct && !matches_bundled {
-                continue; // Doesn't match at all
-            }
-
-            // Use the appropriate capability name for remainder checking
-            let matched_capability = if matches_bundled {
-                &bundled_variant
-            } else {
-                base_capability
-            };
-
-            // Check if the remainder (after capability name) is valid
-            // IMPORTANT: Package 'provides' fields only support cap_with_arch or cap_with_arch EQUALS cap_version.
-            //
-            // Operators like >=, >, <=, < are artifacts from metadata parsing and should be ignored.
-            // wfg /c/epkg% gr -c '^provides: .*>' ~/.cache/epkg/channels/|g -v ':0$'
-            // /home/wfg/.cache/epkg/channels/opensuse-16.0/oss/x86_64/packages.txt:10
-            // /home/wfg/.cache/epkg/channels/fedora-42/Everything-updates/x86_64/packages.txt:11
-            // /home/wfg/.cache/epkg/channels/fedora-42/Everything/x86_64/packages.txt:12
-            // wfg /c/epkg% gr -c '^provides: .*<' ~/.cache/epkg/channels/|g -v ':0$'
-            // /home/wfg/.cache/epkg/channels/opensuse-16.0/oss/x86_64/packages.txt:10
-            // /home/wfg/.cache/epkg/channels/fedora-42/Everything-updates/x86_64/packages.txt:5
-            // /home/wfg/.cache/epkg/channels/fedora-42/Everything/x86_64/packages.txt:22
-            //
-            // Also handle library aliases like "lib.so=lib.so-64" for Arch Linux
-            let remainder = &provide_entry_trimmed[matched_capability.len()..];
-            let remainder_trimmed = remainder.trim_start();
-
-            // Explicitly skip provides with invalid operators (>=, <=, >, <) - these are artifacts
-            if !remainder_trimmed.is_empty() && (
-                remainder_trimmed.starts_with(">=") ||
-                remainder_trimmed.starts_with("<=") ||
-                remainder_trimmed.starts_with(" > ") ||
-                remainder_trimmed.starts_with(" < ") ||
-                (remainder_trimmed.starts_with('>') && !remainder_trimmed.starts_with(">=")) ||
-                (remainder_trimmed.starts_with('<') && !remainder_trimmed.starts_with("<="))
-            ) {
-                // Ignore provides with operators other than "=" (artifacts from metadata parsing)
-                continue;
-            }
-
-            if !remainder_trimmed.is_empty() && !remainder_trimmed.starts_with('=') &&
-               !remainder_trimmed.starts_with("(= ") {
-                // Doesn't match - capability name is a prefix of something else
-                continue;
-            }
-
-            // Check if this is a library alias (Arch Linux format: "lib.so=lib.so-64")
-            // Library aliases don't have version constraints, so they satisfy any requirement for the base capability
-            if format == PackageFormat::Pacman && remainder_trimmed.starts_with('=') {
-                let after_equals = &remainder_trimmed[1..];
-                // Check if it looks like a library alias (contains .so and doesn't start with digit)
-                if after_equals.contains(".so") && !after_equals.chars().next().map_or(false, |c| c.is_ascii_digit()) {
-                    // This is a library alias - it satisfies the requirement without version checking
-                    // (since requires for library aliases are parsed as the base capability without constraints)
-                    return Ok(true);
-                }
-            }
-
-            // Extract version from provide entry if present
-            // Use remainder_trimmed to handle leading spaces in Debian format
-            let provide_version = extract_version_from_remainder(remainder_trimmed, provide_entry);
-
-            // If no version in provide entry, use the package's own version
-            // This is standard behavior across all package formats: when a package provides
-            // a capability without a version, the package's version is used for constraint checking
-            // NOTE: In all package formats (RPM, Debian, Alpine, Pacman, etc.), provides are
-            // always stored as exact versions with "=", never with operators like ">=".
-            // The version in the provide entry is the actual version at which the package
-            // provides the capability. Version operators (>=, >, <=, <) are only used in
-            // requirements/constraints, not in provides.
-            let has_non_conditional_constraints = constraints.iter().any(|c| !matches!(c.operator, Operator::IfInstall));
-            let mut used_package_version_directly = false;
-            let provided_version = if let Some((_, version_str)) = provide_version {
-                // Provide has a version - use that version for constraint checking
-                version_str.trim()
-            } else {
-                // No version in provide entry - use package's own version
-                if has_non_conditional_constraints {
-                    used_package_version_directly = true;
-                    provider_pkg_version.as_str()
-                } else {
-                    // No version constraints (or only conditional), so this satisfies
-                    return Ok(true);
-                }
-            };
-
-            // Check if the provided version satisfies all constraints
-            if check_version_satisfies_constraints(provided_version, constraints, format)? {
-                log::debug!(
-                    "Provider {} provides '{}' version '{}' satisfies all constraints",
-                    provider_pkgkey, capability, provided_version
-                );
+            if single_provide_entry_satisfies(
+                provider_pkgkey,
+                capability,
+                base_capability,
+                &bundled_variant,
+                provider_pkg_version,
+                constraints,
+                format,
+                provide_entry,
+            )? {
                 return Ok(true);
-            }
-
-            // Fallback for RPM: some capabilities (e.g., php-composer()) only record upstream
-            // versions in their provides entries, even though dependencies may specify a release.
-            // If the provide failed because it lacked the release, retry with the package EVR.
-            if !used_package_version_directly
-                && format == PackageFormat::Rpm
-                && rpm_constraints_require_release(constraints)
-                && rpm_provide_missing_release(provided_version, provider_pkg_version.as_str())
-            {
-                if check_version_satisfies_constraints(provider_pkg_version.as_str(), constraints, format)? {
-                    log::debug!(
-                        "Provider {} fallback: using package version '{}' for capability '{}' satisfies constraints {:?}",
-                        provider_pkgkey,
-                        provider_pkg_version,
-                        capability,
-                        constraints
-                    );
-                    return Ok(true);
-                }
             }
         }
     }

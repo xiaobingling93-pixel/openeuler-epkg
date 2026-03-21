@@ -138,54 +138,62 @@ fn handle_if_operator(requires: &str) -> Result<Option<AndDepends>, ParseError> 
 /// - OR expressions in left part:
 ///   `"(package < 3 or package > 3) with constraint"`
 ///   => (package < 3 OR package > 3) AND constraint
+fn parse_with_clause_segment(segment: &str) -> Result<Vec<(String, Vec<VersionConstraint>)>, ParseError> {
+    let inner = if segment.starts_with('(') && segment.ends_with(')') {
+        &segment[1..segment.len() - 1]
+    } else {
+        segment
+    };
+
+    let mut parts = Vec::new();
+    if inner.contains(" or ") {
+        for or_clause in inner.split(" or ") {
+            let or_clause = or_clause.trim();
+            if or_clause.is_empty() {
+                continue;
+            }
+            let normalized_or = normalize_operators_skip_parens(or_clause);
+            let (or_pkg_name, or_constraints) = parse_package(&normalized_or)?;
+            parts.push((or_pkg_name, or_constraints));
+        }
+    } else {
+        let normalized = normalize_operators_skip_parens(segment);
+        let (pkg_name, constraints) = parse_package(&normalized)?;
+        parts.push((pkg_name, constraints));
+    }
+    Ok(parts)
+}
+
+fn merge_or_parts_same_pkg(
+    parts: Vec<(String, Vec<VersionConstraint>)>,
+) -> (String, Vec<VersionConstraint>) {
+    if parts.len() > 1 {
+        let first_pkg = &parts[0].0;
+        let all_same_pkg = parts.iter().all(|(pkg, _)| pkg == first_pkg);
+        if all_same_pkg {
+            let mut combined = Vec::new();
+            for (_, constraints) in &parts {
+                combined.extend(constraints.clone());
+            }
+            (first_pkg.clone(), combined)
+        } else {
+            parts[0].clone()
+        }
+    } else {
+        parts[0].clone()
+    }
+}
+
 fn handle_with_operator(requires: &str) -> Result<Option<AndDepends>, ParseError> {
     if let Some((left_part, right_part)) = split_on_with(requires)? {
         let left_part = left_part.trim();
         let right_part = right_part.trim();
 
-        // Parse the left side - handle OR expressions if present
-        let left_inner = if left_part.starts_with('(') && left_part.ends_with(')') {
-            &left_part[1..left_part.len()-1]
-        } else {
-            left_part
-        };
-
-        let mut left_parts: Vec<(String, Vec<VersionConstraint>)> = Vec::new();
-        if left_inner.contains(" or ") {
-            for or_clause in left_inner.split(" or ") {
-                let or_clause = or_clause.trim();
-                if or_clause.is_empty() {
-                    continue;
-                }
-                let normalized_or = normalize_operators_skip_parens(or_clause);
-                let (or_pkg_name, or_constraints) = parse_package(&normalized_or)?;
-                left_parts.push((or_pkg_name, or_constraints));
-            }
-        } else {
-            let normalized_left = normalize_operators_skip_parens(left_part);
-            let (pkg_name, constraints) = parse_package(&normalized_left)?;
-            left_parts.push((pkg_name, constraints));
-        }
+        let left_parts = parse_with_clause_segment(left_part)?;
 
         // If all OR clauses refer to the same package, combine their constraints
         // Otherwise, use the first one as base (and handle others separately if needed)
-        let (pkg_name, mut base_constraints) = if left_parts.len() > 1 {
-            let first_pkg = &left_parts[0].0;
-            let all_same_pkg = left_parts.iter().all(|(pkg, _)| pkg == first_pkg);
-            if all_same_pkg {
-                // All refer to same package - combine all constraints
-                let mut combined = Vec::new();
-                for (_, constraints) in &left_parts {
-                    combined.extend(constraints.clone());
-                }
-                (first_pkg.clone(), combined)
-            } else {
-                // Different packages - use first as base
-                left_parts[0].clone()
-            }
-        } else {
-            left_parts[0].clone()
-        };
+        let (pkg_name, mut base_constraints) = merge_or_parts_same_pkg(left_parts);
 
         // Handle multiple "with" clauses by recursively parsing the right side
         // The right side may contain additional "with" clauses
@@ -198,50 +206,8 @@ fn handle_with_operator(requires: &str) -> Result<Option<AndDepends>, ParseError
                 let next_left = next_left.trim();
                 let next_right = next_right.trim();
 
-                // Parse the next constraint part - handle OR expressions if present
-                let next_inner = if next_left.starts_with('(') && next_left.ends_with(')') {
-                    &next_left[1..next_left.len()-1]
-                } else {
-                    next_left
-                };
-
-                let mut next_parts: Vec<(String, Vec<VersionConstraint>)> = Vec::new();
-                if next_inner.contains(" or ") {
-                    // Next part contains OR expressions - parse each OR clause
-                    for or_clause in next_inner.split(" or ") {
-                        let or_clause = or_clause.trim();
-                        if or_clause.is_empty() {
-                            continue;
-                        }
-                        let normalized_or = normalize_operators_skip_parens(or_clause);
-                        let (or_pkg_name, or_constraints) = parse_package(&normalized_or)?;
-                        next_parts.push((or_pkg_name, or_constraints));
-                    }
-                } else {
-                    // Next part is a single package - parse normally
-                    let normalized_next = normalize_operators_skip_parens(next_left);
-                    let (pkg_name, constraints) = parse_package(&normalized_next)?;
-                    next_parts.push((pkg_name, constraints));
-                }
-
-                // If all OR clauses refer to the same package, combine their constraints
-                let (next_pkg_name, next_constraints) = if next_parts.len() > 1 {
-                    let first_pkg = &next_parts[0].0;
-                    let all_same_pkg = next_parts.iter().all(|(pkg, _)| pkg == first_pkg);
-                    if all_same_pkg {
-                        // All refer to same package - combine all constraints
-                        let mut combined = Vec::new();
-                        for (_, constraints) in &next_parts {
-                            combined.extend(constraints.clone());
-                        }
-                        (first_pkg.clone(), combined)
-                    } else {
-                        // Different packages - use first as base
-                        next_parts[0].clone()
-                    }
-                } else {
-                    next_parts[0].clone()
-                };
+                let next_parts = parse_with_clause_segment(next_left)?;
+                let (next_pkg_name, next_constraints) = merge_or_parts_same_pkg(next_parts);
 
                 // If package names match, combine constraints
                 if next_pkg_name == pkg_name {
@@ -258,26 +224,7 @@ fn handle_with_operator(requires: &str) -> Result<Option<AndDepends>, ParseError
             } else {
                 // No more "with" clauses, parse the final part
                 let final_trimmed = remaining.trim();
-                let final_inner = if final_trimmed.starts_with('(') && final_trimmed.ends_with(')') {
-                    &final_trimmed[1..final_trimmed.len()-1]
-                } else {
-                    final_trimmed
-                };
-
-                // Parse the OR group on the final part (or single constraint if not an OR group)
-                let mut final_parts: Vec<(String, Vec<VersionConstraint>)> = Vec::new();
-                for or_clause in final_inner.split(" or ") {
-                    let or_clause = or_clause.trim();
-                    if or_clause.is_empty() {
-                        continue;
-                    }
-
-                    // Parse the constraint in this OR clause
-                    let normalized_or = normalize_operators_skip_parens(or_clause);
-                    let (or_pkg_name, or_constraints) = parse_package(&normalized_or)?;
-
-                    final_parts.push((or_pkg_name, or_constraints));
-                }
+                let final_parts = parse_with_clause_segment(final_trimmed)?;
 
                 // If final part has same package name as base, combine constraints
                 // Otherwise, treat as separate AND dependencies

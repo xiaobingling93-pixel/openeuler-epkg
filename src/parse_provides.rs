@@ -20,206 +20,197 @@ use crate::PackageFormat;
 /// - Debian: Items separated by commas with spaces. "node-acorn-bigint (= 1.0.0), node-acorn-class-fields (= 1.0.0)"
 ///   -> {"node-acorn-bigint": "1.0.0", "node-acorn-class-fields": "1.0.0"}
 /// - File paths: "/etc/xdg/autostart" -> {"/etc/xdg/autostart": ""}
-pub fn parse_provides(provides_str: &str, format: PackageFormat) -> HashMap<String, String> {
-    match format {
-        PackageFormat::Apk | PackageFormat::Pacman => {
-            // APK/Pacman: Items separated by whitespace, versions use = directly
-            // Example: "pc:gio-2.0=2.84.4 pc:gio-unix-2.0=2.84.4"
-            // Also handle library aliases like "libstk-5.0.0.so=libstk-5.0.0.so-64"
-            let mut result = HashMap::new();
-            for part in provides_str.split_whitespace() {
-                if part.is_empty() {
-                    continue;
-                }
-                if let Some(equals_pos) = part.find('=') {
-                    let name = part[..equals_pos].to_string();
-                    let version = part[equals_pos + 1..].to_string();
-                    // Check if this is a library alias (e.g., "libstk-5.0.0.so=libstk-5.0.0.so-64")
-                    if version.contains(".so") && !version.chars().next().map_or(false, |c| c.is_ascii_digit()) {
-                        // Extract both the original name and the alias as separate provides
-                        result.insert(name, String::new());
-                        result.insert(version, String::new());
-                    } else {
-                        result.insert(name, version);
-                    }
-                } else {
-                    result.insert(part.to_string(), String::new());
-                }
-            }
-            result
+fn parse_provides_apk_pacman(provides_str: &str) -> HashMap<String, String> {
+    // APK/Pacman: Items separated by whitespace, versions use = directly
+    // Example: "pc:gio-2.0=2.84.4 pc:gio-unix-2.0=2.84.4"
+    // Also handle library aliases like "libstk-5.0.0.so=libstk-5.0.0.so-64"
+    let mut result = HashMap::new();
+    for part in provides_str.split_whitespace() {
+        if part.is_empty() {
+            continue;
         }
-        PackageFormat::Deb => {
-            // Debian: Items separated by commas (often ", " but may include newlines/indentation)
-            // Example: "node-acorn-bigint (= 1.0.0), node-acorn-class-fields (= 1.0.0)"
-            let mut result = HashMap::new();
-            for item in provides_str.split(',') {
-                let trimmed = item.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
+        if let Some(equals_pos) = part.find('=') {
+            let name = part[..equals_pos].to_string();
+            let version = part[equals_pos + 1..].to_string();
+            if version.contains(".so") && !version.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+                result.insert(name, String::new());
+                result.insert(version, String::new());
+            } else {
+                result.insert(name, version);
+            }
+        } else {
+            result.insert(part.to_string(), String::new());
+        }
+    }
+    result
+}
 
-                let mut provide_name = trimmed.to_string();
-                let mut version = String::new();
+fn parse_provides_deb(provides_str: &str) -> HashMap<String, String> {
+    // Debian: Items separated by commas (often ", " but may include newlines/indentation)
+    // Example: "node-acorn-bigint (= 1.0.0), node-acorn-class-fields (= 1.0.0)"
+    let mut result = HashMap::new();
+    for item in provides_str.split(',') {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
 
-                // Check for version constraints in parentheses like "(= version)"
-                if let Some(paren_start) = trimmed.find('(') {
-                    // Check if it's a version constraint like "(= version)"
-                    if trimmed[paren_start..].starts_with("(= ") ||
-                       trimmed[paren_start..].starts_with("(>= ") ||
-                       trimmed[paren_start..].starts_with("(<= ") ||
-                       trimmed[paren_start..].starts_with("(> ") ||
-                       trimmed[paren_start..].starts_with("(< ") {
-                        provide_name = trimmed[..paren_start].trim_end().to_string();
-                        // Extract version from parentheses
-                        if let Some(paren_end) = trimmed[paren_start..].find(')') {
-                            let version_str = &trimmed[paren_start + 3..paren_start + paren_end].trim();
-                            if !version_str.is_empty() {
-                                version = version_str.to_string();
-                            }
-                        }
-                    } else {
-                        // It's an arch spec like "(x86_64)", keep it but check for version after
-                        if let Some(equals_pos) = trimmed.find(" = ") {
-                            provide_name = trimmed[..equals_pos].trim_end().to_string();
-                            version = trimmed[equals_pos + 3..].trim().to_string();
-                        }
+        let mut provide_name = trimmed.to_string();
+        let mut version = String::new();
+
+        if let Some(paren_start) = trimmed.find('(') {
+            if trimmed[paren_start..].starts_with("(= ")
+                || trimmed[paren_start..].starts_with("(>= ")
+                || trimmed[paren_start..].starts_with("(<= ")
+                || trimmed[paren_start..].starts_with("(> ")
+                || trimmed[paren_start..].starts_with("(< ")
+            {
+                provide_name = trimmed[..paren_start].trim_end().to_string();
+                if let Some(paren_end) = trimmed[paren_start..].find(')') {
+                    let version_str = &trimmed[paren_start + 3..paren_start + paren_end].trim();
+                    if !version_str.is_empty() {
+                        version = version_str.to_string();
                     }
-                } else if let Some(equals_pos) = trimmed.find(" = ") {
-                    // Handle "libfoo = 2" format
+                }
+            } else {
+                if let Some(equals_pos) = trimmed.find(" = ") {
                     provide_name = trimmed[..equals_pos].trim_end().to_string();
                     version = trimmed[equals_pos + 3..].trim().to_string();
                 }
-
-                if !provide_name.is_empty() {
-                    result.insert(provide_name, version);
-                }
             }
-            result
+        } else if let Some(equals_pos) = trimmed.find(" = ") {
+            provide_name = trimmed[..equals_pos].trim_end().to_string();
+            version = trimmed[equals_pos + 3..].trim().to_string();
         }
-        PackageFormat::Rpm => {
-            // RPM: Handle comma-separated list of provides/files (high level - vector)
-            // Then parse each individual item (low level - scalar)
-            // Format: "item1 = version1, item2 = version2" or "/path1, /path2"
-            let mut result = HashMap::new();
 
-            // First split by comma to get individual items (high level)
-            for item in provides_str.split(',') {
-                let item = item.trim();
-                if item.is_empty() {
-                    continue;
-                }
+        if !provide_name.is_empty() {
+            result.insert(provide_name, version);
+        }
+    }
+    result
+}
 
-                // For each item, split by whitespace to handle version operators (low level)
-                let parts: Vec<&str> = item.split_whitespace().collect();
-                if parts.is_empty() {
-                    continue;
-                }
+fn rpm_token_equals_inside_parens(pos: usize, text: &str) -> bool {
+    let before = &text[..pos];
+    let mut depth = 0;
+    for ch in before.chars() {
+        if ch == '(' {
+            depth += 1;
+        } else if ch == ')' {
+            depth -= 1;
+        }
+    }
+    depth > 0
+}
 
-                // Helper to check if a position is inside parentheses
-                let is_inside_parens = |pos: usize, text: &str| -> bool {
-                    let before = &text[..pos];
-                    let mut depth = 0;
-                    for ch in before.chars() {
-                        if ch == '(' {
-                            depth += 1;
-                        } else if ch == ')' {
-                            depth -= 1;
-                        }
-                    }
-                    depth > 0
-                };
+fn parse_rpm_provide_item(item: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = item.split_whitespace().collect();
+    if parts.is_empty() {
+        return None;
+    }
 
-                // Process each part of the item
-                let mut provide_name: Option<String> = None;
-                let mut version = String::new();
+    let mut provide_name: Option<String> = None;
+    let mut version = String::new();
 
-                for (idx, part) in parts.iter().enumerate() {
-                    if part.is_empty() {
-                        continue;
-                    }
+    for (idx, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
 
-                    // Check for version operators
-                    if part == &">=" || part == &"<=" || part == &">" || part == &"<" || part == &"=" {
-                        // This is a standalone operator, the next part should be the version
-                        if idx + 1 < parts.len() {
-                            version = parts[idx + 1].to_string();
-                        }
-                        break;
-                    } else if let Some(i) = part.find(">=") {
-                        if !is_inside_parens(i, part) {
-                            provide_name = Some(part[..i].to_string());
-                            version = part[i + 2..].trim().to_string();
-                            break;
-                        } else {
-                            provide_name = Some(part.to_string());
-                        }
-                    } else if let Some(i) = part.find("<=") {
-                        if !is_inside_parens(i, part) {
-                            provide_name = Some(part[..i].to_string());
-                            version = part[i + 2..].trim().to_string();
-                            break;
-                        } else {
-                            provide_name = Some(part.to_string());
-                        }
-                    } else if let Some(i) = part.find('>') {
-                        if !is_inside_parens(i, part) {
-                            provide_name = Some(part[..i].to_string());
-                            version = part[i + 1..].trim().to_string();
-                            break;
-                        } else {
-                            provide_name = Some(part.to_string());
-                        }
-                    } else if let Some(i) = part.find('<') {
-                        if !is_inside_parens(i, part) {
-                            provide_name = Some(part[..i].to_string());
-                            version = part[i + 1..].trim().to_string();
-                            break;
-                        } else {
-                            provide_name = Some(part.to_string());
-                        }
-                    } else if let Some(i) = part.find('=') {
-                        if is_inside_parens(i, part) {
-                            // = is inside parentheses, keep it (e.g., font(:lang=he))
-                            provide_name = Some(part.to_string());
-                        } else {
-                            // = is a version operator, extract name and version
-                            provide_name = Some(part[..i].to_string());
-                            version = part[i + 1..].trim().to_string();
-                            break;
-                        }
-                    } else {
-                        // No version operator, this is the provide name (e.g., file paths)
-                        if provide_name.is_none() {
-                            provide_name = Some(part.to_string());
-                        }
-                    }
-                }
-
-                if let Some(name) = provide_name {
-                    result.insert(name, version);
-                }
+        if part == &">=" || part == &"<=" || part == &">" || part == &"<" || part == &"=" {
+            if idx + 1 < parts.len() {
+                version = parts[idx + 1].to_string();
             }
-
-            result
-        }
-        _ => {
-            // For other formats (Epkg, Conda, Python), use simple whitespace splitting
-            // and extract names and versions
-            let mut result = HashMap::new();
-            for part in provides_str.split_whitespace() {
-                if part.is_empty() {
-                    continue;
-                }
-                if let Some(i) = part.find('=') {
-                    let name = part[..i].to_string();
-                    let version = part[i + 1..].trim().to_string();
-                    result.insert(name, version);
-                } else {
-                    result.insert(part.to_string(), String::new());
-                }
+            break;
+        } else if let Some(i) = part.find(">=") {
+            if !rpm_token_equals_inside_parens(i, part) {
+                provide_name = Some(part[..i].to_string());
+                version = part[i + 2..].trim().to_string();
+                break;
+            } else {
+                provide_name = Some(part.to_string());
             }
-            result
+        } else if let Some(i) = part.find("<=") {
+            if !rpm_token_equals_inside_parens(i, part) {
+                provide_name = Some(part[..i].to_string());
+                version = part[i + 2..].trim().to_string();
+                break;
+            } else {
+                provide_name = Some(part.to_string());
+            }
+        } else if let Some(i) = part.find('>') {
+            if !rpm_token_equals_inside_parens(i, part) {
+                provide_name = Some(part[..i].to_string());
+                version = part[i + 1..].trim().to_string();
+                break;
+            } else {
+                provide_name = Some(part.to_string());
+            }
+        } else if let Some(i) = part.find('<') {
+            if !rpm_token_equals_inside_parens(i, part) {
+                provide_name = Some(part[..i].to_string());
+                version = part[i + 1..].trim().to_string();
+                break;
+            } else {
+                provide_name = Some(part.to_string());
+            }
+        } else if let Some(i) = part.find('=') {
+            if rpm_token_equals_inside_parens(i, part) {
+                provide_name = Some(part.to_string());
+            } else {
+                provide_name = Some(part[..i].to_string());
+                version = part[i + 1..].trim().to_string();
+                break;
+            }
+        } else {
+            if provide_name.is_none() {
+                provide_name = Some(part.to_string());
+            }
         }
+    }
+
+    provide_name.map(|name| (name, version))
+}
+
+fn parse_provides_rpm(provides_str: &str) -> HashMap<String, String> {
+    // RPM: comma-separated list; each item parsed for version operators (whitespace tokens).
+    let mut result = HashMap::new();
+    for item in provides_str.split(',') {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        if let Some((name, version)) = parse_rpm_provide_item(item) {
+            result.insert(name, version);
+        }
+    }
+    result
+}
+
+/// Epkg, Conda, Python, etc.: whitespace-separated tokens, `name=version` when present.
+fn parse_provides_whitespace_equals(provides_str: &str) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+    for part in provides_str.split_whitespace() {
+        if part.is_empty() {
+            continue;
+        }
+        if let Some(i) = part.find('=') {
+            let name = part[..i].to_string();
+            let version = part[i + 1..].trim().to_string();
+            result.insert(name, version);
+        } else {
+            result.insert(part.to_string(), String::new());
+        }
+    }
+    result
+}
+
+pub fn parse_provides(provides_str: &str, format: PackageFormat) -> HashMap<String, String> {
+    match format {
+        PackageFormat::Apk | PackageFormat::Pacman => parse_provides_apk_pacman(provides_str),
+        PackageFormat::Deb => parse_provides_deb(provides_str),
+        PackageFormat::Rpm => parse_provides_rpm(provides_str),
+        _ => parse_provides_whitespace_equals(provides_str),
     }
 }
 
