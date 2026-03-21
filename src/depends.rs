@@ -443,8 +443,9 @@ fn resolve_dependencies_with_resolvo(
             return Ok(HashMap::new());
         }
         Err(e) if flags != base_flags => {
-            // If we tried with additional flags and failed, warn and retry with REQUIRES|BUILD_REQUIRES only
-            log::warn!(
+            // If we tried with additional flags and failed, retry with REQUIRES|BUILD_REQUIRES only
+            // This is a normal fallback behavior, so use debug level
+            log::debug!(
                 "Dependency resolution failed with RECOMMENDS/SUGGESTS: {}. Retrying with {} only.",
                 e,
                 base_flag_desc
