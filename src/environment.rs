@@ -312,9 +312,6 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     // create_environment_dirs() only when pkg_format is Brew.
     // See the Brew-specific block in create_environment_dirs() for details.
 
-    // Ensure usr/bin/epkg exists, pointing to a stable epkg binary (e.g., in self environment)
-    create_epkg_symlink(env_root)?;
-
     // Create "current" symlink in generations directory pointing to generation 1
     force_symlink("1", generations_root.join("current"))?;
 
@@ -323,39 +320,52 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Ensure \$env_root/usr/bin/epkg symlink exists and points to self environment's epkg binary using an absolute path.
+/// Ensure \$env_root/usr/bin/epkg symlink exists and points to appropriate epkg binary.
 ///
-/// This function performs the following:
-/// 1. Locates the self environment (SELF_ENV) using find_env_root()
-/// 2. Checks if self environment's usr/bin/epkg binary exists
-/// 3. Uses the absolute path to self environment's epkg binary
-/// 4. Creates or updates the symlink at \$env_root/usr/bin/epkg to point to the absolute target
+/// On Windows/macOS hosts:
+/// - For Linux-format packages (deb/rpm/arch/apk): use epkg-linux-$arch for VM execution
+/// - For native formats (conda/brew/msys2): use native epkg
+///
+/// On Linux hosts: always use native epkg
 ///
 /// Key behaviors:
 /// - Uses absolute path for the symlink target to work correctly when accessed from host
 /// - Always creates or overwrites the symlink (force_symlink) without checking existing target
 /// - Returns Ok(()) even if self environment not found (no-op)
 /// - Logs debug messages for symlink creation
-///
-/// Purpose:
-/// - Provides a stable epkg binary reference for applet symlinks within the environment
-/// - Absolute symlinks remain valid when accessed from host (e.g., in env with `docker -v`)
-/// - Ensures applet symlinks (init, vm-daemon, etc.) can target the local epkg symlink
-///
-/// Examples:
-/// - Self environment at `/home/user/.epkg/envs/self`, env_root at `/home/user/.epkg/envs/main`:
-///   - Absolute target: `/home/user/.epkg/envs/self/usr/bin/epkg`
-///   - Symlink created: `/home/user/.epkg/envs/main/usr/bin/epkg -> /home/user/.epkg/envs/self/usr/bin/epkg`
-/// - Self environment not found (e.g., fresh system without `epkg self install`):
-///   - No symlink created, function returns Ok(()) (no-op)
-pub fn create_epkg_symlink(env_root: &Path) -> Result<()> {
-    // Try to find epkg binary in self environment
+pub fn create_epkg_symlink(env_root: &Path, pkg_format: &PackageFormat) -> Result<()> {
+    // Try to find appropriate epkg binary in self environment
     if let Some(self_env_root) = find_env_root(SELF_ENV) {
+        let epkg_symlink = crate::dirs::path_join(env_root, &["usr", "bin", "epkg"]);
+
+        // On Windows/macOS with Linux-format packages, use epkg-linux-$arch
+        #[cfg(not(target_os = "linux"))]
+        {
+            let needs_vm = matches!(pkg_format,
+                PackageFormat::Deb | PackageFormat::Rpm | PackageFormat::Apk
+            );
+            let is_arch_linux = *pkg_format == PackageFormat::Pacman &&
+                crate::models::channel_config().distro != "msys2";
+
+            if needs_vm || is_arch_linux {
+                let arch = &crate::config().common.arch;
+                let self_epkg_linux = crate::dirs::path_join(&self_env_root, &["usr", "bin", &format!("epkg-linux-{}", arch)]);
+                if lfs::exists_in_env(&self_epkg_linux) {
+                    log::debug!("Creating epkg symlink {} -> {} (Linux VM)", epkg_symlink.display(), self_epkg_linux.display());
+                    force_symlink(&self_epkg_linux, &epkg_symlink)
+                        .with_context(|| format!("Failed to create epkg symlink in {}", epkg_symlink.display()))?;
+                    return Ok(());
+                } else {
+                    log::debug!("epkg-linux-{} not found in self env, skipping epkg symlink", arch);
+                    return Ok(());
+                }
+            }
+        }
+
+        // Default: use native epkg binary
         let self_epkg = crate::dirs::path_join(&self_env_root, &["usr", "bin", "epkg"]);
         if lfs::exists_in_env(&self_epkg) {
-            // Create absolute symlink from env_root/usr/bin/epkg to self_epkg
-            let epkg_symlink = crate::dirs::path_join(env_root, &["usr", "bin", "epkg"]);
-            log::debug!("Creating/updating epkg symlink {} -> {}", epkg_symlink.display(), self_epkg.display());
+            log::debug!("Creating epkg symlink {} -> {} (native)", epkg_symlink.display(), self_epkg.display());
             force_symlink(&self_epkg, &epkg_symlink)
                 .with_context(|| format!("Failed to create epkg symlink in {}", epkg_symlink.display()))?;
         }
@@ -414,6 +424,9 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
     if pkg_format == &PackageFormat::Deb {
         ensure_triggers_dir(env_root)?;
     }
+
+    // Ensure usr/bin/epkg exists, pointing to appropriate epkg binary
+    create_epkg_symlink(env_root, pkg_format)?;
 
     // Create symlinks for applets in usr/local/bin/
     create_applet_symlinks(env_root, pkg_format)?;
