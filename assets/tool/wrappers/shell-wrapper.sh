@@ -14,9 +14,9 @@ _load_mirror_env_vars() {
     while IFS= read -r _line; do
         case "$_line" in \#*|"") continue ;; esac
         case "$_line" in
-            *:*)
-                _key="${_line%%:*}"
-                _val="${_line#*:}"
+            *": "*)
+                _key="${_line%%: *}"
+                _val="${_line#*: }"
                 _key=$(echo "$_key" | tr -d ' \t')
                 _val=$(echo "$_val" | tr -d ' \t')
                 if [ -n "$_key" ]; then

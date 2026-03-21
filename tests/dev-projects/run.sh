@@ -20,7 +20,7 @@ while [ $# -gt 0 ]; do
         -h|--help)
             echo "Usage: $0 [-d|--debug|-dd|-ddd] [-o|--os OS] [-t|--test LANG]"
             echo "  -o OS   Run only this OS (e.g. ubuntu, alpine)"
-            echo "  -t LANG Run only this lang test (e.g. python, go)"
+            echo "  -t LANG Run only this lang test (e.g. python, go, curl)"
             echo "  Env is removed before create if present; never removed at end (left for debug)."
             echo "OSes: $ALL_OS"
             exit 0

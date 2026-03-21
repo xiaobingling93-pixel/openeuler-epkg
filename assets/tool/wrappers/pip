@@ -14,9 +14,9 @@ def load_mirror_env_vars(tool):
             line = line.strip()
             if not line or line.startswith('#'):
                 continue
-            if ':' not in line:
+            if ': ' not in line:
                 continue
-            key, val = line.split(':', 1)
+            key, val = line.split(': ', 1)
             key = key.strip()
             val = val.strip()
             if key and key not in os.environ:

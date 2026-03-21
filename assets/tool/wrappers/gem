@@ -11,8 +11,8 @@ def load_mirror_env_vars(tool)
     line = line.strip
     next if line.empty? || line.start_with?('#')
 
-    if line.include?(':')
-      key, val = line.split(':', 2)
+    if line.include?(': ')
+      key, val = line.split(': ', 2)
       key = key.strip
       val = val.strip
       if key && !ENV.key?(key)
