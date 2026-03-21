@@ -412,8 +412,7 @@ fn determine_epkg_binary_for_env(env_root: &Path, pkg_format: &PackageFormat) ->
     #[cfg(not(target_os = "linux"))]
     {
         let needs_vm = matches!(pkg_format,
-            PackageFormat::Deb | PackageFormat::Rpm | PackageFormat::Apk |
-            PackageFormat::Pacman // Note: Pacman includes MSYS2 which is native on Windows
+            PackageFormat::Deb | PackageFormat::Rpm | PackageFormat::Apk
         );
 
         // For Arch Linux (not MSYS2), we need VM
