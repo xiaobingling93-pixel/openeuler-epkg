@@ -441,191 +441,168 @@ fn parse_substitution_flags(flags: &str) -> SubstitutionFlags {
     }
 }
 
-fn parse_address(script: &str) -> Result<(Option<Address>, &str)> {
-    let script = script.trim_start();
+fn parse_address_component(s: &str) -> Result<Option<(Address, usize)>, color_eyre::eyre::Error> {
+    if s.is_empty() {
+        return Ok(None);
+    }
 
-    // Helper to parse a single address component
-    fn parse_component(s: &str) -> Result<Option<(Address, usize)>, color_eyre::eyre::Error> {
-        if s.is_empty() {
-            return Ok(None);
-        }
+    if s.starts_with('$') {
+        return Ok(Some((Address::LastLine, 1)));
+    }
 
-        // Check for $ (last line)
-        if s.starts_with('$') {
-            return Ok(Some((Address::LastLine, 1)));
-        }
-
-        // Check for regex pattern address like /pattern/ (delimiter can be escaped as \/)
-        if s.starts_with('/') {
-            let rest = &s[1..];
-            let mut i = 0;
-            let chars: Vec<char> = rest.chars().collect();
-            while i < chars.len() {
-                if chars[i] == '\\' && i + 1 < chars.len() {
-                    i += 2;
-                    continue;
-                }
-                if chars[i] == '/' {
-                    let end_byte = rest.char_indices().nth(i).map(|(o, _)| o).unwrap_or(rest.len());
-                    let pattern = s[..=1 + end_byte].to_string();
-                    return Ok(Some((Address::Pattern(pattern), 2 + end_byte)));
-                }
-                i += 1;
+    if s.starts_with('/') {
+        let rest = &s[1..];
+        let mut i = 0;
+        let chars: Vec<char> = rest.chars().collect();
+        while i < chars.len() {
+            if chars[i] == '\\' && i + 1 < chars.len() {
+                i += 2;
+                continue;
             }
+            if chars[i] == '/' {
+                let end_byte = rest.char_indices().nth(i).map(|(o, _)| o).unwrap_or(rest.len());
+                let pattern = s[..=1 + end_byte].to_string();
+                return Ok(Some((Address::Pattern(pattern), 2 + end_byte)));
+            }
+            i += 1;
         }
+    }
 
-        // Check for line number
+    let mut digit_len = 0;
+    while digit_len < s.len() && s.chars().nth(digit_len).unwrap().is_ascii_digit() {
+        digit_len += 1;
+    }
+    if digit_len > 0 {
+        if let Ok(line_num) = s[..digit_len].parse::<u64>() {
+            return Ok(Some((Address::LineNumber(line_num), digit_len)));
+        }
+    }
+
+    Ok(None)
+}
+
+fn parse_address_offset_suffix(
+    first_addr: &Option<Address>,
+    after_comma: &str,
+    first_len: usize,
+) -> Result<Option<(Address, usize)>, color_eyre::eyre::Error> {
+    if after_comma.starts_with('+') || after_comma.starts_with('-') {
+        let sign = after_comma.chars().next().unwrap();
+        let offset_str = &after_comma[1..];
         let mut digit_len = 0;
-        while digit_len < s.len() && s.chars().nth(digit_len).unwrap().is_ascii_digit() {
+        while digit_len < offset_str.len() && offset_str.chars().nth(digit_len).unwrap().is_ascii_digit() {
             digit_len += 1;
         }
         if digit_len > 0 {
-            if let Ok(line_num) = s[..digit_len].parse::<u64>() {
-                return Ok(Some((Address::LineNumber(line_num), digit_len)));
-            }
-        }
-
-        Ok(None)
-    }
-
-    // Parse offset suffix (+N/-N) after comma
-    fn parse_offset_suffix(
-        first_addr: &Option<Address>,
-        after_comma: &str,
-        first_len: usize,
-    ) -> Result<Option<(Address, usize)>, color_eyre::eyre::Error> {
-        if after_comma.starts_with('+') || after_comma.starts_with('-') {
-            let sign = after_comma.chars().next().unwrap();
-            let offset_str = &after_comma[1..];
-            let mut digit_len = 0;
-            while digit_len < offset_str.len() && offset_str.chars().nth(digit_len).unwrap().is_ascii_digit() {
-                digit_len += 1;
-            }
-            if digit_len > 0 {
-                if let Ok(offset) = offset_str[..digit_len].parse::<u64>() {
-                    let offset_i64 = if sign == '+' { offset as i64 } else { -(offset as i64) };
-                    let total_len = first_len + 1 + (after_comma.len() - offset_str.len()) + digit_len;
-                    match first_addr {
-                        Some(Address::LineNumber(start)) => {
-                            return Ok(Some((Address::RangeOffset(*start, offset_i64), total_len)));
-                        }
-                        Some(Address::Pattern(pattern)) => {
-                            return Ok(Some((Address::PatternOffset(pattern.clone(), offset_i64), total_len)));
-                        }
-                        _ => {
-                            // Invalid combination
-                        }
+            if let Ok(offset) = offset_str[..digit_len].parse::<u64>() {
+                let offset_i64 = if sign == '+' { offset as i64 } else { -(offset as i64) };
+                let total_len = first_len + 1 + (after_comma.len() - offset_str.len()) + digit_len;
+                match first_addr {
+                    Some(Address::LineNumber(start)) => {
+                        return Ok(Some((Address::RangeOffset(*start, offset_i64), total_len)));
                     }
-                }
-            }
-        }
-        Ok(None)
-    }
-
-    // Parse range suffix (,second) after comma
-    fn parse_range_suffix(
-        first_addr: &Option<Address>,
-        after_comma: &str,
-        first_len: usize,
-    ) -> Result<Option<(Address, usize)>, color_eyre::eyre::Error> {
-        // Parse second component (could be number, $, or empty)
-        match parse_component(after_comma)? {
-            Some((second_addr, second_len)) => {
-                let total_len = first_len + 1 + second_len;
-                match (first_addr, second_addr) {
-                    (Some(Address::LineNumber(start)), Address::LineNumber(end)) => {
-                        return Ok(Some((Address::Range(*start, end), total_len)));
-                    }
-                    (Some(Address::Pattern(pattern)), Address::LineNumber(end)) => {
-                        return Ok(Some((Address::PatternTo(pattern.clone(), end), total_len)));
-                    }
-                    (Some(Address::LineNumber(start)), Address::LastLine) => {
-                        return Ok(Some((Address::Range(*start, u64::MAX), total_len)));
-                    }
-                    (Some(Address::Pattern(pattern)), Address::LastLine) => {
-                        return Ok(Some((Address::PatternTo(pattern.clone(), u64::MAX), total_len)));
-                    }
-                    (Some(Address::LineNumber(start)), Address::Pattern(pattern)) => {
-                        return Ok(Some((Address::RangePattern(*start, pattern), total_len)));
-                    }
-                    (Some(Address::Pattern(pattern1)), Address::Pattern(pattern2)) => {
-                        return Ok(Some((Address::PatternPattern(pattern1.clone(), pattern2), total_len)));
+                    Some(Address::Pattern(pattern)) => {
+                        return Ok(Some((Address::PatternOffset(pattern.clone(), offset_i64), total_len)));
                     }
                     _ => {}
                 }
             }
-            None => {
-                // Second component is empty: ,end or start, or pattern,
-                let total_len = first_len + 1;
-                match first_addr {
-                    Some(Address::LineNumber(start)) => {
-                        // start, (range from start to end of file)
-                        return Ok(Some((Address::RangeFrom(*start), total_len)));
-                    }
-                    Some(Address::Pattern(pattern)) => {
-                        // /pattern/, (range from pattern to end of file)
-                        return Ok(Some((Address::PatternTo(pattern.clone(), u64::MAX), total_len)));
-                    }
-                    None => {
-                        // ,end (range from beginning to end)
-                        // Need to parse end component
-                        match parse_component(after_comma)? {
-                            Some((addr, second_len)) => {
-                                let total_len = first_len + 1 + second_len;
-                                match addr {
-                                    Address::LineNumber(end) => {
-                                        return Ok(Some((Address::RangeTo(end), total_len)));
-                                    }
-                                    Address::LastLine => {
-                                        return Ok(Some((Address::RangeTo(u64::MAX), total_len)));
-                                    }
-                                    Address::Pattern(pattern) => {
-                                        return Ok(Some((Address::RangeToPattern(pattern), total_len)));
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            None => {
-                                // No second component, shouldn't happen because we already matched None above
-                            }
-                        }
-                    }
-                    _ => {} // Other address types not valid with trailing comma
+        }
+    }
+    Ok(None)
+}
+
+fn parse_address_range_suffix(
+    first_addr: &Option<Address>,
+    after_comma: &str,
+    first_len: usize,
+) -> Result<Option<(Address, usize)>, color_eyre::eyre::Error> {
+    match parse_address_component(after_comma)? {
+        Some((second_addr, second_len)) => {
+            let total_len = first_len + 1 + second_len;
+            match (first_addr, second_addr) {
+                (Some(Address::LineNumber(start)), Address::LineNumber(end)) => {
+                    return Ok(Some((Address::Range(*start, end), total_len)));
                 }
+                (Some(Address::Pattern(pattern)), Address::LineNumber(end)) => {
+                    return Ok(Some((Address::PatternTo(pattern.clone(), end), total_len)));
+                }
+                (Some(Address::LineNumber(start)), Address::LastLine) => {
+                    return Ok(Some((Address::Range(*start, u64::MAX), total_len)));
+                }
+                (Some(Address::Pattern(pattern)), Address::LastLine) => {
+                    return Ok(Some((Address::PatternTo(pattern.clone(), u64::MAX), total_len)));
+                }
+                (Some(Address::LineNumber(start)), Address::Pattern(pattern)) => {
+                    return Ok(Some((Address::RangePattern(*start, pattern), total_len)));
+                }
+                (Some(Address::Pattern(pattern1)), Address::Pattern(pattern2)) => {
+                    return Ok(Some((Address::PatternPattern(pattern1.clone(), pattern2), total_len)));
+                }
+                _ => {}
             }
         }
-        Ok(None)
+        None => {
+            let total_len = first_len + 1;
+            match first_addr {
+                Some(Address::LineNumber(start)) => {
+                    return Ok(Some((Address::RangeFrom(*start), total_len)));
+                }
+                Some(Address::Pattern(pattern)) => {
+                    return Ok(Some((Address::PatternTo(pattern.clone(), u64::MAX), total_len)));
+                }
+                None => {
+                    match parse_address_component(after_comma)? {
+                        Some((addr, second_len)) => {
+                            let total_len = first_len + 1 + second_len;
+                            match addr {
+                                Address::LineNumber(end) => {
+                                    return Ok(Some((Address::RangeTo(end), total_len)));
+                                }
+                                Address::LastLine => {
+                                    return Ok(Some((Address::RangeTo(u64::MAX), total_len)));
+                                }
+                                Address::Pattern(pattern) => {
+                                    return Ok(Some((Address::RangeToPattern(pattern), total_len)));
+                                }
+                                _ => {}
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                _ => {}
+            }
+        }
     }
+    Ok(None)
+}
 
-    // Try to parse first component
-    let (first_addr, first_len) = match parse_component(script)? {
+fn parse_address(script: &str) -> Result<(Option<Address>, &str)> {
+    let script = script.trim_start();
+
+    let (first_addr, first_len) = match parse_address_component(script)? {
         Some((addr, len)) => (Some(addr), len),
         None => (None, 0),
     };
 
     let after_first = &script[first_len..].trim_start();
 
-    // Check if there's a comma and second component
     if after_first.starts_with(',') {
         let after_comma = &after_first[1..].trim_start();
 
-        // Check for offset syntax: +N or -N
-        if let Some((addr, total_len)) = parse_offset_suffix(&first_addr, after_comma, first_len)? {
+        if let Some((addr, total_len)) = parse_address_offset_suffix(&first_addr, after_comma, first_len)? {
             return Ok((Some(addr), &script[total_len..].trim_start()));
-        } else {
-            // Parse range suffix
-            if let Some((addr, total_len)) = parse_range_suffix(&first_addr, after_comma, first_len)? {
-                return Ok((Some(addr), &script[total_len..].trim_start()));
-            }
+        }
+        if let Some((addr, total_len)) = parse_address_range_suffix(&first_addr, after_comma, first_len)? {
+            return Ok((Some(addr), &script[total_len..].trim_start()));
         }
     }
 
-    // If we have a first address but no comma
     if let Some(addr) = &first_addr {
         return Ok((Some(addr.clone()), after_first));
     }
 
-    // No address found
     Ok((None, script))
 }
 
@@ -660,6 +637,43 @@ fn split_commands_at_semicolon(script: &str) -> Vec<&str> {
     segments
 }
 
+fn merge_sed_segments_with_braces(source: &str) -> Vec<String> {
+    let raw_segments: Vec<&str> = split_commands_at_semicolon(source)
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut segments: Vec<String> = Vec::new();
+    let mut j = 0;
+    while j < raw_segments.len() {
+        let mut merged = raw_segments[j].to_string();
+        let mut depth = 0u32;
+        for c in merged.chars() {
+            match c {
+                '{' => depth += 1,
+                '}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        j += 1;
+        while depth > 0 && j < raw_segments.len() {
+            merged.push(';');
+            merged.push_str(raw_segments[j]);
+            for c in raw_segments[j].chars() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => depth = depth.saturating_sub(1),
+                    _ => {}
+                }
+            }
+            j += 1;
+        }
+        if !merged.trim().is_empty() {
+            segments.push(merged);
+        }
+    }
+    segments
+}
+
 /// Find the position of the matching closing '}' for the first '{' in s (0-indexed char offset).
 /// Returns None if no matching brace. The first character of s is assumed to be '{'.
 fn find_matching_brace(s: &str) -> Option<usize> {
@@ -682,151 +696,145 @@ fn find_matching_brace(s: &str) -> Option<usize> {
     None
 }
 
+fn sed_cmd_rest_after(cmd: &str, len: usize) -> &str {
+    if cmd.len() <= len {
+        ""
+    } else {
+        cmd[len..].trim_start().trim_start_matches(';').trim_start()
+    }
+}
+
+fn parse_sed_simple_command(cmd: &str) -> Option<(SedCommand, &str)> {
+    if cmd == "d" || cmd.starts_with("d;") || cmd.starts_with("d ") {
+        Some((SedCommand::Delete, sed_cmd_rest_after(cmd, 1)))
+    } else if cmd == "p" || cmd.starts_with("p;") || cmd.starts_with("p ") {
+        Some((SedCommand::Print, sed_cmd_rest_after(cmd, 1)))
+    } else if cmd == "q" || cmd.starts_with("q;") || cmd.starts_with("q ") {
+        Some((SedCommand::Quit, sed_cmd_rest_after(cmd, 1)))
+    } else if cmd == "n" || cmd.starts_with("n;") || cmd.starts_with("n ") {
+        Some((SedCommand::Next, sed_cmd_rest_after(cmd, 1)))
+    } else if cmd == "N" || cmd.starts_with("N;") || cmd.starts_with("N ") {
+        Some((SedCommand::NextAppend, sed_cmd_rest_after(cmd, 1)))
+    } else if cmd == "P" || cmd.starts_with("P;") || cmd.starts_with("P ") {
+        Some((SedCommand::PrintFirst, sed_cmd_rest_after(cmd, 1)))
+    } else if cmd == "=" || cmd.starts_with("=;") || cmd.starts_with("= ") {
+        Some((SedCommand::Equals, sed_cmd_rest_after(cmd, 1)))
+    } else if cmd == "G" || cmd.starts_with("G;") || cmd.starts_with("G ") {
+        Some((SedCommand::GetHoldAppend, sed_cmd_rest_after(cmd, 1)))
+    } else if cmd == "g" || cmd.starts_with("g;") || cmd.starts_with("g ") {
+        Some((SedCommand::GetHold, sed_cmd_rest_after(cmd, 1)))
+    } else if cmd == "h" || cmd.starts_with("h;") || cmd.starts_with("h ") {
+        Some((SedCommand::Hold, sed_cmd_rest_after(cmd, 1)))
+    } else if cmd == "H" || cmd.starts_with("H;") || cmd.starts_with("H ") {
+        Some((SedCommand::HoldAppend, sed_cmd_rest_after(cmd, 1)))
+    } else if cmd == "x" || cmd.starts_with("x;") || cmd.starts_with("x ") {
+        Some((SedCommand::Exchange, sed_cmd_rest_after(cmd, 1)))
+    } else if cmd == "z" || cmd.starts_with("z;") || cmd.starts_with("z ") {
+        Some((SedCommand::Zap, sed_cmd_rest_after(cmd, 1)))
+    } else if cmd == ";" || cmd.starts_with(";") {
+        Some((SedCommand::NoOp, sed_cmd_rest_after(cmd, 1)))
+    } else {
+        None
+    }
+}
+
+fn parse_sed_complex_command(cmd: &str) -> Result<Option<(SedCommand, &str)>, color_eyre::eyre::Error> {
+    let first_char = cmd.chars().next().unwrap();
+    match first_char {
+        'b' => {
+            let after = cmd[1..].trim_start();
+            let label_end = after.find(';').unwrap_or(after.len());
+            let label_str = after[..label_end].trim();
+            let label = if label_str.is_empty() { None } else { Some(label_str.to_string()) };
+            let skip = cmd.len() - after.len() + label_end + if after.find(';').is_some() { 1 } else { 0 };
+            Ok(Some((SedCommand::Branch(label), if skip <= cmd.len() { sed_cmd_rest_after(cmd, skip) } else { "" })))
+        }
+        't' => {
+            let after = cmd[1..].trim_start();
+            let label_end = after.find(';').unwrap_or(after.len());
+            let label_str = after[..label_end].trim();
+            let label = if label_str.is_empty() { None } else { Some(label_str.to_string()) };
+            let skip = cmd.len() - after.len() + label_end + if after.find(';').is_some() { 1 } else { 0 };
+            Ok(Some((SedCommand::TestBranch(label), if skip <= cmd.len() { sed_cmd_rest_after(cmd, skip) } else { "" })))
+        }
+        'T' => {
+            let after = cmd[1..].trim_start();
+            let label_end = after.find(';').unwrap_or(after.len());
+            let label_str = after[..label_end].trim();
+            let label = if label_str.is_empty() { None } else { Some(label_str.to_string()) };
+            let skip = cmd.len() - after.len() + label_end + if after.find(';').is_some() { 1 } else { 0 };
+            Ok(Some((SedCommand::TestBranchNot(label), if skip <= cmd.len() { sed_cmd_rest_after(cmd, skip) } else { "" })))
+        }
+        ':' => {
+            let after = cmd[1..].trim_start();
+            let label_end = after.find(';').unwrap_or(after.len());
+            let label_str = after[..label_end].trim();
+            if label_str.is_empty() {
+                return Err(eyre!("sed: missing label for ':' command"));
+            }
+            let skip = cmd.len() - after.len() + label_end + if after.find(';').is_some() { 1 } else { 0 };
+            Ok(Some((SedCommand::Label(label_str.to_string()), if skip <= cmd.len() { sed_cmd_rest_after(cmd, skip) } else { "" })))
+        }
+        'w' => {
+            let after = cmd[1..].trim_start();
+            let end = after.find(';').unwrap_or(after.len());
+            let filename = after[..end].trim();
+            if filename.is_empty() {
+                return Err(eyre!("sed: missing filename for w command"));
+            }
+            let skip = cmd.len() - after.len() + end + if after.find(';').is_some() { 1 } else { 0 };
+            Ok(Some((SedCommand::Write(filename.to_string()), if skip <= cmd.len() { sed_cmd_rest_after(cmd, skip) } else { "" })))
+        }
+        'c' => {
+            let after = cmd[1..].trim_start();
+            let end = after.find(';').unwrap_or(after.len());
+            let text = after[..end].trim();
+            if text.is_empty() {
+                return Err(eyre!("sed: missing text for c command"));
+            }
+            let skip = cmd.len() - after.len() + end + if after.find(';').is_some() { 1 } else { 0 };
+            Ok(Some((SedCommand::Change(text.to_string()), if skip <= cmd.len() { sed_cmd_rest_after(cmd, skip) } else { "" })))
+        }
+        'i' => {
+            let mut after = cmd[1..].trim_start_matches(|c| c == ' ' || c == '\t');
+            if after.starts_with('\\') {
+                after = &after[1..];
+            }
+            if after.starts_with('\n') {
+                after = &after[1..];
+            }
+            let text = after.trim_end();
+            let unescaped = unescape_append_insert_text(text);
+            Ok(Some((SedCommand::Insert(unescaped), "")))
+        }
+        'a' => {
+            let mut after = cmd[1..].trim_start_matches(|c| c == ' ' || c == '\t');
+            if after.starts_with('\\') {
+                after = &after[1..];
+            }
+            if after.starts_with('\n') {
+                after = &after[1..];
+            }
+            let text = after.trim_end();
+            let unescaped = unescape_append_insert_text(text);
+            Ok(Some((SedCommand::Append(unescaped), "")))
+        }
+        _ => Ok(None),
+    }
+}
+
 /// Returns (command, remainder of script after this command).
 fn parse_command(script: &str, extended_regex: bool) -> Result<(AddressedCommand, &str)> {
-    // Parse address if present
     let (address, remaining) = parse_address(script)?;
     let remaining = remaining.trim();
     let cmd = remaining.trim_start();
-    fn rest_after(cmd: &str, len: usize) -> &str {
-        if cmd.len() <= len {
-            ""
-        } else {
-            cmd[len..].trim_start().trim_start_matches(';').trim_start()
-        }
-    }
-
-    // Parse simple single-letter commands without arguments
-    fn parse_simple_command(cmd: &str) -> Option<(SedCommand, &str)> {
-        if cmd == "d" || cmd.starts_with("d;") || cmd.starts_with("d ") {
-            Some((SedCommand::Delete, rest_after(cmd, 1)))
-        } else if cmd == "p" || cmd.starts_with("p;") || cmd.starts_with("p ") {
-            Some((SedCommand::Print, rest_after(cmd, 1)))
-        } else if cmd == "q" || cmd.starts_with("q;") || cmd.starts_with("q ") {
-            Some((SedCommand::Quit, rest_after(cmd, 1)))
-        } else if cmd == "n" || cmd.starts_with("n;") || cmd.starts_with("n ") {
-            Some((SedCommand::Next, rest_after(cmd, 1)))
-        } else if cmd == "N" || cmd.starts_with("N;") || cmd.starts_with("N ") {
-            Some((SedCommand::NextAppend, rest_after(cmd, 1)))
-        } else if cmd == "P" || cmd.starts_with("P;") || cmd.starts_with("P ") {
-            Some((SedCommand::PrintFirst, rest_after(cmd, 1)))
-        } else if cmd == "=" || cmd.starts_with("=;") || cmd.starts_with("= ") {
-            Some((SedCommand::Equals, rest_after(cmd, 1)))
-        } else if cmd == "G" || cmd.starts_with("G;") || cmd.starts_with("G ") {
-            Some((SedCommand::GetHoldAppend, rest_after(cmd, 1)))
-        } else if cmd == "g" || cmd.starts_with("g;") || cmd.starts_with("g ") {
-            Some((SedCommand::GetHold, rest_after(cmd, 1)))
-        } else if cmd == "h" || cmd.starts_with("h;") || cmd.starts_with("h ") {
-            Some((SedCommand::Hold, rest_after(cmd, 1)))
-        } else if cmd == "H" || cmd.starts_with("H;") || cmd.starts_with("H ") {
-            Some((SedCommand::HoldAppend, rest_after(cmd, 1)))
-        } else if cmd == "x" || cmd.starts_with("x;") || cmd.starts_with("x ") {
-            Some((SedCommand::Exchange, rest_after(cmd, 1)))
-        } else if cmd == "z" || cmd.starts_with("z;") || cmd.starts_with("z ") {
-            Some((SedCommand::Zap, rest_after(cmd, 1)))
-        } else if cmd == ";" || cmd.starts_with(";") {
-            Some((SedCommand::NoOp, rest_after(cmd, 1)))
-        } else {
-            None
-        }
-    }
-
-    // Parse complex commands with arguments: b, t, T, :, w, c, i, a
-    fn parse_complex_command(cmd: &str) -> Result<Option<(SedCommand, &str)>, color_eyre::eyre::Error> {
-        let first_char = cmd.chars().next().unwrap();
-        match first_char {
-            'b' => {
-                let after = cmd[1..].trim_start();
-                let label_end = after.find(';').unwrap_or(after.len());
-                let label_str = after[..label_end].trim();
-                let label = if label_str.is_empty() { None } else { Some(label_str.to_string()) };
-                let skip = cmd.len() - after.len() + label_end + if after.find(';').is_some() { 1 } else { 0 };
-                Ok(Some((SedCommand::Branch(label), if skip <= cmd.len() { rest_after(cmd, skip) } else { "" })))
-            }
-            't' => {
-                let after = cmd[1..].trim_start();
-                let label_end = after.find(';').unwrap_or(after.len());
-                let label_str = after[..label_end].trim();
-                let label = if label_str.is_empty() { None } else { Some(label_str.to_string()) };
-                let skip = cmd.len() - after.len() + label_end + if after.find(';').is_some() { 1 } else { 0 };
-                Ok(Some((SedCommand::TestBranch(label), if skip <= cmd.len() { rest_after(cmd, skip) } else { "" })))
-            }
-            'T' => {
-                let after = cmd[1..].trim_start();
-                let label_end = after.find(';').unwrap_or(after.len());
-                let label_str = after[..label_end].trim();
-                let label = if label_str.is_empty() { None } else { Some(label_str.to_string()) };
-                let skip = cmd.len() - after.len() + label_end + if after.find(';').is_some() { 1 } else { 0 };
-                Ok(Some((SedCommand::TestBranchNot(label), if skip <= cmd.len() { rest_after(cmd, skip) } else { "" })))
-            }
-            ':' => {
-                let after = cmd[1..].trim_start();
-                let label_end = after.find(';').unwrap_or(after.len());
-                let label_str = after[..label_end].trim();
-                if label_str.is_empty() {
-                    return Err(eyre!("sed: missing label for ':' command"));
-                }
-                let skip = cmd.len() - after.len() + label_end + if after.find(';').is_some() { 1 } else { 0 };
-                Ok(Some((SedCommand::Label(label_str.to_string()), if skip <= cmd.len() { rest_after(cmd, skip) } else { "" })))
-            }
-            'w' => {
-                let after = cmd[1..].trim_start();
-                let end = after.find(';').unwrap_or(after.len());
-                let filename = after[..end].trim();
-                if filename.is_empty() {
-                    return Err(eyre!("sed: missing filename for w command"));
-                }
-                let skip = cmd.len() - after.len() + end + if after.find(';').is_some() { 1 } else { 0 };
-                Ok(Some((SedCommand::Write(filename.to_string()), if skip <= cmd.len() { rest_after(cmd, skip) } else { "" })))
-            }
-            'c' => {
-                let after = cmd[1..].trim_start();
-                let end = after.find(';').unwrap_or(after.len());
-                let text = after[..end].trim();
-                if text.is_empty() {
-                    return Err(eyre!("sed: missing text for c command"));
-                }
-                let skip = cmd.len() - after.len() + end + if after.find(';').is_some() { 1 } else { 0 };
-                Ok(Some((SedCommand::Change(text.to_string()), if skip <= cmd.len() { rest_after(cmd, skip) } else { "" })))
-            }
-            'i' => {
-                // sed.c: skip optional whitespace, then one \ or \n. Only skip \ so \n stays in text (continuation).
-                let mut after = cmd[1..].trim_start_matches(|c| c == ' ' || c == '\t');
-                if after.starts_with('\\') {
-                    after = &after[1..];
-                }
-                // Continuation from -e 'i\' -e '1': logical line is "i\n1"; strip one leading \n so text is "1".
-                if after.starts_with('\n') {
-                    after = &after[1..];
-                }
-                let text = after.trim_end();
-                // Allow empty text for consistency with a command (e.g. -e '1i\' with no following -e).
-                let unescaped = unescape_append_insert_text(text);
-                Ok(Some((SedCommand::Insert(unescaped), "")))
-            }
-            'a' => {
-                // Allow empty text for "$a\" idiom (ensure file ends with newline; GNU sed extension).
-                let mut after = cmd[1..].trim_start_matches(|c| c == ' ' || c == '\t');
-                if after.starts_with('\\') {
-                    after = &after[1..];
-                }
-                if after.starts_with('\n') {
-                    after = &after[1..];
-                }
-                let text = after.trim_end();
-                let unescaped = unescape_append_insert_text(text);
-                Ok(Some((SedCommand::Append(unescaped), "")))
-            }
-            _ => Ok(None),
-        }
-    }
 
     let (command, rest) = if cmd.starts_with('s') {
         // Parse substitution command
         let script_after_s = &cmd[1..]; // Remove 's'
         let (delimiter, pattern, replacement, flags, rem) = parse_substitution(script_after_s)?;
         (SedCommand::Substitution { pattern, replacement, flags, delimiter }, rem)
-    } else if let Some((simple_cmd, simple_rest)) = parse_simple_command(cmd) {
+    } else if let Some((simple_cmd, simple_rest)) = parse_sed_simple_command(cmd) {
         (simple_cmd, simple_rest)
     } else if cmd.is_empty() {
         (SedCommand::NoOp, "")
@@ -848,7 +856,7 @@ fn parse_command(script: &str, extended_regex: bool) -> Result<(AddressedCommand
         }
     } else {
         // Handle complex commands with arguments: b, t, T, :, w, c, i, a
-        match parse_complex_command(cmd)? {
+        match parse_sed_complex_command(cmd)? {
             Some((complex_cmd, complex_rest)) => (complex_cmd, complex_rest),
             None => return Err(eyre!("sed: unsupported command '{}'", cmd)),
         }
@@ -984,6 +992,45 @@ fn compile_address_pattern(address: &Address, extended_regex: bool) -> Option<Re
     compile_address_regex(&pattern_content, extended_regex)
 }
 
+fn pattern_address_multiline_zero_width_adjust(
+    mut matched: bool,
+    pattern_space: &str,
+    compiled_pattern: Option<&Regex>,
+) -> bool {
+    if matched && pattern_space.contains('\n') {
+        if let Some(regex) = compiled_pattern {
+            if let Some(m) = regex.find(pattern_space) {
+                let len = pattern_space.len();
+                let zero_width_at_end = m.start() == len && m.end() == len;
+                let ends_with_backslash_then_newline = len >= 2
+                    && pattern_space.as_bytes()[len - 2] == b'\\'
+                    && pattern_space.as_bytes()[len - 1] == b'\n';
+                if zero_width_at_end && pattern_space.ends_with('\n') && !ends_with_backslash_then_newline {
+                    matched = false;
+                }
+            }
+        }
+    }
+    matched
+}
+
+fn address_maybe_set_previous_regex(address: &Address, state: &mut SedState, matches: bool) {
+    if !matches {
+        return;
+    }
+    let content = match address {
+        Address::Pattern(p) | Address::PatternTo(p, _) | Address::PatternOffset(p, _)
+        | Address::RangeToPattern(p) | Address::RangePattern(_, p) | Address::PatternRange(p, _)
+        | Address::PatternPattern(p, _) => {
+            if p.len() >= 2 { &p[1..p.len()-1] } else { "" }
+        }
+        _ => "",
+    };
+    if !content.is_empty() {
+        state.previous_regex = Some(content.to_string());
+    }
+}
+
 /// Check if address matches current line and update pattern range state.
 fn address_matches(
     address: &Address,
@@ -1020,7 +1067,6 @@ fn address_matches(
             }
         }
         Address::Pattern(p) => {
-            // // means "use previous regex"
             let mut matched = if p == "//" {
                 state.previous_regex.as_ref()
                     .and_then(|r| compile_address_regex(r, extended_regex))
@@ -1028,23 +1074,7 @@ fn address_matches(
             } else {
                 compiled_pattern.map_or(false, |regex| regex.is_match(&state.pattern_space))
             };
-            // BusyBox test: /$_in_regex/ should not match newlines, only end-of-line. When pattern
-            // space has an embedded newline and the match is zero-width at end, do not match; but
-            // allow when pattern space ends with backslash-newline (so we still match and print 5).
-            if matched && state.pattern_space.contains('\n') {
-                if let Some(regex) = compiled_pattern {
-                    if let Some(m) = regex.find(&state.pattern_space) {
-                        let len = state.pattern_space.len();
-                        let zero_width_at_end = m.start() == len && m.end() == len;
-                        let ends_with_backslash_then_newline = len >= 2
-                            && state.pattern_space.as_bytes()[len - 2] == b'\\'
-                            && state.pattern_space.as_bytes()[len - 1] == b'\n';
-                        if zero_width_at_end && state.pattern_space.ends_with('\n') && !ends_with_backslash_then_newline {
-                            matched = false;
-                        }
-                    }
-                }
-            }
+            matched = pattern_address_multiline_zero_width_adjust(matched, &state.pattern_space, compiled_pattern);
             if matched {
                 state.pattern_range_start_matched = true;
                 state.pattern_start_line = line_number;
@@ -1114,22 +1144,44 @@ fn address_matches(
         }
     };
 
-    if matches {
-        // Set previous_regex when this command has a pattern address (for empty s//)
-        let content = match address {
-            Address::Pattern(p) | Address::PatternTo(p, _) | Address::PatternOffset(p, _)
-            | Address::RangeToPattern(p) | Address::RangePattern(_, p) | Address::PatternRange(p, _)
-            | Address::PatternPattern(p, _) => {
-                if p.len() >= 2 { &p[1..p.len()-1] } else { "" }
-            }
-            _ => "",
-        };
-        if !content.is_empty() {
-            state.previous_regex = Some(content.to_string());
-        }
-    }
-
+    address_maybe_set_previous_regex(address, state, matches);
     matches
+}
+
+fn substitution_apply_regex_to_pattern_space(
+    regex: &Regex,
+    pattern_space: &str,
+    processed_replacement: &str,
+    parsed_flags: &SubstitutionFlags,
+) -> (String, bool) {
+    if parsed_flags.global {
+        let cow = regex.replace_all(pattern_space, processed_replacement);
+        let changed = matches!(cow, Cow::Owned(_));
+        (cow.to_string(), changed)
+    } else if let Some(n) = parsed_flags.occurrence {
+        let mut new_line = String::new();
+        let mut last_end = 0;
+        let mut count = 0;
+        for mat in regex.find_iter(pattern_space) {
+            count += 1;
+            if count == n {
+                new_line.push_str(&pattern_space[last_end..mat.start()]);
+                new_line.push_str(processed_replacement);
+                last_end = mat.end();
+                break;
+            }
+        }
+        if count == n {
+            new_line.push_str(&pattern_space[last_end..]);
+            (new_line, true)
+        } else {
+            (pattern_space.to_string(), false)
+        }
+    } else {
+        let cow = regex.replace(pattern_space, processed_replacement);
+        let changed = matches!(cow, Cow::Owned(_));
+        (cow.to_string(), changed)
+    }
 }
 
 /// Handle substitution command (s///).
@@ -1184,46 +1236,13 @@ fn handle_substitution(
 
     let processed_replacement = process_replacement(replacement, Some(delimiter));
 
-    let substitution_occurred = if parsed_flags.global {
-        // global replacement, ignore any numeric flag
-        let cow = regex.replace_all(&state.pattern_space, processed_replacement.as_str());
-        let owned = matches!(cow, Cow::Owned(_));
-        state.pattern_space = cow.to_string();
-        owned
-    } else {
-        match parsed_flags.occurrence {
-            Some(n) => {
-                // Replace only the nth occurrence (1-indexed)
-                let mut new_line = String::new();
-                let mut last_end = 0;
-                let mut count = 0;
-                for mat in regex.find_iter(&state.pattern_space) {
-                    count += 1;
-                    if count == n {
-                        new_line.push_str(&state.pattern_space[last_end..mat.start()]);
-                        new_line.push_str(&processed_replacement);
-                        last_end = mat.end();
-                        // Only replace this one occurrence, skip the rest
-                        break;
-                    }
-                }
-                if count == n {
-                    new_line.push_str(&state.pattern_space[last_end..]);
-                    state.pattern_space = new_line;
-                    true
-                } else {
-                    false
-                }
-            }
-            None => {
-                // Replace first occurrence
-                let cow = regex.replace(&state.pattern_space, processed_replacement.as_str());
-                let owned = matches!(cow, Cow::Owned(_));
-                state.pattern_space = cow.to_string();
-                owned
-            }
-        }
-    };
+    let (new_ps, substitution_occurred) = substitution_apply_regex_to_pattern_space(
+        &regex,
+        &state.pattern_space,
+        processed_replacement.as_str(),
+        &parsed_flags,
+    );
+    state.pattern_space = new_ps;
 
     if substitution_occurred {
         state.test_flag = true;
@@ -1286,36 +1305,6 @@ fn parse_script_to_commands(script: &str, extended_regex: bool) -> Result<Vec<Ad
 fn parse_script_to_commands_from_lines(lines: &[String], extended_regex: bool) -> Result<Vec<AddressedCommand>> {
     let mut commands = Vec::new();
     let mut i = 0;
-
-    fn merge_segments_with_braces(source: &str) -> Vec<String> {
-        let raw_segments: Vec<&str> = split_commands_at_semicolon(source)
-            .into_iter()
-            .filter(|s| !s.is_empty())
-            .collect();
-        let mut segments: Vec<String> = Vec::new();
-        let mut j = 0;
-        while j < raw_segments.len() {
-            let mut merged = raw_segments[j].to_string();
-            let mut depth = 0u32;
-            for c in merged.chars() {
-                match c { '{' => depth += 1, '}' => depth = depth.saturating_sub(1), _ => {} }
-            }
-            j += 1;
-            while depth > 0 && j < raw_segments.len() {
-                merged.push(';');
-                merged.push_str(raw_segments[j]);
-                for c in raw_segments[j].chars() {
-                    match c { '{' => depth += 1, '}' => depth = depth.saturating_sub(1), _ => {} }
-                }
-                j += 1;
-            }
-            if !merged.trim().is_empty() {
-                segments.push(merged);
-            }
-        }
-        segments
-    }
-
 
     while i < lines.len() {
         let line = lines[i].as_str().trim();
@@ -1402,7 +1391,7 @@ fn parse_script_to_commands_from_lines(lines: &[String], extended_regex: bool) -
         } else {
             // remaining (or rest_after_brace) contains commands (split by ; or NUL only at brace depth 0)
             // Merge segments that have unclosed braces (e.g. " /s/ { s/s/c/ " with " }; p")
-            let segments = merge_segments_with_braces(segments_source);
+            let segments = merge_sed_segments_with_braces(segments_source);
             let mut skip_next_line = false;
             for (idx, segment) in segments.iter().enumerate() {
                 let segment = segment.trim();
