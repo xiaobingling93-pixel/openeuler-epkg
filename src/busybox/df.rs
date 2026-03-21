@@ -442,12 +442,7 @@ fn calculate_percent(used: u64, total: u64) -> u64 {
     }
 }
 
-pub fn run(options: DfOptions) -> Result<()> {
-    #[cfg(windows)]
-    if options.inodes {
-        return Err(eyre!("df: inode counts (-i) are not supported on Windows"));
-    }
-
+fn df_resolve_display_block_size(options: &DfOptions) -> u64 {
     let mut display_block_size = if options.kilo_bytes {
         1024
     } else if options.mega_bytes {
@@ -459,69 +454,78 @@ pub fn run(options: DfOptions) -> Result<()> {
     } else {
         1024
     };
-
     if options.inodes {
         display_block_size = 1;
     }
+    display_block_size
+}
 
-    let mounts = if options.filesystems.is_empty() {
-        read_mount_table()?
-    } else {
-        let all_mounts = read_mount_table()?;
-        let mut filtered = Vec::new();
+fn df_resolve_mounts(options: &DfOptions) -> Result<Vec<(String, String, String)>> {
+    if options.filesystems.is_empty() {
+        return read_mount_table();
+    }
+    let all_mounts = read_mount_table()?;
+    let mut filtered = Vec::new();
 
-        for fs in &options.filesystems {
-            let path = Path::new(fs);
-            let mut found = None;
-            for (device, mount_point, fs_type) in &all_mounts {
-                #[cfg(unix)]
-                if fs == device || fs == mount_point || path.starts_with(mount_point) {
+    for fs in &options.filesystems {
+        let path = Path::new(fs);
+        let mut found = None;
+        for (device, mount_point, fs_type) in &all_mounts {
+            #[cfg(unix)]
+            if fs == device || fs == mount_point || path.starts_with(mount_point) {
+                found = Some((device.clone(), mount_point.clone(), fs_type.clone()));
+                break;
+            }
+            #[cfg(windows)]
+            {
+                let fsl = fs.to_lowercase();
+                let mpl = mount_point.to_lowercase();
+                let pl = path.to_string_lossy().to_lowercase();
+                if fsl == device.to_lowercase() || fsl == mpl || pl.starts_with(&mpl.trim_end_matches('\\'))
+                    || pl.starts_with(&format!("{}\\", mpl.trim_end_matches('\\')).to_lowercase())
+                {
                     found = Some((device.clone(), mount_point.clone(), fs_type.clone()));
                     break;
                 }
-                #[cfg(windows)]
-                {
-                    let fsl = fs.to_lowercase();
-                    let mpl = mount_point.to_lowercase();
-                    let pl = path.to_string_lossy().to_lowercase();
-                    if fsl == device.to_lowercase() || fsl == mpl || pl.starts_with(&mpl.trim_end_matches('\\'))
-                        || pl.starts_with(&format!("{}\\", mpl.trim_end_matches('\\')).to_lowercase())
-                    {
-                        found = Some((device.clone(), mount_point.clone(), fs_type.clone()));
-                        break;
-                    }
-                }
-            }
-
-            if let Some(mount) = found {
-                filtered.push(mount);
-            } else {
-                #[cfg(windows)]
-                {
-                    let root = win_df::volume_root_for_path(path);
-                    let mut root_str = root.to_string_lossy().into_owned();
-                    if !root_str.ends_with('\\') {
-                        root_str.push('\\');
-                    }
-                    let fs_type = win_df::volume_fs_type(&root_str).unwrap_or_else(|_| "unknown".to_string());
-                    let dev = root_str.trim_end_matches('\\').to_string();
-                    filtered.push((dev, root_str, fs_type));
-                }
-                #[cfg(not(windows))]
-                return Err(eyre!("cannot find mount point for '{}'", fs));
             }
         }
 
-        filtered
-    };
+        if let Some(mount) = found {
+            filtered.push(mount);
+        } else {
+            #[cfg(windows)]
+            {
+                let root = win_df::volume_root_for_path(path);
+                let mut root_str = root.to_string_lossy().into_owned();
+                if !root_str.ends_with('\\') {
+                    root_str.push('\\');
+                }
+                let fs_type = win_df::volume_fs_type(&root_str).unwrap_or_else(|_| "unknown".to_string());
+                let dev = root_str.trim_end_matches('\\').to_string();
+                filtered.push((dev, root_str, fs_type));
+            }
+            #[cfg(not(windows))]
+            return Err(eyre!("cannot find mount point for '{}'", fs));
+        }
+    }
 
+    Ok(filtered)
+}
+
+fn print_df_table_header(options: &DfOptions, display_block_size: u64) {
     if options.posix_format {
         print!("Filesystem          ");
         if options.show_fs_type {
             print!("Type          ");
         }
-        print!("{}%-blocks   Used Available Capacity Mounted on\n",
-            if display_block_size == 1 { String::new() } else { display_block_size.to_string() });
+        print!(
+            "{}%-blocks   Used Available Capacity Mounted on\n",
+            if display_block_size == 1 {
+                String::new()
+            } else {
+                display_block_size.to_string()
+            }
+        );
     } else {
         print!("Filesystem          ");
         if options.show_fs_type {
@@ -533,12 +537,29 @@ pub fn run(options: DfOptions) -> Result<()> {
         } else if display_block_size == 1 {
             print!("   Inodes      IUsed    IFree IUse% ");
         } else {
-            print!("{}%-blocks      Used Available Use% ",
-                if options.posix_format { String::new() } else { display_block_size.to_string() });
+            print!(
+                "{}%-blocks      Used Available Use% ",
+                if options.posix_format {
+                    String::new()
+                } else {
+                    display_block_size.to_string()
+                }
+            );
         }
 
         println!("Mounted on");
     }
+}
+
+pub fn run(options: DfOptions) -> Result<()> {
+    #[cfg(windows)]
+    if options.inodes {
+        return Err(eyre!("df: inode counts (-i) are not supported on Windows"));
+    }
+
+    let display_block_size = df_resolve_display_block_size(&options);
+    let mounts = df_resolve_mounts(&options)?;
+    print_df_table_header(&options, display_block_size);
 
     for (device, mount_point, fs_type) in mounts {
         #[cfg(unix)]
