@@ -486,7 +486,7 @@ get_package_manager_config() {
             ;;
         pacman)
             update_cmd="pacman -Sy"
-            install_cmd="pacman -S --noconfirm"
+            install_cmd="pacman -S --needed --noconfirm"
             # Check if we're on MSYS2/Windows
             if [[ "$OS_FAMILY" == "windows" ]]; then
                 # MSYS2 packages: MinGW-w64 toolchain for native Windows builds
