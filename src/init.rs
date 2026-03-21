@@ -472,6 +472,28 @@ fn setup_epkg_src(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     Ok(())
 }
 
+/// Install epkg binaries to the self environment's usr/bin directory.
+///
+/// See the architecture documentation in environment.rs for the dual-binary mechanism.
+///
+/// This function is called during `epkg self install` and sets up:
+///
+/// | Platform | Binary            | Purpose                          |
+/// |----------|-------------------|----------------------------------|
+/// | Linux    | epkg              | Main package manager binary      |
+/// | Linux    | elf-loader        | Dynamic linker for glibc packages|
+/// | macOS    | epkg              | Native binary for Conda/Brew     |
+/// | macOS    | epkg-linux-$arch  | Linux binary for VM execution    |
+/// | Windows  | epkg.exe          | Native binary for Conda/msys2    |
+/// | Windows  | epkg-linux-$arch  | Linux binary for VM execution    |
+///
+/// The self environment layout after installation:
+/// ```
+/// $ENVS/self/usr/bin/
+/// ├── epkg[.exe]          # Native host binary
+/// ├── elf-loader          # Linux only
+/// └── epkg-linux-$arch    # Windows/macOS only
+/// ```
 fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     let usr_bin = crate::dirs::path_join(env_root, &["usr", "bin"]);
 

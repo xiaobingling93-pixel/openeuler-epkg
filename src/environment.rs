@@ -323,13 +323,99 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     Ok(())
 }
 
+// ============================================================================
+// epkg Binary and Applet Symlink Architecture
+// ============================================================================
+//
+// This section documents the dual-binary mechanism and symlink setup for epkg
+// and its busybox-style applets across different platforms.
+//
+// ## Self Environment (epkg Installation)
+//
+// The `self` environment stores epkg's own binaries. Layout:
+// ```
+// $ENVS/self/usr/bin/
+// ├── epkg[.exe]          # Native host binary (Linux/Windows/macOS)
+// ├── elf-loader          # Linux only: dynamic linker for glibc packages
+// └── epkg-linux-$arch    # Windows/macOS only: Linux ELF for VM execution
+// ```
+//
+// Setup by: `init.rs::setup_common_binaries()` during `epkg self install`
+//
+// ## Other Environments (User Package Environments)
+//
+// Each user environment has symlinks to the appropriate epkg binary:
+// ```
+// $ENVS/<env>/usr/bin/
+// ├── epkg[.exe]  -> $ENVS/self/usr/bin/<appropriate-epkg-binary>
+// ├── rpm         -> ../epkg[.exe]  (applet symlink)
+// ├── dpkg        -> ../epkg[.exe]
+// └── ...
+// ```
+//
+// Setup by:
+// - `environment.rs::create_epkg_symlink()` - main epkg symlink
+// - `busybox/mod.rs::create_all_applet_symlinks()` - applet symlinks
+//
+// ## Dual-Binary Mechanism
+//
+// On Windows/macOS hosts, two binaries may exist:
+// 1. Native binary (epkg.exe/epkg): handles Conda/Brew/msys2 packages natively
+// 2. Linux ELF binary (epkg-linux-$arch): runs inside VM for Linux packages
+//
+// Binary selection by package format:
+// | Host       | Package Format | Binary Used           | Execution Context |
+// |------------|---------------|----------------------|-------------------|
+// | Linux      | All           | epkg                  | Native            |
+// | Windows    | Conda/msys2   | epkg.exe              | Native            |
+// | Windows    | deb/rpm/apk   | epkg-linux-$arch      | VM (libkrun)      |
+// | macOS      | Conda/Brew    | epkg                  | Native            |
+// | macOS      | deb/rpm/apk   | epkg-linux-$arch      | VM (libkrun)      |
+//
+// ## Symlink Naming Convention
+//
+// - Native packages on Windows: use `.exe` suffix (epkg.exe, rpm.exe)
+// - Linux packages (any host): NO `.exe` suffix (epkg, rpm)
+//   - These run in Linux VM where Windows extensions don't exist
+//   - Applets follow same convention via `is_windows_target()` in busybox/mod.rs
+//
+// ## When Symlinks Are Used
+//
+// 1. Scriptlet execution: maintainer scripts call `rpm`, `dpkg`, etc.
+//    - Linux hosts: native execution
+//    - Windows/macOS with Linux packages: executed inside VM via libkrun
+//
+// 2. User commands: `epkg run`, `epkg install`, etc.
+//    - Always use native epkg binary on host
+//    - May internally use VM for package operations
+//
+// 3. Applet invocation: symlink names like `rpm`, `dpkg` invoke epkg
+//    - epkg detects invoked name and routes to appropriate applet handler
+// ============================================================================
+
+/// Determine the symlink name for epkg binary based on package format.
+/// - Linux-format packages (deb/rpm/apk/arch-linux): "epkg" (no .exe, runs in VM)
+/// - Native packages on Windows: "epkg.exe"
+/// - Native packages on Unix: "epkg"
+fn epkg_symlink_name(pkg_format: &PackageFormat) -> &'static str {
+    // Linux-format packages run in VM where .exe suffix doesn't exist
+    let is_linux_target = matches!(pkg_format,
+        PackageFormat::Deb | PackageFormat::Rpm | PackageFormat::Apk
+    );
+    let is_arch_linux = *pkg_format == PackageFormat::Pacman &&
+        crate::models::channel_config().distro != "msys2";
+
+    if is_linux_target || is_arch_linux {
+        return "epkg";  // No .exe suffix for Linux VM execution
+    }
+
+    // Native packages: use platform-specific name
+    crate::dirs::EPKG_USR_BIN_NAME
+}
+
 /// Ensure \$env_root/usr/bin/epkg symlink exists and points to appropriate epkg binary.
 ///
-/// On Windows/macOS hosts:
-/// - For Linux-format packages (deb/rpm/arch/apk): use epkg-linux-$arch for VM execution
-/// - For native formats (conda/brew/msys2): use native epkg
-///
-/// On Linux hosts: always use native epkg
+/// See the architecture documentation above for the dual-binary mechanism.
 ///
 /// Key behaviors:
 /// - Uses absolute path for the symlink target to work correctly when accessed from host
@@ -352,7 +438,9 @@ pub fn create_epkg_symlink(env_root: &Path, pkg_format: &PackageFormat) -> Resul
             return Ok(());
         }
 
-        let epkg_symlink = crate::dirs::path_join(env_root, &["usr", "bin", crate::dirs::EPKG_USR_BIN_NAME]);
+        // Determine symlink name: "epkg" for Linux packages, "epkg[.exe]" for native
+        let symlink_name = epkg_symlink_name(pkg_format);
+        let epkg_symlink = crate::dirs::path_join(env_root, &["usr", "bin", symlink_name]);
 
         // On Windows/macOS with Linux-format packages, use epkg-linux-$arch
         #[cfg(not(target_os = "linux"))]

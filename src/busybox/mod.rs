@@ -457,6 +457,8 @@ fn is_musl_build() -> bool {
 
 /// Determine which epkg binary to use for applet symlinks.
 ///
+/// See the architecture documentation in environment.rs for the dual-binary mechanism.
+///
 /// On Windows/macOS hosts:
 /// - For Linux-format packages (deb/rpm/arch/apk): use epkg-linux-$arch for VM execution
 /// - For native formats (conda/brew/msys2): use native epkg
@@ -477,8 +479,9 @@ fn determine_epkg_binary_for_env(env_root: &Path, pkg_format: &PackageFormat) ->
             crate::models::channel_config().distro != "msys2";
 
         if needs_vm || is_arch_linux {
+            // Linux-format packages: symlink name is "epkg" (no .exe), runs in VM
             // First check if 'epkg' symlink exists in target env - prefer it for simpler relative paths
-            let epkg_symlink = crate::dirs::path_join(env_root, &["usr", "bin", crate::dirs::EPKG_USR_BIN_NAME]);
+            let epkg_symlink = crate::dirs::path_join(env_root, &["usr", "bin", "epkg"]);
             if epkg_symlink.exists() {
                 log::debug!("Using epkg symlink from target env: {}", epkg_symlink.display());
                 return Some(epkg_symlink);
@@ -510,6 +513,7 @@ fn determine_epkg_binary_for_env(env_root: &Path, pkg_format: &PackageFormat) ->
     let _ = pkg_format;
 
     // Default: use native epkg binary
+    // Native packages: symlink name includes platform-specific suffix (epkg.exe on Windows)
     let epkg_exe = crate::dirs::path_join(env_root, &["usr", "bin", crate::dirs::EPKG_USR_BIN_NAME]);
     if epkg_exe.exists() {
         log::debug!("Using native epkg binary at {}", epkg_exe.display());
@@ -523,8 +527,18 @@ fn determine_epkg_binary_for_env(env_root: &Path, pkg_format: &PackageFormat) ->
     }
 }
 
-/// Create symlinks for all registered applets in the environment
-/// This automatically discovers all applets and places them in the appropriate directory (bin or sbin)
+/// Create symlinks for all registered applets in the environment.
+///
+/// This implements the busybox-style multicall binary pattern where a single binary
+/// (epkg) can be invoked under different names (rpm, dpkg, etc.) to provide different
+/// functionalities.
+///
+/// See the architecture documentation in environment.rs for the dual-binary mechanism.
+///
+/// Symlink naming convention:
+/// - Linux-format packages: no .exe suffix (rpm, dpkg) - runs in Linux VM
+/// - Native packages on Windows: .exe suffix (rpm.exe, dpkg.exe)
+/// - Native packages on Unix: no suffix (rpm, dpkg)
 pub fn create_all_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -> Result<()> {
     log::debug!("Creating busybox applet links for format {:?}", pkg_format);
 
