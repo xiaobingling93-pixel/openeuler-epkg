@@ -15,6 +15,7 @@ use crate::models::PACKAGE_CACHE;
 use crate::package_cache::map_pkgline2filelist;
 
 /// Calculate total download and install sizes for the installation plan
+#[allow(dead_code)]
 pub fn calculate_plan_sizes(plan: &mut InstallationPlan) -> Result<()> {
     let mut total_download: u64 = 0;
     let mut total_install: u64 = 0;
@@ -226,6 +227,7 @@ pub fn check_disk_space_for_plan(
 }
 
 /// Build file map from installed packages, excluding those being removed or upgraded
+#[allow(dead_code)]
 pub fn build_installed_file_map(
     packages: &InstalledPackagesMap,
     store_root: &Path,
@@ -256,6 +258,7 @@ pub fn build_installed_file_map(
 /// Check risks for all packages at once (inode space, file conflicts)
 /// This is called before linking any packages to keep the environment clean
 /// Validate packages before linking - check inodes and file conflicts
+#[allow(dead_code)]
 pub fn validate_before_linking(
     plan: &crate::plan::InstallationPlan,
 ) -> Result<()> {
@@ -266,6 +269,7 @@ pub fn validate_before_linking(
 
 /// Validate file conflicts for all packages before linking
 /// Returns total number of inodes (files) needed across all packages
+#[allow(dead_code)]
 pub fn validate_file_conflicts(
     plan: &crate::plan::InstallationPlan,
 ) -> color_eyre::Result<u64> {
@@ -333,6 +337,7 @@ pub fn validate_file_conflicts(
 
 /// Validate inode space for installation plan
 /// Requires total_inodes_needed (count of files) to check against free inodes on env_root
+#[allow(dead_code)]
 pub fn validate_inode_space(
     plan: &crate::plan::InstallationPlan,
     total_inodes_needed: u64,
