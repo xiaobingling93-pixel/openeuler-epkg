@@ -233,7 +233,9 @@ pub fn wait_guest_ready_windows(
         // Check if VM start failed
         if let Some(ref failed_rx) = vm_start_failed_rx {
             if failed_rx.try_recv().is_ok() {
-                let _ = jh.join();
+                // Note: Don't join the pipe thread here - ConnectNamedPipe is blocking
+                // and will never complete since VM failed. The thread will be cleaned
+                // up when the process exits.
                 return Err(eyre::eyre!("VM failed to start (krun_start_enter error)"));
             }
         }
@@ -260,7 +262,7 @@ pub fn wait_guest_ready_windows(
 
         if start.elapsed() >= timeout {
             log::error!("libkrun: timeout waiting for VM to become ready");
-            let _ = jh.join();
+            // Note: Don't join the pipe thread - ConnectNamedPipe is blocking
             return Err(eyre::eyre!("Timeout waiting for VM to start"));
         }
 
