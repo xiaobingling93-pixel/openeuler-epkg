@@ -360,15 +360,12 @@ fn general_unpack_package<P: AsRef<Path>>(
     };
 
     match format {
-        #[cfg(target_os = "linux")]
         PackageFormat::Deb => {
             crate::deb_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
-        #[cfg(target_os = "linux")]
         PackageFormat::Rpm => {
             crate::rpm_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
-        #[cfg(target_os = "linux")]
         PackageFormat::Apk => {
             crate::apk_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
@@ -382,9 +379,8 @@ fn general_unpack_package<P: AsRef<Path>>(
         PackageFormat::Brew => {
             crate::brew_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         PackageFormat::Epkg => {
-            // Handle existing .epkg format
             crate::epkg::unpack_package(package_file, store_tmp_dir)?
         }
         _ => {

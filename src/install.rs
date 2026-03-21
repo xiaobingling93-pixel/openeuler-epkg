@@ -294,7 +294,6 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
 
     // Generate dpkg database for Debian/Ubuntu environments
     // This allows the real dpkg/dpkg-query commands to see installed packages
-    #[cfg(target_os = "linux")]
     if plan.package_format == crate::models::PackageFormat::Deb {
         if let Err(e) = crate::dpkg_db::generate_dpkg_database() {
             log::warn!("Failed to generate dpkg database: {}", e);
@@ -360,7 +359,6 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
 
     // Generate dpkg database for Debian/Ubuntu environments before running scriptlets
     // This allows maintainer scripts to query packages being installed
-    #[cfg(target_os = "linux")]
     if plan.package_format == crate::models::PackageFormat::Deb {
         // First generate status for already installed packages
         if let Err(e) = crate::dpkg_db::generate_dpkg_status() {

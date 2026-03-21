@@ -51,6 +51,7 @@ mod index_html;
 pub use devices::virtio::fs::ntfs_ea;
 #[cfg(all(windows, not(feature = "libkrun")))]
 mod ntfs_ea {
+    #![allow(dead_code)]
     include!("../git/libkrun/src/devices/src/virtio/fs/windows/ntfs_ea.rs");
 }
 // Linux package formats - now cross-platform for VM execution
@@ -93,6 +94,7 @@ mod dpkg_db;
 mod rpm_triggers;
 #[cfg(target_os = "linux")]
 mod lua;
+#[cfg(unix)]
 mod risks;
 mod run;
 #[cfg(target_os = "linux")]
@@ -111,6 +113,7 @@ mod busybox;
 mod info;
 mod list;
 mod search;
+#[cfg(unix)]
 mod gc;
 #[cfg(unix)]
 mod service;

@@ -1151,9 +1151,7 @@ pub fn set_permissions_from_mode<P: AsRef<Path>>(path: P, mode: u32) -> Result<(
 }
 
 #[cfg(not(unix))]
-#[allow(dead_code)]
 pub fn set_permissions_from_mode<P: AsRef<Path>>(_path: P, _mode: u32) -> Result<()> {
-    // No-op on non-Unix systems
     Ok(())
 }
 

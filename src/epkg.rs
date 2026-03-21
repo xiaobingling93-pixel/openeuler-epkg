@@ -15,7 +15,6 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 
 /// Legacy function for unpacking .epkg files (original implementation)
 /// This function is kept for backward compatibility with existing .epkg packages
-#[cfg(target_os = "linux")]
 pub fn unpack_package<P: AsRef<Path>>(epkg_file: P, store_tmp_dir: P) -> Result<()> {
     let epkg_file = epkg_file.as_ref();
     let store_tmp_dir = store_tmp_dir.as_ref();

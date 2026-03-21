@@ -200,7 +200,6 @@ pub fn install_epkg() -> Result<()> {
     }
 
     // Setup tool config symlinks for mirror acceleration
-    #[cfg(target_os = "linux")]
     crate::tool_wrapper::setup_tool_config_symlinks()
         .unwrap_or_else(|e| {
             log::warn!("Failed to setup tool config symlinks: {}", e);

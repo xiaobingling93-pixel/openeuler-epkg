@@ -44,6 +44,7 @@ fn trigger_name_to_filename(name: &str) -> String {
 }
 
 /// Ensure triggers directory exists
+#[cfg(unix)]
 pub fn ensure_triggers_dir(env_root: &Path) -> Result<()> {
     let triggers_dir = get_triggers_dir(env_root);
     fs::create_dir_all(&triggers_dir)
@@ -237,6 +238,7 @@ fn write_unincorp_file(
 /// Activate a trigger (add to Unincorp file)
 /// Reference: dpkg-trigger main.c do_trigger()
 /// Used by dpkg-trigger command
+#[cfg(unix)]
 pub fn activate_trigger(
     env_root: &Path,
     trigger_name: &str,

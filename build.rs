@@ -37,7 +37,6 @@ const LINUX_ONLY: &[&str] = &[
     "dpkg_query",
     "dpkg_realpath",
     "dpkg_statoverride",
-    "dpkg_trigger",
     "update_alternatives",
 
     // RPM query/install path and Lua scriptlets (epkg Linux RPM story)
@@ -87,6 +86,9 @@ const UNIX_ONLY: &[&str] = &[
     "tar",
 
     "tty",
+
+    // dpkg-trigger: updates var/lib/dpkg/triggers (same layout on macOS-hosted Linux envs)
+    "dpkg_trigger",
 ];
 
 fn main() {

@@ -291,7 +291,6 @@ fn resolve_channel_distro_version(cc: &mut ChannelConfig, main_config: Option<&C
 /// Merge channel-level default URLs into repo configs where missing
 pub fn merge_channel_defaults_into_repos(cc: &mut ChannelConfig) {
     for (_, repo_config) in &mut cc.repos {
-        #[cfg(target_os = "linux")]
         if repo_config.components.is_empty() {
             repo_config.components = cc.components.clone();
         }
@@ -344,7 +343,6 @@ pub fn deserialize_channel_config() -> Result<Vec<ChannelConfig>> {
 }
 
 /// Update system channel configs with inherited settings and proper naming
-#[cfg(target_os = "linux")]
 fn update_system_channel_configs(
     system_channel_configs: Vec<ChannelConfig>,
     channel_configs: &mut Vec<ChannelConfig>,
@@ -361,7 +359,6 @@ fn update_system_channel_configs(
 }
 
 /// Load system repository configurations as separate ChannelConfig instances
-#[cfg(target_os = "linux")]
 fn load_system_repositories(channel_configs: &mut Vec<ChannelConfig>, env_root: &Path) -> Result<()> {
     // Get the main channel config to inherit common settings
     let main_config = channel_configs.first().cloned();
@@ -380,12 +377,6 @@ fn load_system_repositories(channel_configs: &mut Vec<ChannelConfig>, env_root: 
         }
     }
 
-    Ok(())
-}
-
-/// Load system repository configurations as separate ChannelConfig instances (stub for non-Linux)
-#[cfg(not(target_os = "linux"))]
-fn load_system_repositories(_channel_configs: &mut Vec<ChannelConfig>, _env_root: &Path) -> Result<()> {
     Ok(())
 }
 

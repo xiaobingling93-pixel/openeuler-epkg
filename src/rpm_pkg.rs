@@ -2,6 +2,7 @@ use crate::rpm_repo::PACKAGE_KEY_MAPPING;
 #[cfg(all(target_os = "linux", debug_assertions))]
 use crate::rpm_verify;
 use crate::rpm_triggers::{extract_rpm_triggers, extract_install_prefixes};
+#[cfg(unix)]
 use crate::utils;
 use color_eyre::eyre::WrapErr;
 use color_eyre::Result;
@@ -102,6 +103,8 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
                             utils::set_permissions_from_mode(&file_path, mode.into())
                                 .wrap_err_with(|| format!("Failed to set permissions for file at {}", file_path.display()))?;
                         }
+                        #[cfg(not(unix))]
+                        let _ = permissions;
                     }
                     FileMode::Dir { permissions } => {
                         // Create directory
@@ -115,6 +118,8 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
                             utils::set_permissions_from_mode(&file_path, mode.into())
                                 .wrap_err_with(|| format!("Failed to set permissions for directory at {}", file_path.display()))?;
                         }
+                        #[cfg(not(unix))]
+                        let _ = permissions;
                     }
                     FileMode::SymbolicLink { permissions: _ } => {
                         // Create symbolic link

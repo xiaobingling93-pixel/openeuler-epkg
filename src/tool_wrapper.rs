@@ -3,6 +3,18 @@
 //! This module handles automatic injection of mirror environment variables
 //! for common package managers (pip, npm, gem, go, cargo).
 //!
+//! Cross-platform: same install flow on Linux, macOS, and Windows. Host config links use
+//! [`crate::lfs::symlink`] (junction/hardlink/copy on Windows as implemented there). Wrapper
+//! install uses [`crate::utils::set_permissions_from_mode`] (no-op on Windows). Path matching
+//! for newly installed binaries normalizes `\\` to `/` so detection works on Windows.
+//!
+//! **Windows launchers**: Native Conda/CMD does not honor shebangs. We still write one
+//! extensionless script (same as Unix) for MSYS2/Git Bash, and copy a template from
+//! `assets/tool/cmd_shims/` to `usr/local/bin/{tool}.cmd` (`python.cmd`, `ruby.cmd`, or
+//! `posix_shell.cmd` by shebang). Templates use `%~dp0%~n0` so the paired extensionless
+//! script is same basename as the `.cmd` file. We use **`.cmd`** (not `.bat`) for new shims. Do **not** duplicate as
+//! `tool.sh` — the extensionless file is already the POSIX script.
+//!
 //! ★ 注意：文件存在性检查 ★
 //! ═══════════════════════════════════════════════════════════════════════════
 //!
@@ -262,7 +274,8 @@ fn detect_installed_tools(plan: &InstallationPlan) -> Vec<String> {
     ];
 
     for file in &plan.batch.new_files {
-        let file_str = file.to_string_lossy();
+        // Normalize separators so matching works on Windows (usr\bin\pip vs usr/bin/pip)
+        let file_str = file.to_string_lossy().replace('\\', "/");
         log::debug!("Checking new_file: {}", file_str);
 
         // Check if file matches any tool's alternative paths
@@ -301,16 +314,90 @@ fn detect_installed_tools(plan: &InstallationPlan) -> Vec<String> {
 /// Note: Filesystem symlinks (e.g., node->npm) are auto-followed by read_to_string()
 fn get_wrapper_content(tool: &str) -> Result<String> {
     let epkg_src = dirs::get_epkg_src_path();
-    let wrapper_path = crate::dirs::path_join(&epkg_src, &["assets", "tool", "wrappers"]).join(tool);
+    let base = crate::dirs::path_join(&epkg_src, &["assets", "tool", "wrappers"]);
+    let wrapper_path = base.join(tool);
 
-    // Use exists_on_host for regular host file check
     if lfs::exists_on_host(&wrapper_path) {
         let content = std::fs::read_to_string(&wrapper_path)
             .with_context(|| format!("Failed to read wrapper script: {}", wrapper_path.display()))?;
         return Ok(content);
     }
 
+    let generic = base.join("shell-wrapper.sh");
+    if lfs::exists_on_host(&generic) {
+        let content = std::fs::read_to_string(&generic)
+            .with_context(|| format!("Failed to read generic shell wrapper: {}", generic.display()))?;
+        return Ok(content);
+    }
+
     Err(eyre::eyre!("No wrapper script found for tool: {}", tool))
+}
+
+/// How to invoke the extensionless wrapper from a `tool.cmd` shim on Windows.
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+enum WindowsShimKind {
+    Python,
+    Ruby,
+    PosixShell,
+}
+
+#[cfg(windows)]
+fn detect_windows_shim_kind(content: &str) -> Option<WindowsShimKind> {
+    let shebang = content.lines().next()?.trim();
+    if shebang.contains("python") {
+        return Some(WindowsShimKind::Python);
+    }
+    if shebang.contains("ruby") {
+        return Some(WindowsShimKind::Ruby);
+    }
+    if shebang.contains("/bin/sh") || shebang.contains("/bin/bash") || shebang.contains("/usr/bin/env sh") {
+        return Some(WindowsShimKind::PosixShell);
+    }
+    None
+}
+
+#[cfg(windows)]
+fn cmd_shim_template_filename(kind: WindowsShimKind) -> &'static str {
+    match kind {
+        WindowsShimKind::Python => "python.cmd",
+        WindowsShimKind::Ruby => "ruby.cmd",
+        WindowsShimKind::PosixShell => "posix_shell.cmd",
+    }
+}
+
+#[cfg(windows)]
+fn load_windows_cmd_shim_template(kind: WindowsShimKind) -> Result<String> {
+    let epkg_src = dirs::get_epkg_src_path();
+    let path = crate::dirs::path_join(
+        &epkg_src,
+        &["assets", "tool", "cmd_shims", cmd_shim_template_filename(kind)],
+    );
+    if !lfs::exists_on_host(&path) {
+        return Err(eyre::eyre!(
+            "Windows CMD shim template missing: {} (expected under EPKG_SRC assets)",
+            path.display()
+        ));
+    }
+    std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read CMD shim template {}", path.display()))
+}
+
+#[cfg(windows)]
+fn write_windows_cmd_shim(wrapper_dir: &Path, tool: &str, script_content: &str) -> Result<()> {
+    let Some(kind) = detect_windows_shim_kind(script_content) else {
+        log::debug!(
+            "No Windows .cmd shim for tool {} (unrecognized shebang); MSYS2/Git Bash can still run the extensionless script",
+            tool
+        );
+        return Ok(());
+    };
+    let body = load_windows_cmd_shim_template(kind)?;
+    let cmd_path = wrapper_dir.join(format!("{}.cmd", tool));
+    lfs::write(&cmd_path, body.as_bytes())
+        .with_context(|| format!("Failed to write {}", cmd_path.display()))?;
+    log::info!("Created Windows CMD launcher: {}", cmd_path.display());
+    Ok(())
 }
 
 /// Create wrapper script for a tool
@@ -324,13 +411,12 @@ fn create_tool_wrapper(tool: &str, env_root: &Path) -> Result<()> {
     // Write wrapper script
     lfs::write(&wrapper_path, &content)?;
 
-    // Set executable permissions
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755))
-            .with_context(|| format!("Failed to set permissions for {}", wrapper_path.display()))?;
-    }
+    // Unix: chmod; Windows: no-op (see utils::set_permissions_from_mode)
+    crate::utils::set_permissions_from_mode(&wrapper_path, 0o755)
+        .with_context(|| format!("Failed to set permissions for {}", wrapper_path.display()))?;
+
+    #[cfg(windows)]
+    write_windows_cmd_shim(&wrapper_dir, tool, &content)?;
 
     log::info!("Created tool wrapper: {}", wrapper_path.display());
     Ok(())
@@ -339,12 +425,22 @@ fn create_tool_wrapper(tool: &str, env_root: &Path) -> Result<()> {
 /// Remove wrapper script for a tool
 #[allow(dead_code)]
 fn remove_tool_wrapper(tool: &str, env_root: &Path) -> Result<()> {
-    let wrapper_path = crate::dirs::path_join(env_root, &["usr", "local", "bin"]).join(tool);
+    let wrapper_dir = crate::dirs::path_join(env_root, &["usr", "local", "bin"]);
+    let wrapper_path = wrapper_dir.join(tool);
 
     // Use exists_in_env because wrapper_path is in env_root and may be a broken symlink
     if lfs::exists_in_env(&wrapper_path) {
         lfs::remove_file(&wrapper_path)?;
         log::info!("Removed tool wrapper: {}", wrapper_path.display());
+    }
+
+    #[cfg(windows)]
+    {
+        let cmd_path = wrapper_dir.join(format!("{}.cmd", tool));
+        if lfs::exists_in_env(&cmd_path) {
+            lfs::remove_file(&cmd_path)?;
+            log::info!("Removed Windows CMD launcher: {}", cmd_path.display());
+        }
     }
 
     Ok(())

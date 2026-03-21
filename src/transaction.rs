@@ -47,12 +47,16 @@
 //! - `process_single_package_upgrade()` - Replaced by `run_action()` with integrated triggers
 //! - `process_fresh_installs()` - Replaced by `process_package_operation()` with integrated triggers
 
+#[cfg(unix)]
 use std::path::Path;
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::time::SystemTime;
 use color_eyre::Result;
 use std::sync::Arc;
+#[cfg(unix)]
 use color_eyre::eyre::WrapErr;
+#[cfg(unix)]
 use crate::lfs;
 use crate::models::{PackageFormat, InstalledPackageInfo};
 use crate::models::PACKAGE_CACHE;
@@ -60,6 +64,7 @@ use crate::plan::{InstallationPlan, PackageOperation, OperationType, remove_pack
 use crate::hooks;
 use crate::hooks::{run_hooks, run_pkgkey_hooks_pair, HookWhen};
 use crate::scriptlets::{run_scriptlet, run_trans_scriptlets, ScriptletType};
+#[cfg(unix)]
 use crate::run;
 use crate::remove::unlink_package;
 use log;
@@ -290,7 +295,6 @@ pub fn run_transaction_batch(
     build_batch_file_union(plan)?;
 
     // Setup tool wrappers for newly installed tools (after new_files is populated)
-    #[cfg(target_os = "linux")]
     crate::tool_wrapper::setup_tool_wrappers(plan)?;
 
     // Execute transaction scriptlets at transaction boundaries (RPM behavior)

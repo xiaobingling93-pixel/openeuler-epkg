@@ -478,9 +478,7 @@ fn sync_from_release_metadata(repo: &RepoRevise, release_path: &PathBuf) -> Resu
     #[allow(unused)]
     let release_items =
         match repo.format {
-            #[cfg(target_os = "linux")]
             PackageFormat::Deb => crate::deb_repo::parse_release_file(&repo, &release_content, &release_dir.to_path_buf())?,
-            #[cfg(target_os = "linux")]
             PackageFormat::Rpm => crate::rpm_repo::parse_repomd_file(&repo, &release_content, &release_dir.to_path_buf())?,
             _ => return Err(eyre::eyre!("Unsupported package format: {:?}", repo.format)),
         };
@@ -1080,11 +1078,8 @@ fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> 
 fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<()> {
     if revise.is_packages {
         match revise.repo_revise.format {
-            #[cfg(target_os = "linux")]
             PackageFormat::Deb => crate::deb_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Debian packages content for {}", revise.download_path.display()))?,
-            #[cfg(target_os = "linux")]
             PackageFormat::Rpm => crate::rpm_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process RPM packages content for {}", revise.download_path.display()))?,
-            #[cfg(target_os = "linux")]
             PackageFormat::Apk => crate::apk_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process APK packages content for {}", revise.download_path.display()))?,
             PackageFormat::Pacman => {
                 // Check if this is an AUR repository

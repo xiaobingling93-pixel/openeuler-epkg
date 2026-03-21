@@ -551,15 +551,13 @@ pub fn run_scriptlet(
                 env_vars.entry("PATH".to_string())
                     .or_insert("/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string());
 
-                // Add environment variables for package scripts based on format
-                #[cfg(target_os = "linux")]
+                // Add environment variables for package scripts based on format.
+                // Same vars are needed when scriptlets run in a Linux VM from macOS/Windows hosts.
                 if package_format == PackageFormat::Deb {
                     setup_deb_env_vars(&mut env_vars, pkgkey, package_info, scriptlet_type, env_root);
                 } else if package_format == PackageFormat::Rpm {
                     setup_rpm_env_vars(&mut env_vars, pkgkey, package_info, store_root);
-                }
-                #[cfg(target_os = "linux")]
-                if package_format == PackageFormat::Apk {
+                } else if package_format == PackageFormat::Apk {
                     setup_apk_env_vars(&mut env_vars, pkgkey, package_info, scriptlet_type);
                 }
                 if package_format == PackageFormat::Conda {

@@ -21,7 +21,7 @@ use crate::dirs::*;
 use crate::repo::sync_channel_metadata;
 use crate::utils::force_symlink;
 use crate::deinit::force_remove_dir_all;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use crate::deb_triggers::ensure_triggers_dir;
 use crate::plan::prepare_installation_plan;
 use crate::install::execute_installation_plan;
@@ -409,8 +409,8 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
         lfs::create_dir_all(crate::dirs::path_join(env_root, &["usr", "sbin"]))?;
     }
 
-    // Debian-specific setup (Linux only)
-    #[cfg(target_os = "linux")]
+    // Debian-specific layout (triggers directory for dpkg-trigger compatibility)
+    #[cfg(unix)]
     if pkg_format == &PackageFormat::Deb {
         ensure_triggers_dir(env_root)?;
     }

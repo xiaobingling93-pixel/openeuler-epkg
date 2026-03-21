@@ -30,13 +30,14 @@ Automatically create wrapper scripts in `$env_root/usr/local/bin/` for common pa
 │   │   └── ...
 │   └── us/                    # US region
 │       └── ...
-└── wrappers/
-    ├── pip                    # Python3 script
-    ├── npm                    # Node.js script
-    ├── gem                    # Ruby script
-    ├── shell-wrapper.sh       # Generic shell script
-    ├── go -> shell-wrapper.sh # Symlink
-    └── cargo -> shell-wrapper.sh
+├── wrappers/
+│   ├── pip                    # Python3 script
+│   ├── gem                    # Ruby script
+│   └── shell-wrapper.sh       # Generic shell (go, npm, cargo, …)
+└── cmd_shims/                 # Windows: templates copied to {tool}.cmd beside extensionless wrapper
+    ├── python.cmd             # py / python3 / python; target %~dp0%~n0
+    ├── ruby.cmd
+    └── posix_shell.cmd        # bash / sh; target %~dp0%~n0
 ```
 
 ### Deployment (on user system)
@@ -49,12 +50,12 @@ Automatically create wrapper scripts in `$env_root/usr/local/bin/` for common pa
 
 # Created in each environment:
 $env_root/usr/local/bin/
-├── pip           (wrapper, if pip installed & conditions met)
-├── pip3          (wrapper, uses pip config)
-├── npm           (wrapper)
+├── pip           (extensionless wrapper, if pip installed & conditions met)
+├── pip.cmd       (Windows: CMD launcher → same mirror logic via Python)
+├── pip3          (wrapper)
 ├── gem           (wrapper)
-├── go            (wrapper)
-└── cargo         (wrapper)
+├── gem.cmd       (Windows, when shim applies)
+└── …
 ```
 
 ---
