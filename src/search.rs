@@ -396,6 +396,20 @@ fn rfind_byte(data: &[u8], byte: u8) -> Option<usize> {
     None
 }
 
+fn open_filelists_reader(filelists_path: &Path) -> Result<Box<dyn Read>> {
+    let file = File::open(filelists_path)?;
+    let s = filelists_path.to_string_lossy();
+    Ok(if s.ends_with(".gz") {
+        Box::new(GzDecoder::new(file))
+    } else if s.ends_with(".xz") {
+        Box::new(XzDecoder::new_parallel(file))
+    } else if s.ends_with(".zst") {
+        Box::new(ZstdDecoder::new(file)?)
+    } else {
+        Box::new(file)
+    })
+}
+
 // Start a producer thread to read and send file contents in chunks using zero-copy with Arc<Mutex<FixedBuffer>>
 // Uses a dedicated buffer pool with circular buffer semantics for true zero-copy
 fn start_filelists_producer(
@@ -408,17 +422,7 @@ fn start_filelists_producer(
         let mut current_buffer = buffer_pool.get_producer_buffer();
         let mut partial_size = 0;
 
-        // Open and prepare the file reader
-        let file = File::open(&filelists_path)?;
-        let mut reader: Box<dyn std::io::Read> = if filelists_path.to_string_lossy().ends_with(".gz") {
-            Box::new(GzDecoder::new(file))
-        } else if filelists_path.to_string_lossy().ends_with(".xz") {
-            Box::new(XzDecoder::new_parallel(file))
-        } else if filelists_path.to_string_lossy().ends_with(".zst") {
-            Box::new(ZstdDecoder::new(file)?)
-        } else {
-            Box::new(file)
-        };
+        let mut reader = open_filelists_reader(&filelists_path)?;
 
         // Process the file in chunks
         loop {

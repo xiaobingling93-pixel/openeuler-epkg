@@ -154,17 +154,143 @@ fn get_file_type_from_metadata(metadata: &StdMetadata) -> String {
     }
 }
 
-pub fn compare_directories(official_dir: &Path, epkg_dir: &Path) -> Result<ComparisonResult> {
-    fn get_metadata_or_log(p: &Path, _path_for_log: &PathBuf) -> Option<StdMetadata> {
-        match fs::symlink_metadata(p) {
-            Ok(meta) => Some(meta),
-            Err(e) => {
-                log::warn!("Failed to get metadata for {}: {}. Skipping some checks for this entry.", p.display(), e);
-                None
-            }
+fn get_metadata_or_log(p: &Path, _path_for_log: &PathBuf) -> Option<StdMetadata> {
+    match fs::symlink_metadata(p) {
+        Ok(meta) => Some(meta),
+        Err(e) => {
+            log::warn!("Failed to get metadata for {}: {}. Skipping some checks for this entry.", p.display(), e);
+            None
         }
     }
+}
 
+fn compare_one_path_pair(
+    path: &PathBuf,
+    official_entry: &DirEntry,
+    epkg_entry: &DirEntry,
+    mismatches: &mut Vec<ComparisonMismatchDetail>,
+) -> Result<()> {
+    let official_meta_opt = get_metadata_or_log(official_entry.path(), path);
+    let epkg_meta_opt = get_metadata_or_log(epkg_entry.path(), path);
+
+    if let (Some(official_meta), Some(epkg_meta)) = (official_meta_opt.as_ref(), epkg_meta_opt.as_ref()) {
+        let official_type = get_file_type_from_metadata(official_meta);
+        let epkg_type = get_file_type_from_metadata(epkg_meta);
+
+        if official_type != epkg_type {
+            mismatches.push(ComparisonMismatchDetail::TypeMismatch {
+                path: path.clone(),
+                official_type,
+                epkg_type,
+            });
+        }
+
+        if official_meta.mode() != epkg_meta.mode() {
+            mismatches.push(ComparisonMismatchDetail::PermissionsMismatch {
+                path: path.clone(),
+                official_mode: official_meta.mode(),
+                epkg_mode: epkg_meta.mode(),
+            });
+        }
+
+        if official_meta.uid() != epkg_meta.uid() {
+            mismatches.push(ComparisonMismatchDetail::OwnerMismatch {
+                path: path.clone(),
+                official_uid: official_meta.uid(),
+                epkg_uid: epkg_meta.uid(),
+            });
+        }
+
+        if official_meta.gid() != epkg_meta.gid() {
+            mismatches.push(ComparisonMismatchDetail::GroupMismatch {
+                path: path.clone(),
+                official_gid: official_meta.gid(),
+                epkg_gid: epkg_meta.gid(),
+            });
+        }
+
+        if official_meta.len() != epkg_meta.len() {
+            mismatches.push(ComparisonMismatchDetail::SizeMismatch {
+                path: path.clone(),
+                official_size: official_meta.len(),
+                epkg_size: epkg_meta.len(),
+            });
+        }
+
+        // Extended stat comparisons
+
+        // if official_meta.mtime() != epkg_meta.mtime() {
+        //     mismatches.push(ComparisonMismatchDetail::MtimeMismatch {
+        //         path: path.clone(),
+        //         official_mtime: official_meta.mtime(),
+        //         epkg_mtime: epkg_meta.mtime(),
+        //     });
+        // }
+
+        if official_meta.dev() != epkg_meta.dev() {
+            mismatches.push(ComparisonMismatchDetail::DevMismatch {
+                path: path.clone(),
+                official_dev: official_meta.dev(),
+                epkg_dev: epkg_meta.dev(),
+            });
+        }
+
+        // For device files, compare rdev (device ID)
+        let official_mode = official_meta.mode();
+        let epkg_mode = epkg_meta.mode();
+        if ((official_mode & libc::S_IFMT) == libc::S_IFBLK || (official_mode & libc::S_IFMT) == libc::S_IFCHR)
+            && ((epkg_mode & libc::S_IFMT) == libc::S_IFBLK || (epkg_mode & libc::S_IFMT) == libc::S_IFCHR)
+        {
+            if official_meta.rdev() != epkg_meta.rdev() {
+                mismatches.push(ComparisonMismatchDetail::RdevMismatch {
+                    path: path.clone(),
+                    official_rdev: official_meta.rdev(),
+                    epkg_rdev: epkg_meta.rdev(),
+                });
+            }
+        }
+
+        // Content and symlink target comparison
+        if official_meta.is_file() && epkg_meta.is_file() {
+            // Only compare content if sizes match
+            if official_meta.len() == epkg_meta.len() {
+                if !are_files_equal(official_entry.path(), epkg_entry.path())? {
+                    mismatches.push(ComparisonMismatchDetail::ContentMismatch(path.clone()));
+                }
+            }
+        } else if official_meta.file_type().is_symlink() && epkg_meta.file_type().is_symlink() {
+            let official_target = fs::read_link(official_entry.path())
+                .wrap_err_with(|| format!("Failed to read link: {}", official_entry.path().display()))?;
+            let epkg_target =
+                fs::read_link(epkg_entry.path()).wrap_err_with(|| format!("Failed to read link: {}", epkg_entry.path().display()))?;
+            if official_target != epkg_target {
+                mismatches.push(ComparisonMismatchDetail::SymlinkTargetMismatch {
+                    path: path.clone(),
+                    official_target,
+                    epkg_target,
+                });
+            }
+        }
+    } else {
+        // Fallback comparison using DirEntry if metadata is not available
+        let official_type = official_entry.file_type();
+        let epkg_type = epkg_entry.file_type();
+
+        if official_type.is_dir() != epkg_type.is_dir()
+            || official_type.is_file() != epkg_type.is_file()
+            || official_type.is_symlink() != epkg_type.is_symlink()
+        {
+            mismatches.push(ComparisonMismatchDetail::TypeMismatch {
+                path: path.clone(),
+                official_type: get_entry_type_as_string(official_entry),
+                epkg_type: get_entry_type_as_string(epkg_entry),
+            });
+        }
+    }
+    Ok(())
+}
+
+pub fn compare_directories(official_dir: &Path, epkg_dir: &Path) -> Result<ComparisonResult> {
     let mut mismatches = Vec::new();
     let mut official_entries = HashMap::new();
     let mut epkg_entries = HashMap::new();
@@ -184,121 +310,7 @@ pub fn compare_directories(official_dir: &Path, epkg_dir: &Path) -> Result<Compa
     for (path, official_entry) in &official_entries {
         match epkg_entries.get(path) {
             Some(epkg_entry) => {
-                let official_meta_opt = get_metadata_or_log(official_entry.path(), path);
-                let epkg_meta_opt = get_metadata_or_log(epkg_entry.path(), path);
-
-                if let (Some(official_meta), Some(epkg_meta)) = (official_meta_opt.as_ref(), epkg_meta_opt.as_ref()) {
-                    // Compare file types using metadata instead of DirEntry file_type for better accuracy
-                    let official_type = get_file_type_from_metadata(official_meta);
-                    let epkg_type = get_file_type_from_metadata(epkg_meta);
-
-                    if official_type != epkg_type {
-                        mismatches.push(ComparisonMismatchDetail::TypeMismatch {
-                            path: path.clone(),
-                            official_type,
-                            epkg_type,
-                        });
-                    }
-
-                    // Compare all metadata fields
-                    if official_meta.mode() != epkg_meta.mode() {
-                        mismatches.push(ComparisonMismatchDetail::PermissionsMismatch {
-                            path: path.clone(),
-                            official_mode: official_meta.mode(),
-                            epkg_mode: epkg_meta.mode(),
-                        });
-                    }
-
-                    if official_meta.uid() != epkg_meta.uid() {
-                        mismatches.push(ComparisonMismatchDetail::OwnerMismatch {
-                            path: path.clone(),
-                            official_uid: official_meta.uid(),
-                            epkg_uid: epkg_meta.uid(),
-                        });
-                    }
-
-                    if official_meta.gid() != epkg_meta.gid() {
-                        mismatches.push(ComparisonMismatchDetail::GroupMismatch {
-                            path: path.clone(),
-                            official_gid: official_meta.gid(),
-                            epkg_gid: epkg_meta.gid(),
-                        });
-                    }
-
-                    if official_meta.len() != epkg_meta.len() {
-                        mismatches.push(ComparisonMismatchDetail::SizeMismatch {
-                            path: path.clone(),
-                            official_size: official_meta.len(),
-                            epkg_size: epkg_meta.len(),
-                        });
-                    }
-
-                    // Extended stat comparisons
-
-                    // if official_meta.mtime() != epkg_meta.mtime() {
-                    //     mismatches.push(ComparisonMismatchDetail::MtimeMismatch {
-                    //         path: path.clone(),
-                    //         official_mtime: official_meta.mtime(),
-                    //         epkg_mtime: epkg_meta.mtime(),
-                    //     });
-                    // }
-
-                    if official_meta.dev() != epkg_meta.dev() {
-                        mismatches.push(ComparisonMismatchDetail::DevMismatch {
-                            path: path.clone(),
-                            official_dev: official_meta.dev(),
-                            epkg_dev: epkg_meta.dev(),
-                        });
-                    }
-
-                    // For device files, compare rdev (device ID)
-                    let official_mode = official_meta.mode();
-                    let epkg_mode = epkg_meta.mode();
-                    if ((official_mode & libc::S_IFMT) == libc::S_IFBLK || (official_mode & libc::S_IFMT) == libc::S_IFCHR) &&
-                       ((epkg_mode & libc::S_IFMT) == libc::S_IFBLK || (epkg_mode & libc::S_IFMT) == libc::S_IFCHR) {
-                        if official_meta.rdev() != epkg_meta.rdev() {
-                            mismatches.push(ComparisonMismatchDetail::RdevMismatch {
-                                path: path.clone(),
-                                official_rdev: official_meta.rdev(),
-                                epkg_rdev: epkg_meta.rdev(),
-                            });
-                        }
-                    }
-
-                    // Content and symlink target comparison
-                    if official_meta.is_file() && epkg_meta.is_file() {
-                        // Only compare content if sizes match
-                        if official_meta.len() == epkg_meta.len() {
-                            if !are_files_equal(official_entry.path(), epkg_entry.path())? {
-                                mismatches.push(ComparisonMismatchDetail::ContentMismatch(path.clone()));
-                            }
-                        }
-                    } else if official_meta.file_type().is_symlink() && epkg_meta.file_type().is_symlink() {
-                        let official_target = fs::read_link(official_entry.path()).wrap_err_with(|| format!("Failed to read link: {}", official_entry.path().display()))?;
-                        let epkg_target = fs::read_link(epkg_entry.path()).wrap_err_with(|| format!("Failed to read link: {}", epkg_entry.path().display()))?;
-                        if official_target != epkg_target {
-                            mismatches.push(ComparisonMismatchDetail::SymlinkTargetMismatch {
-                                path: path.clone(),
-                                official_target,
-                                epkg_target,
-                            });
-                        }
-                    }
-                } else {
-                    // Fallback comparison using DirEntry if metadata is not available
-                    let official_type = official_entry.file_type();
-                    let epkg_type = epkg_entry.file_type();
-
-                    if official_type.is_dir() != epkg_type.is_dir() ||
-                       official_type.is_file() != epkg_type.is_file() ||
-                       official_type.is_symlink() != epkg_type.is_symlink() {
-                        mismatches.push(ComparisonMismatchDetail::TypeMismatch {
-                            path: path.clone(),
-                            official_type: get_entry_type_as_string(official_entry),
-                            epkg_type: get_entry_type_as_string(epkg_entry),
-                        });
-                    }
-                }
+                compare_one_path_pair(path, official_entry, epkg_entry, &mut mismatches)?;
             }
             None => {
                 mismatches.push(ComparisonMismatchDetail::MissingInEpkg(path.clone()));
