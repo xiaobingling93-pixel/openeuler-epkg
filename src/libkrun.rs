@@ -738,7 +738,7 @@ fn try_reuse_existing_krun_session(
 fn send_session_done_unix(sock_path: &Path) -> Result<()> {
     let req = serde_json::to_vec(&libkrun_stream::build_command_request(
         &[crate::run::VM_SESSION_DONE_CMD.to_string()],
-        false,
+        crate::models::IoMode::Stream,
         false,
     ))?;
     #[cfg(unix)]
