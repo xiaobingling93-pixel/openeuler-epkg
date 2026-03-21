@@ -243,7 +243,7 @@ fn symlink_desktop_files(
         }
 
         // Handle existing destination
-        if dst_path.is_symlink() {
+        if lfs::is_symlink(&dst_path) {
             lfs::remove_file(&dst_path)?;
         } else if dst_path.exists() {
             // Regular file or directory - skip
@@ -545,7 +545,7 @@ pub fn unexpose_package_xdesktop(
         }
 
         // Check if this is a desktop file by extension
-        if link_path.is_symlink() {
+        if lfs::is_symlink(link_path) {
             remove_symlinked_file(link_path, link_path_str, env_root, desktop_integration_occurred)?;
         } else if link_path_str.ends_with(".desktop") {
             remove_desktop_file(link_path, env_root, desktop_integration_occurred)?;

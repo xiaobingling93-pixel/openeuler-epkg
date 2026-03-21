@@ -21,6 +21,7 @@ use walkdir::{DirEntry, WalkDir};
 // If utils is a module in src, then crate::utils should work.
 // If it's a submodule of rpm_pkg, this might need adjustment after moving.
 // For now, assuming it's generally available via crate::utils
+use crate::lfs;
 use crate::utils;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -125,10 +126,10 @@ fn are_files_equal(path1: &Path, path2: &Path) -> Result<bool> {
 }
 
 fn get_entry_type_as_string(entry: &DirEntry) -> String {
-    let ft = entry.file_type();
-    if ft.is_dir() { "directory".to_string() }
-    else if ft.is_file() { "file".to_string() }
-    else if ft.is_symlink() { "symlink".to_string() }
+    let path = entry.path();
+    if entry.file_type().is_dir() { "directory".to_string() }
+    else if entry.file_type().is_file() { "file".to_string() }
+    else if lfs::is_symlink(&path) { "symlink".to_string() }
     else { "other".to_string() }
 }
 
@@ -258,7 +259,7 @@ fn compare_one_path_pair(
                     mismatches.push(ComparisonMismatchDetail::ContentMismatch(path.clone()));
                 }
             }
-        } else if official_meta.file_type().is_symlink() && epkg_meta.file_type().is_symlink() {
+        } else if lfs::is_symlink(&official_entry.path()) && lfs::is_symlink(&epkg_entry.path()) {
             let official_target = fs::read_link(official_entry.path())
                 .wrap_err_with(|| format!("Failed to read link: {}", official_entry.path().display()))?;
             let epkg_target =
@@ -278,7 +279,7 @@ fn compare_one_path_pair(
 
         if official_type.is_dir() != epkg_type.is_dir()
             || official_type.is_file() != epkg_type.is_file()
-            || official_type.is_symlink() != epkg_type.is_symlink()
+            || lfs::is_symlink(&official_entry.path()) != lfs::is_symlink(&epkg_entry.path())
         {
             mismatches.push(ComparisonMismatchDetail::TypeMismatch {
                 path: path.clone(),

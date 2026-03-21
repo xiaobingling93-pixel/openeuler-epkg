@@ -522,12 +522,39 @@ pub fn metadata_in_env<P: AsRef<Path>>(path: P, env_root: &Path) -> Result<fs::M
 }
 
 /// Check if path is a symlink
-/// ★ NOTE: Only checks file type, does NOT check if target exists
+/// ★ NOTE: Only checks for true symlinks, NOT Windows junctions
+/// Use is_symlink_or_junction() when checking directories that may be junctions
 pub fn is_symlink(path: &Path) -> bool {
     match symlink_metadata(path) {
         Ok(metadata) => metadata.file_type().is_symlink(),
         Err(_) => false,
     }
+}
+
+/// Check if path is a symlink or Windows junction
+/// On Windows, junctions are directory reparse points created by lfs::symlink()
+/// Use this when checking directory links that may be junctions
+#[cfg(windows)]
+pub fn is_symlink_or_junction(path: &Path) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    match symlink_metadata(path) {
+        Ok(metadata) => {
+            // Check if it's a regular symlink
+            if metadata.file_type().is_symlink() {
+                return true;
+            }
+            // Check if it's a reparse point (junction)
+            // FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+            metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        }
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(windows))]
+pub fn is_symlink_or_junction(path: &Path) -> bool {
+    is_symlink(path)
 }
 
 /// Check if path itself exists (does NOT follow symlinks)

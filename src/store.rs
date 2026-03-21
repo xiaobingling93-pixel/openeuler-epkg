@@ -438,7 +438,7 @@ fn filelist_mtree_line_for_entry(path: &Path, relative_path_str: &str) -> Result
                 attrs.push(format!("mode={:o}", mode));
             }
         }
-    } else if file_type.is_symlink() {
+    } else if lfs::is_symlink(path) {
         attrs.push("type=link".to_string());
 
         // Add link target

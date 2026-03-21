@@ -463,7 +463,7 @@ fn get_dir_size(path: &Path) -> Result<u64> {
         }
 
         // If it's a symlink to a directory or something else, don't follow it; treat as size 0
-        if metadata.file_type().is_symlink() && !metadata.is_dir() {
+        if lfs::is_symlink_or_junction(path) && !metadata.is_dir() {
             return Ok(0);
         }
     }
@@ -479,8 +479,8 @@ fn get_dir_size(path: &Path) -> Result<u64> {
                 if metadata.is_file() {
                     total_size += metadata.len();
                 } else if metadata.is_dir() {
-                    // Don't follow symlinks to avoid counting the same files multiple times
-                    if !metadata.file_type().is_symlink() {
+                    // Don't follow symlinks/junctions to avoid counting the same files multiple times
+                    if !lfs::is_symlink_or_junction(&entry_path) {
                         total_size += get_dir_size(&entry_path).unwrap_or(0);
                     }
                 }

@@ -174,7 +174,7 @@ pub fn get_file_type(file: &Path) -> Result<(FileType, String)> {
     const ELF_MAGIC: &[u8] = &[0x7f, b'E', b'L', b'F'];
 
     // For symlinks, follow the link and check the target's type
-    let file_to_check = if lfs::symlink_metadata(&file).map_or(false, |metadata| metadata.file_type().is_symlink()) {
+    let file_to_check = if lfs::is_symlink(&file) {
         match fs::canonicalize(file) {
             Ok(target) => target,
             Err(_) => return Ok((FileType::Symlink, String::new())),
@@ -958,7 +958,7 @@ fn replace_symlinks_with_content(env_root: &Path) -> Result<()> {
             .unwrap_or(symlink_path)  // Fallback to original if no prefix
         );
 
-        if lfs::exists_in_env(&full_symlink_path) && full_symlink_path.is_symlink() {
+        if lfs::exists_in_env(&full_symlink_path) && lfs::is_symlink(&full_symlink_path) {
             // Resolve the symlink to get the actual target file path
             let target_path = match std::fs::canonicalize(&full_symlink_path) {
                 Ok(path) => path,

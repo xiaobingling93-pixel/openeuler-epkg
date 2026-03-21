@@ -339,7 +339,7 @@ pub fn create_libexec_bin_symlinks(env_root: &Path, store_fs_dir: &Path) -> Resu
         };
 
         // Only process symlinks and regular files
-        if !file_type.is_symlink() && !file_type.is_file() {
+        if !lfs::is_symlink(&entry.path()) && !file_type.is_file() {
             continue;
         }
 
@@ -352,7 +352,7 @@ pub fn create_libexec_bin_symlinks(env_root: &Path, store_fs_dir: &Path) -> Resu
             let target_path = target_bin.join(&name);
 
             // Skip if already exists
-            if target_path.exists() || target_path.is_symlink() {
+            if target_path.exists() || lfs::is_symlink(&target_path) {
                 continue;
             }
 
@@ -698,24 +698,22 @@ fn find_link_interpreter(interpreter_in_env: &Path, interpreter_basename: &str, 
 
     // If the path exists as a symlink but resolve_symlink_in_env returned None,
     // the symlink is broken (target does not exist in the environment).
-    if let Ok(metadata) = lfs::symlink_metadata(interpreter_in_env) {
-        if metadata.file_type().is_symlink() {
-            // Read the target for logging before removal
-            let target = match fs::read_link(interpreter_in_env) {
-                Ok(t) => t.to_string_lossy().into_owned(),
-                Err(_) => "???".to_string(),
-            };
-            log::warn!(
-                "Removing broken symlink: {} -> {} (target not found in environment)",
-                interpreter_in_env.display(),
-                target
-            );
-            lfs::remove_file(interpreter_in_env)?;
-            // After removing broken symlink, continue to search for alternatives
-        } else {
-            // Not a symlink (regular file or directory) - leave it alone
-            return Ok(());
-        }
+    if lfs::is_symlink(interpreter_in_env) {
+        // Read the target for logging before removal
+        let target = match fs::read_link(interpreter_in_env) {
+            Ok(t) => t.to_string_lossy().into_owned(),
+            Err(_) => "???".to_string(),
+        };
+        log::warn!(
+            "Removing broken symlink: {} -> {} (target not found in environment)",
+            interpreter_in_env.display(),
+            target
+        );
+        lfs::remove_file(interpreter_in_env)?;
+        // After removing broken symlink, continue to search for alternatives
+    } else {
+        // Not a symlink (regular file or directory) - leave it alone
+        return Ok(());
     }
 
     find_and_link_alternative_interpreter(interpreter_in_env, interpreter_basename)?;

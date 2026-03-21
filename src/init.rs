@@ -166,13 +166,22 @@ pub fn upgrade_epkg() -> Result<()> {
     Ok(())
 }
 
-pub fn install_epkg() -> Result<()> {
+pub fn install_epkg_with_force(force: bool) -> Result<()> {
     // Fix up /lib64 symlink on Unix systems
     #[cfg(unix)]
     fixup_host_lib64_symlink()
         .unwrap_or_else(|e| {
             log::debug!("Could not fixup /lib64 symlink: {}", e);
         });
+
+    // Remove old self environment if --force is specified
+    if force {
+        let self_env_base = crate::dirs::get_env_base_path(SELF_ENV);
+        if self_env_base.exists() {
+            println!("Removing old self environment: {}", self_env_base.display());
+            lfs::remove_dir_all(&self_env_base)?;
+        }
+    }
 
     // Set up installation paths
     lfs::create_dir_all(&dirs().epkg_downloads_cache.join("epkg"))?;
@@ -429,13 +438,16 @@ fn setup_epkg_src(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
             lfs::create_dir_all(&usr_src)?;
         }
 
-        if epkg_src.is_symlink() {
+        if lfs::is_symlink_or_junction(&epkg_src) {
             lfs::remove_file(&epkg_src)?;
         }
-        if !epkg_src.exists() {
-            let repo_root = find_repo_root()?;
-            lfs::symlink(&repo_root, &epkg_src)?;
+        // If directory exists but is not a symlink/junction, remove it (may be incomplete/stale)
+        if epkg_src.exists() {
+            log::debug!("Removing existing epkg src directory: {}", epkg_src.display());
+            lfs::remove_dir_all(&epkg_src)?;
         }
+        let repo_root = find_repo_root()?;
+        lfs::symlink(&repo_root, &epkg_src)?;
 
         println!("Using local git repository for epkg source code");
         return Ok(());
@@ -771,7 +783,7 @@ fn find_repo_root() -> Result<std::path::PathBuf> {
             let epkg_src_symlink = crate::dirs::path_join(&self_env_root, &["usr", "src", "epkg"]);
             if epkg_src_symlink.exists() {
                 // Check if it's a symlink
-                if lfs::is_symlink(&epkg_src_symlink) {
+                if lfs::is_symlink_or_junction(&epkg_src_symlink) {
                     // Follow the symlink to get the actual repo root
                     // Use canonicalize on the symlink itself to handle both absolute and relative paths
                     if let Ok(canonical_path) = std::fs::canonicalize(&epkg_src_symlink) {
@@ -1199,7 +1211,7 @@ fn install_vmlinux(zst_path: &Path, config_path: Option<&Path>, version: &str, a
 
     // Create symlink vmlinux -> vmlinux-$version-$arch
     let vmlinux_link = boot_dir.join("vmlinux");
-    if vmlinux_link.exists() || vmlinux_link.is_symlink() {
+    if vmlinux_link.exists() || lfs::is_symlink(&vmlinux_link) {
         lfs::remove_file(&vmlinux_link)?;
     }
     #[cfg(unix)]
@@ -1252,33 +1264,53 @@ fn resolve_assets_for_os(
     is_linux: bool,
     using_local_repo: bool,
 ) -> Result<ResolvedAssets> {
-    let local_dev_mode = is_linux && using_local_repo;
-
-    if local_dev_mode {
-        // Local development mode - keep current versions and resolve asset names
-        // with backward-compatible prefix fallback.
+    // Local development mode: running from git repo
+    // - On Linux: skip binary download, use local elf-loader if available
+    // - On Windows/macOS: skip native binary download, still need epkg-linux for VM
+    if using_local_repo {
         let new_version = current_version.clone();
         let epkg_release = fetch_release_by_tag(GITEE_OWNER, REPO_EPKG, &new_version.epkg_version)?;
 
-        let (epkg_binary_url, _sha_url) =
-            epkg_release.find_asset_urls_for_arch_with_prefixes(&["epkg-linux", "epkg"], arch)?;
+        // On Linux, we still need to resolve the binary URL for reference
+        // On Windows/macOS, skip native binary URL (we're running local build)
+        let epkg_binary_url = if is_linux {
+            let (bin_url, _sha_url) =
+                epkg_release.find_asset_urls_for_arch_with_prefixes(&["epkg-linux", "epkg"], arch)?;
+            bin_url
+        } else {
+            // Windows/macOS: dummy URL, won't be used for download
+            String::new()
+        };
 
-        let elf_loader_url = match &new_version.elf_loader_version {
-            Some(elf_loader_tag) => {
-                let elf_loader_release =
-                    fetch_release_by_tag(GITEE_OWNER, REPO_ELF_LOADER, elf_loader_tag)?;
-                let (loader_url, _loader_sha_url) =
-                    elf_loader_release.find_asset_urls_for_arch("elf-loader", arch)?;
-                Some(loader_url)
+        let elf_loader_url = if is_linux {
+            match &new_version.elf_loader_version {
+                Some(elf_loader_tag) => {
+                    let elf_loader_release =
+                        fetch_release_by_tag(GITEE_OWNER, REPO_ELF_LOADER, elf_loader_tag)?;
+                    let (loader_url, _loader_sha_url) =
+                        elf_loader_release.find_asset_urls_for_arch("elf-loader", arch)?;
+                    Some(loader_url)
+                }
+                None => None,
             }
-            None => None,
+        } else {
+            None
+        };
+
+        // On Windows/macOS, still need epkg-linux for VM usage
+        let epkg_linux_url = if !is_linux {
+            let (linux_url, _sha_url) =
+                epkg_release.find_asset_urls_for_arch_with_prefixes(&["epkg-linux", "epkg"], arch)?;
+            Some(linux_url)
+        } else {
+            None
         };
 
         return Ok(ResolvedAssets {
             new_version,
             epkg_binary_url,
             elf_loader_url,
-            epkg_linux_url: None, // Not needed in local dev mode
+            epkg_linux_url,
         });
     }
 
@@ -1418,14 +1450,21 @@ fn check_for_updates() -> Result<InitPlan> {
 
     // Set up file paths using the same resolution logic as the download system.
     // This ensures paths match where files are actually downloaded.
-    let epkg_binary_path =
-        mirror::Mirrors::remote_url_to_path(&epkg_binary_url, &epkg_download_dir, "epkg")?;
+    // Note: epkg_binary_url may be empty on Windows/macOS with local dev mode
+    let epkg_binary_path = if epkg_binary_url.is_empty() {
+        PathBuf::new() // Won't be used
+    } else {
+        mirror::Mirrors::remote_url_to_path(&epkg_binary_url, &epkg_download_dir, "epkg")?
+    };
     let epkg_src_path =
         mirror::Mirrors::remote_url_to_path(&epkg_src_url, &epkg_download_dir, "epkg")?;
 
     // Determine what needs to be downloaded.
-    // epkg binary is downloaded only when the version actually differs.
-    let need_download_epkg_binary = new_version.epkg_version != current_version.epkg_version;
+    // epkg binary is downloaded only when:
+    // - version differs AND
+    // - we have a URL (non-empty, i.e., not local dev mode on Windows/macOS)
+    let need_download_epkg_binary = new_version.epkg_version != current_version.epkg_version
+        && !epkg_binary_url.is_empty();
     let need_download_epkg_src = !using_local_repo;
     let need_download_elf_loader = is_linux && !has_local_elf_loader;
 

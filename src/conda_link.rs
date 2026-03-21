@@ -813,9 +813,7 @@ fn link_file_without_prefix_replacement(
     fhs_file: &Path,
 ) -> Result<()> {
     // Detect if source is a symlink
-    let is_link = lfs::symlink_metadata(source_path)
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false);
+    let is_link = lfs::is_symlink(source_path);
 
     // Determine link type based on path_type and plan capabilities
     let link_type = if path_type == "hardlink" && plan.can_hardlink {

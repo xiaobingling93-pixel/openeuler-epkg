@@ -563,9 +563,9 @@ fn setup_environment_paths(env_base: &PathBuf) -> Result<PathBuf> {
 
     // If env_root is specified, we need to create a symlink from env_base to env_root
     if !config().common.env_root.is_empty() {
-        // Check if env_base already exists as a directory (not a symlink)
-        // Use exists_no_follow to check if path exists, then check if it's NOT a symlink
-        if lfs::exists_no_follow(&env_base) && !lfs::is_symlink(&env_base) {
+        // Check if env_base already exists as a directory (not a symlink/junction)
+        // Use exists_no_follow to check if path exists, then check if it's NOT a symlink/junction
+        if lfs::exists_no_follow(&env_base) && !lfs::is_symlink_or_junction(&env_base) {
             return Err(eyre::eyre!("Environment base path '{}' already exists as a directory. Cannot create symlink.", env_base.display()));
         }
         // Ensure parent directory of env_base exists

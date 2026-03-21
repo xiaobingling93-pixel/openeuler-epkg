@@ -778,9 +778,9 @@ fn adjust_symlink_target_for_usr_merge(
     // Check if this is a usr-merge symlink
     for &(symlink_name, _symlink_target) in USR_MERGE_SYMLINKS {
         if first_component == symlink_name {
-            // Check if the directory in env is actually a symlink
+            // Check if the directory in env is actually a symlink/junction
             let symlink_path = env_root.join(symlink_name);
-            if lfs::is_symlink(&symlink_path) {
+            if lfs::is_symlink_or_junction(&symlink_path) {
                 // The symlink is in a usr-merge directory
                 // Need to add one more "../" to account for the extra level
                 // For example: ../go/bin/go -> ../../go/bin/go
@@ -833,8 +833,8 @@ fn find_env_root_from_path(path: &Path) -> Option<PathBuf> {
     while let Some(parent) = current.parent() {
         // Check if this could be an env root by looking for typical structure
         if parent.join("usr").is_dir() {
-            // Check for usr-merge symlinks
-            let has_bin_symlink = lfs::is_symlink(&parent.join("bin"));
+            // Check for usr-merge symlinks/junctions
+            let has_bin_symlink = lfs::is_symlink_or_junction(&parent.join("bin"));
             let has_usr_bin = crate::dirs::path_join(parent, &["usr", "bin"]).is_dir();
             if has_bin_symlink && has_usr_bin {
                 return Some(parent.to_path_buf());

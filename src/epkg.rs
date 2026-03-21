@@ -92,7 +92,7 @@ pub fn compress_folder_to_epkg(
             continue;
         }
 
-        if entry.file_type().is_symlink() {
+        if lfs::is_symlink(path) {
             // Get symlink target (even if dead)
             let target = fs::read_link(path)?;
             // Forcefully add the symlink to the tar, even if target doesn't exist

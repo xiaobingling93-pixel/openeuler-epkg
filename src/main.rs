@@ -137,7 +137,7 @@ use crate::install::install_packages;
 use crate::upgrade::upgrade_packages;
 use crate::remove::remove_packages;
 use crate::history::{print_history, rollback_history};
-use crate::init::{install_epkg, try_light_init, light_init, upgrade_epkg};
+use crate::init::{install_epkg_with_force, try_light_init, light_init, upgrade_epkg};
 use crate::run::{command_run, command_busybox};
 use color_eyre::Result;
 use color_eyre::eyre;
@@ -591,6 +591,7 @@ fn add_self_subcommand(cmd: Command) -> Command {
                             .default_value("auto")
                             .value_parser(["shared", "private", "auto"]),
                     )
+                    .arg(arg!(--force "Force reinstall epkg source and binaries"))
             )
             .subcommand(
                 Command::new("upgrade")
@@ -2164,13 +2165,16 @@ fn command_service(sub_matches: &clap::ArgMatches) -> Result<()> {
 
 fn command_self(sub_matches: &clap::ArgMatches) -> Result<()> {
     match sub_matches.subcommand() {
-        Some(("install", _sub_matches)) => {
-            if find_env_base(SELF_ENV).is_none() {
-                install_epkg()?;
+        Some(("install", sub_matches)) => {
+            let force = sub_matches.get_flag("force");
+            if force || find_env_base(SELF_ENV).is_none() {
+                install_epkg_with_force(force)?;
             }
 
             if let Some(path) = find_env_base(MAIN_ENV) {
-                eprintln!("epkg was already initialized for current user: {:?}", path);
+                if !force {
+                    eprintln!("epkg was already initialized for current user: {:?}", path);
+                }
             } else {
                 light_init()?;
             }
