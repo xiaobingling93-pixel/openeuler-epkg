@@ -377,7 +377,14 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
             continue;
         }
 
-        let full_path = dest_dir.join(path.clone());
+        // Sanitize path for Windows (handles `::` in Perl man pages, etc.)
+        let sanitized_path = lfs::sanitize_path_for_windows(&path);
+        if path != sanitized_path {
+            log::debug!("Sanitized tar entry path: '{}' -> '{}'",
+                       path.display(), sanitized_path.display());
+        }
+
+        let full_path = dest_dir.join(&sanitized_path);
 
         // Create parent directories if needed
         if path.is_dir() {

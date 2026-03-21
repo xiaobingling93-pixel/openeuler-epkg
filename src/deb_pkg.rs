@@ -107,6 +107,7 @@ fn extract_ar_archive<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P) -> Result<(
 }
 
 /// Extracts a tar archive (with automatic compression detection) to the target directory
+/// On Windows, sanitizes filenames with invalid characters (like `::` in Perl man pages).
 fn extract_tar<P: AsRef<Path>>(tar_path: P, target_dir: P) -> Result<()> {
     let tar_path = tar_path.as_ref();
     let target_dir = target_dir.as_ref();
@@ -129,8 +130,39 @@ fn extract_tar<P: AsRef<Path>>(tar_path: P, target_dir: P) -> Result<()> {
     };
 
     let mut archive = Archive::new(reader);
-    archive.unpack(target_dir)
-        .wrap_err_with(|| format!("Failed to extract tar archive: {}", tar_path.display()))?;
+
+    // On Windows, manually extract entries with sanitized filenames
+    // because `:` in filenames (e.g., `Text::Iconv.3pm.gz`) is not allowed
+    #[cfg(windows)]
+    {
+        for entry_result in archive.entries()? {
+            let mut entry = entry_result?;
+            let entry_path = entry.path()?.to_path_buf();
+            let sanitized_path = lfs::sanitize_path_for_windows(&entry_path);
+            let dest_path = target_dir.join(&sanitized_path);
+
+            // Create parent directories
+            if let Some(parent) = dest_path.parent() {
+                lfs::create_dir_all(parent)?;
+            }
+
+            // Check if entry path was sanitized
+            if entry_path != sanitized_path {
+                log::debug!("Sanitized tar entry path: '{}' -> '{}'",
+                           entry_path.display(), sanitized_path.display());
+            }
+
+            // Extract the file
+            entry.unpack(&dest_path)?;
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(windows))]
+    {
+        archive.unpack(target_dir)
+            .wrap_err_with(|| format!("Failed to extract tar archive: {}", tar_path.display()))?;
+    }
 
     Ok(())
 }
