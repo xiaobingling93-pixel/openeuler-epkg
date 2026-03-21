@@ -130,14 +130,19 @@ check_vm_log() {
         log "VM log not found at $log_file (maybe not created yet)"
         return 0
     fi
-    log "Checking VM log $log_file for errors..."
+
+    # Filter out known benign messages
+    local filtered_log
+    filtered_log=$(grep -vE \
+        -e 'check access for rdinit=/init failed: -2, ignoring' \
+        -e 'virtiofsd:' \
+        "$log_file" 2>/dev/null || cat "$log_file")
+
     # Check for kernel panic indicators (use -E for extended regex, portable across GNU/BSD grep)
-    if grep -E -w "Kernel panic|Panic|Oops|BUG|Call Trace" "$log_file"; then
-        error "Kernel panic or serious error detected in VM log. See $log_file"
-    fi
-    # Check for other error patterns (warn only)
-    if grep -E "Error:|failed|WARN" "$log_file"; then
-        echo "${YELLOW}[WARN]${NC} Some errors/warnings found in VM log (may be benign). Check $log_file" >&2
+    if echo "$filtered_log" | grep -E -w "Kernel panic|Panic|Oops|BUG|Call Trace" >/dev/null 2>&1; then
+        echo "${RED}[ERROR]${NC} Kernel panic or serious error detected in VM log:" >&2
+        echo "$filtered_log" | grep -E -w "Kernel panic|Panic|Oops|BUG|Call Trace" >&2
+        error "See $log_file for full log"
     fi
 }
 
