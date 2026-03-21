@@ -139,284 +139,297 @@ fn filter_packages_by_compression(release_items: Vec<RepoReleaseItem>) -> Vec<Re
     filtered_items
 }
 
+fn map_debian_arch(arch: &str) -> String {
+    match arch {
+        "arm64" => "aarch64".to_string(),
+        "amd64" => "x86_64".to_string(),
+        _ => arch.to_string(),
+    }
+}
+
+fn release_hash_section_header(line: &str) -> Option<&'static str> {
+    if line.starts_with("SHA256:") {
+        Some("SHA256")
+    } else if line.starts_with("SHA1:") {
+        Some("SHA1")
+    } else if line.starts_with("MD5Sum:") {
+        Some("MD5")
+    } else {
+        None
+    }
+}
+
+fn parse_components_line(line: &str) -> Vec<String> {
+    line.strip_prefix("Components:")
+        .unwrap_or("")
+        .trim()
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+struct ReleaseParseCtx<'a> {
+    repo: &'a RepoRevise,
+    hash_type: &'a str,
+    components: &'a [String],
+    acquire_by_hash: bool,
+    release_dir: &'a PathBuf,
+}
+
+fn try_parse_release_hash_line(ctx: &ReleaseParseCtx, line: &str) -> Option<RepoReleaseItem> {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    let hash = parts[0].to_string();
+    let size = parts[1].parse::<usize>().unwrap_or(0);
+    let location = parts[2].to_string();
+
+    if location.contains("/debian-installer/") {
+        return None;
+    }
+
+    let is_packages = location.contains("/binary-")
+        && (location.ends_with("/Packages.xz") || location.ends_with("/Packages.gz"))
+        || location.ends_with("Packages.gz");
+    let is_contents = location.contains("Contents-") && location.ends_with(".gz");
+
+    if !is_packages && !is_contents {
+        return None;
+    }
+
+    // Case 1: the common situation
+    // e.g. http://deb.debian.org/debian/dists/trixie/InRelease
+    //
+    // Origin: mongodb
+    // Architectures: amd64 arm64
+    // Components: main
+    // MD5Sum:
+    //  963904bcd0ba3fac6446e1a036478bab           399738 main/binary-amd64/Packages
+    //  4a0c6bc7e925cea11e96df40e3b49258            44458 main/binary-amd64/Packages.gz
+    //  de176d56dcab6fb85563f1d075d23bb1            91824 main/binary-arm64/Packages
+    //  8037ce831b3957701298c27c5882ef4a            20944 main/binary-arm64/Packages.gz
+    //  => component_name = "main"
+
+    // Case 2: OBS or CUDA repositories don't use components or subdirs in location,
+    // e.g. https://developer.download.nvidia.cn/compute/cuda/repos/ubuntu2404/x86_64/Release
+    //
+    // Archive: Debian_12
+    // Origin: obs://build.opensuse.org/devel:languages:crystal/Debian_12
+    // Label: devel:languages:crystal
+    // Architectures: i386 amd64
+    // Description: Crystal (Debian_12)
+    // MD5Sum:
+    //  1246e515893d375c5da48a8cae4f6175 7134 Packages.gz
+    //  45f461e8c85b7e33be9bf7953d5e2473 6150 Sources.gz
+    //  => component_name = ""
+    // For root-level entries (no '/', e.g. Ubuntu's "Contents-amd64.gz") leave
+    // component_name empty so the workaround below can attribute them to "main"
+    // and repodata_name won't become weird things like 'Contents-amd64.gz-security'.
+    let mut component_name: String = if location.contains('/') {
+        location.split('/').next().unwrap_or("").to_string()
+    } else {
+        String::new()
+    };
+
+    // Ubuntu has a single Contents file outside of any specific components
+    // As a workaround, attribute it to the "main" repo
+    //
+    // Origin: Ubuntu
+    // Architectures: amd64 arm64 armhf i386 ppc64el riscv64 s390x
+    // Components: main restricted universe multiverse
+    // Description: Ubuntu Noble 24.04
+    // MD5Sum:
+    //  2fc7d01e0a1c7b351738abcd571eec59         51301092 Contents-amd64.gz
+    //  d9a7b09989b1804788068aa3fc437fbe          1401160 main/binary-amd64/Packages.xz
+    //  e76d3250b16471773a8760583f955010           269224 multiverse/binary-amd64/Packages.xz
+    if is_contents && !location.contains('/') && !ctx.components.is_empty() {
+        component_name = ctx
+            .components
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "main".to_string());
+    }
+
+    if !ctx.repo.components.is_empty() && !ctx.repo.components.contains(&component_name) {
+        return None;
+    }
+
+    let arch = if is_packages {
+        if location.contains("/binary-") {
+            let deb_arch = location
+                .split("binary-")
+                .nth(1)
+                .unwrap_or("")
+                .split('/')
+                .next()
+                .unwrap_or("")
+                .to_string();
+            map_debian_arch(&deb_arch)
+        } else {
+            ctx.repo.arch.clone()
+        }
+    } else {
+        let deb_arch = location
+            .split("Contents-")
+            .nth(1)
+            .unwrap_or("")
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .to_string();
+        map_debian_arch(&deb_arch)
+    };
+
+    if arch != "all" && arch != ctx.repo.arch {
+        return None;
+    }
+
+    let joined_names = vec![ctx.repo.repo_name.as_str(), component_name.as_str()].join("-");
+    let with_component_name = joined_names.trim_end_matches('-');
+    let repodata_name = ctx
+        .repo
+        .repodata_name
+        .replace(&ctx.repo.repo_name, with_component_name)
+        .replace("Official-", "");
+
+    let component_repo = crate::repo::RepoRevise {
+        repodata_name,
+        components: vec![component_name.clone()],
+        arch: arch.clone(),
+        ..ctx.repo.clone()
+    };
+
+    let repo_dir = dirs::get_repo_dir(&component_repo);
+    let output_path = if is_packages {
+        repo_dir.join("packages.txt")
+    } else {
+        repo_dir.join("filelists.gz")
+    };
+
+    // --- EXAMPLES FOR PATH AND URL CONSTRUCTION ---
+    // Given:
+    //   repo.index_url = "$mirror/debian/dists/$version/Release"
+    //   current_hash_type = "SHA256"
+    //   hash = "aaa"
+    //   location = "main/binary-amd64/Packages.xz"
+    //   location = "main/Contents-amd64.gz"
+    //
+    // For Packages.xz:
+    //   location = "main/binary-amd64/Packages.xz"
+    //   location.rsplitn(2, '/').nth(1).unwrap() == "main/binary-amd64"
+    //   URL: http://mirrors.163.com/debian/dists/trixie///main/binary-amd64/by-hash/SHA256/aaa
+    //
+    // For Contents-amd64.gz:
+    //   location = "main/Contents-amd64.gz"
+    //   location.rsplitn(2, '/').nth(1).unwrap() == "main"
+    //   URL: http://mirrors.163.com/debian/dists/trixie///main/by-hash/SHA256/ccc
+    // ------------------------------------------------
+
+    let download_location = if ctx.acquire_by_hash {
+        std::path::Path::new(&location)
+            .parent()
+            .unwrap()
+            .join(format!("by-hash/{}/{}", ctx.hash_type, hash))
+            .display()
+            .to_string()
+    } else {
+        location.clone()
+    };
+
+    let download_path = ctx.release_dir.join(&download_location);
+    let need_download = !lfs::exists_on_host(&download_path);
+    let need_convert = if !lfs::exists_on_host(&output_path) {
+        true
+    } else {
+        let metadata_path = if is_packages {
+            output_path
+                .with_extension("json")
+                .to_str()
+                .map(|s| s.replace("packages", ".packages"))
+        } else {
+            output_path
+                .with_extension("")
+                .with_extension("json")
+                .to_str()
+                .map(|s| s.replace("filelists", ".filelists"))
+        };
+        metadata_path
+            .map(|p| !lfs::exists_on_host(std::path::Path::new(&p)))
+            .unwrap_or(true)
+    };
+
+    let mut package_baseurl = ctx.repo.index_url.clone();
+    let baseurl = if ctx.repo.index_url.ends_with("/Release") {
+        if let Some(parent_url) = parent_parent_parent(&ctx.repo.index_url) {
+            package_baseurl = parent_url;
+        }
+        ctx.repo.index_url.trim_end_matches("/Release")
+    } else if ctx.repo.index_url.ends_with('/') {
+        ctx.repo.index_url.trim_end_matches('/')
+    } else {
+        &ctx.repo.index_url
+    };
+    let url = format!("{}/{}", baseurl, download_location);
+
+    Some(RepoReleaseItem {
+        repo_revise: component_repo,
+        need_download,
+        need_convert,
+        arch,
+        url,
+        package_baseurl,
+        hash_type: ctx.hash_type.to_string(),
+        hash,
+        size,
+        location,
+        is_packages,
+        is_adb: false,
+        output_path,
+        download_path,
+    })
+}
+
+fn release_items_keep_sha256_only(items: &mut Vec<RepoReleaseItem>) {
+    items.retain(|r| r.hash_type == "SHA256");
+}
+
 pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -> Result<Vec<RepoReleaseItem>> {
     let mut release_items = Vec::new();
     let mut current_hash_type = String::new();
     let mut components = Vec::new();
 
-    // Map Debian architecture to standard architecture
-    let map_architecture = |arch: &str| -> String {
-        match arch {
-            "arm64" => "aarch64".to_string(),
-            "amd64" => "x86_64".to_string(),
-            _ => arch.to_string(),
-        }
-    };
-
-    // This could be in last line, so must whole-file-match in the beginning
     let acquire_by_hash = content.contains("Acquire-By-Hash: yes");
 
-    // Single pass: collect files with their best hash type
     for line in content.lines() {
-        if line.starts_with("SHA256:") {
-            current_hash_type = "SHA256".to_string();
-            continue;
-        } else if line.starts_with("SHA1:") {
-            current_hash_type = "SHA1".to_string();
-            continue;
-        } else if line.starts_with("MD5Sum:") {
-            current_hash_type = "MD5".to_string();
+        if let Some(ht) = release_hash_section_header(line) {
+            current_hash_type = ht.to_string();
             continue;
         }
 
         if line.starts_with("Components:") {
-            let components_line = line.strip_prefix("Components:").unwrap_or("").trim();
-            components = components_line.split_whitespace().map(|s| s.to_string()).collect();
+            components = parse_components_line(line);
             continue;
         }
 
-        if !current_hash_type.is_empty() && !line.trim().is_empty() {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 3 {
-                let hash = parts[0].to_string();
-                let size = parts[1].parse::<usize>().unwrap_or(0);
-                let location = parts[2].to_string();
+        if current_hash_type.is_empty() || line.trim().is_empty() {
+            continue;
+        }
 
-                if location.contains("/debian-installer/") {
-                    continue;
-                }
+        let ctx = ReleaseParseCtx {
+            repo,
+            hash_type: current_hash_type.as_str(),
+            components: &components,
+            acquire_by_hash,
+            release_dir,
+        };
 
-                // Check if this is a file we're interested in
-                let is_packages = location.contains("/binary-") && (location.ends_with("/Packages.xz") || location.ends_with("/Packages.gz")) ||
-                                 location.ends_with("Packages.gz");
-                let is_contents = location.contains("Contents-") && location.ends_with(".gz");
-
-                // Only process entries that match the Debian repo metadata files of interest
-                if is_packages || is_contents {
-                    // Case 1: the common situation
-                    // e.g. http://deb.debian.org/debian/dists/trixie/InRelease
-                    //
-                    // Origin: mongodb
-                    // Architectures: amd64 arm64
-                    // Components: main
-                    // MD5Sum:
-                    //  963904bcd0ba3fac6446e1a036478bab           399738 main/binary-amd64/Packages
-                    //  4a0c6bc7e925cea11e96df40e3b49258            44458 main/binary-amd64/Packages.gz
-                    //  de176d56dcab6fb85563f1d075d23bb1            91824 main/binary-arm64/Packages
-                    //  8037ce831b3957701298c27c5882ef4a            20944 main/binary-arm64/Packages.gz
-                    //  => component_name = "main"
-
-                    // Case 2: OBS or CUDA repositories don't use components or subdirs in location,
-                    // e.g. https://developer.download.nvidia.cn/compute/cuda/repos/ubuntu2404/x86_64/Release
-                    //
-                    // Archive: Debian_12
-                    // Origin: obs://build.opensuse.org/devel:languages:crystal/Debian_12
-                    // Label: devel:languages:crystal
-                    // Architectures: i386 amd64
-                    // Description: Crystal (Debian_12)
-                    // MD5Sum:
-                    //  1246e515893d375c5da48a8cae4f6175 7134 Packages.gz
-                    //  45f461e8c85b7e33be9bf7953d5e2473 6150 Sources.gz
-                    //  => component_name = ""
-                    // For root-level entries (no '/', e.g. Ubuntu's "Contents-amd64.gz") leave
-                    // component_name empty so the workaround below can attribute them to "main"
-                    // and repodata_name won't become weird things like 'Contents-amd64.gz-security'.
-                    let mut component_name: String = if location.contains('/') {
-                        location.split('/').next().unwrap_or("").to_string()
-                    } else {
-                        String::new()
-                    };
-
-                    // Ubuntu has a single Contents file outside of any specific components
-                    // As a workaround, attribute it to the "main" repo
-                    //
-                    // Origin: Ubuntu
-                    // Architectures: amd64 arm64 armhf i386 ppc64el riscv64 s390x
-                    // Components: main restricted universe multiverse
-                    // Description: Ubuntu Noble 24.04
-                    // MD5Sum:
-                    //  2fc7d01e0a1c7b351738abcd571eec59         51301092 Contents-amd64.gz
-                    //  d9a7b09989b1804788068aa3fc437fbe          1401160 main/binary-amd64/Packages.xz
-                    //  e76d3250b16471773a8760583f955010           269224 multiverse/binary-amd64/Packages.xz
-                    if is_contents && !location.contains('/') && !components.is_empty() {
-                        component_name = components.first().cloned().unwrap_or_else(|| "main".to_string());
-                        // log::debug!("Adapt Ubuntu {} to component {}", location, component_name);
-                    }
-
-                    // Filter components based on repo.components - if components list is not empty,
-                    // only include components that are in the list
-                    if !repo.components.is_empty() {
-                        if !repo.components.contains(&component_name) {
-                            continue;
-                        }
-                    }
-
-                    // arch: e.g. "amd64" from "main/binary-amd64/Packages.xz" or "main/Contents-amd64.gz"
-                    // or from "Packages" (for repositories like CUDA that don't use binary- subdirectories)
-                    let arch = if is_packages {
-                        if location.contains("/binary-") {
-                            let deb_arch = location.split("binary-").nth(1).unwrap_or("").split('/').next().unwrap_or("").to_string();
-                            map_architecture(&deb_arch)
-                        } else {
-                            // For repositories like CUDA that don't use binary- subdirectories,
-                            // use the repository's architecture
-                            repo.arch.clone()
-                        }
-                    } else {
-                        let deb_arch = location.split("Contents-").nth(1).unwrap_or("").split('.').next().unwrap_or("").to_string();
-                        map_architecture(&deb_arch)
-                    };
-
-                    // Skip if architecture doesn't match and isn't 'all'
-                    if arch != "all" && arch != repo.arch {
-                        continue;
-                    }
-
-                    // Augment repodata_name from 'repo-suffix' to 'repo-component-suffix' format
-                    let joined_names = vec![repo.repo_name.as_str(), component_name.as_str()].join("-");
-                    let with_component_name = joined_names.trim_end_matches('-');
-                    let repodata_name = repo.repodata_name
-                        // Official => Official-main
-                        // Official-updates => Official-main-updates
-                        // Official-security => Official-main-security
-                        .replace(&repo.repo_name, &with_component_name)
-                        // => main
-                        // => main-updates
-                        // => main-security
-                        .replace("Official-", "");  // matches the "Official" in assets/repos/debian.yaml
-
-                    // Create a new RepoRevise object with augmented repodata_name with component
-                    let component_repo = crate::repo::RepoRevise {
-                        repodata_name: repodata_name,
-                        components: vec![component_name.clone()],
-                        arch: arch.clone(),
-                        ..repo.clone()
-                    };
-
-                    let repo_dir = dirs::get_repo_dir(&component_repo);
-                    let output_path = if is_packages {
-                        repo_dir.join("packages.txt")
-                    } else {
-                        repo_dir.join("filelists.gz")
-                    };
-
-                    // --- EXAMPLES FOR PATH AND URL CONSTRUCTION ---
-                    // Given:
-                    //   repo.index_url = "$mirror/debian/dists/$version/Release"
-                    //   current_hash_type = "SHA256"
-                    //   hash = "aaa"
-                    //   location = "main/binary-amd64/Packages.xz"
-                    //   location = "main/Contents-amd64.gz"
-                    //
-                    // For Packages.xz:
-                    //   location = "main/binary-amd64/Packages.xz"
-                    //   location.rsplitn(2, '/').nth(1).unwrap() == "main/binary-amd64"
-                    //   URL: http://mirrors.163.com/debian/dists/trixie///main/binary-amd64/by-hash/SHA256/aaa
-                    //
-                    // For Contents-amd64.gz:
-                    //   location = "main/Contents-amd64.gz"
-                    //   location.rsplitn(2, '/').nth(1).unwrap() == "main"
-                    //   URL: http://mirrors.163.com/debian/dists/trixie///main/by-hash/SHA256/ccc
-                    // ------------------------------------------------
-
-                    // Construct the location path based on acquire_by_hash setting
-                    // If acquire_by_hash is true, use the by-hash location
-                    //   e.g. main/binary-amd64/by-hash/SHA256/aaa  # for Packages file
-                    //   or   main/by-hash/SHA256/ccc               # for Contents file
-                    // If acquire_by_hash is false, use the original location
-                    //   e.g. main/binary-amd64/Packages.xz
-                    //   or   main/Contents-amd64.gz
-                    let download_location = if acquire_by_hash {
-                        std::path::Path::new(&location).parent().unwrap().join(
-                            format!(
-                                "by-hash/{}/{}",
-                                current_hash_type, // e.g. "SHA256"
-                                hash // e.g. "aaa"
-                            )
-                        ).display().to_string()
-                    } else {
-                        location.clone() // Use original location
-                    };
-
-                    // Check if we need to revise by checking if the file exists
-                    let download_path = &release_dir.join(&download_location);
-                    let need_download = !lfs::exists_on_host(&download_path);
-                    // Check if we need to convert by checking both the output file and its JSON metadata
-                    let need_convert = if !lfs::exists_on_host(&output_path) {
-                        true // Output file doesn't exist, definitely need to convert
-                    } else {
-                        // Output file exists, check if metadata JSON file exists
-                        let metadata_path = if is_packages {
-                            output_path.with_extension("json").to_str()
-                                .map(|s| s.replace("packages", ".packages"))
-                        } else {
-                            output_path.with_extension("").with_extension("json").to_str()
-                                .map(|s| s.replace("filelists", ".filelists"))
-                        };
-                        // If we can't determine metadata path or it doesn't exist, need to convert
-                        metadata_path.map(|p| !lfs::exists_on_host(std::path::Path::new(&p))).unwrap_or(true)
-                    };
-
-                    let mut package_baseurl = repo.index_url.clone();
-
-                    // Construct the download URL
-                    let baseurl = if repo.index_url.ends_with("/Release") {
-                        if let Some(parent_url) = parent_parent_parent(&repo.index_url) {
-                            package_baseurl = parent_url;
-                        }
-                        repo.index_url.trim_end_matches("/Release")
-                    } else if repo.index_url.ends_with('/') {
-                        repo.index_url.trim_end_matches('/')
-                    } else {
-                        &repo.index_url
-                    };
-                    let url = format!("{}/{}", baseurl, download_location);
-
-                    // Example output for release_items vector:
-                    // RepoReleaseItem {
-                    //     repo_name: "main",
-                    //     need_download: true,
-                    //     arch: "x86_64",
-                    //     url: "http://mirrors.163.com///debian/dists/trixie/main/binary-amd64/by-hash/SHA256/aaa",
-                    //     hash_type: "SHA256",
-                    //     hash: "aaa",
-                    //     size: 9680256,
-                    //     location: "main/binary-amd64/Packages.xz",
-                    //     download_path: "$HOME/.cache/epkg/downloads/debian/dists/trixie/main/binary-amd64/by-hash/SHA256/aaa"
-                    // }
-
-                    release_items.push(RepoReleaseItem {
-                        repo_revise: component_repo,
-                        need_download,
-                        need_convert,
-                        arch,
-                        url,
-                        package_baseurl: package_baseurl,
-                        hash_type: current_hash_type.clone(),
-                        hash,
-                        size,
-                        location,
-                        is_packages,
-                        is_adb: false,
-                        output_path,
-                        download_path: download_path.to_path_buf(),
-                    });
-                    // log::debug!("Release line: {}\n {:?}", line, release_items.last());
-                }
-            }
+        if let Some(item) = try_parse_release_hash_line(&ctx, line) {
+            release_items.push(item);
         }
     }
 
-    // Remove entries with lower priority hash types
-    release_items.retain(|revise| {
-        let priority = match revise.hash_type.as_str() {
-            "SHA256" => 3,
-            "MD5" => 2,
-            "SHA1" => 1,
-            _ => 0,
-        };
-        priority == 3 // Keep only SHA256 entries
-    });
+    release_items_keep_sha256_only(&mut release_items);
 
     Ok(filter_packages_by_compression(release_items))
 }
