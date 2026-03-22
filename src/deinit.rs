@@ -1,11 +1,13 @@
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::exit;
+use std::time::{Duration, Instant};
 
 use color_eyre::eyre::{self, WrapErr};
 use color_eyre::Result;
+use indicatif::{ProgressBar, ProgressStyle};
 #[cfg(unix)]
 use nix::unistd;
 
@@ -225,12 +227,184 @@ fn execute_deinit_plan(plan: &DeinitPlan) -> Result<()> {
     for dir in &plan.dirs_to_remove {
         if lfs::exists_on_host(dir) {
             println!("Removing directory: {}", dir.display());
-            force_remove_dir_all(dir)
+            force_remove_dir_all_with_progress(dir)
                 .wrap_err_with(|| format!("Failed to remove directory: {}", dir.display()))?;
         }
     }
 
     Ok(())
+}
+
+fn format_removal_elapsed(d: Duration) -> String {
+    let s = d.as_secs();
+    if s < 60 {
+        format!("{:.1}s", d.as_secs_f64())
+    } else if s < 3600 {
+        format!("{}m {}s", s / 60, s % 60)
+    } else {
+        format!("{}h {}m", s / 3600, (s % 3600) / 60)
+    }
+}
+
+struct RemovalProgress {
+    pb: Option<ProgressBar>,
+    last_update: Instant,
+    start: Instant,
+    removed_count: u64,
+    plain_mode: bool,
+    verbose: bool,
+}
+
+impl RemovalProgress {
+    fn new() -> Self {
+        let start = Instant::now();
+        let verbose = config().common.verbose;
+        if config().common.quiet {
+            return Self {
+                pb: None,
+                last_update: start,
+                start,
+                removed_count: 0,
+                plain_mode: false,
+                verbose,
+            };
+        }
+
+        let stderr = std::io::stderr();
+        if stderr.is_terminal() {
+            let pb = ProgressBar::new_spinner();
+            pb.enable_steady_tick(Duration::from_millis(100));
+            let style = ProgressStyle::with_template("{spinner:.green} {wide_msg}")
+                .expect("hard-coded progress template");
+            pb.set_style(style);
+            pb.set_message("Removing … 0 entries · 0.0s");
+            Self {
+                pb: Some(pb),
+                last_update: start,
+                start,
+                removed_count: 0,
+                plain_mode: false,
+                verbose,
+            }
+        } else {
+            Self {
+                pb: None,
+                last_update: start,
+                start,
+                removed_count: 0,
+                plain_mode: true,
+                verbose,
+            }
+        }
+    }
+
+    fn tick(&mut self) {
+        if config().common.quiet {
+            return;
+        }
+
+        self.removed_count += 1;
+        const THROTTLE_OPS_DEFAULT: u64 = 500;
+        const THROTTLE_OPS_VERBOSE: u64 = 50;
+        let throttle_ops = if self.verbose {
+            THROTTLE_OPS_VERBOSE
+        } else {
+            THROTTLE_OPS_DEFAULT
+        };
+        let throttle_time = if self.verbose {
+            Duration::from_millis(200)
+        } else {
+            Duration::from_secs(1)
+        };
+        let now = Instant::now();
+        if self.removed_count != 1
+            && self.removed_count % throttle_ops != 0
+            && now.duration_since(self.last_update) < throttle_time
+        {
+            return;
+        }
+        self.last_update = now;
+
+        let elapsed = format_removal_elapsed(self.start.elapsed());
+        let msg = format!(
+            "Removing … {} entries · {}",
+            self.removed_count, elapsed
+        );
+        if let Some(pb) = &self.pb {
+            pb.set_message(msg);
+        } else if self.plain_mode {
+            eprintln!("{msg}");
+        }
+    }
+
+    fn finish(&mut self) {
+        if let Some(pb) = self.pb.take() {
+            pb.finish_and_clear();
+        }
+    }
+
+    fn abandon(&mut self) {
+        if let Some(pb) = self.pb.take() {
+            pb.abandon();
+        }
+    }
+}
+
+fn remove_dir_all_recursive_inner(path: &Path, progress: &mut RemovalProgress) -> Result<()> {
+    let entries = fs::read_dir(path)
+        .wrap_err_with(|| format!("Failed to read directory: {}", path.display()))?;
+    for entry in entries {
+        let entry = entry.wrap_err_with(|| format!("Failed to read entry in {}", path.display()))?;
+        let p = entry.path();
+        let meta = lfs::symlink_metadata(&p)
+            .wrap_err_with(|| format!("Failed to stat: {}", p.display()))?;
+        if meta.file_type().is_symlink() {
+            lfs::remove_file(&p)?;
+        } else if meta.is_dir() {
+            remove_dir_all_recursive_inner(&p, progress)?;
+            lfs::remove_dir(&p)?;
+        } else {
+            lfs::remove_file(&p)?;
+        }
+        progress.tick();
+    }
+    Ok(())
+}
+
+fn remove_dir_all_recursive_with_progress(path: &Path) -> Result<()> {
+    let mut progress = RemovalProgress::new();
+    let result = (|| -> Result<()> {
+        remove_dir_all_recursive_inner(path, &mut progress)?;
+        lfs::remove_dir(path)?;
+        progress.tick();
+        Ok(())
+    })();
+
+    match &result {
+        Ok(()) => progress.finish(),
+        Err(_) => progress.abandon(),
+    }
+    result
+}
+
+/// Like [`force_remove_dir_all`], but shows indeterminate progress (spinner + entry count and
+/// elapsed time) on a TTY unless `--quiet` is set. Updates are throttled (every 500 entries or
+/// every second by default; every 50 entries or 200ms with `--verbose`) so terminal I/O stays cheap.
+/// With no TTY (e.g. script), defaults to the same fast removal as quiet; pass `--verbose` to force
+/// throttled lines on stderr.
+pub(crate) fn force_remove_dir_all_with_progress<P: AsRef<Path>>(path: P) -> Result<()> {
+    let path = path.as_ref();
+    if config().common.quiet {
+        return force_remove_dir_all(path);
+    }
+    if !std::io::stderr().is_terminal() && !config().common.verbose {
+        return force_remove_dir_all(path);
+    }
+
+    match remove_dir_all_recursive_with_progress(path) {
+        Ok(()) => Ok(()),
+        Err(_e) => force_remove_dir_all(path),
+    }
 }
 
 pub fn remove_epkg_from_rc_file(rc_file_path: &str) -> Result<String> {

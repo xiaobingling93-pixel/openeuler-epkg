@@ -9,7 +9,7 @@ use crate::models::*;
 use crate::dirs::*;
 use crate::io;
 use crate::utils;
-use crate::deinit::force_remove_dir_all;
+use crate::deinit::force_remove_dir_all_with_progress;
 
 #[derive(Debug)]
 pub struct GcPlan {
@@ -414,7 +414,7 @@ fn execute_gc_plan(plan: &GcPlan) -> Result<()> {
     for dir in &plan.unused_channels {
         if dir.exists() {
             println!("Removing unused channel directory: {}", dir.display());
-            force_remove_dir_all(dir)
+            force_remove_dir_all_with_progress(dir)
                 .wrap_err_with(|| format!("Failed to remove directory: {}", dir.display()))?;
         }
     }
@@ -423,7 +423,7 @@ fn execute_gc_plan(plan: &GcPlan) -> Result<()> {
     for dir in &plan.unused_packages {
         if dir.exists() {
             println!("Removing unused package directory: {}", dir.display());
-            force_remove_dir_all(dir)
+            force_remove_dir_all_with_progress(dir)
                 .wrap_err_with(|| format!("Failed to remove directory: {}", dir.display()))?;
         }
     }
@@ -432,7 +432,7 @@ fn execute_gc_plan(plan: &GcPlan) -> Result<()> {
     for dir in &plan.old_unpack_dirs {
         if dir.exists() {
             println!("Removing unused unpack directory: {}", dir.display());
-            force_remove_dir_all(dir)
+            force_remove_dir_all_with_progress(dir)
                 .wrap_err_with(|| format!("Failed to remove directory: {}", dir.display()))?;
         }
     }
@@ -442,7 +442,7 @@ fn execute_gc_plan(plan: &GcPlan) -> Result<()> {
         if item.exists() {
             if item.is_dir() {
                 println!("Removing stale AUR build directory: {}", item.display());
-                force_remove_dir_all(item)
+                force_remove_dir_all_with_progress(item)
                     .wrap_err_with(|| format!("Failed to remove directory: {}", item.display()))?;
             } else {
                 println!("Removing stale AUR build log: {}", item.display());
