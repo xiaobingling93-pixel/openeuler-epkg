@@ -323,6 +323,142 @@ pub fn create_dir<P: AsRef<Path>>(path: P) -> Result<()> {
         .wrap_err_with(|| format!("Failed to create directory {}", path.display()))
 }
 
+///////////////////////////////
+// Case sensitivity support //
+///////////////////////////////
+
+/// Enable case sensitivity for a directory on Windows NTFS.
+///
+/// This requires either:
+/// - Administrator privileges, OR
+/// - Developer Mode enabled (Windows 10+)
+///
+/// On success, the directory will have case-sensitive semantics (like Linux).
+/// Subdirectories created after this call will inherit case sensitivity.
+///
+/// Returns Ok(()) on success or when case sensitivity is already enabled.
+/// Returns Ok(()) with log::info on failure (best-effort, silent failure).
+#[cfg(windows)]
+pub fn set_case_sensitive<P: AsRef<Path>>(path: P) -> Result<()> {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        OPEN_EXISTING, SetFileInformationByHandle, FILE_INFO_BY_HANDLE_CLASS,
+    };
+    use windows::core::PCWSTR;
+
+    let path = path.as_ref();
+    log::trace!("setting case sensitivity for: {}", path.display());
+
+    // Convert path to wide string with null terminator
+    let path_wide: Vec<u16> = path
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    // Open directory with GENERIC_READ (0x80000000) | GENERIC_WRITE (0x40000000)
+    // for setting case sensitivity
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR(path_wide.as_ptr()),
+            0x80000000u32 | 0x40000000u32, // GENERIC_READ | GENERIC_WRITE
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            HANDLE::default(),
+        )
+    };
+
+    match handle {
+        Ok(h) if h != INVALID_HANDLE_VALUE => {
+            // FILE_CASE_SENSITIVE_INFORMATION: Flags = 1 enables case sensitivity
+            // See: https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_case_sensitive_information
+            #[repr(C)]
+            struct FileCaseSensitiveInformation {
+                flags: u32,
+            }
+
+            let info = FileCaseSensitiveInformation { flags: 1 };
+
+            let result = unsafe {
+                SetFileInformationByHandle(
+                    h,
+                    FILE_INFO_BY_HANDLE_CLASS(33), // FileCaseSensitiveInformation
+                    &info as *const _ as *const std::ffi::c_void,
+                    std::mem::size_of::<FileCaseSensitiveInformation>() as u32,
+                )
+            };
+
+            let _ = unsafe { CloseHandle(h) };
+
+            if result.is_ok() {
+                log::debug!("Enabled case sensitivity for: {}", path.display());
+            } else {
+                log::info!(
+                    "Could not enable case sensitivity for {} (requires admin or developer mode)",
+                    path.display()
+                );
+            }
+        }
+        _ => {
+            let err = std::io::Error::last_os_error();
+            log::info!(
+                "Could not open directory for case sensitivity setting {}: {}",
+                path.display(),
+                err
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// On Unix systems, case sensitivity is always enabled.
+#[cfg(not(windows))]
+pub fn set_case_sensitive<P: AsRef<Path>>(_path: P) -> Result<()> {
+    Ok(())
+}
+
+/// Create a directory and all its parent directories, then enable case sensitivity on Windows.
+///
+/// Case sensitivity setting is best-effort: failures are logged but don't cause errors.
+/// This is useful for directories that will contain Linux-style packages where
+/// case-sensitive file names matter (e.g., OpenSSL vs openssl).
+#[cfg(windows)]
+pub fn create_dir_all_with_case_sensitivity<P: AsRef<Path>>(path: P) -> Result<()> {
+    let path = path.as_ref();
+    debug_assert_no_forward_slash(path);
+    create_dir_all(path)?;
+    set_case_sensitive(path)?;
+    Ok(())
+}
+
+/// On Unix systems, case sensitivity is always enabled; delegate to create_dir_all.
+#[cfg(not(windows))]
+pub fn create_dir_all_with_case_sensitivity<P: AsRef<Path>>(path: P) -> Result<()> {
+    create_dir_all(path)
+}
+
+/// Create a single directory, then enable case sensitivity on Windows.
+///
+/// Parent directories must exist. Case sensitivity setting is best-effort.
+#[cfg(windows)]
+pub fn create_dir_with_case_sensitivity<P: AsRef<Path>>(path: P) -> Result<()> {
+    let path = path.as_ref();
+    debug_assert_no_forward_slash(path);
+    create_dir(path)?;
+    set_case_sensitive(path)?;
+    Ok(())
+}
+
+/// On Unix systems, case sensitivity is always enabled; delegate to create_dir.
+#[cfg(not(windows))]
+pub fn create_dir_with_case_sensitivity<P: AsRef<Path>>(path: P) -> Result<()> {
+    create_dir(path)
+}
+
 /////////////////////
 // Reflink support //
 /////////////////////

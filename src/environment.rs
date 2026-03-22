@@ -284,6 +284,10 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     let generations_root = env_root.join("generations");
     let gen_1_dir = generations_root.join("1");
 
+    // Create env_root directory first and enable case sensitivity on Windows
+    // This must be done before creating any subdirectories
+    lfs::create_dir_all_with_case_sensitivity(env_root)?;
+
     // Create basic directories
     lfs::create_dir_all(&gen_1_dir)?;
     lfs::create_dir_all(env_root.join("root"))?;

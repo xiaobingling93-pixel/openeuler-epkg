@@ -247,7 +247,7 @@ pub fn unpack_mv_package_with_format(
     // Create temporary directory for unpacking
     let temp_name = Uuid::new_v4().to_string();
     let store_tmp_dir = crate::dirs::unpack_basedir().join(&temp_name);
-    lfs::create_dir_all(&store_tmp_dir)?;
+    lfs::create_dir_all_with_case_sensitivity(&store_tmp_dir)?;
 
     // Unpack the package (with optional format hint)
     general_unpack_package(Path::new(package_file), &store_tmp_dir, pkgkey, format_hint)

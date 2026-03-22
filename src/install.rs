@@ -244,7 +244,7 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     let download_cache = dirs().epkg_downloads_cache.clone();
 
     // Ensure store and download cache exist so statvfs can report correct fsid/space
-    lfs::create_dir_all(&store_root)?;
+    lfs::create_dir_all_with_case_sensitivity(&store_root)?;
     lfs::create_dir_all(&download_cache)?;
 
     // Get filesystem info for all mount points and store in plan
