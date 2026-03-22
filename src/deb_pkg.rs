@@ -10,9 +10,7 @@ use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use crate::deb_repo::PACKAGE_KEY_MAPPING;
 use crate::lfs;
-use crate::tar_extract::create_package_dirs;
-#[cfg(windows)]
-use crate::tar_extract::unpack_tar_archive;
+use crate::tar_extract::{create_package_dirs, unpack_tar_archive};
 
 /// Unpacks a Debian package to the specified directory
 pub fn unpack_package<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
@@ -108,8 +106,7 @@ fn extract_ar_archive<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P) -> Result<(
     Ok(())
 }
 
-/// Extracts a tar archive (with automatic compression detection) to the target directory
-/// On Windows, sanitizes filenames with invalid characters (like `::` in Perl man pages).
+/// Extracts a tar archive (with automatic compression detection) to the target directory.
 fn extract_tar<P: AsRef<Path>>(tar_path: P, target_dir: P) -> Result<()> {
     let tar_path = tar_path.as_ref();
     let target_dir = target_dir.as_ref();
@@ -133,16 +130,8 @@ fn extract_tar<P: AsRef<Path>>(tar_path: P, target_dir: P) -> Result<()> {
 
     let mut archive = Archive::new(reader);
 
-    #[cfg(windows)]
-    {
-        unpack_tar_archive(&mut archive, target_dir)
-            .wrap_err_with(|| format!("Failed to extract tar archive: {}", tar_path.display()))?;
-    }
-    #[cfg(not(windows))]
-    {
-        archive.unpack(target_dir)
-            .wrap_err_with(|| format!("Failed to extract tar archive: {}", tar_path.display()))?;
-    }
+    unpack_tar_archive(&mut archive, target_dir)
+        .wrap_err_with(|| format!("Failed to extract tar archive: {}", tar_path.display()))?;
     Ok(())
 }
 

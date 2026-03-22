@@ -401,28 +401,37 @@ pub fn create_package_dirs<P: AsRef<Path>>(
 /// // ... collect hard links during extraction ...
 /// create_hard_links(&hard_links)?;
 /// ```
-/// Unpack a tar archive to `dest`. Each entry path is passed through
-/// [`lfs::sanitize_path_for_windows`] so POSIX names with `:` and other illegal
-/// characters extract successfully (same behavior as `utils` tar paths).
-#[cfg(windows)]
+/// Unpack a tar archive to `dest`.
+///
+/// On Windows, each entry path is passed through [`lfs::sanitize_path_for_windows`]
+/// so POSIX names with `:` and other illegal characters extract successfully
+/// (same behavior as `utils` tar paths). On other platforms this delegates to
+/// [`tar::Archive::unpack`].
 pub fn unpack_tar_archive<R: Read>(archive: &mut Archive<R>, dest: &Path) -> Result<()> {
-    lfs::create_dir_all(dest)?;
-    for entry_result in archive.entries()? {
-        let mut entry = entry_result?;
-        let entry_path = entry.path()?.to_path_buf();
-        let sanitized_path = lfs::sanitize_path_for_windows(&entry_path);
-        if entry_path != sanitized_path {
-            log::debug!(
-                "Sanitized tar entry path: '{}' -> '{}'",
-                entry_path.display(),
-                sanitized_path.display()
-            );
+    #[cfg(windows)]
+    {
+        lfs::create_dir_all(dest)?;
+        for entry_result in archive.entries()? {
+            let mut entry = entry_result?;
+            let entry_path = entry.path()?.to_path_buf();
+            let sanitized_path = lfs::sanitize_path_for_windows(&entry_path);
+            if entry_path != sanitized_path {
+                log::debug!(
+                    "Sanitized tar entry path: '{}' -> '{}'",
+                    entry_path.display(),
+                    sanitized_path.display()
+                );
+            }
+            let dest_path = dest.join(&sanitized_path);
+            if let Some(parent) = dest_path.parent() {
+                lfs::create_dir_all(parent)?;
+            }
+            entry.unpack(&dest_path)?;
         }
-        let dest_path = dest.join(&sanitized_path);
-        if let Some(parent) = dest_path.parent() {
-            lfs::create_dir_all(parent)?;
-        }
-        entry.unpack(&dest_path)?;
+    }
+    #[cfg(not(windows))]
+    {
+        archive.unpack(dest)?;
     }
     Ok(())
 }
