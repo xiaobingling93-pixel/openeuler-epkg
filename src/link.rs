@@ -429,10 +429,23 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::mtree::Mt
             continue;
         }
 
+        // On Windows, resolve ancestor directory symlinks (e.g., lib64 -> usr/lib64, Lib -> usr/lib)
+        // This handles cases where packages install files to lib64/ or Lib/ which are symlinks
+        #[cfg(windows)]
+        let target_path = lfs::resolve_ancestor_symlink(&target_path);
+
         if fs_file_info.is_dir() {
-            // Check if target path exists and is not a directory
-            if lfs::exists_in_env(&target_path) && !lfs::symlink_metadata(&target_path).map(|m| m.file_type().is_dir()).unwrap_or(false) {
-                // Remove the non-directory file first
+            // Check if target path exists
+            if let Ok(metadata) = lfs::symlink_metadata(&target_path) {
+                // If it's a directory or a symlink to a directory, we're done
+                if metadata.file_type().is_dir() {
+                    continue;
+                }
+                // If it's a symlink (to a directory), skip - the symlink target directory will be used
+                if metadata.file_type().is_symlink() {
+                    continue;
+                }
+                // It's a file, remove it
                 lfs::remove_file(&target_path)?;
             }
             lfs::create_dir_all(&target_path)?;

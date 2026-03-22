@@ -110,17 +110,22 @@ pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<(
 pub fn symlink_to_directory<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
     let original = original.as_ref();
     let link = link.as_ref();
-    let posix_target = original.to_string_lossy();
+    // Normalize the symlink target to use backslashes for Windows native access.
+    // Forward slashes in symlink targets cause "InvalidFilename" errors when Windows
+    // joins them with backslash paths, creating mixed separators like:
+    // C:\...\env\usr/share\file.txt
+    let normalized_original = normalize_symlink_target(original);
+    let posix_target = normalized_original.to_string_lossy();
     log::trace!(
         "symlink_to_directory: {} -> {}",
         link.display(),
-        original.display()
+        normalized_original.display()
     );
-    crate::krun_virtiofs_windows::symlink::symlink_to_directory(original, link, posix_target.as_ref())
+    crate::krun_virtiofs_windows::symlink::symlink_to_directory(&normalized_original, link, posix_target.as_ref())
         .wrap_err_with(|| {
             format!(
                 "Failed symlink_to_directory from {} to {}",
-                original.display(),
+                normalized_original.display(),
                 link.display()
             )
         })
@@ -133,13 +138,15 @@ pub fn symlink_to_directory<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q
 pub fn symlink_to_file<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
     let original = original.as_ref();
     let link = link.as_ref();
-    let posix_target = original.to_string_lossy();
-    log::trace!("symlink_to_file: {} -> {}", link.display(), original.display());
-    crate::krun_virtiofs_windows::symlink::symlink_to_file(original, link, posix_target.as_ref())
+    // Normalize the symlink target to use backslashes for Windows native access.
+    let normalized_original = normalize_symlink_target(original);
+    let posix_target = normalized_original.to_string_lossy();
+    log::trace!("symlink_to_file: {} -> {}", link.display(), normalized_original.display());
+    crate::krun_virtiofs_windows::symlink::symlink_to_file(&normalized_original, link, posix_target.as_ref())
         .wrap_err_with(|| {
             format!(
                 "Failed symlink_to_file from {} to {}",
-                original.display(),
+                normalized_original.display(),
                 link.display()
             )
         })
@@ -150,13 +157,15 @@ pub fn symlink_to_file<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> 
 pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
     let original = original.as_ref();
     let link = link.as_ref();
-    let posix_target = original.to_string_lossy();
-    log::trace!("creating symlink: {} -> {}", link.display(), original.display());
-    crate::krun_virtiofs_windows::symlink::symlink(original, link, posix_target.as_ref())
+    // Normalize the symlink target to use backslashes for Windows native access.
+    let normalized_original = normalize_symlink_target(original);
+    let posix_target = normalized_original.to_string_lossy();
+    log::trace!("creating symlink: {} -> {}", link.display(), normalized_original.display());
+    crate::krun_virtiofs_windows::symlink::symlink(&normalized_original, link, posix_target.as_ref())
         .wrap_err_with(|| {
             format!(
                 "Failed symlink from {} to {}",
-                original.display(),
+                normalized_original.display(),
                 link.display()
             )
         })
@@ -524,6 +533,81 @@ pub fn is_symlink_or_junction(path: &Path) -> bool {
 #[cfg(not(windows))]
 pub fn is_symlink_or_junction(path: &Path) -> bool {
     is_symlink(path)
+}
+
+/// Normalize path separators for Windows.
+/// Symlink targets may contain forward slashes (from POSIX-style symlinks created by
+/// msys2/cygwin), which cause "InvalidFilename" errors when joined with Windows paths.
+/// This function converts forward slashes to backslashes.
+#[cfg(windows)]
+fn normalize_symlink_target(target: &Path) -> PathBuf {
+    let target_str = target.to_string_lossy();
+    PathBuf::from(target_str.replace('/', "\\"))
+}
+
+#[cfg(not(windows))]
+fn normalize_symlink_target(target: &Path) -> PathBuf {
+    target.to_path_buf()
+}
+
+/// Resolve ancestor directory symlinks in a path (Windows-specific).
+/// On Windows, symlink targets may contain forward slashes (from POSIX-style symlinks).
+/// When joined with Windows paths, this creates mixed separators like
+/// `C:\...\env\usr/share\file.txt`, which Windows rejects with error 123.
+///
+/// This function resolves paths through symlinks while normalizing separators,
+/// converting `Lib/site-packages` where `Lib -> usr/lib` to `usr\lib\site-packages`.
+#[cfg(windows)]
+pub fn resolve_ancestor_symlink(path: &Path) -> PathBuf {
+    // First, check if the path itself is a symlink (case-insensitive check on Windows)
+    if is_directory_symlink(path) {
+        if let Ok(link_target) = std::fs::read_link(path) {
+            if let Some(parent) = path.parent() {
+                let normalized_target = normalize_symlink_target(&link_target);
+                let resolved = parent.join(&normalized_target);
+                log::trace!("resolve_ancestor_symlink: {} -> {} (path itself is symlink)", path.display(), resolved.display());
+                return resolved;
+            }
+        }
+    }
+
+    let mut current = path.to_path_buf();
+    let mut suffix_parts: Vec<PathBuf> = Vec::new();
+
+    while let Some(parent) = current.parent() {
+        if parent == current {
+            break;
+        }
+
+        if is_directory_symlink(parent) {
+            if let Ok(link_target) = std::fs::read_link(parent) {
+                if let Some(grandparent) = parent.parent() {
+                    let normalized_target = normalize_symlink_target(&link_target);
+                    let mut resolved = grandparent.join(&normalized_target);
+                    if let Some(filename) = current.file_name() {
+                        resolved = resolved.join(filename);
+                    }
+                    for part in suffix_parts.iter().rev() {
+                        resolved = resolved.join(part);
+                    }
+                    log::trace!("resolve_ancestor_symlink: {} -> {}", path.display(), resolved.display());
+                    return resolved;
+                }
+            }
+        }
+
+        if let Some(filename) = current.file_name() {
+            suffix_parts.push(PathBuf::from(filename));
+        }
+        current = parent.to_path_buf();
+    }
+
+    path.to_path_buf()
+}
+
+#[cfg(not(windows))]
+pub fn resolve_ancestor_symlink(path: &Path) -> PathBuf {
+    path.to_path_buf()
 }
 
 /// Check if path itself exists (does NOT follow symlinks)

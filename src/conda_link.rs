@@ -781,11 +781,14 @@ fn copy_file_with_prefix_replacement(
     placeholder_info: &PrefixPlaceholder,
     target_prefix: &str,
 ) -> Result<()> {
+    // On Windows, resolve ancestor directory symlinks
+    let target_path = lfs::resolve_ancestor_symlink(target_path);
+
     match placeholder_info.file_mode {
         FileMode::Text => {
             copy_replace_textual_placeholder(
                 source_path,
-                target_path,
+                &target_path,
                 &placeholder_info.placeholder,
                 target_prefix,
             )?;
@@ -793,14 +796,14 @@ fn copy_file_with_prefix_replacement(
         FileMode::Binary => {
             copy_replace_cstring_placeholder(
                 source_path,
-                target_path,
+                &target_path,
                 &placeholder_info.placeholder,
                 target_prefix,
             )?;
         }
     }
 
-    crate::utils::preserve_file_permissions(source_path, target_path)?;
+    crate::utils::preserve_file_permissions(source_path, &target_path)?;
     Ok(())
 }
 
@@ -825,8 +828,11 @@ fn link_file_without_prefix_replacement(
         LinkType::Reflink
     };
 
+    // On Windows, resolve ancestor directory symlinks (e.g., share -> usr/share)
+    let target_path = lfs::resolve_ancestor_symlink(target_path);
+
     // Single call to mirror_file
-    mirror_file(source_path, target_path, fhs_file, is_link, link_type, plan.can_reflink)?;
+    mirror_file(source_path, &target_path, fhs_file, is_link, link_type, plan.can_reflink)?;
     Ok(())
 }
 
@@ -846,9 +852,10 @@ fn link_conda_files(
         let source_path = store_fs_dir.join(&entry.relative_path);
         let target_path = plan.env_root.join(&computed_path);
 
-        // Create parent directory
+        // Create parent directory (resolve ancestor symlinks on Windows)
         if let Some(parent) = target_path.parent() {
-            lfs::create_dir_all(parent)?;
+            let resolved_parent = lfs::resolve_ancestor_symlink(parent);
+            lfs::create_dir_all(&resolved_parent)?;
         }
 
         // Handle prefix placeholder replacement

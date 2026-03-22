@@ -308,6 +308,12 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     // to work correctly with Linux namespace isolation that mounts env_root/usr -> /usr
     force_symlink_to_directory("usr/sbin", env_root.join("sbin"))?;
     force_symlink_to_directory("usr/bin", env_root.join("bin"))?;
+    // On Windows, skip lib symlink because:
+    // 1. Conda packages use Lib/ (capital L) for Python standard library
+    // 2. Windows is case-insensitive: Lib == lib
+    // 3. If lib -> usr/lib exists, conda's Lib/ files would resolve to usr/lib/
+    //    breaking Python's expected Lib/ directory structure
+    #[cfg(not(windows))]
     force_symlink_to_directory("usr/lib", env_root.join("lib"))?;
     force_symlink_to_directory("usr/share", env_root.join("share"))?;
     force_symlink_to_directory("usr/include", env_root.join("include"))?;
