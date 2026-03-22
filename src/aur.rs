@@ -404,7 +404,7 @@ fn extract_aur_source(
 
     let tar = flate2::read::GzDecoder::new(tar_gz);
     let mut archive = tar::Archive::new(tar);
-    crate::tar_extract::unpack_tar_archive(&mut archive, build_dir)
+    crate::tar_extract::unpack_tar_archive(&mut archive, build_dir, None)
         .with_context(|| format!("Failed to unpack tarball {}", tarball_path.display()))?;
 
     // Find PKGBUILD (usually in a subdirectory)

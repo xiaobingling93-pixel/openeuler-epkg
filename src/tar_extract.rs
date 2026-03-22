@@ -415,7 +415,16 @@ pub fn create_package_dirs<P: AsRef<Path>>(
 /// (same behavior as `utils` tar paths). Hard links are collected and created
 /// after all regular files are extracted. On other platforms this delegates to
 /// [`tar::Archive::unpack`].
-pub fn unpack_tar_archive<R: Read>(archive: &mut Archive<R>, dest: &Path) -> Result<()> {
+///
+/// # Arguments
+/// * `archive` - The tar archive to extract
+/// * `dest` - Destination directory for extraction
+/// * `env_root` - Optional environment root for checking cross-package directory symlinks
+pub fn unpack_tar_archive<R: Read>(
+    archive: &mut Archive<R>,
+    dest: &Path,
+    env_root: Option<&Path>,
+) -> Result<()> {
     #[cfg(windows)]
     {
         lfs::create_dir_all(dest)?;
@@ -472,8 +481,9 @@ pub fn unpack_tar_archive<R: Read>(archive: &mut Archive<R>, dest: &Path) -> Res
 
         // Create symlinks with correct type (file vs directory)
         for (link_path, target_path) in symlinks {
-            // Check if target is a directory by looking in our collected directories
-            // The target_path is relative to the link_path's parent
+            // Check if target is a directory:
+            // 1. First check if target is in current package's directories
+            // 2. Then check if target exists in env_root (for cross-package symlinks)
             let target_full = if target_path.is_relative() {
                 link_path.parent()
                     .map(|p| p.join(&target_path))
@@ -482,7 +492,48 @@ pub fn unpack_tar_archive<R: Read>(archive: &mut Archive<R>, dest: &Path) -> Res
                 dest.join(&target_path)
             };
 
-            let is_dir = directories.contains(&target_full);
+            let mut is_dir = directories.contains(&target_full);
+
+            // Check env_root for cross-package directory symlinks
+            if !is_dir {
+                // Get env_root from parameter or try to get default
+                let default_env_root = crate::dirs::get_default_env_root().ok();
+                let env = env_root.or(default_env_root.as_deref());
+                if let Some(env) = env {
+                    // For absolute path targets (e.g., /usr/lib), check under env_root
+                    // For relative path targets, resolve and check under env_root
+                    let env_target = if target_path.is_absolute() {
+                        // Strip leading "/" and join with env_root
+                        let relative = target_path.strip_prefix("/").unwrap_or(&target_path);
+                        env.join(relative)
+                    } else {
+                        // Relative path: resolve from the link's parent location in env
+                        // The link_path is under store/.../fs/, we need to find its location in env
+                        // link_path: store/xxx/fs/usr/lib/foo
+                        // env location: env_root/usr/lib/foo
+                        if let Some(fs_pos) = link_path.to_string_lossy().find("/fs/") {
+                            let after_fs = &link_path.to_string_lossy()[fs_pos + 4..];
+                            if let Some(parent) = Path::new(after_fs).parent() {
+                                env.join(parent).join(&target_path)
+                            } else {
+                                env.join(&target_path)
+                            }
+                        } else {
+                            env.join(&target_path)
+                        }
+                    };
+                    // Check both raw and decoded paths for PUA-encoded names
+                    let decoded_target = lfs::decode_path_from_windows(&env_target);
+                    is_dir = env_target.is_dir() || decoded_target.is_dir();
+                    if is_dir {
+                        log::debug!(
+                            "Symlink target {} found as directory in env_root: {}",
+                            target_path.display(),
+                            env_target.display()
+                        );
+                    }
+                }
+            }
 
             log::debug!(
                 "Creating symlink: {} -> {}, is_dir={}",

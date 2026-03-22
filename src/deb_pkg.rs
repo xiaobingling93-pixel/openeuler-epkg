@@ -130,7 +130,7 @@ fn extract_tar<P: AsRef<Path>>(tar_path: P, target_dir: P) -> Result<()> {
 
     let mut archive = Archive::new(reader);
 
-    unpack_tar_archive(&mut archive, target_dir)
+    unpack_tar_archive(&mut archive, target_dir, None)
         .wrap_err_with(|| format!("Failed to extract tar archive: {}", tar_path.display()))?;
     Ok(())
 }
