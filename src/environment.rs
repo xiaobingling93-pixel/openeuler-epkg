@@ -19,7 +19,7 @@ use glob;
 use crate::models::*;
 use crate::dirs::*;
 use crate::repo::sync_channel_metadata;
-use crate::utils::force_symlink;
+use crate::utils::{force_symlink_to_directory, force_symlink_to_file};
 use crate::deinit::force_remove_dir_all;
 #[cfg(unix)]
 use crate::deb_triggers::ensure_triggers_dir;
@@ -306,17 +306,17 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     // Create symlinks in generation 1 (usr-merge layout)
     // This allows brew packages (which have bin/, share/, include/ at root)
     // to work correctly with Linux namespace isolation that mounts env_root/usr -> /usr
-    force_symlink("usr/sbin", env_root.join("sbin"))?;
-    force_symlink("usr/bin", env_root.join("bin"))?;
-    force_symlink("usr/lib", env_root.join("lib"))?;
-    force_symlink("usr/share", env_root.join("share"))?;
-    force_symlink("usr/include", env_root.join("include"))?;
+    force_symlink_to_directory("usr/sbin", env_root.join("sbin"))?;
+    force_symlink_to_directory("usr/bin", env_root.join("bin"))?;
+    force_symlink_to_directory("usr/lib", env_root.join("lib"))?;
+    force_symlink_to_directory("usr/share", env_root.join("share"))?;
+    force_symlink_to_directory("usr/include", env_root.join("include"))?;
     // NOTE: usr/libexec, Frameworks, opt symlinks for brew packages are created in
     // create_environment_dirs() only when pkg_format is Brew.
     // See the Brew-specific block in create_environment_dirs() for details.
 
     // Create "current" symlink in generations directory pointing to generation 1
-    force_symlink("1", generations_root.join("current"))?;
+    force_symlink_to_directory("1", generations_root.join("current"))?;
 
     setup_resolv_conf(env_root)?;
 
@@ -333,7 +333,7 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
 ///
 /// Key behaviors:
 /// - Uses absolute path for the symlink target to work correctly when accessed from host
-/// - Always creates or overwrites the symlink (force_symlink) without checking existing target
+/// - Always creates or overwrites the symlink (`force_symlink_to_*`) without checking existing target
 /// - Returns Ok(()) even if self environment not found (no-op)
 /// - Logs debug messages for symlink creation
 pub fn create_epkg_symlink(env_root: &Path, pkg_format: &PackageFormat) -> Result<()> {
@@ -358,7 +358,7 @@ pub fn create_epkg_symlink(env_root: &Path, pkg_format: &PackageFormat) -> Resul
                 let self_epkg_linux = crate::dirs::path_join(&self_env_root, &["usr", "bin", &format!("epkg-linux-{}", arch)]);
                 if lfs::exists_in_env(&self_epkg_linux) {
                     log::debug!("Creating epkg symlink {} -> {} (Linux VM)", epkg_symlink.display(), self_epkg_linux.display());
-                    force_symlink(&self_epkg_linux, &epkg_symlink)
+                    force_symlink_to_file(&self_epkg_linux, &epkg_symlink)
                         .with_context(|| format!("Failed to create epkg symlink in {}", epkg_symlink.display()))?;
                     return Ok(());
                 } else {
@@ -372,7 +372,7 @@ pub fn create_epkg_symlink(env_root: &Path, pkg_format: &PackageFormat) -> Resul
         let self_epkg = crate::dirs::path_join(&self_env_root, &["usr", "bin", "epkg"]);
         if lfs::exists_in_env(&self_epkg) {
             log::debug!("Creating epkg symlink {} -> {} (native)", epkg_symlink.display(), self_epkg.display());
-            force_symlink(&self_epkg, &epkg_symlink)
+            force_symlink_to_file(&self_epkg, &epkg_symlink)
                 .with_context(|| format!("Failed to create epkg symlink in {}", epkg_symlink.display()))?;
         }
     }
@@ -387,17 +387,17 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
             // /usr/lib64 -> lib
             // /lib64 -> usr/lib
             lfs::create_dir_all(env_root.join("usr"))?;
-            force_symlink("lib", crate::dirs::path_join(env_root, &["usr", "lib64"]))?;
-            force_symlink("usr/lib", env_root.join("lib64"))?;
+            force_symlink_to_directory("lib", crate::dirs::path_join(env_root, &["usr", "lib64"]))?;
+            force_symlink_to_directory("usr/lib", env_root.join("lib64"))?;
         },
         _ => {
             // Default behavior for other formats
             lfs::create_dir_all(crate::dirs::path_join(env_root, &["usr", "lib64"]))?;
-            force_symlink("usr/lib64", env_root.join("lib64"))?;
+            force_symlink_to_directory("usr/lib64", env_root.join("lib64"))?;
 
             if lfs::exists_on_host("/usr/lib32") {
                 lfs::create_dir_all(crate::dirs::path_join(env_root, &["usr", "lib32"]))?;
-                force_symlink("usr/lib32", env_root.join("lib32"))?;
+                force_symlink_to_directory("usr/lib32", env_root.join("lib32"))?;
             }
         }
     }
@@ -411,16 +411,16 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
     if *pkg_format == PackageFormat::Brew {
         #[cfg(target_os = "macos")]
         {
-            force_symlink("../libexec", crate::dirs::path_join(env_root, &["usr", "libexec"]))?;
-            force_symlink("../Frameworks", crate::dirs::path_join(env_root, &["usr", "Frameworks"]))?;
-            force_symlink("../opt", crate::dirs::path_join(env_root, &["usr", "opt"]))?;
+            force_symlink_to_directory("../libexec", crate::dirs::path_join(env_root, &["usr", "libexec"]))?;
+            force_symlink_to_directory("../Frameworks", crate::dirs::path_join(env_root, &["usr", "Frameworks"]))?;
+            force_symlink_to_directory("../opt", crate::dirs::path_join(env_root, &["usr", "opt"]))?;
         }
         // On Linux, do nothing - packages will create usr/libexec as a real directory if needed
     }
 
     // Fedora: usr/sbin is a symlink to bin (unified /usr/bin and /usr/sbin)
     if channel_config.distro == "fedora" {
-        force_symlink("bin", crate::dirs::path_join(env_root, &["usr", "sbin"]))?;
+        force_symlink_to_directory("bin", crate::dirs::path_join(env_root, &["usr", "sbin"]))?;
     } else {
         lfs::create_dir_all(crate::dirs::path_join(env_root, &["usr", "sbin"]))?;
     }
@@ -471,13 +471,13 @@ fn create_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -> Result
     {
         let systemctl_path = crate::dirs::path_join(env_root, &["usr", "bin", "systemctl"]);
         if !lfs::exists_in_env(&systemctl_path) {
-            force_symlink("/usr/bin/true", &systemctl_path)
+            force_symlink_to_file("/usr/bin/true", &systemctl_path)
                 .with_context(|| format!("Failed to create systemctl symlink in {}", systemctl_path.display()))?;
         }
     }
 
     // Automatically discover all applets and create links.
-    // On Windows, lfs::symlink falls back to hardlink/copy if needed.
+    // On Windows, file symlinks use lfs::symlink_to_file (hardlink/copy when needed).
     crate::busybox::create_all_applet_symlinks(env_root, pkg_format)?;
 
     Ok(())
@@ -591,7 +591,7 @@ fn setup_environment_paths(env_base: &PathBuf) -> Result<PathBuf> {
         if let Some(parent) = env_base.parent() {
             lfs::create_dir_all(parent)?;
         }
-        force_symlink(&env_root, &env_base)
+        force_symlink_to_directory(&env_root, &env_base)
             .with_context(|| format!("Failed to create symlink from {} to {}", env_base.display(), env_root.display()))?;
     }
 

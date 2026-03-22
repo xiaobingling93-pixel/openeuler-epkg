@@ -296,7 +296,7 @@ fn create_pid_log_with_symlink(log_name: &str) -> Result<std::path::PathBuf> {
     // Create symlink to latest log
     let latest_log = base_log_dir.join(format!("latest-{}.log", log_name));
     let _ = lfs::remove_file(&latest_log);
-    if let Err(e) = lfs::symlink(&log_path, &latest_log) {
+    if let Err(e) = lfs::symlink_to_file(&log_path, &latest_log) {
         log::warn!("Failed to create symlink {} -> {}: {}", latest_log.display(), log_path.display(), e);
     }
 

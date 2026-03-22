@@ -464,7 +464,7 @@ fn do_dir_to_symlink(helper_args: &[String], script_args: &[String], script_name
                 if let Err(e) = lfs::remove_dir(&path) {
                     log::warn!("dpkg-maintscript-helper dir_to_symlink postinst rmdir: {}", e);
                 } else {
-                    if let Err(e) = crate::utils::force_symlink(new_target, &path) {
+                    if let Err(e) = crate::utils::force_symlink_to_directory(new_target, &path) {
                         log::warn!("dpkg-maintscript-helper dir_to_symlink postinst symlink: {}", e);
                     } else if let Err(e) = lfs::remove_dir_all(&backup_path) {
                         log::warn!("dpkg-maintscript-helper dir_to_symlink postinst remove backup: {}", e);

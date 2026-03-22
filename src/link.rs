@@ -364,8 +364,8 @@ pub fn compute_link_type_and_reflink(
             log::info!("Windows symlink creation not available; using hardlinks instead");
             link_type = LinkType::Hardlink;
         }
-        // If different filesystems, keep symlink type - the lfs::symlink() function
-        // will handle the fallback (junction for dirs, hardlink/copy for files)
+        // If different filesystems, keep symlink type - lfs::symlink / symlink_to_file
+        // handle the fallback (junction for dirs, hardlink/copy for files)
     }
 
     plan.link = link_type;
@@ -830,8 +830,16 @@ fn copy_symlink(fs_file: &Path, target_path: &Path) -> Result<()> {
         link_target
     };
 
-    lfs::symlink(&adjusted_target, target_path)
-        .with_context(|| format!("Failed to create symlink {} -> {}", target_path.display(), adjusted_target.display()))?;
+    let point_dir = match fs::metadata(fs_file) {
+        Ok(m) => m.is_dir(),
+        Err(_) => false,
+    };
+    if point_dir {
+        lfs::symlink_to_directory(&adjusted_target, target_path)
+    } else {
+        lfs::symlink_to_file(&adjusted_target, target_path)
+    }
+    .with_context(|| format!("Failed to create symlink {} -> {}", target_path.display(), adjusted_target.display()))?;
     Ok(())
 }
 

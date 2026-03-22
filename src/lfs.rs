@@ -70,6 +70,34 @@ use std::path::{Path, PathBuf};
 use color_eyre::eyre::{eyre, WrapErr};
 use color_eyre::Result;
 
+/// Create a symbolic link that must point at a directory (or a missing path that should be a
+/// **directory symlink** on Windows).
+///
+/// On Unix this is identical to [`symlink`]. On Windows, if the resolved target exists, it must be
+/// a directory (junction is used); if it does not exist yet, a directory symlink is created.
+#[cfg(unix)]
+pub fn symlink_to_directory<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
+    symlink(original, link)
+}
+
+/// Create a symbolic link that must point at a regular file (or a missing path that should be a
+/// **file symlink** on Windows).
+///
+/// On Unix this is identical to [`symlink`]. On Windows, if the resolved target exists, it must be
+/// a file (same fallbacks as [`symlink`]); if it does not exist yet, a file symlink is created.
+#[cfg(unix)]
+pub fn symlink_to_file<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
+    symlink(original, link)
+}
+
+/// POSIX-style symlink for bindings that cannot distinguish directory vs file symlinks (e.g. Lua
+/// `posix.symlink`). On Windows, if the target path does not exist yet, tries a directory symlink
+/// first, then a file symlink — the same last-resort behavior as typical POSIX `symlink` on Unix.
+#[cfg(unix)]
+pub fn symlink_posix_compat<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
+    symlink(original, link)
+}
+
 /// Create a symbolic link.
 #[cfg(unix)]
 pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
@@ -94,11 +122,12 @@ pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<(
 ///
 /// 1. For existing directories: Creates a Junction (requires absolute path)
 /// 2. For existing files: `symlink_file`, then `hard_link`, then `copy`
-/// 3. If the resolved target does not exist: skips creation (returns Ok)
+/// 3. If the resolved target does not exist: returns an error — use
+///    [`symlink_to_directory`] or [`symlink_to_file`] depending on intent.
 ///
-/// Note: `force_symlink()` in utils.rs calls this function after removing any
-/// existing link at the target path. The "force" in `force_symlink` means
-/// "overwrite if exists", not "create if target doesn't exist".
+/// Note: `force_symlink_to_directory` / `force_symlink_to_file` in utils.rs call into those
+/// explicit helpers after removing any existing link at the target path. The "force" means
+/// "overwrite if exists", not "infer symlink kind when the target is missing".
 #[cfg(windows)]
 fn symlink_resolve_original(original: &Path, link: &Path) -> PathBuf {
     // Relative paths resolve relative to link's parent — matches Unix symlink
@@ -172,25 +201,69 @@ fn symlink_windows_existing_file(original: &Path, link: &Path, resolved_original
 
 #[cfg(windows)]
 fn symlink_windows_missing_target(original: &Path, link: &Path) -> Result<()> {
-    // When target doesn't exist, we can't create a junction (needs existing target).
-    // Try to create a directory symlink first (requires Developer Mode or admin),
-    // fall back to file symlink if that fails.
-    use std::os::windows::fs::{symlink_dir, symlink_file};
-
-    log::debug!(
-        "Creating symlink at {} -> {} (target doesn't exist yet)",
+    log::error!(
+        "Cannot infer symlink type on Windows when the target does not exist yet: {} -> {}. \
+         Use lfs::symlink_to_directory or lfs::symlink_to_file.",
         link.display(),
         original.display()
     );
+    Err(eyre!(
+        "Symlink target does not exist; specify directory vs file symlink: {} -> {}",
+        link.display(),
+        original.display()
+    ))
+}
 
-    // Try directory symlink first (for paths like bin, sbin, lib, etc.)
-    if symlink_dir(original, link).is_ok() {
-        return Ok(());
+#[cfg(windows)]
+pub fn symlink_to_directory<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
+    let original = original.as_ref();
+    let link = link.as_ref();
+    log::trace!(
+        "symlink_to_directory: {} -> {}",
+        link.display(),
+        original.display()
+    );
+    let resolved_original = symlink_resolve_original(original, link);
+    if resolved_original.is_dir() {
+        symlink_windows_existing_directory(&resolved_original, link)
+    } else if resolved_original.is_file() {
+        Err(eyre!(
+            "symlink_to_directory: target exists but is a file, not a directory: {}",
+            resolved_original.display()
+        ))
+    } else {
+        std::os::windows::fs::symlink_dir(original, link).wrap_err_with(|| {
+            format!(
+                "Failed to create directory symlink from {} to {}",
+                original.display(),
+                link.display()
+            )
+        })
     }
+}
 
-    // Fall back to file symlink
-    symlink_file(original, link)
-        .wrap_err_with(|| format!("Failed to create symlink from {} to {}", original.display(), link.display()))
+#[cfg(windows)]
+pub fn symlink_to_file<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
+    let original = original.as_ref();
+    let link = link.as_ref();
+    log::trace!("symlink_to_file: {} -> {}", link.display(), original.display());
+    let resolved_original = symlink_resolve_original(original, link);
+    if resolved_original.is_file() {
+        symlink_windows_existing_file(original, link, &resolved_original)
+    } else if resolved_original.is_dir() {
+        Err(eyre!(
+            "symlink_to_file: target exists but is a directory, not a file: {}",
+            resolved_original.display()
+        ))
+    } else {
+        std::os::windows::fs::symlink_file(original, link).wrap_err_with(|| {
+            format!(
+                "Failed to create file symlink from {} to {}",
+                original.display(),
+                link.display()
+            )
+        })
+    }
 }
 
 #[cfg(windows)]
@@ -545,7 +618,8 @@ pub fn is_symlink(path: &Path) -> bool {
 }
 
 /// Check if path is a symlink or Windows junction
-/// On Windows, junctions are directory reparse points created by lfs::symlink()
+/// On Windows, junctions are directory reparse points created by lfs::symlink() /
+/// lfs::symlink_to_directory() when the target directory exists
 /// Use this when checking directory links that may be junctions
 #[cfg(windows)]
 pub fn is_symlink_or_junction(path: &Path) -> bool {

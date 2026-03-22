@@ -163,7 +163,7 @@ pub(crate) fn ensure_dev_symlinks(dev_root: &Path) -> Result<()> {
         if lfs::exists_on_host(&link_path) {
             continue;
         }
-        if let Err(e) = lfs::symlink(target, &link_path) {
+        if let Err(e) = lfs::symlink_to_file(target, &link_path) {
             warn!("Failed to create symlink {}/{} -> {}: {}. Continuing.", dev_root.display(), name, target, e);
         }
     }

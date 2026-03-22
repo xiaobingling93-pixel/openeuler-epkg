@@ -697,18 +697,42 @@ pub fn user_prompt_and_confirm() -> Result<bool> {
     Ok(true)
 }
 
-pub fn force_symlink<P: AsRef<Path>, Q: AsRef<Path>>(file_path: P, symlink_path: Q) -> Result<()> {
+/// Remove any existing link at `symlink_path`, then create a **directory** symlink (see
+/// [`lfs::symlink_to_directory`]).
+pub fn force_symlink_to_directory<P: AsRef<Path>, Q: AsRef<Path>>(file_path: P, symlink_path: Q) -> Result<()> {
     let file_path = file_path.as_ref();
     let symlink_path = symlink_path.as_ref();
 
-    // Remove existing symlink or file if it exists
     if lfs::symlink_metadata(symlink_path).is_ok() {
         lfs::remove_file(symlink_path)?;
     }
 
-    // Create the symlink
-    log::debug!("Creating symlink: {} -> {}", symlink_path.display(), file_path.display());
-    lfs::symlink(file_path, symlink_path)?;
+    log::debug!(
+        "Creating directory symlink: {} -> {}",
+        symlink_path.display(),
+        file_path.display()
+    );
+    lfs::symlink_to_directory(file_path, symlink_path)?;
+
+    Ok(())
+}
+
+/// Remove any existing link at `symlink_path`, then create a **file** symlink (see
+/// [`lfs::symlink_to_file`]).
+pub fn force_symlink_to_file<P: AsRef<Path>, Q: AsRef<Path>>(file_path: P, symlink_path: Q) -> Result<()> {
+    let file_path = file_path.as_ref();
+    let symlink_path = symlink_path.as_ref();
+
+    if lfs::symlink_metadata(symlink_path).is_ok() {
+        lfs::remove_file(symlink_path)?;
+    }
+
+    log::debug!(
+        "Creating file symlink: {} -> {}",
+        symlink_path.display(),
+        file_path.display()
+    );
+    lfs::symlink_to_file(file_path, symlink_path)?;
 
     Ok(())
 }

@@ -470,7 +470,7 @@ fn setup_epkg_src(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
         .context("Failed to extract epkg source code tar file")?;
 
     // Create a symlink from epkg to epkg-master (or epkg-$version)
-    if let Err(e) = utils::force_symlink(&epkg_extracted_dir, &epkg_src) {
+    if let Err(e) = utils::force_symlink_to_directory(&epkg_extracted_dir, &epkg_src) {
         eprintln!("[WARN] Failed to create symlink {} -> {}: {}",
                  epkg_src.display(), epkg_extracted_dir, e);
     }
@@ -631,7 +631,7 @@ fn create_epkg_symlink(epkg_binary_path: &Path) -> Result<()> {
         let usr_local_bin = PathBuf::from("/usr/local/bin");
         lfs::create_dir_all(&usr_local_bin)?;
         println!("Creating symlink: {}/epkg -> {}", usr_local_bin.display(), epkg_binary_path.display());
-        if let Err(e) = utils::force_symlink(epkg_binary_path, &usr_local_bin.join("epkg")) {
+        if let Err(e) = utils::force_symlink_to_file(epkg_binary_path, &usr_local_bin.join("epkg")) {
             log::warn!("Failed to create epkg symlink in {}: {}", usr_local_bin.display(), e);
         }
         return Ok(());
@@ -646,7 +646,7 @@ fn create_epkg_symlink(epkg_binary_path: &Path) -> Result<()> {
     if path_var.contains(&*home_bin.to_string_lossy()) {
         if home_bin.exists() {
             println!("Creating symlink: {}/epkg -> {}", home_bin.display(), epkg_binary_path.display());
-            if let Err(e) = utils::force_symlink(epkg_binary_path, &home_bin.join("epkg")) {
+            if let Err(e) = utils::force_symlink_to_file(epkg_binary_path, &home_bin.join("epkg")) {
                 log::warn!("Failed to create epkg symlink in {}: {}", home_bin.display(), e);
             }
         }
