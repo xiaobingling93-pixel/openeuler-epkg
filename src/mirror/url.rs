@@ -32,6 +32,18 @@ use crate::models::channel_config;
 use crate::models::ChannelConfig;
 use crate::mirror::{Mirrors, UrlProtocol};
 
+/// Normalize path separators for Windows (convert forward slashes to backslashes).
+/// This prevents mixed separators when joining URL paths with Windows paths.
+#[cfg(windows)]
+fn normalize_url_path_separators(path: &str) -> PathBuf {
+    PathBuf::from(path.replace('/', "\\"))
+}
+
+#[cfg(not(windows))]
+fn normalize_url_path_separators(path: &str) -> PathBuf {
+    PathBuf::from(path)
+}
+
 /// Global hashmap for repodata_name to distro_dirs mapping
 static REPODATA_NAME2DISTRO_DIRS: std::sync::LazyLock<Mutex<HashMap<String, Vec<String>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -225,16 +237,20 @@ impl Mirrors {
         if let Some((_, str_b)) = url.split_once("$mirror/") {
             let distro_dirs = get_distro_dirs_for_repodata_name(repodata_name);
             let local_subdir = distro_dirs.last().unwrap().clone();
+            // Normalize separators to avoid mixed path separators on Windows
+            let normalized_path = normalize_url_path_separators(str_b);
             let path = if local_subdir != "debian" {
-                output_dir.join(&local_subdir).join(str_b)
+                output_dir.join(&local_subdir).join(normalized_path)
             } else {
-                output_dir.join(str_b)
+                output_dir.join(normalized_path)
             };
             return Ok(path);
         }
 
         if let Some((_, str_b)) = url.split_once("///") {
-            let path = output_dir.join(str_b);
+            // Normalize separators to avoid mixed path separators on Windows
+            let normalized_path = normalize_url_path_separators(str_b);
+            let path = output_dir.join(normalized_path);
             return Ok(path);
         }
 
@@ -264,12 +280,14 @@ impl Mirrors {
             .strip_prefix("file://")
             .or_else(|| spec.strip_prefix("./"))
         {
-            return Some(PathBuf::from(local_path));
+            // Normalize separators to avoid mixed path separators on Windows
+            return Some(normalize_url_path_separators(local_path));
         }
 
         // Check for absolute paths (leading /)
         if spec.starts_with('/') {
-            return Some(PathBuf::from(spec));
+            // Normalize separators for consistency on Windows
+            return Some(normalize_url_path_separators(spec));
         }
 
         // Check if it's an existing file (unknown pattern but file exists)

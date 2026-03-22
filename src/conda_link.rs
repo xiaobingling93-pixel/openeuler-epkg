@@ -28,6 +28,18 @@ use crate::link::{link_package_generic, mirror_file};
 #[cfg(unix)]
 use crate::utils;
 use crate::lfs;
+
+/// Normalize path separators for Windows (convert forward slashes to backslashes).
+/// Conda paths.json entries use forward slashes which need conversion on Windows.
+#[cfg(windows)]
+fn normalize_conda_path(path: &str) -> PathBuf {
+    PathBuf::from(path.replace('/', "\\"))
+}
+
+#[cfg(not(windows))]
+fn normalize_conda_path(path: &str) -> PathBuf {
+    PathBuf::from(path)
+}
 use log;
 
 /// Default Python version (major, minor) used when version cannot be determined
@@ -205,7 +217,7 @@ fn parse_paths_entry(path_entry: &Value) -> Result<PathsEntry> {
         .unwrap_or(false);
 
     Ok(PathsEntry {
-        relative_path: PathBuf::from(relative_path),
+        relative_path: normalize_conda_path(relative_path),
         path_type,
         sha256,
         size_in_bytes,
@@ -362,12 +374,12 @@ fn get_python_info(index_json: &IndexJson) -> Result<Option<PythonInfo>> {
 
     let site_packages_path = index_json.python_site_packages_path
         .as_ref()
-        .map(|s| PathBuf::from(s))
+        .map(|s| normalize_conda_path(s))
         .unwrap_or_else(|| {
             #[cfg(unix)]
             { PathBuf::from(format!("lib/python{major}.{minor}/site-packages")) }
             #[cfg(windows)]
-            { PathBuf::from("Lib/site-packages") }
+            { PathBuf::from("Lib\\site-packages") }
         });
 
     #[cfg(unix)]
@@ -437,13 +449,19 @@ fn compute_paths(
 
 /// Remap noarch Python package paths
 fn remap_noarch_path(relative_path: &Path, python_info: &PythonInfo) -> PathBuf {
+    // Use platform-appropriate path separators for prefix matching
+    #[cfg(unix)]
+    let (site_packages_prefix, python_scripts_prefix) = ("site-packages/", "python-scripts/");
+    #[cfg(windows)]
+    let (site_packages_prefix, python_scripts_prefix) = (r"site-packages\", r"python-scripts\");
+
     // Remap site-packages/ -> lib/python{major}.{minor}/site-packages/
-    if let Ok(rest) = relative_path.strip_prefix("site-packages/") {
+    if let Ok(rest) = relative_path.strip_prefix(site_packages_prefix) {
         return python_info.site_packages_path.join(rest);
     }
 
     // Remap python-scripts/ -> bin/ (Unix) or Scripts/ (Windows)
-    if let Ok(rest) = relative_path.strip_prefix("python-scripts/") {
+    if let Ok(rest) = relative_path.strip_prefix(python_scripts_prefix) {
         return python_info.bin_dir.join(rest);
     }
 

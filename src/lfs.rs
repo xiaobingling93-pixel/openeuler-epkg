@@ -110,6 +110,7 @@ pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<(
 pub fn symlink_to_directory<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
     let original = original.as_ref();
     let link = link.as_ref();
+    debug_assert_no_forward_slash(link);
     // Normalize the symlink target to use backslashes for Windows native access.
     // Forward slashes in symlink targets cause "InvalidFilename" errors when Windows
     // joins them with backslash paths, creating mixed separators like:
@@ -138,6 +139,7 @@ pub fn symlink_to_directory<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q
 pub fn symlink_to_file<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
     let original = original.as_ref();
     let link = link.as_ref();
+    debug_assert_no_forward_slash(link);
     // Normalize the symlink target to use backslashes for Windows native access.
     let normalized_original = normalize_symlink_target(original);
     let posix_target = normalized_original.to_string_lossy();
@@ -157,6 +159,7 @@ pub fn symlink_to_file<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> 
 pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
     let original = original.as_ref();
     let link = link.as_ref();
+    debug_assert_no_forward_slash(link);
     // Normalize the symlink target to use backslashes for Windows native access.
     let normalized_original = normalize_symlink_target(original);
     let posix_target = normalized_original.to_string_lossy();
@@ -175,6 +178,8 @@ pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<(
 pub fn hard_link<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
     let original = original.as_ref();
     let link = link.as_ref();
+    debug_assert_no_forward_slash(original);
+    debug_assert_no_forward_slash(link);
     log::trace!("creating hard link: {} -> {}", link.display(), original.display());
     fs::hard_link(original, link)
         .wrap_err_with(|| format!("Failed to create hard link from {} to {}", link.display(), original.display()))
@@ -184,6 +189,8 @@ pub fn hard_link<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result
 pub fn copy<P: AsRef<Path>, Q: AsRef<Path>>(source: P, target: Q) -> Result<u64> {
     let source = source.as_ref();
     let target = target.as_ref();
+    debug_assert_no_forward_slash(source);
+    debug_assert_no_forward_slash(target);
     log::trace!("copying file: {} -> {}", source.display(), target.display());
     fs::copy(source, target)
         .wrap_err_with(|| format!("Failed to copy {} to {}", source.display(), target.display()))
@@ -193,6 +200,8 @@ pub fn copy<P: AsRef<Path>, Q: AsRef<Path>>(source: P, target: Q) -> Result<u64>
 pub fn rename<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()> {
     let from = from.as_ref();
     let to = to.as_ref();
+    debug_assert_no_forward_slash(from);
+    debug_assert_no_forward_slash(to);
     log::trace!("renaming: {} -> {}", from.display(), to.display());
     fs::rename(from, to)
         .wrap_err_with(|| format!("Failed to rename {} to {}", from.display(), to.display()))
@@ -267,6 +276,7 @@ pub fn can_create_symlinks() -> bool {
 /// Create a directory and all its parent directories if they are missing.
 pub fn create_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
     let path = path.as_ref();
+    debug_assert_no_forward_slash(path);
     log::trace!("creating directory: {}", path.display());
     fs::create_dir_all(path)
         .wrap_err_with(|| format!("Failed to create directory {}", path.display()))
@@ -548,6 +558,35 @@ fn normalize_symlink_target(target: &Path) -> PathBuf {
 #[cfg(not(windows))]
 fn normalize_symlink_target(target: &Path) -> PathBuf {
     target.to_path_buf()
+}
+
+/// Debug assertion to catch mixed path separators on Windows.
+/// Forward slashes in Windows paths cause error 123 (InvalidFilename).
+/// This should be called at control points where paths enter filesystem operations.
+#[cfg(all(windows, debug_assertions))]
+fn debug_assert_no_forward_slash(path: &Path) {
+    let path_str = path.to_string_lossy();
+    // Allow forward slashes only in:
+    // 1. Pure relative paths (no backslash) - e.g., "usr/lib"
+    // 2. Paths starting with "/" (Unix absolute paths, used internally)
+    // Disallow mixed separators like "C:\path/to/file"
+    if path_str.contains('\\') && path_str.contains('/') {
+        // Check if it's a UNC path prefix (\\?\) which is valid
+        if !path_str.starts_with("//?/") && !path_str.starts_with("\\\\?\\") {
+            debug_assert!(
+                false,
+                "Mixed path separators detected: {:?}\n\
+                 This will cause Windows error 123 (InvalidFilename).\n\
+                 Path should be normalized to use consistent separators.",
+                path
+            );
+        }
+    }
+}
+
+#[cfg(not(all(windows, debug_assertions)))]
+fn debug_assert_no_forward_slash(_path: &Path) {
+    // No-op on non-Windows or release builds
 }
 
 /// Resolve ancestor directory symlinks in a path (Windows-specific).
