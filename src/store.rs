@@ -862,6 +862,7 @@ fn validate_store_integrity(pkgline: &str) -> bool {
     };
 
     // Check if any regular files are listed (not just directories)
+    // Meta-packages (like conda's vc package) may have empty filelist
     let has_listed_files = filelist_content.lines().any(|line| {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.is_empty() {
@@ -875,6 +876,12 @@ fn validate_store_integrity(pkgline: &str) -> bool {
     });
 
     if !has_listed_files {
+        // Meta-package: no files listed, check if package.txt exists to confirm valid metadata
+        let package_txt_path = crate::dirs::path_join(&store_path, &["info", "package.txt"]);
+        if lfs::exists_on_host(&package_txt_path) {
+            log::debug!("validate_store_integrity: meta-package {} has no files, metadata valid", pkgline);
+            return true;
+        }
         log::debug!("validate_store_integrity: no files listed in filelist.txt for {}", pkgline);
         return false;
     }
