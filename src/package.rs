@@ -11,14 +11,38 @@ pub struct PackageLine {
     pub arch: String,
 }
 
+/// Windows disallows ':' in filenames. RPM epoch uses ':' in EVR (e.g. `1:3.0.12-22.oe2509`).
+/// We substitute only in the version segment.
+///
+/// Escape character choice (must be filename-safe on Windows and must not appear in real EVRs):
+/// - **RPM** (rpm-version(7)): segments are alphanumerics plus `.`, `_`, `+`, and the sorting
+///   operators `~` and `^` — so `^` and `~` must not be used as escapes. `:` is only for epoch.
+/// - **Debian** (Policy 5.6.12): upstream allows alphanumerics plus `.`, `+`, `-`, `~` (not `#`).
+/// - **Alpine** (apk): `pkgver` / `pkgrel` follow similar patterns; `~` is common.
+/// - **Conda** (PEP 440): `+` local identifiers, `-` / `.` common; `#` is not part of the grammar.
+///
+/// **`%`**: Like `#`, it is not in typical EVR grammars, so it was considered as an escape. We did
+/// not pick it: Windows `cmd.exe` interprets `%NAME%` as env expansion; `%` also appears
+/// constantly in package *descriptions* (e.g. “100%”, `%{rpm_macro}` in summaries), which is
+/// misleading if you grep `list` output — that is not evidence of `%` in version fields.
+///
+/// **`#`**: Used here so we do not collide with RPM `^`/`~` or Debian `~`.
+const VERSION_COLON_FILENAME_ESC: &str = "#";
+
+fn version_for_filename(version: &str) -> String {
+    version.replace(':', VERSION_COLON_FILENAME_ESC)
+}
+
+fn version_from_filename(version: &str) -> String {
+    version.replace(VERSION_COLON_FILENAME_ESC, ":")
+}
 
 /// Formats a package line string from its components.
 /// pkgline format: {ca_hash}__{pkgname}__{version}__{arch}
 ///
-/// Note: Windows doesn't allow ':' in filenames, so we replace it with '~'.
-/// This handles RPM epoch in version strings like "1:3.0.12-22.oe2509".
+/// Note: ':' in `version` is replaced with `#` (see `VERSION_COLON_FILENAME_ESC`) for Windows paths.
 pub fn format_pkgline(ca_hash: &str, pkgname: &str, version: &str, arch: &str) -> String {
-    let safe_version = version.replace(':', "~");
+    let safe_version = version_for_filename(version);
     format!("{}__{}__{}__{}", ca_hash, pkgname, safe_version, arch)
 }
 
@@ -29,8 +53,7 @@ pub fn parse_pkgline(pkgline: &str) -> Result<PackageLine> {
         bail!("Invalid package line format: {}", pkgline);
     }
 
-    // Restore ':' from '~' in version (for RPM epoch)
-    let version = parts[2].replace('~', ":");
+    let version = version_from_filename(parts[2]);
 
     let spec = PackageLine {
         ca_hash: parts[0].to_string(),
@@ -42,9 +65,9 @@ pub fn parse_pkgline(pkgline: &str) -> Result<PackageLine> {
 }
 
 // pkgkey format: {pkgname}__{version}__{arch}
-// Note: Windows doesn't allow ':' in filenames, so we replace it with '~'.
+// ':' in `version` is replaced with `#` (see `VERSION_COLON_FILENAME_ESC`) for Windows paths.
 pub fn format_pkgkey(pkgname: &str, version: &str, arch: &str) -> String {
-    let safe_version = version.replace(':', "~");
+    let safe_version = version_for_filename(version);
     format!("{}__{}__{}", pkgname, safe_version, arch)
 }
 
@@ -73,7 +96,11 @@ pub fn parse_pkgkey_parts(pkgkey: &str) -> Result<(&str, &str, &str)> {
 
 pub fn parse_pkgkey(pkgkey: &str) -> Result<(String, String, String)> {
     parse_pkgkey_parts(pkgkey).map(|(pkgname, version, arch)| {
-        (pkgname.to_string(), version.to_string(), arch.to_string())
+        (
+            pkgname.to_string(),
+            version_from_filename(version),
+            arch.to_string(),
+        )
     })
 }
 
@@ -82,7 +109,7 @@ pub fn pkgkey2pkgname(pkgkey: &str) -> Result<String> {
 }
 
 pub fn pkgkey2version(pkgkey: &str) -> Result<String> {
-    parse_pkgkey_parts(pkgkey).map(|(_, version, _)| version.to_string())
+    parse_pkgkey_parts(pkgkey).map(|(_, version, _)| version_from_filename(version))
 }
 
 pub fn pkgkey2arch(pkgkey: &str) -> Result<String> {
