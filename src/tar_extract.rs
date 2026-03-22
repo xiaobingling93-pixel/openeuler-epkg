@@ -110,6 +110,10 @@ pub fn extract_archive_with_policy<R: Read>(
     let mut hard_links: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut created_dirs: HashSet<PathBuf> = HashSet::new();
 
+    // Ensure target directory exists with case sensitivity on Windows
+    lfs::create_dir_all_with_case_sensitivity(&config.target_dir)?;
+    created_dirs.insert(config.target_dir.clone());
+
     for entry_result in archive.entries()? {
         let mut entry = entry_result?;
         let path = entry.path()?.to_path_buf();
@@ -223,6 +227,10 @@ pub fn extract_archive<R: Read>(
     let mut entries_processed = 0;
     let mut hard_links: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut created_dirs: HashSet<PathBuf> = HashSet::new();
+
+    // Ensure target directory exists with case sensitivity on Windows
+    lfs::create_dir_all_with_case_sensitivity(&config.target_dir)?;
+    created_dirs.insert(config.target_dir.clone());
 
     for entry_result in archive.entries()? {
         let mut entry = entry_result?;
@@ -386,9 +394,9 @@ pub fn create_package_dirs<P: AsRef<Path>>(
     format: &str,
 ) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
-    lfs::create_dir_all(store_tmp_dir.join("fs"))?;
-    lfs::create_dir_all(crate::dirs::path_join(store_tmp_dir, &["info", format]))?;
-    lfs::create_dir_all(crate::dirs::path_join(store_tmp_dir, &["info", "install"]))?;
+    lfs::create_dir_all_with_case_sensitivity(store_tmp_dir.join("fs"))?;
+    lfs::create_dir_all_with_case_sensitivity(crate::dirs::path_join(store_tmp_dir, &["info", format]))?;
+    lfs::create_dir_all_with_case_sensitivity(crate::dirs::path_join(store_tmp_dir, &["info", "install"]))?;
     Ok(())
 }
 
@@ -427,7 +435,7 @@ pub fn unpack_tar_archive<R: Read>(
 ) -> Result<()> {
     #[cfg(windows)]
     {
-        lfs::create_dir_all(dest)?;
+        lfs::create_dir_all_with_case_sensitivity(dest)?;
         let mut hard_links: Vec<(PathBuf, PathBuf)> = Vec::new();
         let mut symlinks: Vec<(PathBuf, PathBuf)> = Vec::new(); // (link_path, target_path)
         let mut directories: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();

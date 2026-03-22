@@ -394,9 +394,9 @@ fn extract_aur_source(
     // Extract tarball (tarball already contains a top-level pkgname/ directory)
     let pkg_root_dir = build_dir.join(pkgname);
     if lfs::exists_on_host(&pkg_root_dir) {
-        std::fs::remove_dir_all(&pkg_root_dir)?;
+        lfs::remove_dir_all(&pkg_root_dir)?;
     }
-    std::fs::create_dir_all(build_dir)?;
+    lfs::create_dir_all_with_case_sensitivity(build_dir)?;
 
     // Extract tar.gz with better diagnostics for corrupt downloads
     let tar_gz = File::open(tarball_path)

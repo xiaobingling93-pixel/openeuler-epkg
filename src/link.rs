@@ -448,7 +448,7 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::mtree::Mt
                 // It's a file, remove it
                 lfs::remove_file(&target_path)?;
             }
-            lfs::create_dir_all(&target_path)?;
+            lfs::create_dir_all_with_case_sensitivity(&target_path)?;
             continue;
         }
 
@@ -560,7 +560,7 @@ fn mirror_symlink_file(fs_file: &Path, target_path: &Path, link_type: LinkType) 
     if link_type == LinkType::Move {
         // Ensure parent directory exists
         if let Some(parent) = target_path.parent() {
-            lfs::create_dir_all(parent)?;
+            lfs::create_dir_all_with_case_sensitivity(parent)?;
         }
         lfs::rename(fs_file, target_path)?;
         return Ok(());

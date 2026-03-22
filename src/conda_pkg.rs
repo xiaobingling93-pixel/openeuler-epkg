@@ -310,7 +310,7 @@ fn extract_zstd_tar_stream<R: Read>(
     target_dir: &Path,
     strip_prefix: Option<String>,
 ) -> Result<()> {
-    fs::create_dir_all(target_dir)?;
+    lfs::create_dir_all_with_case_sensitivity(target_dir)?;
 
     let decoder = ZstdDecoder::new(reader).wrap_err("Failed to create zstd decoder")?;
     let archive = Archive::new(decoder);

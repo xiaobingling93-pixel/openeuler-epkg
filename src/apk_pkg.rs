@@ -504,7 +504,7 @@ fn write_apk_hook_file<P: AsRef<Path>>(
 
     let install_dir = crate::dirs::path_join(store_tmp_dir, &["info", "install"]);
     let hook_path = install_dir.join("apk-trigger.hook");
-    fs::create_dir_all(&install_dir)?;
+    lfs::create_dir_all_with_case_sensitivity(&install_dir)?;
     fs::write(&hook_path, buf)
         .with_context(|| format!("Failed to write APK hook file {}", hook_path.display()))?;
 

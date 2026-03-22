@@ -321,7 +321,7 @@ pub fn unpack_mv_package_with_format(
     } else {
         let parent_dir = final_dir.parent()
             .ok_or_else(|| eyre::eyre!("Failed to get parent directory for: {}", final_dir.display()))?;
-        lfs::create_dir_all(parent_dir)?;
+        lfs::create_dir_all_with_case_sensitivity(parent_dir)?;
     }
 
     log::info!("Unpacking pkgkey {:?} file to store: {} -> {}", pkgkey, package_file, final_dir.display());

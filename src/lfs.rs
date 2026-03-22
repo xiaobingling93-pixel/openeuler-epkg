@@ -445,6 +445,7 @@ pub fn create_dir_all_with_case_sensitivity<P: AsRef<Path>>(path: P) -> Result<(
 ///
 /// Parent directories must exist. Case sensitivity setting is best-effort.
 #[cfg(windows)]
+#[allow(dead_code)]
 pub fn create_dir_with_case_sensitivity<P: AsRef<Path>>(path: P) -> Result<()> {
     let path = path.as_ref();
     debug_assert_no_forward_slash(path);
@@ -455,6 +456,7 @@ pub fn create_dir_with_case_sensitivity<P: AsRef<Path>>(path: P) -> Result<()> {
 
 /// On Unix systems, case sensitivity is always enabled; delegate to create_dir.
 #[cfg(not(windows))]
+#[allow(dead_code)]
 pub fn create_dir_with_case_sensitivity<P: AsRef<Path>>(path: P) -> Result<()> {
     create_dir(path)
 }

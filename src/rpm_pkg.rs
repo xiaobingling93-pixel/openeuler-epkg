@@ -90,7 +90,7 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
 
                 // Create parent directories if they don't exist
                 if let Some(parent) = file_path.parent() {
-                    lfs::create_dir_all(parent)?;
+                    lfs::create_dir_all_with_case_sensitivity(parent)?;
                 }
 
                 match file.metadata.mode {
@@ -110,7 +110,7 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
                     }
                     FileMode::Dir { permissions } => {
                         // Create directory
-                        lfs::create_dir_all(&file_path)?;
+                        lfs::create_dir_all_with_case_sensitivity(&file_path)?;
 
                         #[cfg(unix)]
                         {
