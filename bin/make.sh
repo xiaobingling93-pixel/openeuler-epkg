@@ -218,7 +218,8 @@ detect_package_manager() {
 }
 
 # Install kernel for libkrun VM from local build or download.
-# For local development: copies vmlinux from git/sandbox-kernel/linux-stable to ~/.epkg/envs/self/boot/
+# For local development: copies vmlinux from git/sandbox-kernel/linux-stable into the self env boot dir.
+# On Unix that is ~/.epkg/envs/self/boot/; on Windows it matches src/dirs.rs (%LOCALAPPDATA%\epkg\envs\self\boot).
 # Only works when building for host architecture.
 install_kernel_for_libkrun() {
     local arch="$1"
@@ -240,16 +241,25 @@ install_kernel_for_libkrun() {
             ;;
     esac
 
-    # Check if kernel already exists
-    local self_boot_vmlinux="${HOME}/.epkg/envs/self/boot/vmlinux"
+    # Self env boot dir must match EPKGDirs (dirs.rs): Windows uses LOCALAPPDATA, not only $HOME/.epkg.
+    local self_boot_dir="${HOME}/.epkg/envs/self/boot"
+    if [[ -n "${LOCALAPPDATA:-}" ]]; then
+        self_boot_dir="${LOCALAPPDATA//\\//}/epkg/envs/self/boot"
+    elif [[ -n "${USERPROFILE:-}" ]]; then
+        self_boot_dir="${USERPROFILE//\\//}/AppData/Local/epkg/envs/self/boot"
+    fi
+    local self_boot_vmlinux="${self_boot_dir}/vmlinux"
     if [[ -f "$self_boot_vmlinux" ]]; then
+        return 0
+    fi
+    # Legacy / alternate layout (e.g. manual copy under ~/.epkg on Windows)
+    if [[ "$self_boot_vmlinux" != "${HOME}/.epkg/envs/self/boot/vmlinux" ]] && [[ -f "${HOME}/.epkg/envs/self/boot/vmlinux" ]]; then
         return 0
     fi
 
     # Try to install from local build (sandbox-kernel)
     local vmlinux="$PROJECT_ROOT/git/sandbox-kernel/linux-stable/vmlinux"
     if [[ -f "$vmlinux" ]]; then
-        local self_boot_dir="${HOME}/.epkg/envs/self/boot"
         mkdir -p "$self_boot_dir"
 
         # Get kernel version for naming
