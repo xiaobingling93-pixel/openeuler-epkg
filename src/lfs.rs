@@ -589,58 +589,13 @@ fn debug_assert_no_forward_slash(_path: &Path) {
     // No-op on non-Windows or release builds
 }
 
-/// Resolve ancestor directory symlinks in a path (Windows-specific).
-/// On Windows, symlink targets may contain forward slashes (from POSIX-style symlinks).
-/// When joined with Windows paths, this creates mixed separators like
-/// `C:\...\env\usr/share\file.txt`, which Windows rejects with error 123.
+/// Resolve ancestor directory symlinks - simplified to no-op.
 ///
-/// This function resolves paths through symlinks while normalizing separators,
-/// converting `Lib/site-packages` where `Lib -> usr/lib` to `usr\lib\site-packages`.
+/// Windows can create files inside symlinked directories transparently.
+/// The symlink target normalization is handled by normalize_symlink_target()
+/// when symlinks are created, ensuring consistent path separators.
 #[cfg(windows)]
 pub fn resolve_ancestor_symlink(path: &Path) -> PathBuf {
-    // First, check if the path itself is a symlink (case-insensitive check on Windows)
-    if is_directory_symlink(path) {
-        if let Ok(link_target) = std::fs::read_link(path) {
-            if let Some(parent) = path.parent() {
-                let normalized_target = normalize_symlink_target(&link_target);
-                let resolved = parent.join(&normalized_target);
-                log::trace!("resolve_ancestor_symlink: {} -> {} (path itself is symlink)", path.display(), resolved.display());
-                return resolved;
-            }
-        }
-    }
-
-    let mut current = path.to_path_buf();
-    let mut suffix_parts: Vec<PathBuf> = Vec::new();
-
-    while let Some(parent) = current.parent() {
-        if parent == current {
-            break;
-        }
-
-        if is_directory_symlink(parent) {
-            if let Ok(link_target) = std::fs::read_link(parent) {
-                if let Some(grandparent) = parent.parent() {
-                    let normalized_target = normalize_symlink_target(&link_target);
-                    let mut resolved = grandparent.join(&normalized_target);
-                    if let Some(filename) = current.file_name() {
-                        resolved = resolved.join(filename);
-                    }
-                    for part in suffix_parts.iter().rev() {
-                        resolved = resolved.join(part);
-                    }
-                    log::trace!("resolve_ancestor_symlink: {} -> {}", path.display(), resolved.display());
-                    return resolved;
-                }
-            }
-        }
-
-        if let Some(filename) = current.file_name() {
-            suffix_parts.push(PathBuf::from(filename));
-        }
-        current = parent.to_path_buf();
-    }
-
     path.to_path_buf()
 }
 
