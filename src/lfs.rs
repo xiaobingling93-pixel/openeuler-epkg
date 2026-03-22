@@ -783,85 +783,23 @@ fn resolve_symlink_in_env_recursive(symlink_path: &std::path::Path, env_root: &s
 }
 
 // ============================================================================
-// Windows filename sanitization
+// Win32 PUA filename/path mapping (shared implementation, see virtio/fs/windows/win32_pua_paths.rs)
 // ============================================================================
 
-/// Characters that are invalid in Windows filenames.
-/// These characters are reserved by Windows and cannot appear in filenames.
-#[cfg(windows)]
-const WINDOWS_INVALID_FILENAME_CHARS: &[char] = &['<', '>', ':', '"', '|', '?', '*'];
-
-/// Check if a path component (filename) contains characters invalid on Windows.
-/// Returns true if the filename would be invalid on Windows.
-#[cfg(windows)]
 #[allow(dead_code)]
-pub fn has_invalid_windows_chars(filename: &str) -> bool {
-    filename.chars().any(|c| {
-        WINDOWS_INVALID_FILENAME_CHARS.contains(&c) || c.is_control()
-    })
+mod win32_pua_paths {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/git/libkrun/src/devices/src/virtio/fs/windows/win32_pua_paths.rs"
+    ));
 }
 
-#[cfg(not(windows))]
-pub fn has_invalid_windows_chars(_filename: &str) -> bool {
-    false
-}
-
-/// Sanitize a filename for Windows by replacing invalid characters.
-///
-/// On Windows, the following characters are not allowed in filenames:
-/// `< > : " | ? *` and control characters (0x00-0x1F)
-///
-/// This function replaces them with `~` followed by a hex code:
-/// - `:` becomes `~3a` (0x3A is the ASCII code for `:`)
-/// - `::` becomes `~3a~3a`
-///
-/// For example, `Text::Iconv.3pm.gz` becomes `Text~3a~3aIconv.3pm.gz`
-///
-/// On non-Windows platforms, this is a no-op (returns the input unchanged).
-pub fn sanitize_filename_for_windows(filename: &str) -> String {
-    #[cfg(windows)]
-    {
-        let mut result = String::with_capacity(filename.len() + 10);
-        for c in filename.chars() {
-            if WINDOWS_INVALID_FILENAME_CHARS.contains(&c) || c.is_control() {
-                result.push_str(&format!("~{:02x}", c as u8));
-            } else {
-                result.push(c);
-            }
-        }
-        if result != filename {
-            log::debug!("Sanitized Windows filename: '{}' -> '{}'", filename, result);
-        }
-        result
-    }
-    #[cfg(not(windows))]
-    {
-        filename.to_string()
-    }
-}
-
-/// Sanitize a full path for Windows by sanitizing each component.
-/// Preserves directory separators.
-pub fn sanitize_path_for_windows(path: &Path) -> PathBuf {
-    #[cfg(windows)]
-    {
-        let mut result = PathBuf::new();
-        for component in path.components() {
-            match component {
-                std::path::Component::Normal(os_str) => {
-                    if let Some(s) = os_str.to_str() {
-                        result.push(sanitize_filename_for_windows(s));
-                    } else {
-                        result.push(os_str);
-                    }
-                }
-                _ => result.push(component.as_os_str()),
-            }
-        }
-        result
-    }
-    #[cfg(not(windows))]
-    {
-        path.to_path_buf()
-    }
-}
+#[allow(unused_imports)]
+pub use win32_pua_paths::{
+    decode_filename_from_windows,
+    decode_path_from_windows,
+    has_invalid_windows_chars,
+    host_path_from_manifest_rel_path,
+    sanitize_filename_for_windows,
+    sanitize_path_for_windows,
+};

@@ -128,9 +128,9 @@ pub fn extract_archive_with_policy<R: Read>(
         let mode = header.mode().unwrap_or(0o644);
         let is_dir = matches!(header.entry_type(), tar::EntryType::Directory);
 
-        // Apply path policy
+        // Apply path policy, then map Unix-style names to Win32-safe paths (PUA encoding, etc.)
         let target_path = match (path_policy)(&path, is_hard_link, &config.target_dir) {
-            Some(tp) => tp,
+            Some(tp) => lfs::sanitize_path_for_windows(&tp),
             None => continue, // Skip this entry
         };
 
@@ -138,7 +138,7 @@ pub fn extract_archive_with_policy<R: Read>(
         if config.handle_hard_links && is_hard_link {
             if let Ok(Some(link_path)) = entry.link_name() {
                 let source_path = match (path_policy)(&link_path, false, &config.target_dir) {
-                    Some(sp) => sp,
+                    Some(sp) => lfs::sanitize_path_for_windows(&sp),
                     None => continue,
                 };
 
@@ -340,7 +340,7 @@ fn calculate_target_path(path: &Path, config: &ExtractConfig) -> Result<PathBuf>
         config.target_dir.join(&stripped_path)
     };
 
-    Ok(result)
+    Ok(lfs::sanitize_path_for_windows(&result))
 }
 
 /// Strip leading components from a path
@@ -401,6 +401,32 @@ pub fn create_package_dirs<P: AsRef<Path>>(
 /// // ... collect hard links during extraction ...
 /// create_hard_links(&hard_links)?;
 /// ```
+/// Unpack a tar archive to `dest`. Each entry path is passed through
+/// [`lfs::sanitize_path_for_windows`] so POSIX names with `:` and other illegal
+/// characters extract successfully (same behavior as `utils` tar paths).
+#[cfg(windows)]
+pub fn unpack_tar_archive<R: Read>(archive: &mut Archive<R>, dest: &Path) -> Result<()> {
+    lfs::create_dir_all(dest)?;
+    for entry_result in archive.entries()? {
+        let mut entry = entry_result?;
+        let entry_path = entry.path()?.to_path_buf();
+        let sanitized_path = lfs::sanitize_path_for_windows(&entry_path);
+        if entry_path != sanitized_path {
+            log::debug!(
+                "Sanitized tar entry path: '{}' -> '{}'",
+                entry_path.display(),
+                sanitized_path.display()
+            );
+        }
+        let dest_path = dest.join(&sanitized_path);
+        if let Some(parent) = dest_path.parent() {
+            lfs::create_dir_all(parent)?;
+        }
+        entry.unpack(&dest_path)?;
+    }
+    Ok(())
+}
+
 pub fn create_hard_links(links: &[(PathBuf, PathBuf)]) -> Result<()> {
     for (source_path, target_path) in links {
         // Ensure parent directory exists for the hard link target

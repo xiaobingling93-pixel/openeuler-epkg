@@ -222,9 +222,9 @@ fn create_ebin_wrappers(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate:
         }
 
         // Construct absolute path by joining store_fs_dir with the relative path
-        let fs_file_relative = Path::new(fs_file);
-        let fs_file_absolute = store_fs_dir.join(fs_file_relative);
-        if let Some(created_path) = create_ebin_wrapper(env_root, &fs_file_absolute, fs_file_relative)
+        let fs_file_relative = lfs::host_path_from_manifest_rel_path(fs_file);
+        let fs_file_absolute = store_fs_dir.join(&fs_file_relative);
+        if let Some(created_path) = create_ebin_wrapper(env_root, &fs_file_absolute, &fs_file_relative)
             .with_context(|| format!("Failed to create ebin wrapper for {}", fs_file_absolute.display()))? {
             created_ebin_paths.push(created_path);
         }

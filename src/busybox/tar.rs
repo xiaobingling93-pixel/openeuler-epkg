@@ -296,7 +296,7 @@ fn extract_entry<R: std::io::Read>(entry: &mut tar::Entry<R>, extract_path: &str
     let entry_type = entry.header().entry_type();
     let path = entry.path()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("failed to get entry path: {}", e)))?;
-    let dest = std::path::Path::new(extract_path).join(&path);
+    let dest = std::path::Path::new(extract_path).join(lfs::sanitize_path_for_windows(&path));
     if std::env::var_os("EPKG_DEBUG").is_some() {
         eprintln!("[tar] extract_entry: type={:?} dest={:?}", entry_type, dest);
     }
@@ -342,8 +342,12 @@ fn extract_entry<R: std::io::Read>(entry: &mut tar::Entry<R>, extract_path: &str
             Ok(())
         }
         _ => {
-            // Fallback to tar crate's unpack for other entry types
-            entry.unpack(extract_path)?;
+            // Fallback: unpack to the same sanitized path as Regular/Directory above
+            if let Some(p) = dest.parent() {
+                lfs::create_dir_all(p)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            }
+            entry.unpack(&dest)?;
             Ok(())
         }
     }
@@ -371,7 +375,7 @@ fn maybe_extract_entry<R: std::io::Read>(
         return Ok(false);
     }
 
-    let dest = std::path::Path::new(extract_path).join(&path);
+    let dest = std::path::Path::new(extract_path).join(lfs::sanitize_path_for_windows(std::path::Path::new(&path)));
     if std::env::var_os("EPKG_DEBUG").is_some() {
         eprintln!("[tar] extract: dest={:?} path={:?} extract_path={:?}", dest, path, extract_path);
         eprintln!("[tar] entry header: type={:?} size={} mode={:o}", entry.header().entry_type(), entry.header().size().unwrap_or(0), entry.header().mode().unwrap_or(0));

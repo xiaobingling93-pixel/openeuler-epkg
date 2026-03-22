@@ -229,7 +229,9 @@ pub fn unlink_package_diff(
 
     // Remove the files from environment
     for rel_path in &files_to_remove {
-        let env_file_path = env_root.join(rel_path);
+        let env_file_path = env_root.join(lfs::host_path_from_manifest_rel_path(
+            rel_path.to_string_lossy().as_ref(),
+        ));
 
         if lfs::exists_in_env(&env_file_path) {
             if lfs::symlink_metadata(&env_file_path).map(|m| m.file_type().is_dir()).unwrap_or(false) {
@@ -408,9 +410,10 @@ pub fn create_symlink2(target_path: &Path, fs_file: &Path) -> Result<()> {
 
 fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::mtree::MtreeFileInfo], link_type: LinkType, can_reflink: bool) -> Result<()> {
     for fs_file_info in fs_files {
-        let fs_file = store_fs_dir.join(&fs_file_info.path);
+        let rel_host = lfs::host_path_from_manifest_rel_path(fs_file_info.path.trim_start_matches('/'));
+        let fs_file = store_fs_dir.join(&rel_host);
         let fhs_file = &fs_file_info.path;
-        let target_path = env_root.join(fhs_file);
+        let target_path = env_root.join(&rel_host);
         log::trace!("mirror_dir: processing fhs_file={}, is_link={}, is_dir={}", fhs_file, fs_file_info.is_link(), fs_file_info.is_dir());
 
         // No modify top-level directories/symlinks created by create_environment_dirs_early()

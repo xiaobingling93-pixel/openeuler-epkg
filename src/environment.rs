@@ -636,7 +636,9 @@ fn import_environment_from_file(env_root: &Path, import_file: &str) -> Result<En
     // Save all files to the environment
     for export_file in &env_export.files {
         // Create parent directories if needed
-        let file_path = env_root.join(&export_file.path);
+        let file_path = env_root.join(lfs::host_path_from_manifest_rel_path(
+            export_file.path.trim_start_matches('/'),
+        ));
         if let Some(parent) = file_path.parent() {
             lfs::create_dir_all(parent)?;
         }

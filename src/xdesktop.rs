@@ -174,14 +174,15 @@ fn create_desktop_files(
         .collect();
 
     for file_path in desktop_files {
-        let filename = Path::new(file_path)
+        let host_rel = lfs::host_path_from_manifest_rel_path(file_path.trim_start_matches('/'));
+        let filename = host_rel
             .file_name()
             .ok_or_else(|| eyre::eyre!("Failed to get filename for {}", file_path))?;
 
         let dst_path = dst_dir.join(filename);
 
         // Construct the source path under env_root (where the file has been moved)
-        let src_path = env_root.join(file_path);
+        let src_path = env_root.join(&host_rel);
 
         // Parse and adjust desktop file
         let adjusted_content = adjust_desktop_file(&src_path, env_root)?;
@@ -234,8 +235,8 @@ fn symlink_desktop_files(
         let relative_path = &file_path[src_prefix.len()..];
         let relative_path = relative_path.strip_prefix('/').unwrap_or(relative_path);
 
-        // Compose destination path
-        let dst_path = dst_dir.join(relative_path);
+        // Compose destination path (POSIX manifest segments → host names on Windows)
+        let dst_path = dst_dir.join(crate::lfs::host_path_from_manifest_rel_path(relative_path));
 
         // Create parent directories if they don't exist
         if let Some(parent) = dst_path.parent() {
@@ -251,7 +252,7 @@ fn symlink_desktop_files(
         }
 
         // Create symlink to the path under env_root (where the file has been moved)
-        let target_path = env_root.join(file_path);
+        let target_path = env_root.join(crate::lfs::host_path_from_manifest_rel_path(file_path));
 
         // Skip directories
         if target_path.is_dir() {

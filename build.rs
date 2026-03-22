@@ -111,6 +111,13 @@ fn main() {
     println!("cargo:rustc-env=EPKG_VERSION_TAG=v{}", env!("CARGO_PKG_VERSION"));
     println!("cargo:rustc-env=EPKG_VERSION_INFO={}", epkg_version_info);
 
+    println!("cargo::rustc-check-cfg=cfg(epkg_ntfs_ea)");
+    // `ntfs_ea.rs` uses `crate::lfs::sanitize_path_for_windows` when built inside epkg (see cfg above).
+    println!("cargo:rustc-cfg=epkg_ntfs_ea");
+    println!(
+        "cargo:rerun-if-changed=git/libkrun/src/devices/src/virtio/fs/windows/win32_pua_paths.rs"
+    );
+
     // Link Hypervisor framework on macOS when libkrun feature is enabled
     // Check target platform via CARGO_CFG_TARGET_OS (set by Cargo for the target)
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();

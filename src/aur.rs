@@ -404,9 +404,17 @@ fn extract_aur_source(
 
     let tar = flate2::read::GzDecoder::new(tar_gz);
     let mut archive = tar::Archive::new(tar);
-    archive
-        .unpack(build_dir)
-        .with_context(|| format!("Failed to unpack tarball {}", tarball_path.display()))?;
+    #[cfg(windows)]
+    {
+        crate::tar_extract::unpack_tar_archive(&mut archive, build_dir)
+            .with_context(|| format!("Failed to unpack tarball {}", tarball_path.display()))?;
+    }
+    #[cfg(not(windows))]
+    {
+        archive
+            .unpack(build_dir)
+            .with_context(|| format!("Failed to unpack tarball {}", tarball_path.display()))?;
+    }
 
     // Find PKGBUILD (usually in a subdirectory)
     let pkgbuild_path = find_pkgbuild(&pkg_root_dir)?;

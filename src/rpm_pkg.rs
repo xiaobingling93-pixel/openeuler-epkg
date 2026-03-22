@@ -84,7 +84,9 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
                     continue;
                 }
 
-                let file_path = target_dir.join(file.metadata.path.to_string_lossy().trim_start_matches('/'));
+                let path_in_pkg = file.metadata.path.to_string_lossy();
+                let rel = std::path::Path::new(path_in_pkg.trim_start_matches('/'));
+                let file_path = target_dir.join(crate::lfs::sanitize_path_for_windows(rel));
 
                 // Create parent directories if they don't exist
                 if let Some(parent) = file_path.parent() {

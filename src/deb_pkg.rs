@@ -11,6 +11,8 @@ use color_eyre::eyre::{self, WrapErr};
 use crate::deb_repo::PACKAGE_KEY_MAPPING;
 use crate::lfs;
 use crate::tar_extract::create_package_dirs;
+#[cfg(windows)]
+use crate::tar_extract::unpack_tar_archive;
 
 /// Unpacks a Debian package to the specified directory
 pub fn unpack_package<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
@@ -131,39 +133,17 @@ fn extract_tar<P: AsRef<Path>>(tar_path: P, target_dir: P) -> Result<()> {
 
     let mut archive = Archive::new(reader);
 
-    // On Windows, manually extract entries with sanitized filenames
-    // because `:` in filenames (e.g., `Text::Iconv.3pm.gz`) is not allowed
     #[cfg(windows)]
     {
-        for entry_result in archive.entries()? {
-            let mut entry = entry_result?;
-            let entry_path = entry.path()?.to_path_buf();
-            let sanitized_path = lfs::sanitize_path_for_windows(&entry_path);
-            let dest_path = target_dir.join(&sanitized_path);
-
-            // Create parent directories
-            if let Some(parent) = dest_path.parent() {
-                lfs::create_dir_all(parent)?;
-            }
-
-            // Check if entry path was sanitized
-            if entry_path != sanitized_path {
-                log::debug!("Sanitized tar entry path: '{}' -> '{}'",
-                           entry_path.display(), sanitized_path.display());
-            }
-
-            // Extract the file
-            entry.unpack(&dest_path)?;
-        }
-        return Ok(());
+        unpack_tar_archive(&mut archive, target_dir)
+            .wrap_err_with(|| format!("Failed to extract tar archive: {}", tar_path.display()))?;
     }
-
     #[cfg(not(windows))]
     {
         archive.unpack(target_dir)
             .wrap_err_with(|| format!("Failed to extract tar archive: {}", tar_path.display()))?;
-        return Ok(());
     }
+    Ok(())
 }
 
 /// Maps Debian scriptlet names to common scriptlet names and moves them to info/install/

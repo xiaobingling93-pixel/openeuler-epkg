@@ -48,8 +48,10 @@ pub fn unlink_package(
     let fs_files = crate::utils::list_package_files_with_info(fs_dir_str)?;
     log::debug!("Unlinking package from {} to {} ({} files)", pkg_store_path.display(), env_root.display(), fs_files.len());
     for fs_file_info in fs_files {
-        // fs_file_info.path is already relative
-        let target_path = env_root.join(&fs_file_info.path);
+        // fs_file_info.path comes from filelist.txt (POSIX); on-disk env paths use PUA on Windows.
+        let target_path = env_root.join(lfs::host_path_from_manifest_rel_path(
+            fs_file_info.path.trim_start_matches('/'),
+        ));
 
         // Skip symlinks for top-level directories, some are manually created in create_environment_dirs_early()
         // NOTE: On macOS, usr/libexec is a symlink (for brew packages), so we skip it.
