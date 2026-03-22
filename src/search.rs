@@ -819,7 +819,9 @@ fn process_rpm_filelists_with_memmem(current_pkgname: &mut Vec<u8>, chunk_data: 
                                 line
                             }
                         } else {
-                            line
+                            // Pattern may match spurious '/' in XML (e.g. http://, "/>") — only
+                            // <file> lines represent real paths.
+                            continue;
                         };
 
         // If we have a match, print the result
