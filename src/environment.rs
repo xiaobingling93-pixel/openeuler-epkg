@@ -337,6 +337,9 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
 /// - Returns Ok(()) even if self environment not found (no-op)
 /// - Logs debug messages for symlink creation
 pub fn create_epkg_symlink(env_root: &Path, pkg_format: &PackageFormat) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    let _ = pkg_format;
+
     // Try to find appropriate epkg binary in self environment
     if let Some(self_env_root) = find_env_root(SELF_ENV) {
         let epkg_symlink = crate::dirs::path_join(env_root, &["usr", "bin", "epkg"]);
