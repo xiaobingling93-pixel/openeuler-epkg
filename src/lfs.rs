@@ -90,14 +90,6 @@ pub fn symlink_to_file<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> 
     symlink(original, link)
 }
 
-/// POSIX-style symlink for bindings that cannot distinguish directory vs file symlinks (e.g. Lua
-/// `posix.symlink`). On Windows, if the target path does not exist yet, tries a directory symlink
-/// first, then a file symlink — the same last-resort behavior as typical POSIX `symlink` on Unix.
-#[cfg(unix)]
-pub fn symlink_posix_compat<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
-    symlink(original, link)
-}
-
 /// Create a symbolic link.
 #[cfg(unix)]
 pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {

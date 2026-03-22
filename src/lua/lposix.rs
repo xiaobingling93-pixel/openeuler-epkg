@@ -185,7 +185,7 @@ fn register_simple_posix_functions(lua: &Lua, posix_table: &mut Table) -> LuaRes
     posix_bind2!("link", oldpath, newpath, lfs::hard_link(&oldpath, &newpath));
 
     // posix.symlink(oldpath, newpath) - create symbolic link
-    posix_bind2!("symlink", oldpath, newpath, lfs::symlink_posix_compat(&oldpath, &newpath));
+    posix_bind2!("symlink", oldpath, newpath, lfs::symlink(&oldpath, &newpath));
 
     // posix.chdir(path) - change current directory
     posix_bind1!("chdir", path, std::env::set_current_dir(&path));
