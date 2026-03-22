@@ -50,6 +50,23 @@ pub mod ntfs_ea {
     #![allow(dead_code)]
     include!("../git/libkrun/src/devices/src/virtio/fs/windows/ntfs_ea.rs");
 }
+// Windows symlink/junction/LX policy (same sources as libkrun virtiofs `git/libkrun/.../windows/symlink.rs`).
+#[cfg(windows)]
+#[allow(dead_code)]
+mod krun_virtiofs_windows {
+    pub mod reparse_point {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/git/libkrun/src/devices/src/virtio/fs/windows/reparse_point.rs"
+        ));
+    }
+    pub mod symlink {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/git/libkrun/src/devices/src/virtio/fs/windows/symlink.rs"
+        ));
+    }
+}
 // Linux package formats - now cross-platform for VM execution
 mod deb_repo;
 mod deb_pkg;

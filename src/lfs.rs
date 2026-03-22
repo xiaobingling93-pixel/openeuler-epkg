@@ -73,8 +73,8 @@ use color_eyre::Result;
 /// Create a symbolic link that must point at a directory (or a missing path that should be a
 /// **directory symlink** on Windows).
 ///
-/// On Unix this is identical to [`symlink`]. On Windows, if the resolved target exists, it must be
-/// a directory (junction is used); if it does not exist yet, a directory symlink is created.
+/// On Unix this is identical to [`symlink`]. On Windows, see [`symlink_to_directory`] in the
+/// `cfg(windows)` impl (shared with libkrun virtiofs).
 #[cfg(unix)]
 pub fn symlink_to_directory<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
     symlink(original, link)
@@ -83,8 +83,8 @@ pub fn symlink_to_directory<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q
 /// Create a symbolic link that must point at a regular file (or a missing path that should be a
 /// **file symlink** on Windows).
 ///
-/// On Unix this is identical to [`symlink`]. On Windows, if the resolved target exists, it must be
-/// a file (same fallbacks as [`symlink`]); if it does not exist yet, a file symlink is created.
+/// On Unix this is identical to [`symlink`]. On Windows, see [`symlink_to_file`] in the
+/// `cfg(windows)` impl (shared with libkrun virtiofs).
 #[cfg(unix)]
 pub fn symlink_to_file<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
     symlink(original, link)
@@ -101,210 +101,65 @@ pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<(
         .wrap_err_with(|| format!("Failed to create symlink from {} to {}", link.display(), original.display()))
 }
 
-/// Create a symbolic link on Windows.
+/// Windows: directory symlink / junction / LX reparse (same implementation as libkrun
+/// `git/libkrun/src/devices/src/virtio/fs/windows/symlink.rs`, `include!`d from `main.rs`).
 ///
-/// Windows has different link types with different permission requirements:
-/// - **Junction** (directory): No admin privileges required, but needs absolute path
-/// - **Hard link** (file): No admin privileges required
-/// - **Symlink** (file/dir): Requires admin privileges or Developer Mode
-///
-/// This function uses Junction for directories. For existing files it tries
-/// `symlink_file` first, then falls back to a hard link, then to a full copy.
-/// The behavior differs from Unix symlink:
-///
-/// 1. For existing directories: Creates a Junction (requires absolute path)
-/// 2. For existing files: `symlink_file`, then `hard_link`, then `copy`
-/// 3. If the resolved target does not exist: returns an error — use
-///    [`symlink_to_directory`] or [`symlink_to_file`] depending on intent.
-///
-/// Note: `force_symlink_to_directory` / `force_symlink_to_file` in utils.rs call into those
-/// explicit helpers after removing any existing link at the target path. The "force" means
-/// "overwrite if exists", not "infer symlink kind when the target is missing".
-#[cfg(windows)]
-fn symlink_resolve_original(original: &Path, link: &Path) -> PathBuf {
-    // Relative paths resolve relative to link's parent — matches Unix symlink
-    // semantics (target string is interpreted from link's location).
-    if original.is_relative() {
-        if let Some(parent) = link.parent() {
-            parent.join(original)
-        } else {
-            original.to_path_buf()
-        }
-    } else {
-        original.to_path_buf()
-    }
-}
-
-#[cfg(windows)]
-fn symlink_abs_for_junction(resolved_original: &Path) -> PathBuf {
-    if resolved_original.is_relative() {
-        match std::env::current_dir() {
-            Ok(cwd) => cwd.join(resolved_original),
-            Err(_) => resolved_original.to_path_buf(),
-        }
-    } else {
-        resolved_original.to_path_buf()
-    }
-}
-
-#[cfg(windows)]
-fn symlink_windows_existing_directory(resolved_original: &Path, link: &Path) -> Result<()> {
-    let abs_original = symlink_abs_for_junction(resolved_original);
-    junction::create(&abs_original, link)
-        .wrap_err_with(|| format!("Failed to create junction from {} to {}", link.display(), abs_original.display()))
-}
-
-#[cfg(windows)]
-fn symlink_windows_existing_file(original: &Path, link: &Path, resolved_original: &Path) -> Result<()> {
-    match std::os::windows::fs::symlink_file(original, link) {
-        Ok(()) => Ok(()),
-        Err(e_symlink) => {
-            log::debug!(
-                "symlink_file {} -> {} failed: {}; trying hard link",
-                link.display(),
-                original.display(),
-                e_symlink
-            );
-            match fs::hard_link(resolved_original, link) {
-                Ok(()) => Ok(()),
-                Err(e_hard) => {
-                    log::debug!(
-                        "hard_link {} -> {} failed: {}; trying copy",
-                        link.display(),
-                        resolved_original.display(),
-                        e_hard
-                    );
-                    fs::copy(resolved_original, link)
-                        .map(|_| ())
-                        .wrap_err_with(|| {
-                            format!(
-                                "Failed to symlink, hardlink, or copy from {} to {} (symlink: {}; hardlink: {})",
-                                resolved_original.display(),
-                                link.display(),
-                                e_symlink,
-                                e_hard
-                            )
-                        })
-                }
-            }
-        }
-    }
-}
-
-/// Check if a path is a file or directory, handling PUA-encoded paths.
-/// Returns (is_file, is_dir) tuple.
-#[cfg(windows)]
-fn check_path_type(path: &Path) -> (bool, bool) {
-    let decoded = decode_path_from_windows(path);
-    let is_file = path.is_file() || decoded.is_file();
-    let is_dir = path.is_dir() || decoded.is_dir();
-    (is_file, is_dir)
-}
-
+/// Note: `force_symlink_to_directory` in utils.rs removes an existing link first. "force" means
+/// overwrite, not infer symlink kind when the target is missing.
 #[cfg(windows)]
 pub fn symlink_to_directory<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
     let original = original.as_ref();
     let link = link.as_ref();
+    let posix_target = original.to_string_lossy();
     log::trace!(
         "symlink_to_directory: {} -> {}",
         link.display(),
         original.display()
     );
-    let resolved_original = symlink_resolve_original(original, link);
-    let (is_file, is_dir) = check_path_type(&resolved_original);
-
-    log::debug!(
-        "symlink_to_directory: resolved={}, is_file={}, is_dir={}",
-        resolved_original.display(),
-        is_file,
-        is_dir
-    );
-
-    if is_dir {
-        symlink_windows_existing_directory(&resolved_original, link)
-    } else if is_file {
-        Err(eyre!(
-            "symlink_to_directory: target exists but is a file, not a directory: {}",
-            resolved_original.display()
-        ))
-    } else {
-        // Target doesn't exist, create directory symlink
-        log::debug!("symlink_to_directory: target not found, creating dir symlink");
-        std::os::windows::fs::symlink_dir(original, link).wrap_err_with(|| {
+    crate::krun_virtiofs_windows::symlink::symlink_to_directory(original, link, posix_target.as_ref())
+        .wrap_err_with(|| {
             format!(
-                "Failed to create directory symlink from {} to {}",
+                "Failed symlink_to_directory from {} to {}",
                 original.display(),
                 link.display()
             )
         })
-    }
 }
 
+/// Windows: file symlink, else hardlink/copy, else LX reparse (shared with libkrun virtiofs).
+///
+/// Note: `force_symlink_to_file` in utils.rs removes an existing link first.
 #[cfg(windows)]
 pub fn symlink_to_file<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
     let original = original.as_ref();
     let link = link.as_ref();
+    let posix_target = original.to_string_lossy();
     log::trace!("symlink_to_file: {} -> {}", link.display(), original.display());
-    let resolved_original = symlink_resolve_original(original, link);
-    let (is_file, is_dir) = check_path_type(&resolved_original);
-
-    log::debug!(
-        "symlink_to_file: resolved={}, is_file={}, is_dir={}",
-        resolved_original.display(),
-        is_file,
-        is_dir
-    );
-
-    if is_file {
-        symlink_windows_existing_file(original, link, &resolved_original)
-    } else if is_dir {
-        Err(eyre!(
-            "symlink_to_file: target exists but is a directory, not a file: {}",
-            resolved_original.display()
-        ))
-    } else {
-        // Target doesn't exist, create file symlink
-        log::debug!("symlink_to_file: target not found, creating file symlink");
-        std::os::windows::fs::symlink_file(original, link).wrap_err_with(|| {
+    crate::krun_virtiofs_windows::symlink::symlink_to_file(original, link, posix_target.as_ref())
+        .wrap_err_with(|| {
             format!(
-                "Failed to create file symlink from {} to {}",
+                "Failed symlink_to_file from {} to {}",
                 original.display(),
                 link.display()
             )
         })
-    }
 }
 
+/// Windows: generic symlink when target type is unknown; missing target → LX reparse (see virtiofs docs).
 #[cfg(windows)]
 pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
     let original = original.as_ref();
     let link = link.as_ref();
+    let posix_target = original.to_string_lossy();
     log::trace!("creating symlink: {} -> {}", link.display(), original.display());
-
-    let resolved_original = symlink_resolve_original(original, link);
-    let (is_file, is_dir) = check_path_type(&resolved_original);
-
-    log::debug!(
-        "symlink: resolved={}, is_file={}, is_dir={}",
-        resolved_original.display(),
-        is_file,
-        is_dir
-    );
-
-    if is_dir {
-        symlink_windows_existing_directory(&resolved_original, link)
-    } else if is_file {
-        symlink_windows_existing_file(original, link, &resolved_original)
-    } else {
-        // Target doesn't exist. Caller should use symlink_to_directory() or
-        // symlink_to_file() explicitly to specify the symlink type.
-        Err(eyre!(
-            "Cannot create symlink: target does not exist or cannot be accessed: {} -> {}. \
-             Use symlink_to_directory() or symlink_to_file() to specify symlink type.",
-            link.display(),
-            original.display()
-        ))
-    }
+    crate::krun_virtiofs_windows::symlink::symlink(original, link, posix_target.as_ref())
+        .wrap_err_with(|| {
+            format!(
+                "Failed symlink from {} to {}",
+                original.display(),
+                link.display()
+            )
+        })
 }
 
 /// Create a hard link.
@@ -387,44 +242,11 @@ pub fn remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
 ///
 /// This function tests symlink creation capability by attempting to create
 /// a temporary symlink. The result is cached for the process lifetime.
+///
+/// Delegates to the same implementation as libkrun virtiofs (`krun_virtiofs_windows::symlink`).
 #[cfg(windows)]
 pub fn can_create_symlinks() -> bool {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    static CAN_SYMLINK: AtomicBool = AtomicBool::new(false);
-    static CHECKED: AtomicBool = AtomicBool::new(false);
-
-    if CHECKED.load(Ordering::Relaxed) {
-        return CAN_SYMLINK.load(Ordering::Relaxed);
-    }
-
-    // Test symlink creation in temp directory
-    let result = std::env::temp_dir();
-    let test_file = result.join("epkg_symlink_test_file");
-    let test_link = result.join("epkg_symlink_test_link");
-
-    // Create a test file
-    let can_create = (|| {
-        let _ = std::fs::File::create(&test_file).ok()?;
-        let result = std::os::windows::fs::symlink_file(&test_file, &test_link).is_ok();
-        // Clean up
-        let _ = std::fs::remove_file(&test_file);
-        let _ = std::fs::remove_file(&test_link);
-        Some(result)
-    })();
-
-    let can_create = can_create.unwrap_or(false);
-
-    CAN_SYMLINK.store(can_create, Ordering::Relaxed);
-    CHECKED.store(true, Ordering::Relaxed);
-
-    if can_create {
-        log::debug!("Windows symlink creation is available");
-    } else {
-        log::info!("Windows symlink creation is NOT available (requires Admin or Developer Mode); will use hardlinks/junctions");
-    }
-
-    can_create
+    crate::krun_virtiofs_windows::symlink::can_create_symlinks()
 }
 
 /// On Unix systems, symlinks are always available.

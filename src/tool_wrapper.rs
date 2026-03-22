@@ -5,7 +5,8 @@
 //!
 //! Cross-platform: same install flow on Linux, macOS, and Windows. Host config links use
 //! [`crate::lfs::symlink`] / [`crate::lfs::symlink_to_directory`] /
-//! [`crate::lfs::symlink_to_file`] (junction/hardlink/copy on Windows as implemented there). Wrapper
+//! [`crate::lfs::symlink_to_file`] (Windows: shared libkrun policy — native symlink / junction /
+//! hardlink+copy / LX reparse). Wrapper
 //! install uses [`crate::utils::set_permissions_from_mode`] (no-op on Windows). Path matching
 //! for newly installed binaries normalizes `\\` to `/` so detection works on Windows.
 //!

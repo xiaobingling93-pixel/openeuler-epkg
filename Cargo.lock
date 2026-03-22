@@ -529,6 +529,7 @@ dependencies = [
  "crossbeam-channel",
  "hvf",
  "imago",
+ "junction",
  "kvm-bindings",
  "kvm-ioctls",
  "libc",

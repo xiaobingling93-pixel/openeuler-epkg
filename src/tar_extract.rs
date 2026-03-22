@@ -554,6 +554,7 @@ pub fn unpack_tar_archive<R: Read>(
     }
     #[cfg(not(windows))]
     {
+        let _ = env_root;
         archive.unpack(dest)?;
     }
     Ok(())
