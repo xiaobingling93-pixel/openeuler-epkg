@@ -8,5 +8,12 @@ check_cmd erl -eval "halt()." -noshell 2>/dev/null || lang_skip "no erlang for O
 
 run_ebin_if erl -eval "halt()." -noshell
 
-run /bin/sh -c 'erl -eval "io:format(\"ok~n\"), halt()." -noshell' | grep -q ok
+# msys2 has bash but no /bin/sh
+if [ "$OS" = "msys2" ]; then
+    SHELL_CMD="bash -c"
+else
+    SHELL_CMD="/bin/sh -c"
+fi
+
+run $SHELL_CMD 'erl -eval "io:format(\"ok~n\"), halt()." -noshell' | grep -q ok
 lang_ok

@@ -4,12 +4,12 @@
 . "$(dirname "$0")/../common.sh"
 
 # Note: Arch Linux uses python-pip, Debian/Ubuntu uses python3-pip, Alpine uses py3-pip
-# Conda on Windows provides 'python' not 'python3', and no /bin/sh
-if [ "$OS" = "conda" ]; then
+# Conda/msys2 on Windows provides 'python' not 'python3', and no /bin/sh
+if [ "$OS" = "conda" ] || [ "$OS" = "msys2" ]; then
     run_install python pip
     check_cmd python --version || lang_skip "no python for OS=$OS"
     PYTHON_CMD="python"
-    # Conda on Windows has no /bin/sh, use python to create test files
+    # Conda/msys2 on Windows has no /bin/sh, use python to create test files
     SHELL_CMD=""
 else
     run_install python3 py3-pip python3-pip python-pip
@@ -18,15 +18,21 @@ else
     SHELL_CMD="/bin/sh -c"
 fi
 
-run $PYTHON_CMD -c "print(1+1)"
-run $PYTHON_CMD -c "print('ok')"
+# msys2: use bash to run python commands (workaround for Windows arg quoting issues)
+if [ "$OS" = "msys2" ]; then
+    run bash -c "$PYTHON_CMD -c 'print(1+1)'"
+    run bash -c "$PYTHON_CMD -c 'print(\"ok\")'"
+else
+    run $PYTHON_CMD -c "print(1+1)"
+    run $PYTHON_CMD -c "print(\"ok\")"
+fi
 
 # Create test project directory and file
 if [ -n "$SHELL_CMD" ]; then
     run $SHELL_CMD 'mkdir -p /tmp/pyproj && cd /tmp/pyproj && echo "print(\"hello\")" > main.py'
     run $SHELL_CMD "cd /tmp/pyproj && $PYTHON_CMD main.py" | grep -q hello
 else
-    # Windows conda: use python to create the test file
+    # Windows conda/msys2: use python to create the test file
     run $PYTHON_CMD -c "import os; os.makedirs('/tmp/pyproj', exist_ok=True); open('/tmp/pyproj/main.py', 'w').write('print(\"hello\")')"
     run $PYTHON_CMD /tmp/pyproj/main.py | grep -q hello
 fi

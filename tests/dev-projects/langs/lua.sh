@@ -19,8 +19,8 @@ fi
 
 run $LUA_CMD -e "print(1+1)"
 
-# Create test file - use lua for conda/Windows (no /bin/sh)
-if [ "$OS" = "conda" ]; then
+# Create test file - use lua for conda/msys2 (no /bin/sh)
+if [ "$OS" = "conda" ] || [ "$OS" = "msys2" ]; then
     run $LUA_CMD -e "os.execute('mkdir -p /tmp/luaproj'); f = io.open('/tmp/luaproj/main.lua', 'w'); f:write('print(\"ok\")'); f:close()"
     run $LUA_CMD /tmp/luaproj/main.lua | grep -q ok
 else

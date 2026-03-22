@@ -9,9 +9,16 @@ check_cmd sbcl --version || check_cmd clisp --version || lang_skip "no sbcl/clis
 run_ebin_if sbcl --version
 run_ebin_if clisp --version
 
-if run sbcl --version; then
-    run /bin/sh -c 'echo "(write-line \"ok\")" | sbcl --noinform --quit' | grep -q ok
+# msys2 has bash but no /bin/sh
+if [ "$OS" = "msys2" ]; then
+    SHELL_CMD="bash -c"
 else
-    run /bin/sh -c 'echo "(write-line \"ok\")" | clisp -q' | grep -q ok
+    SHELL_CMD="/bin/sh -c"
+fi
+
+if run sbcl --version; then
+    run $SHELL_CMD 'echo "(write-line \"ok\")" | sbcl --noinform --quit' | grep -q ok
+else
+    run $SHELL_CMD 'echo "(write-line \"ok\")" | clisp -q' | grep -q ok
 fi
 lang_ok

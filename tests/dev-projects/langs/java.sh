@@ -10,8 +10,8 @@ check_cmd javac -version || lang_skip "no java for OS=$OS"
 run_ebin javac -version
 run_ebin_if java -version
 
-# Create test file - use java for conda/Windows (no /bin/sh)
-if [ "$OS" = "conda" ]; then
+# Create test file - use java for conda/msys2 (no /bin/sh)
+if [ "$OS" = "conda" ] || [ "$OS" = "msys2" ]; then
     run java -e '
         import java.io.*;
         public class init {

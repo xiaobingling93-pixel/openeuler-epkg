@@ -8,6 +8,13 @@ check_cmd clang --version || lang_skip "no clang for OS=$OS"
 
 run_ebin clang --version
 
-run /bin/sh -c 'mkdir -p /tmp/clangproj && cd /tmp/clangproj && printf "%s\n" "#include <stdio.h>" "int main(void) { puts(\"ok\"); return 0; }" > main.c'
-run /bin/sh -c 'cd /tmp/clangproj && clang -o hello main.c && ./hello' | grep -q ok
+# msys2 has bash but no /bin/sh
+if [ "$OS" = "msys2" ]; then
+    SHELL_CMD="bash -c"
+else
+    SHELL_CMD="/bin/sh -c"
+fi
+
+run $SHELL_CMD 'mkdir -p /tmp/clangproj && cd /tmp/clangproj && printf "%s\n" "#include <stdio.h>" "int main(void) { puts(\"ok\"); return 0; }" > main.c'
+run $SHELL_CMD 'cd /tmp/clangproj && clang -o hello main.c && ./hello' | grep -q ok
 lang_ok

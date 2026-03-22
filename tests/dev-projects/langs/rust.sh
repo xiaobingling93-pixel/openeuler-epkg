@@ -8,11 +8,18 @@ check_cmd cargo --version || lang_skip "no rust package for OS=$OS"
 
 run_ebin cargo --version
 
-run /bin/sh -c 'mkdir -p /tmp/rustproj/src && cd /tmp/rustproj && printf "%s\n" "[package]" "name=\"rustproj\"" "version=\"0.1.0\"" "[profile.release]" "opt-level=0" > Cargo.toml && echo "fn main() { println!(\"ok\"); }" > src/main.rs'
-run /bin/sh -c 'cd /tmp/rustproj && cargo build && cargo run' | grep -q ok
-run /bin/sh -c 'cd /tmp/rustproj && cargo add rand && echo "fn main() { println!(\"{}\", rand::random::<u32>()); }" > src/main.rs && cargo run' | grep -q .
+# msys2 has bash but no /bin/sh
+if [ "$OS" = "msys2" ]; then
+    SHELL_CMD="bash -c"
+else
+    SHELL_CMD="/bin/sh -c"
+fi
+
+run $SHELL_CMD 'mkdir -p /tmp/rustproj/src && cd /tmp/rustproj && printf "%s\n" "[package]" "name=\"rustproj\"" "version=\"0.1.0\"" "[profile.release]" "opt-level=0" > Cargo.toml && echo "fn main() { println!(\"ok\"); }" > src/main.rs'
+run $SHELL_CMD 'cd /tmp/rustproj && cargo build && cargo run' | grep -q ok
+run $SHELL_CMD 'cd /tmp/rustproj && cargo add rand && echo "fn main() { println!(\"{}\", rand::random::<u32>()); }" > src/main.rs && cargo run' | grep -q .
 # Exercise ebin for cargo (build in rustproj)
 if [ -n "${ENV_ROOT:-}" ] && [ -x "$ENV_ROOT/ebin/cargo" ]; then
-    run /bin/sh -c 'cd /tmp/rustproj && '"$ENV_ROOT"'/ebin/cargo build'
+    run $SHELL_CMD 'cd /tmp/rustproj && '"$ENV_ROOT"'/ebin/cargo build'
 fi
 lang_ok

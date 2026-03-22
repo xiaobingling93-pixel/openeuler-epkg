@@ -9,6 +9,13 @@ check_cmd g++ --version || lang_skip "no g++ for OS=$OS"
 
 run_ebin g++ --version
 
-run /bin/sh -c 'mkdir -p /tmp/cppproj && cd /tmp/cppproj && printf "%s\n" "#include <iostream>" "int main() { std::cout << \"ok\" << std::endl; return 0; }" > main.cc'
-run /bin/sh -c 'cd /tmp/cppproj && g++ -o hello main.cc && ./hello' | grep -q ok
+# msys2 has bash but no /bin/sh
+if [ "$OS" = "msys2" ]; then
+    SHELL_CMD="bash -c"
+else
+    SHELL_CMD="/bin/sh -c"
+fi
+
+run $SHELL_CMD 'mkdir -p /tmp/cppproj && cd /tmp/cppproj && printf "%s\n" "#include <iostream>" "int main() { std::cout << \"ok\" << std::endl; return 0; }" > main.cc'
+run $SHELL_CMD 'cd /tmp/cppproj && g++ -o hello main.cc && ./hello' | grep -q ok
 lang_ok

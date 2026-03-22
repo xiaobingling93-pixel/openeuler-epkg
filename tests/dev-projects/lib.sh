@@ -21,7 +21,12 @@ create_env() {
 bootstrap_shell() {
     local name="$1"
     log "Bootstrapping shell in $name"
-    "$EPKG_BIN" -e "$name" --assume-yes --ignore-missing install busybox bash
+    if [ "$OS" = "msys2" ]; then
+        # msys2: install bash (no busybox on Windows)
+        "$EPKG_BIN" -e "$name" --assume-yes --ignore-missing install bash
+    else
+        "$EPKG_BIN" -e "$name" --assume-yes --ignore-missing install busybox bash
+    fi
 }
 
 # Remove env if it exists (idempotent). Use before create to get a fresh env; we never remove at end (leave for debug).

@@ -93,11 +93,11 @@ check_cmd() {
 }
 
 # Direct run the exposed binary at env ebin/<name> (exercises ebin wrappers). No-op if ENV_ROOT unset.
-# Note: conda environments have different library layouts (bin/ instead of usr/bin/, no /lib64/ld-linux-x86-64.so.2)
-# so run_ebin is skipped for conda. Use "run" instead for conda tests.
+# Note: conda/msys2 environments have different library layouts (bin/ instead of usr/bin/, no /lib64/ld-linux-x86-64.so.2)
+# so run_ebin is skipped for conda/msys2. Use "run" instead for conda/msys2 tests.
 run_ebin() {
     [ -z "${ENV_ROOT:-}" ] && return 0
-    [ "$OS" = "conda" ] && return 0
+    [ "$OS" = "conda" ] || [ "$OS" = "msys2" ] && return 0
     bin=$1
     shift
     "$ENV_ROOT/ebin/$bin" "$@" || exit
@@ -106,7 +106,7 @@ run_ebin() {
 # Run ebin binary only if it exists (for optional names, e.g. pip3 vs pip).
 run_ebin_if() {
     [ -z "${ENV_ROOT:-}" ] && return 0
-    [ "$OS" = "conda" ] && return 0
+    [ "$OS" = "conda" ] || [ "$OS" = "msys2" ] && return 0
     bin=$1
     [ ! -x "$ENV_ROOT/ebin/$bin" ] && return 0
     shift
