@@ -830,11 +830,21 @@ fn copy_symlink(fs_file: &Path, target_path: &Path) -> Result<()> {
         link_target
     };
 
-    let point_dir = match fs::metadata(fs_file) {
-        Ok(m) => m.is_dir(),
-        Err(_) => false,
-    };
-    if point_dir {
+    // Determine symlink type by checking the existing symlink in store.
+    // On Windows, symlink_dir has FILE_ATTRIBUTE_DIRECTORY flag set.
+    // This is reliable even when symlink target doesn't exist (cross-package or dead links).
+    // We don't need to follow the symlink or check if target exists.
+    let is_dir = lfs::is_directory_symlink(fs_file);
+
+    log::debug!(
+        "copy_symlink: fs_file={}, adjusted_target={}, is_directory_symlink={}",
+        fs_file.display(),
+        adjusted_target.display(),
+        is_dir
+    );
+
+    // Use symlink_to_file or symlink_to_directory explicitly based on symlink type.
+    if is_dir {
         lfs::symlink_to_directory(&adjusted_target, target_path)
     } else {
         lfs::symlink_to_file(&adjusted_target, target_path)

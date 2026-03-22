@@ -191,19 +191,14 @@ fn symlink_windows_existing_file(original: &Path, link: &Path, resolved_original
     }
 }
 
+/// Check if a path is a file or directory, handling PUA-encoded paths.
+/// Returns (is_file, is_dir) tuple.
 #[cfg(windows)]
-fn symlink_windows_missing_target(original: &Path, link: &Path) -> Result<()> {
-    log::error!(
-        "Cannot infer symlink type on Windows when the target does not exist yet: {} -> {}. \
-         Use lfs::symlink_to_directory or lfs::symlink_to_file.",
-        link.display(),
-        original.display()
-    );
-    Err(eyre!(
-        "Symlink target does not exist; specify directory vs file symlink: {} -> {}",
-        link.display(),
-        original.display()
-    ))
+fn check_path_type(path: &Path) -> (bool, bool) {
+    let decoded = decode_path_from_windows(path);
+    let is_file = path.is_file() || decoded.is_file();
+    let is_dir = path.is_dir() || decoded.is_dir();
+    (is_file, is_dir)
 }
 
 #[cfg(windows)]
@@ -216,14 +211,25 @@ pub fn symlink_to_directory<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q
         original.display()
     );
     let resolved_original = symlink_resolve_original(original, link);
-    if resolved_original.is_dir() {
+    let (is_file, is_dir) = check_path_type(&resolved_original);
+
+    log::debug!(
+        "symlink_to_directory: resolved={}, is_file={}, is_dir={}",
+        resolved_original.display(),
+        is_file,
+        is_dir
+    );
+
+    if is_dir {
         symlink_windows_existing_directory(&resolved_original, link)
-    } else if resolved_original.is_file() {
+    } else if is_file {
         Err(eyre!(
             "symlink_to_directory: target exists but is a file, not a directory: {}",
             resolved_original.display()
         ))
     } else {
+        // Target doesn't exist, create directory symlink
+        log::debug!("symlink_to_directory: target not found, creating dir symlink");
         std::os::windows::fs::symlink_dir(original, link).wrap_err_with(|| {
             format!(
                 "Failed to create directory symlink from {} to {}",
@@ -240,14 +246,25 @@ pub fn symlink_to_file<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> 
     let link = link.as_ref();
     log::trace!("symlink_to_file: {} -> {}", link.display(), original.display());
     let resolved_original = symlink_resolve_original(original, link);
-    if resolved_original.is_file() {
+    let (is_file, is_dir) = check_path_type(&resolved_original);
+
+    log::debug!(
+        "symlink_to_file: resolved={}, is_file={}, is_dir={}",
+        resolved_original.display(),
+        is_file,
+        is_dir
+    );
+
+    if is_file {
         symlink_windows_existing_file(original, link, &resolved_original)
-    } else if resolved_original.is_dir() {
+    } else if is_dir {
         Err(eyre!(
             "symlink_to_file: target exists but is a directory, not a file: {}",
             resolved_original.display()
         ))
     } else {
+        // Target doesn't exist, create file symlink
+        log::debug!("symlink_to_file: target not found, creating file symlink");
         std::os::windows::fs::symlink_file(original, link).wrap_err_with(|| {
             format!(
                 "Failed to create file symlink from {} to {}",
@@ -265,13 +282,28 @@ pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<(
     log::trace!("creating symlink: {} -> {}", link.display(), original.display());
 
     let resolved_original = symlink_resolve_original(original, link);
+    let (is_file, is_dir) = check_path_type(&resolved_original);
 
-    if resolved_original.is_dir() {
+    log::debug!(
+        "symlink: resolved={}, is_file={}, is_dir={}",
+        resolved_original.display(),
+        is_file,
+        is_dir
+    );
+
+    if is_dir {
         symlink_windows_existing_directory(&resolved_original, link)
-    } else if resolved_original.is_file() {
+    } else if is_file {
         symlink_windows_existing_file(original, link, &resolved_original)
     } else {
-        symlink_windows_missing_target(original, link)
+        // Target doesn't exist. Caller should use symlink_to_directory() or
+        // symlink_to_file() explicitly to specify the symlink type.
+        Err(eyre!(
+            "Cannot create symlink: target does not exist or cannot be accessed: {} -> {}. \
+             Use symlink_to_directory() or symlink_to_file() to specify symlink type.",
+            link.display(),
+            original.display()
+        ))
     }
 }
 
@@ -605,6 +637,42 @@ pub fn metadata_in_env<P: AsRef<Path>>(path: P, env_root: &Path) -> Result<fs::M
 pub fn is_symlink(path: &Path) -> bool {
     match symlink_metadata(path) {
         Ok(metadata) => metadata.file_type().is_symlink(),
+        Err(_) => false,
+    }
+}
+
+/// Check if path is a directory symlink (symlink_dir, not symlink_file)
+/// On Windows, this checks FILE_ATTRIBUTE_DIRECTORY flag on the symlink itself.
+/// This is reliable even when the symlink target doesn't exist (dead symlink).
+/// Returns false if path is not a symlink or check fails.
+#[cfg(windows)]
+pub fn is_directory_symlink(path: &Path) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    match symlink_metadata(path) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_symlink() {
+                return false;
+            }
+            // FILE_ATTRIBUTE_DIRECTORY = 0x10
+            // On Windows, symlink_dir sets this flag, symlink_file doesn't
+            const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+            metadata.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0
+        }
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(windows))]
+pub fn is_directory_symlink(path: &Path) -> bool {
+    // On Unix, check if symlink target is a directory
+    match symlink_metadata(path) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_symlink() {
+                return false;
+            }
+            // Follow the symlink to check target type
+            path.metadata().map(|m| m.is_dir()).unwrap_or(false)
+        }
         Err(_) => false,
     }
 }

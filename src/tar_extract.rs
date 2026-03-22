@@ -420,6 +420,10 @@ pub fn unpack_tar_archive<R: Read>(archive: &mut Archive<R>, dest: &Path) -> Res
     {
         lfs::create_dir_all(dest)?;
         let mut hard_links: Vec<(PathBuf, PathBuf)> = Vec::new();
+        let mut symlinks: Vec<(PathBuf, PathBuf)> = Vec::new(); // (link_path, target_path)
+        let mut directories: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+
+        // First pass: collect directories, hard links, symlinks
         for entry_result in archive.entries()? {
             let mut entry = entry_result?;
             let entry_path = entry.path()?.to_path_buf();
@@ -433,21 +437,68 @@ pub fn unpack_tar_archive<R: Read>(archive: &mut Archive<R>, dest: &Path) -> Res
             }
             let dest_path = dest.join(&sanitized_path);
 
-            // Handle hard links: collect for deferred creation
             let header = entry.header();
-            if matches!(header.entry_type(), tar::EntryType::Link) {
-                if let Ok(Some(link_path)) = entry.link_name() {
-                    let source_path = dest.join(lfs::sanitize_path_for_windows(&link_path));
-                    hard_links.push((source_path, dest_path));
-                    continue;
+            match header.entry_type() {
+                tar::EntryType::Directory => {
+                    directories.insert(dest_path.clone());
+                    if let Some(parent) = dest_path.parent() {
+                        lfs::create_dir_all(parent)?;
+                    }
+                    entry.unpack(&dest_path)?;
+                }
+                tar::EntryType::Link => {
+                    // Hard link: collect for deferred creation
+                    if let Ok(Some(link_path)) = entry.link_name() {
+                        let source_path = dest.join(lfs::sanitize_path_for_windows(&link_path));
+                        hard_links.push((source_path, dest_path));
+                    }
+                }
+                tar::EntryType::Symlink => {
+                    // Symlink: collect for deferred creation (need to know if target is dir)
+                    if let Ok(Some(link_path)) = entry.link_name() {
+                        let target_path = lfs::sanitize_path_for_windows(&link_path);
+                        symlinks.push((dest_path, target_path));
+                    }
+                }
+                _ => {
+                    // Regular file or other
+                    if let Some(parent) = dest_path.parent() {
+                        lfs::create_dir_all(parent)?;
+                    }
+                    entry.unpack(&dest_path)?;
                 }
             }
-
-            if let Some(parent) = dest_path.parent() {
-                lfs::create_dir_all(parent)?;
-            }
-            entry.unpack(&dest_path)?;
         }
+
+        // Create symlinks with correct type (file vs directory)
+        for (link_path, target_path) in symlinks {
+            // Check if target is a directory by looking in our collected directories
+            // The target_path is relative to the link_path's parent
+            let target_full = if target_path.is_relative() {
+                link_path.parent()
+                    .map(|p| p.join(&target_path))
+                    .unwrap_or_else(|| link_path.clone())
+            } else {
+                dest.join(&target_path)
+            };
+
+            let is_dir = directories.contains(&target_full);
+
+            log::debug!(
+                "Creating symlink: {} -> {}, is_dir={}",
+                link_path.display(),
+                target_path.display(),
+                is_dir
+            );
+
+            if is_dir {
+                lfs::symlink_to_directory(&target_path, &link_path)?;
+            } else {
+                lfs::symlink_to_file(&target_path, &link_path)?;
+            }
+        }
+
+        // Create hard links after all files are extracted
         create_hard_links(&hard_links)?;
     }
     #[cfg(not(windows))]
