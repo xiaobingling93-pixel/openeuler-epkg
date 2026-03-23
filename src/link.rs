@@ -616,6 +616,14 @@ fn cleanup_existing_target(
 
 fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path, link_type: LinkType, can_reflink: bool) -> Result<()> {
     log::trace!("mirror_regular_file: fs_file={}, target_path={}, link_type={:?}", fs_file.display(), target_path.display(), link_type);
+
+    // Ensure parent directory exists before creating any links
+    if let Some(parent) = target_path.parent() {
+        if !lfs::exists_on_host(parent) {
+            lfs::create_dir_all(parent)?;
+        }
+    }
+
     // Clean up existing target (remove old file/dir if needed)
     cleanup_existing_target(fs_file, target_path, fhs_file)?;
 
@@ -860,7 +868,23 @@ fn copy_symlink(fs_file: &Path, target_path: &Path) -> Result<()> {
     if is_dir {
         lfs::symlink_to_directory(&adjusted_target, target_path)
     } else {
-        lfs::symlink_to_file(&adjusted_target, target_path)
+        // Try symlink_to_file first, but fall back to symlink_to_directory if target is a directory.
+        // This handles cases where the symlink was stored as a file symlink but the target is actually a directory.
+        let result = lfs::symlink_to_file(&adjusted_target, target_path);
+        if let Err(ref e) = result {
+            // Check if error indicates target is a directory
+            let err_chain = format!("{:?}", e);
+            if err_chain.contains("target exists but is a directory") {
+                log::debug!(
+                    "copy_symlink: falling back to symlink_to_directory for {} -> {}",
+                    target_path.display(),
+                    adjusted_target.display()
+                );
+                return lfs::symlink_to_directory(&adjusted_target, target_path)
+                    .with_context(|| format!("Failed to create symlink {} -> {}", target_path.display(), adjusted_target.display()));
+            }
+        }
+        result
     }
     .with_context(|| format!("Failed to create symlink {} -> {}", target_path.display(), adjusted_target.display()))?;
     Ok(())
