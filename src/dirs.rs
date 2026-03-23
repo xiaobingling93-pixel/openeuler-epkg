@@ -474,25 +474,36 @@ pub fn get_user_shell_rc(_home_dir: &Path) -> Result<Vec<String>> {
     Ok(Vec::new())
 }
 
-/// PowerShell profile paths for `epkg.ps1` integration (pwsh on Unix/macOS and Windows).
+/// PowerShell profile paths for `epkg.ps1` integration.
+///
+/// pwsh uses one canonical current-user profile per OS: `~/.config/powershell/` on Linux/macOS,
+/// and `%USERPROFILE%\Documents\PowerShell\` on Windows. We append only that path so we do not
+/// duplicate the same epkg block in two files on Windows (both `HOME` and `USERPROFILE` are set
+/// there and would otherwise point at two different profile locations).
 pub fn powershell_profile_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    if let Ok(home) = get_home() {
-        paths.push(
-            PathBuf::from(home)
-                .join(".config")
-                .join("powershell")
-                .join("Microsoft.PowerShell_profile.ps1"),
-        );
-    }
     #[cfg(windows)]
-    if let Ok(up) = env::var("USERPROFILE") {
-        paths.push(
-            PathBuf::from(up)
-                .join("Documents")
-                .join("PowerShell")
-                .join("Microsoft.PowerShell_profile.ps1"),
-        );
+    {
+        if let Ok(up) = env::var("USERPROFILE") {
+            paths.push(
+                PathBuf::from(up)
+                    .join("Documents")
+                    .join("PowerShell")
+                    .join("Microsoft.PowerShell_profile.ps1"),
+            );
+        }
+        return paths;
+    }
+    #[cfg(not(windows))]
+    {
+        if let Ok(home) = get_home() {
+            paths.push(
+                PathBuf::from(home)
+                    .join(".config")
+                    .join("powershell")
+                    .join("Microsoft.PowerShell_profile.ps1"),
+            );
+        }
     }
     paths
 }

@@ -1,7 +1,15 @@
 # SPDX-License-Identifier: MulanPSL-2.0+
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 #
-# Dot-source from $PROFILE, e.g. after `epkg self install`:
+# Integration model (why the profile filename looks "Microsoft.*"):
+# - PowerShell only auto-loads profiles at fixed paths. The usual current-user file is
+#   Microsoft.PowerShell_profile.ps1 under ~/.config/powershell/ (pwsh on Linux/macOS) or
+#   %USERPROFILE%/Documents/PowerShell/ (pwsh on Windows). "Microsoft.PowerShell" is the host
+#   name of the default console host, not a random label; epkg did not invent that name.
+# - `epkg self install` / light_init append a small # epkg begin/end block to that file;
+#   the block dot-sources this script. Real logic and the `epkg` function live here.
+#
+# Dot-source manually if needed:
 #   . "$HOME/.epkg/envs/self/usr/src/epkg/assets/shell/epkg.ps1"
 
 function Get-EpkgSelfEnvRoot {
