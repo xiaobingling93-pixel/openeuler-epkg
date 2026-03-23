@@ -1009,7 +1009,6 @@ pub use win32_pua_paths::{
     decode_path_from_windows,
     has_invalid_windows_chars,
     host_path_from_manifest_rel_path,
-    sanitize_filename_for_windows,
     sanitize_path_for_windows,
 };
 
@@ -1025,4 +1024,36 @@ pub fn normalize_path_separators(path: &Path) -> PathBuf {
 #[cfg(not(windows))]
 pub fn normalize_path_separators(path: &Path) -> PathBuf {
     path.to_path_buf()
+}
+
+/// Normalize path by resolving `.` and `..` components.
+/// This is needed when comparing paths that may contain relative components.
+/// Unlike `canonicalize()`, this does NOT require the path to exist.
+///
+/// Example: `/foo/bar/../baz` -> `/foo/baz`
+pub fn normalize_path_components(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                match components.last() {
+                    Some(Component::Normal(_)) => {
+                        components.pop();
+                    }
+                    Some(Component::RootDir) => {
+                        // /.. -> /
+                        continue;
+                    }
+                    _ => components.push(component),
+                }
+            }
+            _ => components.push(component),
+        }
+    }
+    if components.is_empty() {
+        components.push(Component::CurDir);
+    }
+    components.iter().collect()
 }

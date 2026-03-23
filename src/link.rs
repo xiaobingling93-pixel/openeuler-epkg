@@ -868,23 +868,7 @@ fn copy_symlink(fs_file: &Path, target_path: &Path) -> Result<()> {
     if is_dir {
         lfs::symlink_to_directory(&adjusted_target, target_path)
     } else {
-        // Try symlink_to_file first, but fall back to symlink_to_directory if target is a directory.
-        // This handles cases where the symlink was stored as a file symlink but the target is actually a directory.
-        let result = lfs::symlink_to_file(&adjusted_target, target_path);
-        if let Err(ref e) = result {
-            // Check if error indicates target is a directory
-            let err_chain = format!("{:?}", e);
-            if err_chain.contains("target exists but is a directory") {
-                log::debug!(
-                    "copy_symlink: falling back to symlink_to_directory for {} -> {}",
-                    target_path.display(),
-                    adjusted_target.display()
-                );
-                return lfs::symlink_to_directory(&adjusted_target, target_path)
-                    .with_context(|| format!("Failed to create symlink {} -> {}", target_path.display(), adjusted_target.display()));
-            }
-        }
-        result
+        lfs::symlink_to_file(&adjusted_target, target_path)
     }
     .with_context(|| format!("Failed to create symlink {} -> {}", target_path.display(), adjusted_target.display()))?;
     Ok(())

@@ -1443,8 +1443,13 @@ pub fn find_command_in_registered_envs(cmd_name: &str) -> Result<Option<(String,
         match get_env_root(config.name.clone()) {
             Ok(env_root) => {
                 for bin_dir in &bin_dirs {
+                    #[cfg(windows)]
+                    let bin_path = PathBuf::from(bin_dir.replace('/', "\\"));
+                    #[cfg(not(windows))]
+                    let bin_path = Path::new(bin_dir);
+
                     for candidate in &command_candidates {
-                        let cmd_path = env_root.join(bin_dir).join(candidate);
+                        let cmd_path = env_root.join(&bin_path).join(candidate);
                         if !lfs::exists_in_env(&cmd_path) {
                             continue;
                         }

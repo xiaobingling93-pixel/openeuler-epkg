@@ -665,28 +665,6 @@ pub fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(format!("{}.{}", path.display(), suffix))
 }
 
-/// Sanitize filename for Windows by replacing illegal characters.
-/// Windows forbidden characters: < > : " / \ | ? *
-/// We replace ':' with '_' (common in Arch Linux epoch versions like "pkg-1:1.0-1")
-/// Other illegal characters are also replaced with '_'.
-#[cfg(windows)]
-pub fn sanitize_filename_for_windows(filename: &str) -> String {
-    const FORBIDDEN: &[char] = &['<', '>', ':', '"', '|', '?', '*'];
-    let mut result = String::with_capacity(filename.len());
-    for c in filename.chars() {
-        if FORBIDDEN.contains(&c) {
-            result.push('_');
-        } else {
-            result.push(c);
-        }
-    }
-    result
-}
-
-#[cfg(not(windows))]
-pub fn sanitize_filename_for_windows(filename: &str) -> String {
-    filename.to_string()
-}
 
 pub fn user_prompt_and_confirm() -> Result<bool> {
     if models::config().common.dry_run {

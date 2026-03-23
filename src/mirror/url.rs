@@ -32,13 +32,36 @@ use crate::models::channel_config;
 use crate::models::ChannelConfig;
 use crate::mirror::{Mirrors, UrlProtocol};
 
+/// Convert URL path to legal filename for Windows by replacing illegal characters.
+/// Windows forbidden characters: < > : " / \ | ? *
+/// We replace ':' with '_' (common in Arch Linux epoch versions like "pkg-1:1.0-1")
+/// Other illegal characters are also replaced with '_'.
+#[cfg(windows)]
+pub fn url2legal_filename(filename: &str) -> String {
+    const FORBIDDEN: &[char] = &['<', '>', ':', '"', '|', '?', '*'];
+    let mut result = String::with_capacity(filename.len());
+    for c in filename.chars() {
+        if FORBIDDEN.contains(&c) {
+            result.push('_');
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+#[cfg(not(windows))]
+pub fn url2legal_filename(filename: &str) -> String {
+    filename.to_string()
+}
+
 /// Normalize path separators for Windows (convert forward slashes to backslashes).
 /// This prevents mixed separators when joining URL paths with Windows paths.
 /// Also sanitizes Windows-illegal characters like ':' (common in Arch Linux epoch versions).
 #[cfg(windows)]
 fn normalize_url_path_separators(path: &str) -> PathBuf {
     // First sanitize illegal characters, then convert separators
-    let sanitized = crate::utils::sanitize_filename_for_windows(path);
+    let sanitized = url2legal_filename(path);
     PathBuf::from(sanitized.replace('/', "\\"))
 }
 
@@ -381,7 +404,7 @@ impl Mirrors {
         let parts: Vec<&str> = url_stripped.split('/').filter(|s| !s.is_empty()).collect();
         let mut path = output_dir.to_path_buf();
         for part in parts {
-            let sanitized = crate::utils::sanitize_filename_for_windows(part);
+            let sanitized = url2legal_filename(part);
             path = path.join(&sanitized);
         }
 
