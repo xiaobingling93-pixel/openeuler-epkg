@@ -305,6 +305,39 @@ fn setup_resolv_conf(env_root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn setup_hosts(env_root: &Path) -> Result<()> {
+    // Create /etc directory if it doesn't exist
+    lfs::create_dir_all(env_root.join("etc"))?;
+
+    let hosts_path = crate::dirs::path_join(env_root, &["etc", "hosts"]);
+
+    // Skip if already exists (e.g., mounted or installed by package)
+    if lfs::exists_in_env(&hosts_path) {
+        return Ok(());
+    }
+
+    #[cfg(windows)]
+    {
+        // Windows doesn't use /etc/hosts for DNS. Add a placeholder.
+        let windows_stub = "# Managed by epkg on Windows\n127.0.0.1 localhost\n::1 localhost\n";
+        lfs::write(&hosts_path, windows_stub)?;
+    }
+
+    #[cfg(not(windows))]
+    {
+        let host_hosts = Path::new("/etc/hosts");
+        if lfs::exists_on_host(host_hosts) {
+            lfs::copy(host_hosts, &hosts_path)?;
+        } else {
+            // If /etc/hosts doesn't exist on host, create a default one
+            let default_hosts = "127.0.0.1 localhost\n::1 localhost\n";
+            lfs::write(&hosts_path, default_hosts)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     let generations_root = env_root.join("generations");
     let gen_1_dir = generations_root.join("1");
@@ -354,6 +387,7 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     force_symlink_to_directory("1", generations_root.join("current"))?;
 
     setup_resolv_conf(env_root)?;
+    setup_hosts(env_root)?;
 
     Ok(())
 }

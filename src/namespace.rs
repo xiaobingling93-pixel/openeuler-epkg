@@ -828,6 +828,12 @@ fn env_mount_spec_strings(env_root: &Path, _run_options: &RunOptions) -> Vec<Str
         specs.push("@/root://root".to_string());
     }
 
+    // Mount host's network configuration files for DNS resolution.
+    // These are mounted after the environment's /etc to override missing files.
+    // Use :try to silently skip if files don't exist on host.
+    specs.push("/etc/hosts://etc/hosts:try".to_string());
+    specs.push("/etc/resolv.conf://etc/resolv.conf:try".to_string());
+
     specs
 }
 
