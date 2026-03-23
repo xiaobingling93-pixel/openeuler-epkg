@@ -55,6 +55,13 @@ impl IdMapSync {
         write(&self.write_fd, &[PIPE_SYNC_BYTE])?;
         Ok(())
     }
+
+    /// Signal the child to proceed without performing ID mapping.
+    /// Used when the child writes its own ID maps (Clone strategy with CLONE_NEWUSER).
+    pub fn signal_only(&self) -> Result<()> {
+        write(&self.write_fd, &[PIPE_SYNC_BYTE])?;
+        Ok(())
+    }
 }
 
 /// Wait for the parent to finish UID/GID mapping (if a sync pipe is present).

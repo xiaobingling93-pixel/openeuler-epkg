@@ -441,12 +441,10 @@ fn create_process_via_clone(
 
         let child_pid = Pid::from_raw(pid);
 
-        // Perform UID mapping if needed (for clone with namespaces at clone time)
-        if let Some(ref mut sync) = id_sync {
-            // Update sync target to actual child PID
-            sync.set_target_pid(child_pid);
-            let allow_setgroups = config.isolate_mode == IsolateMode::Vm;
-            sync.perform_mapping_and_signal(uid, gid, &user, allow_setgroups)?;
+        // For Clone strategy with CLONE_NEWUSER, the child writes its own ID maps.
+        // The parent just needs to signal the child to proceed (no mapping needed).
+        if let Some(ref sync) = id_sync {
+            sync.signal_only()?;
         }
 
         Ok(child_pid)
@@ -511,12 +509,46 @@ extern "C" fn unified_child_main(arg: *mut c_void) -> c_int {
 /// then mount and exec.
 /// Called from unified_child_main() for Clone strategy.
 fn child_setup_with_namespaces(context: Box<UnifiedChildContext>) -> Result<()> {
-    // Wait for uid mapping if needed (for clone with namespaces at clone time)
-    if let Some(ref sync_fd) = context.sync_read_fd {
-        wait_for_idmap_sync(sync_fd)?;
+    // For Clone strategy with CLONE_NEWUSER, the child must write its own uid/gid maps
+    // because the parent cannot write to the child's user namespace (they are siblings,
+    // not parent-child in the user namespace hierarchy).
+    // The child has CAP_SETUID in its own user namespace and can write /proc/self/uid_map.
+    if context.sync_read_fd.is_some() {
+        // Write UID/GID mapping ourselves (child has CAP_SETUID in its user namespace)
+        write_self_idmap(context.uid, context.gid)?;
     }
 
     child_mount_and_exec(context)
+}
+
+/// Write UID/GID mapping for the current process (self).
+/// Called by the child process after clone(CLONE_NEWUSER).
+/// The child has CAP_SETUID in its own user namespace and can write /proc/self/uid_map.
+fn write_self_idmap(uid: Uid, gid: Gid) -> Result<()> {
+    use std::fs;
+
+    let uid_raw = uid.as_raw();
+    let gid_raw = gid.as_raw();
+
+    // Format: "inside_id outside_id count"
+    // Map root (0) inside namespace to our real UID/GID outside
+    let uid_map = format!("0 {} 1", uid_raw);
+    let gid_map = format!("0 {} 1", gid_raw);
+
+    debug!("Child writing self ID map: uid_map='{}', gid_map='{}'", uid_map, gid_map);
+
+    // Must write setgroups deny before gid_map
+    fs::write("/proc/self/setgroups", "deny")
+        .map_err(|e| eyre::eyre!("Failed to write /proc/self/setgroups: {}", e))?;
+
+    fs::write("/proc/self/uid_map", &uid_map)
+        .map_err(|e| eyre::eyre!("Failed to write /proc/self/uid_map: {}", e))?;
+
+    fs::write("/proc/self/gid_map", &gid_map)
+        .map_err(|e| eyre::eyre!("Failed to write /proc/self/gid_map: {}", e))?;
+
+    debug!("Child successfully wrote self ID map");
+    Ok(())
 }
 
 /// Ensure mount propagation is set to private to prevent mount leaks.
