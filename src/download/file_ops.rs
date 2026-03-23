@@ -202,7 +202,7 @@ fn is_pid_file_active(pid_file: &Path) -> bool {
         return false;
     }
 
-    // If not our PID, check if the process is still running (Unix-like systems)
+    // If not our PID, check if the process is still running
     #[cfg(unix)]
     {
         if !utils::process_exists(pid) {
@@ -212,9 +212,18 @@ fn is_pid_file_active(pid_file: &Path) -> bool {
         is_epkg_process(pid)
     }
 
-    // For Windows or if we can't check, assume it's active for safety
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
+        if !utils::process_exists(pid) {
+            return false;
+        }
+        // Process exists, assume it's still active
+        true
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        // For other platforms, assume it's active for safety
         true
     }
 }

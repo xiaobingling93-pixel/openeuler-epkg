@@ -1489,7 +1489,29 @@ pub fn process_exists(pid: u32) -> bool {
     Path::new(&format!("/proc/{}", pid)).exists()
 }
 
-#[cfg(not(unix))]
+/// Check if a process exists on Windows using OpenProcess API
+#[cfg(windows)]
+pub fn process_exists(pid: u32) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // SAFETY: OpenProcess returns a handle that we immediately check and close
+    unsafe {
+        let handle = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+        if handle.is_invalid() {
+            return false;
+        }
+        let _ = CloseHandle(handle);
+        true
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 #[allow(dead_code)]
 pub fn process_exists(_pid: u32) -> bool {
     false
