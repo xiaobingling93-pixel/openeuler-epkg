@@ -159,11 +159,24 @@ pub fn search_repo_cache(options: &mut SearchOptions) -> Result<()> {
     }
 
     if !any_filelists && (options.files || options.paths) {
-        if channel_config().format == PackageFormat::Apk {
-            eprintln!("Alpine has no filelists for search");
+        match channel_config().format {
+            PackageFormat::Apk => {
+                eprintln!("Alpine has no filelists for search");
+                std::process::exit(0);
+            }
+            PackageFormat::Conda => {
+                eprintln!("Conda has no filelists for search");
+                std::process::exit(0);
+            }
+            PackageFormat::Brew => {
+                eprintln!("Homebrew has no filelists for search");
+                std::process::exit(0);
+            }
+            _ => {
+                eprintln!("No filelists downloaded yet, please run 'epkg update' first");
+                std::process::exit(0);
+            }
         }
-        eprintln!("No filelists downloaded yet, please run 'epkg update' first");
-        std::process::exit(0);
     }
 
     // Wait for all producer threads to complete first
