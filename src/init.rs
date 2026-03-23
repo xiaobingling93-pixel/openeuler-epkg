@@ -544,10 +544,50 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
         }
     }
 
+    // Short CLI path: ~/.epkg/bin -> <self env>/usr/bin (e.g. ~/.epkg/bin/epkg)
+    ensure_home_epkg_bin_symlink(&usr_bin)?;
+
     // Create symlink to epkg binary in the first valid PATH component (Unix only)
     #[cfg(unix)]
     create_epkg_symlink(&target_epkg)
         .context("Failed to create epkg symlink in PATH")?;
+
+    Ok(())
+}
+
+/// Symlink `$HOME/.epkg/bin` (or `%LOCALAPPDATA%\\epkg\\bin` on Windows) to the self env's
+/// `usr/bin` so users can run `~/.epkg/bin/epkg` without the long `envs/self/usr/bin` path.
+/// Works for private store, shared store, and any layout where `self_usr_bin` is the real bin dir.
+fn ensure_home_epkg_bin_symlink(self_usr_bin: &Path) -> Result<()> {
+    let home_epkg = dirs().home_epkg.clone();
+    if let Err(e) = lfs::create_dir_all(&home_epkg) {
+        log::warn!(
+            "Could not create {} (skip short bin symlink): {}",
+            home_epkg.display(),
+            e
+        );
+        return Ok(());
+    }
+
+    let short_bin = home_epkg.join("bin");
+    let link_target = match std::fs::canonicalize(self_usr_bin) {
+        Ok(p) => p,
+        Err(_) => self_usr_bin.to_path_buf(),
+    };
+
+    println!(
+        "Creating symlink: {} -> {}",
+        short_bin.display(),
+        link_target.display()
+    );
+    if let Err(e) = utils::force_symlink_to_directory(&link_target, &short_bin) {
+        log::warn!(
+            "Failed to create short bin symlink {} -> {}: {}",
+            short_bin.display(),
+            link_target.display(),
+            e
+        );
+    }
 
     Ok(())
 }
