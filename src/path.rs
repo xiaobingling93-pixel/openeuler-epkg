@@ -4,8 +4,9 @@ use color_eyre::Result;
 use color_eyre::eyre;
 use crate::lfs;
 use crate::models::*;
-use crate::dirs::get_env_root;
+use crate::dirs::{get_env_root, path_join};
 use crate::environment::registered_env_configs;
+use crate::shell_emit;
 
 // Construct PATH from active and registered environments.
 // Order (from left/earliest to right/latest in PATH):
@@ -13,7 +14,11 @@ use crate::environment::registered_env_configs;
 // 2) Registered envs with path-order >= 0 (ascending path-order)
 // 3) Original/system PATH entries (with existing epkg bits removed)
 // 4) Registered envs with path-order < 0 (ascending abs(path-order))
+// 5) self env usr/bin (epkg, elf-loader, etc.) — always last
 pub fn update_path() -> Result<()> {
+    let sep = shell_emit::path_sep_os();
+    let shell_kind = shell_emit::detect();
+
     let mut path_components = Vec::new();
     let mut pure = false;
 
@@ -22,14 +27,13 @@ pub fn update_path() -> Result<()> {
         let active_envs: Vec<&str> = active_env.split(':').collect();
         for env_name in active_envs.iter() {
             let (env_name, is_pure) = if env_name.ends_with(PURE_ENV_SUFFIX) {
-                (env_name[..env_name.len()-1].to_string(), true)
+                (env_name[..env_name.len() - 1].to_string(), true)
             } else {
                 (env_name.to_string(), false)
             };
             pure = pure && is_pure;
             path_components.extend(get_active_env_paths(&env_name, is_pure)?);
         }
-
     }
 
     if !pure {
@@ -41,19 +45,38 @@ pub fn update_path() -> Result<()> {
     let mut seen = std::collections::HashSet::new();
     path_components.retain(|item| seen.insert(item.clone()));
 
+    let self_bin = self_usr_bin_path()?;
+    if let Some(ref p) = self_bin {
+        path_components.retain(|x| x != p);
+    }
+
     // Validate we have at least one path
-    if path_components.is_empty() {
+    if path_components.is_empty() && self_bin.is_none() {
         return Err(eyre::eyre!("No valid paths found to update PATH"));
     }
 
-    // Join paths with colons
-    let new_path = path_components.join(":");
+    let mut new_path = path_components.join(&sep.to_string());
+    if let Some(p) = self_bin {
+        if !new_path.is_empty() {
+            new_path.push(sep);
+        }
+        new_path.push_str(&p);
+    }
 
-    // Update PATH
     env::set_var("PATH", &new_path);
-    println!("export PATH=\"{}\"", &new_path);
+    println!("{}", shell_emit::emit_path(&new_path, shell_kind));
 
     Ok(())
+}
+
+fn self_usr_bin_path() -> Result<Option<String>> {
+    let root = get_env_root(SELF_ENV.to_string())?;
+    let p = path_join(&root, &["usr", "bin"]);
+    if lfs::exists_or_any_symlink(&p) {
+        Ok(Some(p.display().to_string()))
+    } else {
+        Ok(None)
+    }
 }
 
 fn get_active_env_paths(active_env: &str, pure: bool) -> Result<Vec<String>> {
@@ -127,12 +150,14 @@ fn get_registered_env_paths() -> Result<Vec<String>> {
 
 fn get_system_paths() -> Result<Vec<String>> {
     let mut path_components = Vec::new();
+    let sep = shell_emit::path_sep_os();
 
     if let Ok(path) = env::var("PATH") {
         path_components.extend(
-            path.split(':')
-                .filter(|dir| !dir.contains("epkg"))
-                .map(String::from)
+            path
+                .split(sep)
+                .filter(|dir| !dir.is_empty() && !dir.contains("epkg"))
+                .map(String::from),
         );
     }
 

@@ -471,6 +471,29 @@ pub fn get_user_shell_rc(_home_dir: &Path) -> Result<Vec<String>> {
     Ok(Vec::new())
 }
 
+/// PowerShell profile paths for `epkg.ps1` integration (pwsh on Unix/macOS and Windows).
+pub fn powershell_profile_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Ok(home) = get_home() {
+        paths.push(
+            PathBuf::from(home)
+                .join(".config")
+                .join("powershell")
+                .join("Microsoft.PowerShell_profile.ps1"),
+        );
+    }
+    #[cfg(windows)]
+    if let Ok(up) = env::var("USERPROFILE") {
+        paths.push(
+            PathBuf::from(up)
+                .join("Documents")
+                .join("PowerShell")
+                .join("Microsoft.PowerShell_profile.ps1"),
+        );
+    }
+    paths
+}
+
 /// Get username from environment variables.
 /// On Unix, validates environment variables against real UID when running as setuid.
 pub fn get_username() -> Result<String> {

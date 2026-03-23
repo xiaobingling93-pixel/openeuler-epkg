@@ -2,9 +2,7 @@
 use std::env;
 #[cfg(unix)]
 use std::fs;
-#[cfg(unix)]
 use std::fs::OpenOptions;
-#[cfg(unix)]
 use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 
@@ -14,12 +12,8 @@ use color_eyre::Result;
 use nix::unistd::{fork, ForkResult};
 use serde::{Deserialize, Serialize};
 
-#[cfg(unix)]
 use crate::deinit::remove_epkg_from_rc_file;
-#[cfg(unix)]
 use crate::dirs::{find_env_base, get_env_root};
-#[cfg(not(unix))]
-use crate::dirs::find_env_base;
 use crate::download::download_urls;
 use crate::mirror;
 use crate::models::*;
@@ -126,6 +120,10 @@ pub fn light_init() -> Result<()> {
     #[cfg(unix)]
     update_shell_rc()?;
 
+    update_powershell_profile().unwrap_or_else(|e| {
+        log::warn!("Could not update PowerShell profile: {}", e);
+    });
+
     println!("Notice: for changes to take effect, close and re-open your current shell.");
     Ok(())
 }
@@ -209,6 +207,10 @@ pub fn install_epkg_with_force(force: bool) -> Result<()> {
         });
 
     println!("Installation complete!");
+
+    update_powershell_profile().unwrap_or_else(|e| {
+        log::warn!("Could not update PowerShell profile: {}", e);
+    });
 
     Ok(())
 }
@@ -716,38 +718,69 @@ test -r "$epkg_rc" && . "$epkg_rc"
     )
 }
 
+fn build_epkg_ps_block(self_env_root: &Path) -> String {
+    let ps1_path = self_env_root
+        .join("usr")
+        .join("src")
+        .join("epkg")
+        .join("assets")
+        .join("shell")
+        .join("epkg.ps1");
+    let escaped = ps1_path.display().to_string().replace('\'', "''");
+    format!(
+        r#"
+# epkg begin
+$epkg_ps1 = '{escaped}'
+if (Test-Path -LiteralPath $epkg_ps1) {{ . $epkg_ps1 }}
+# epkg end
+"#,
+        escaped = escaped
+    )
+}
+
+fn append_epkg_block_to_text_file(path: &Path, block_content: &str) -> Result<()> {
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| eyre::eyre!("Path must be valid UTF-8: {}", path.display()))?;
+    let existing_content = remove_epkg_from_rc_file(path_str)?;
+
+    println!("Adding epkg to: {}", path.display());
+
+    let mut file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+        .with_context(|| format!("Failed to open or create file: {}", path.display()))?;
+
+    if !existing_content.is_empty() && !existing_content.ends_with('\n') {
+        file
+            .write_all(b"\n")
+            .with_context(|| format!("Failed to write newline to: {}", path.display()))?;
+    }
+
+    file
+        .write_all(block_content.as_bytes())
+        .with_context(|| format!("Failed to write to: {}", path.display()))?;
+
+    Ok(())
+}
+
 /// Append the epkg rc block to a given rc file, ensuring any previous epkg block is removed
 /// and newline formatting remains tidy.
 #[cfg(unix)]
 fn append_epkg_block_to_rc_file(rc_file_path: &str, rc_content: &str) -> Result<()> {
-    // Remove any existing epkg configuration and get the cleaned content
-    let existing_content = remove_epkg_from_rc_file(rc_file_path)?;
+    append_epkg_block_to_text_file(Path::new(rc_file_path), rc_content)
+}
 
-    // Append the new configuration
-    println!("Adding epkg to shell RC file: {}", rc_file_path);
-
-    let mut file = OpenOptions::new()
-        .append(true)
-        .create(true) // Create if it doesn't exist
-        .open(rc_file_path)
-        .with_context(|| {
-            format!("Failed to open or create shell rc file: {}", rc_file_path)
-        })?;
-
-    // If the file was empty or didn't end with a newline, add one before our content for neatness.
-    if !existing_content.is_empty() && !existing_content.ends_with('\n') {
-        file.write_all(b"\n").with_context(|| {
-            format!(
-                "Failed to write newline to shell rc file: {}",
-                rc_file_path
-            )
-        })?;
+fn update_powershell_profile() -> Result<()> {
+    let self_env_root = get_env_root(SELF_ENV.to_string())?;
+    let block = build_epkg_ps_block(&self_env_root);
+    for profile_path in crate::dirs::powershell_profile_paths() {
+        if let Some(parent) = profile_path.parent() {
+            lfs::create_dir_all(parent)?;
+        }
+        append_epkg_block_to_text_file(&profile_path, &block)?;
     }
-
-    file.write_all(rc_content.as_bytes()).with_context(|| {
-        format!("Failed to write to shell rc file: {}", rc_file_path)
-    })?;
-
     Ok(())
 }
 

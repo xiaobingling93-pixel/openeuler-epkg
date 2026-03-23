@@ -333,6 +333,11 @@ install_to_dev_env() {
         if [[ "$(readlink -f "$src_rc")" != "$(readlink -f "$dst_rc")" ]]; then
             safe_cp "$src_rc" "$dst_rc"
         fi
+        local src_ps1="$PROJECT_ROOT/assets/shell/epkg.ps1"
+        local dst_ps1="$DEV_ENV_SRC_DIR/assets/shell/epkg.ps1"
+        if [[ ! -f "$dst_ps1" ]] || ! cmp -s "$src_ps1" "$dst_ps1"; then
+            safe_cp "$src_ps1" "$dst_ps1"
+        fi
     fi
 
     safe_cp "$binary_path" "$DEV_ENV_BIN_DIR/$BINARY_NAME"

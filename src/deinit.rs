@@ -151,6 +151,12 @@ fn collect_user_personal_plan() -> Result<DeinitPlan> {
         plan.shell_rc_files.extend(user_shell_rcs);
     }
 
+    for ps in crate::dirs::powershell_profile_paths() {
+        if lfs::exists_on_host(&ps) {
+            plan.shell_rc_files.push(ps.to_string_lossy().into_owned());
+        }
+    }
+
     Ok(plan)
 }
 

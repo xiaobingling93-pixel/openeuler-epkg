@@ -26,8 +26,8 @@ use crate::deb_triggers::ensure_triggers_dir;
 use crate::plan::prepare_installation_plan;
 use crate::install::execute_installation_plan;
 use crate::history::record_history;
-#[cfg(unix)]
 use crate::path::update_path;
+use crate::shell_emit;
 use crate::io;
 use crate::lfs;
 use log::warn;
@@ -67,16 +67,37 @@ use log::warn;
 // Helper function to handle environment variable changes
 // Note: PATH is handled by update_path() instead of push_env_var(), since PATH could be changed by
 // interleaved (de)activate/(un)register calls.
-fn push_env_var(script: &mut String, key: &str, new_value: Option<String>, original_value: Option<String>) {
-    // Set new value (print to stdout)
+fn push_env_var(
+    script: &mut String,
+    key: &str,
+    new_value: Option<String>,
+    original_value: Option<String>,
+    kind: shell_emit::ShellKind,
+) {
     if let Some(v) = &new_value {
-        println!("export {}={}", key, v);
+        println!("{}", shell_emit::emit_export(key, v, kind));
     }
 
-    // Prepare restore command (store in script)
-    match original_value {
-        Some(v) => script.push_str(&format!("export {}={}\n", key, v)),
-        None => script.push_str(&format!("unset {}\n", key)),
+    match kind {
+        shell_emit::ShellKind::Bash => match original_value {
+            Some(v) => script.push_str(&format!(
+                "export {}=\"{}\"\n",
+                key,
+                v.replace('\\', "\\\\").replace('"', "\\\"")
+            )),
+            None => script.push_str(&format!("unset {}\n", key)),
+        },
+        shell_emit::ShellKind::PowerShell => match original_value {
+            Some(v) => script.push_str(&format!(
+                "$env:{} = '{}'\n",
+                key,
+                shell_emit::ps_escape_single_quoted(&v)
+            )),
+            None => script.push_str(&format!(
+                "Remove-Item \"Env:{}\" -ErrorAction SilentlyContinue\n",
+                key
+            )),
+        },
     }
 }
 
@@ -982,6 +1003,8 @@ pub fn activate_environment(name: &str) -> Result<()> {
     // Get environment config for env_vars
     let env_config = env_config();
 
+    let shell_kind = shell_emit::detect();
+
     // Initialize deactivate script
     let mut script = String::new();
 
@@ -995,8 +1018,18 @@ pub fn activate_environment(name: &str) -> Result<()> {
             rng.random::<u32>()
         ));
         let path_str = path.to_string_lossy().into_owned();
-        println!("export EPKG_SESSION_PATH=\"{}\"", path_str);
-        script.push_str(&format!("unset EPKG_SESSION_PATH\n"));
+        println!(
+            "{}",
+            shell_emit::emit_export("EPKG_SESSION_PATH", &path_str, shell_kind)
+        );
+        match shell_kind {
+            shell_emit::ShellKind::Bash => script.push_str("unset EPKG_SESSION_PATH\n"),
+            shell_emit::ShellKind::PowerShell => {
+                script.push_str(
+                    "Remove-Item \"Env:EPKG_SESSION_PATH\" -ErrorAction SilentlyContinue\n",
+                );
+            }
+        }
         path_str
     });
 
@@ -1017,21 +1050,36 @@ pub fn activate_environment(name: &str) -> Result<()> {
 
     // Action 1: Show export commands for shell eval
     println!("# Activate environment '{}'{}", name, if config().env.pure { " in pure mode" } else { "" });
-    push_env_var(&mut script, "EPKG_ACTIVE_ENV", Some(new_active_envs.clone()), original_active_envs);
+    push_env_var(
+        &mut script,
+        "EPKG_ACTIVE_ENV",
+        Some(new_active_envs.clone()),
+        original_active_envs,
+        shell_kind,
+    );
     std::env::set_var("EPKG_ACTIVE_ENV", new_active_envs);
 
     // Export env_vars from config
     for (key, value) in &env_config.env_vars {
         let original_value = env::var(key).ok();
-        push_env_var(&mut script, key, Some(value.clone()), original_value);
+        push_env_var(
+            &mut script,
+            key,
+            Some(value.clone()),
+            original_value,
+            shell_kind,
+        );
     }
 
-    // Update PATH (Unix only for now)
-    #[cfg(unix)]
     update_path()?;
 
-    // Action 2: Create deactivate shell script
-    let deactivate_script = format!("{}-{}.sh", session_path, name);
+    // Action 2: Create deactivate script for shell eval
+    let deactivate_script = format!(
+        "{}-{}.{}",
+        session_path,
+        name,
+        shell_emit::deactivate_script_extension(shell_kind)
+    );
     lfs::write(&deactivate_script, script)?;
 
     Ok(())
@@ -1065,7 +1113,12 @@ pub fn deactivate_environment() -> Result<()> {
     // Remove pure mode suffix from the environment name for script filename lookup
     // The deactivate script is created without the '!' suffix
     let deactivated_env_name = deactivated_env.trim_end_matches(PURE_ENV_SUFFIX);
-    let deactivate_script = format!("{}-{}.sh", session_path, deactivated_env_name);
+    let deactivate_script = format!(
+        "{}-{}.{}",
+        session_path,
+        deactivated_env_name,
+        shell_emit::deactivate_script_extension(shell_emit::detect())
+    );
     let script = fs::read_to_string(&deactivate_script)
         .with_context(|| format!("Failed to read deactivate script: {}", deactivate_script))?;
     println!("{}", script);
@@ -1085,7 +1138,6 @@ pub fn deactivate_environment() -> Result<()> {
     // Update environment variables EPKG_ACTIVE_ENV and PATH
     // For eval by caller shell.
     println!("# Deactivate environment '{}'", deactivated_env);
-    #[cfg(unix)]
     update_path()?;
     Ok(())
 }
@@ -1116,7 +1168,6 @@ pub fn register_environment_for(name: &str, mut env_config: EnvConfig) -> Result
     env_config.register_path_order = path_order;
     io::serialize_env_config(env_config)?;
 
-    #[cfg(unix)]
     update_path()?;
     Ok(())
 }
@@ -1144,7 +1195,6 @@ pub fn unregister_environment(name: &str) -> Result<()> {
     env_config.register_path_order = 0;
     io::serialize_env_config(env_config)?;
 
-    #[cfg(unix)]
     update_path()?;
     println!("# Environment '{}' has been unregistered.", name);
     Ok(())

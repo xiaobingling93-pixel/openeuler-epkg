@@ -37,6 +37,7 @@ mod deinit;
 mod apparmor;
 mod init;
 mod path;
+mod shell_emit;
 mod repo;
 mod mmio;
 mod mirror;
