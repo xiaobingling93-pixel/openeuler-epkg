@@ -87,7 +87,7 @@ fn unexpose_package_ebin(env_root: &Path, pkgkey: &str) -> Result<()> {
             log::debug!("Unexposing ebin wrappers for package: {}", pkgkey);
 
             for relative_ebin_path_str in &pkg_info.ebin_links {
-                let ebin_path = env_root.join(relative_ebin_path_str);
+                let ebin_path = lfs::normalize_path_separators(&env_root.join(relative_ebin_path_str));
                 if lfs::symlink_metadata(&ebin_path).is_ok() {
                     log::debug!("Removing ebin wrapper: {}", ebin_path.display());
                     lfs::remove_file(&ebin_path)?;
@@ -424,13 +424,14 @@ fn resolve_ebin_target_path(env_root: &Path, env_path: &Path) -> PathBuf {
                         // Points outside env (e.g., /etc/alternatives/go -> /usr/lib/go/bin/go)
                         // Map it back to env context by prepending env_root
                         log::debug!("Absolute symlink outside env: {} -> {}", current.display(), target.display());
-                        current = env_root.join(target.strip_prefix("/").unwrap_or(target.as_ref()));
+                        let target_rel = target.strip_prefix("/").unwrap_or(target.as_ref());
+                        current = lfs::normalize_path_separators(&env_root.join(target_rel));
                         break;
                     }
                 } else {
                     // Relative symlink - resolve relative to current's parent
                     if let Some(parent) = current.parent() {
-                        current = parent.join(&target);
+                        current = lfs::normalize_path_separators(&parent.join(&target));
                     } else {
                         break;
                     }
