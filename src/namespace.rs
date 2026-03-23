@@ -17,7 +17,7 @@ use crate::dirs;
 use crate::mount::*;
 use crate::models::{IsolateMode, ProcessCreationConfig, UnifiedChildContext, NamespaceStrategy};
 use crate::run::RunOptions;
-use crate::idmap::{IdMapSync, check_user_namespace_support, write_self_idmap};
+use crate::idmap::{IdMapSync, check_user_namespace_support, execute_idmap_for_parent, wait_for_idmap_sync};
 
 /// Convert a host-side absolute path to a guest-side path.
 /// If `host_path` is inside `env_root`, strip the env_root prefix and prepend "/".
@@ -126,28 +126,60 @@ fn unshare_namespaces_with_idmap(
     }
 }
 
-/// Unshare namespaces with user namespace and ID mapping.
-/// After unshare(CLONE_NEWUSER), the process has all capabilities in its new namespace
-/// and can write /proc/self/uid_map directly.
+/// Unshare namespaces with user namespace and ID mapping via fork helper.
+/// Uses fork helper to call newuidmap/newgidmap for subuid/subgid support.
 fn unshare_with_user_ns_and_idmap(
     clone_flags: CloneFlags,
     uid: Uid,
     gid: Gid,
-    _opt_user: &Option<String>,
-    _allow_setgroups: bool,
+    opt_user: &Option<String>,
+    allow_setgroups: bool,
 ) -> Result<()> {
-    // First, unshare to create new namespaces
-    unshare_with_error_handling(clone_flags)?;
-    trace!("Successfully created namespaces");
+    // Fork a helper child to call newuidmap/newgidmap on parent.
+    // The helper must be forked BEFORE unshare, so it remains in the original
+    // user namespace and can call newuidmap (which runs as setuid root).
+    let sync = IdMapSync::new(nix::unistd::getpid())?;
 
-    // Immediately set mount propagation to private to prevent mount leaks
-    set_mount_propagation_private_if_needed(clone_flags)?;
+    match unsafe { fork() } {
+        Ok(ForkResult::Parent { child }) => {
+            // Parent: unshare namespaces, then wait for helper to map IDs
+            unshare_with_error_handling(clone_flags)?;
+            trace!("Parent: successfully created namespaces");
 
-    // After unshare(CLONE_NEWUSER), we have all capabilities in our new user namespace.
-    // Write our own UID/GID mapping directly.
-    write_self_idmap(uid, gid)?;
+            // Immediately set mount propagation to private
+            set_mount_propagation_private_if_needed(clone_flags)?;
 
-    Ok(())
+            // Wait for helper to complete mapping
+            sync.wait_for_mapping()?;
+            trace!("Parent: ID mapping completed");
+
+            // Wait for helper to exit
+            match nix::sys::wait::waitpid(child, None) {
+                Ok(nix::sys::wait::WaitStatus::Exited(_, 0)) => Ok(()),
+                Ok(status) => Err(eyre::eyre!("ID mapping helper failed: {:?}", status)),
+                Err(e) => Err(eyre::eyre!("Failed to wait for helper: {}", e)),
+            }
+        }
+        Ok(ForkResult::Child) => {
+            // Helper: wait for parent to unshare, then map parent's IDs
+            // Small delay to ensure parent has called unshare
+            std::thread::sleep(std::time::Duration::from_millis(10));
+
+            trace!("Helper: calling newuidmap/newgidmap on parent");
+            match execute_idmap_for_parent(uid, gid, opt_user, allow_setgroups) {
+                Ok(()) => {
+                    // Signal parent that mapping is done
+                    let _ = sync.signal_only();
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    warn!("Helper: ID mapping failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Err(e) => Err(eyre::eyre!("Failed to fork helper: {}", e)),
+    }
 }
 
 /// Set mount propagation to private immediately after creating mount namespace.
@@ -299,25 +331,27 @@ pub fn build_unified_context(
 
 /// Create process with namespace isolation using one of two strategies:
 /// 1. Unshare: unshare namespaces, forked helper maps parent IDs
-/// 2. Clone with namespaces at clone time: clone with namespace flags, parent maps child IDs
+/// 2. Clone: clone with namespace flags, parent maps child IDs using newuidmap/newgidmap
 /// Returns child PID on success.
 pub fn create_process_with_namespaces(
     config: &ProcessCreationConfig,
     context: UnifiedChildContext,
 ) -> Result<Pid> {
-    // For Clone strategy, create sync pipe to signal child needs to write its own ID maps.
-    // For Unshare strategy, the process writes its own maps inline (no sync needed).
-    let id_sync = if config.needs_uid_mapping &&
-        config.namespace_strategy == NamespaceStrategy::Clone {
-        // Clone strategy: child will write its own ID maps
-        // sync_read_fd in context signals child that mapping is needed
-        let target_pid = Pid::from_raw(0); // placeholder, not used for mapping
+    // Create sync pipe for ID mapping coordination
+    // - Clone: parent maps child, child waits for signal
+    // - Unshare: forked helper maps parent, parent waits for signal
+    let id_sync = if config.needs_uid_mapping {
+        let target_pid = if config.namespace_strategy == NamespaceStrategy::Clone {
+            Pid::from_raw(0) // placeholder, will be updated after clone
+        } else {
+            nix::unistd::getpid() // parent PID for helper to map
+        };
         Some(IdMapSync::new(target_pid)?)
     } else {
         None
     };
 
-    // Update context with sync fd if needed (signals child to write its own maps)
+    // Update context with sync fd if needed (child waits on this fd)
     let mut context = context;
     if let Some(ref sync) = id_sync {
         context.sync_read_fd = Some(sync.read_fd().try_clone()?);
@@ -334,12 +368,11 @@ pub fn create_process_with_namespaces(
 }
 
 /// Implement Clone strategy: create child via clone() with namespace flags.
-/// Namespaces are created at clone time, child writes its own ID maps if needed.
-/// Child entry point is unified_child_main() → child_setup_with_namespaces().
+/// Namespaces are created at clone time. Parent maps child IDs using newuidmap/newgidmap.
 fn create_process_via_clone(
     config: &ProcessCreationConfig,
     context: UnifiedChildContext,
-    _id_sync: Option<IdMapSync>,
+    mut id_sync: Option<IdMapSync>,
 ) -> Result<Pid> {
     // Allocate stack for clone child (1MB, grows down)
     const STACK_SIZE: usize = 1024 * 1024;
@@ -349,9 +382,10 @@ fn create_process_via_clone(
     // Prepare raw flags for libc::clone
     let raw_flags = config.namespace_flags.bits() as u64 | libc::SIGCHLD as u64;
 
-    // Capture uid/gid before moving context into box
+    // Capture uid/gid/user before moving context into box
     let uid = context.uid;
     let gid = context.gid;
+    let user = context.user.clone();
 
     // Box context to pass to child
     let context_ptr = Box::into_raw(Box::new(context));
@@ -377,7 +411,13 @@ fn create_process_via_clone(
 
         let child_pid = Pid::from_raw(pid);
 
-        // Child writes its own ID maps - no parent action needed
+        // Parent: map child's IDs using newuidmap/newgidmap and signal child to proceed
+        if let Some(ref mut sync) = id_sync {
+            sync.set_target_pid(child_pid);
+            let allow_setgroups = config.isolate_mode == IsolateMode::Vm;
+            sync.perform_mapping_and_signal(uid, gid, &user, allow_setgroups)?;
+        }
+
         Ok(child_pid)
     }
 }
@@ -440,13 +480,11 @@ extern "C" fn unified_child_main(arg: *mut c_void) -> c_int {
 /// then mount and exec.
 /// Called from unified_child_main() for Clone strategy.
 fn child_setup_with_namespaces(context: Box<UnifiedChildContext>) -> Result<()> {
-    // For Clone strategy with CLONE_NEWUSER, the child must write its own uid/gid maps
-    // because the parent cannot write to the child's user namespace (they are siblings,
-    // not parent-child in the user namespace hierarchy).
-    // The child has CAP_SETUID in its own user namespace and can write /proc/self/uid_map.
-    if context.sync_read_fd.is_some() {
-        // Write UID/GID mapping ourselves (child has CAP_SETUID in its user namespace)
-        write_self_idmap(context.uid, context.gid)?;
+    // Wait for parent to complete ID mapping via newuidmap/newgidmap.
+    // The parent (in original user namespace) has called newuidmap on our PID.
+    if let Some(ref sync_fd) = context.sync_read_fd {
+        wait_for_idmap_sync(sync_fd)?;
+        trace!("Child: parent completed ID mapping");
     }
 
     child_mount_and_exec(context)
