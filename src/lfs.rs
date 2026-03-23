@@ -927,7 +927,8 @@ fn resolve_symlink_in_env_recursive(symlink_path: &std::path::Path, env_root: &s
                                  link_target.starts_with("/libx32");
             log::trace!("resolve_symlink_in_env_recursive: is_system_path={}", is_system_path);
             if is_system_path {
-                let target_in_env = env_root.join(link_target.strip_prefix("/").unwrap_or(&link_target));
+                let target_rel = link_target.strip_prefix("/").unwrap_or(&link_target);
+                let target_in_env = normalize_path_separators(&env_root.join(target_rel));
                 log::trace!("resolve_symlink_in_env_recursive: mapped to target_in_env={:?}", target_in_env);
                 match resolve_target_in_env(&target_in_env, env_root, depth) {
                     Some(result) => return Some(result),
@@ -954,7 +955,8 @@ fn resolve_symlink_in_env_recursive(symlink_path: &std::path::Path, env_root: &s
 
             // For other absolute paths (e.g., /etc), first check if target exists within env_root,
             // then fall back to host path check.
-            let target_in_env = env_root.join(link_target.strip_prefix("/").unwrap_or(&link_target));
+            let target_rel = link_target.strip_prefix("/").unwrap_or(&link_target);
+            let target_in_env = normalize_path_separators(&env_root.join(target_rel));
             log::debug!("resolve_symlink_in_env_recursive: checking other path {:?}, target_in_env={:?}", link_target, target_in_env);
             match resolve_target_in_env(&target_in_env, env_root, depth) {
                 Some(result) => {
