@@ -629,7 +629,12 @@ fn get_permissions_string_win(meta: &fs::Metadata) -> String {
         '-'
     };
     let ro = meta.permissions().readonly();
-    let tri = if ro { "r--r--r--" } else { "rw-rw-rw-" };
+    let tri = if meta.is_dir() {
+        // Directories should show 'x' bit (can enter directory)
+        if ro { "r-xr-xr-x" } else { "rwxrwxrwx" }
+    } else {
+        if ro { "r--r--r--" } else { "rw-rw-rw-" }
+    };
     format!("{}{}", c, tri)
 }
 
