@@ -762,7 +762,17 @@ pub fn force_symlink_to_directory<P: AsRef<Path>, Q: AsRef<Path>>(file_path: P, 
     let symlink_path = symlink_path.as_ref();
 
     if lfs::symlink_metadata(symlink_path).is_ok() {
-        lfs::remove_file(symlink_path)?;
+        // Check if it's a symlink (can be removed with remove_file) or a real directory
+        if lfs::is_symlink(symlink_path) {
+            lfs::remove_file(symlink_path)?;
+        } else if symlink_path.is_dir() {
+            // It's a real directory, not a symlink. Remove it if empty.
+            // This handles the case where environment is being recreated with different config.
+            lfs::remove_dir(symlink_path)?;
+        } else {
+            // It's a regular file
+            lfs::remove_file(symlink_path)?;
+        }
     }
 
     log::debug!(
