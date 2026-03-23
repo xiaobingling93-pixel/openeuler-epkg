@@ -8,8 +8,8 @@ check_cmd clang --version || lang_skip "no clang for OS=$OS"
 
 run_ebin clang --version
 
-# msys2 has bash but no /bin/sh
-if [ "$OS" = "msys2" ]; then
+# msys2/conda on Windows have bash but no /bin/sh
+if [ "$OS" = "msys2" ] || [ "$OS" = "conda" ]; then
     SHELL_CMD="bash -c"
 else
     SHELL_CMD="/bin/sh -c"

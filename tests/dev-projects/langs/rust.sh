@@ -8,8 +8,8 @@ check_cmd cargo --version || lang_skip "no rust package for OS=$OS"
 
 run_ebin cargo --version
 
-# msys2 has bash but no /bin/sh
-if [ "$OS" = "msys2" ]; then
+# msys2/conda on Windows have bash but no /bin/sh
+if [ "$OS" = "msys2" ] || [ "$OS" = "conda" ]; then
     SHELL_CMD="bash -c"
 else
     SHELL_CMD="/bin/sh -c"
