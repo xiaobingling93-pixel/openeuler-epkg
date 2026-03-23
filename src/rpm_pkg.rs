@@ -124,12 +124,13 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
                         let _ = permissions;
                     }
                     FileMode::SymbolicLink { permissions: _ } => {
-                        // Create symbolic link
+                        // Create symbolic link (sanitize target like tar_extract / unpack_tar_archive)
                         if !file.metadata.linkto.is_empty() {
                             #[cfg(unix)]
                             {
-                                if let Err(e) = lfs::symlink(&file.metadata.linkto, &file_path) {
-                                    log::warn!("Failed to create symlink {:?} -> {:?}: {}", file_path, file.metadata.linkto, e);
+                                let link_target = lfs::sanitize_path_for_windows(Path::new(&file.metadata.linkto));
+                                if let Err(e) = lfs::symlink(&link_target, &file_path) {
+                                    log::warn!("Failed to create symlink {:?} -> {:?}: {}", file_path, link_target, e);
                                 }
                             }
                         }

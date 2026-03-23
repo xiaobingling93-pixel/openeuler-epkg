@@ -349,7 +349,8 @@ pub fn create_libexec_bin_symlinks(env_root: &Path, store_fs_dir: &Path) -> Resu
                 continue;
             }
 
-            let target_path = target_bin.join(&name);
+            let name_sanitized = lfs::sanitize_path_for_windows(std::path::Path::new(&name));
+            let target_path = target_bin.join(&name_sanitized);
 
             // Skip if already exists
             if target_path.exists() || lfs::is_symlink(&target_path) {
@@ -358,7 +359,7 @@ pub fn create_libexec_bin_symlinks(env_root: &Path, store_fs_dir: &Path) -> Resu
 
             // Create symlink pointing to the libexec/bin entry
             // The symlink target will be relative: ../../libexec/bin/<name>
-            let link_target = Path::new("../../libexec/bin").join(&name);
+            let link_target = Path::new("../../libexec/bin").join(&name_sanitized);
             match lfs::symlink(&link_target, &target_path) {
                 Ok(()) => {
                     log::info!("Created libexec symlink: {} -> {}",
@@ -751,7 +752,8 @@ fn find_and_link_alternative_interpreter(interpreter_in_env: &Path, interpreter_
         .ok_or_else(|| eyre::eyre!("No suitable interpreter found for '{}'", interpreter_basename))?;
 
     // Create a symlink from the found interpreter to the expected location
-    lfs::symlink(&target, interpreter_in_env)?;
+    let target_sanitized = lfs::sanitize_path_for_windows(&target);
+    lfs::symlink(&target_sanitized, interpreter_in_env)?;
 
     Ok(())
 }

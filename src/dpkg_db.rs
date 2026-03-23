@@ -274,6 +274,7 @@ pub fn create_dpkg_info_symlinks(pkgname: &str, pkgline: &str) -> Result<()> {
 
         // Create symlink: {pkgname}.{filetype}
         let link_name = format!("{}.{}", pkgname, filename_str);
+        let link_name = lfs::sanitize_path_for_windows(std::path::Path::new(&link_name));
         let link_path = info_dir.join(&link_name);
 
         // Remove existing symlink if present

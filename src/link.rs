@@ -895,6 +895,8 @@ fn copy_symlink(fs_file: &Path, target_path: &Path) -> Result<()> {
         }
     }
 
+    let adjusted_target = lfs::sanitize_path_for_windows(&adjusted_target);
+
     log::debug!(
         "copy_symlink: fs_file={}, adjusted_target={}, is_directory_symlink={}",
         fs_file.display(),

@@ -1241,24 +1241,35 @@ pub fn copy_scriptlets_by_mapping<P: AsRef<Path>>(
     let target_dir = target_dir.as_ref();
 
     for (package_script, common_script) in mapping {
-        let source_path = source_dir.join(package_script);
+        let package_script = lfs::sanitize_path_for_windows(std::path::Path::new(package_script));
+        let common_script = lfs::sanitize_path_for_windows(std::path::Path::new(common_script));
+        let source_path = source_dir.join(&package_script);
         if source_path.exists() {
-            log::debug!("Found scriptlet: {}", package_script);
-            let target_path = target_dir.join(common_script);
+            log::debug!("Found scriptlet: {}", package_script.display());
+            let target_path = target_dir.join(&common_script);
             if use_symlink {
                 let rel = pathdiff::diff_paths(&source_path, target_dir).unwrap_or_else(|| {
                     let base = source_dir.file_name().and_then(|o| o.to_str()).unwrap_or("deb");
-                    PathBuf::from(format!("../{}/{}", base, package_script))
+                    PathBuf::from(format!("../{}/{}", base, package_script.display()))
                 });
+                let rel = lfs::sanitize_path_for_windows(&rel);
                 if lfs::symlink_metadata(&target_path).is_ok() {
                     lfs::remove_file(&target_path)?;
                 }
                 log::debug!("Creating symlink: {} -> {}", target_path.display(), rel.display());
                 lfs::symlink(rel, &target_path)?;
-                log::debug!("Created script symlink: {} -> {}", common_script, package_script);
+                log::debug!(
+                    "Created script symlink: {} -> {}",
+                    common_script.display(),
+                    package_script.display()
+                );
             } else {
                 copy_scriptlet_file(&source_path, &target_path)?;
-                log::debug!("Created script: {} -> {}", package_script, common_script);
+                log::debug!(
+                    "Created script: {} -> {}",
+                    package_script.display(),
+                    common_script.display()
+                );
             }
         }
     }

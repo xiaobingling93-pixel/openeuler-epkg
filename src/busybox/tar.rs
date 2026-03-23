@@ -330,6 +330,7 @@ fn extract_entry<R: std::io::Read>(entry: &mut tar::Entry<R>, extract_path: &str
             let linkname = entry.link_name()
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("failed to get link name: {}", e)))?
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "symlink entry missing link name"))?;
+            let linkname = lfs::sanitize_path_for_windows(&linkname);
             #[cfg(unix)]
             {
                 lfs::symlink(&linkname, &dest)
