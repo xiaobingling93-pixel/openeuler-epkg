@@ -111,7 +111,9 @@ fn extract_tar<P: AsRef<Path>>(tar_path: P, target_dir: P) -> Result<()> {
     let tar_path = tar_path.as_ref();
     let target_dir = target_dir.as_ref();
 
-    lfs::create_dir_all_with_case_sensitivity(target_dir)?;
+    // Child directories inherit case sensitivity from parent (store_tmp_dir).
+    // The parent should have case sensitivity set when created in store.rs.
+    lfs::create_dir_all(target_dir)?;
 
     let file = fs::File::open(tar_path)?;
     let filename = tar_path.file_name()

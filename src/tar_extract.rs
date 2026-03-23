@@ -483,9 +483,11 @@ pub fn create_package_dirs<P: AsRef<Path>>(
     format: &str,
 ) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
-    lfs::create_dir_all_with_case_sensitivity(store_tmp_dir.join("fs"))?;
-    lfs::create_dir_all_with_case_sensitivity(crate::dirs::path_join(store_tmp_dir, &["info", format]))?;
-    lfs::create_dir_all_with_case_sensitivity(crate::dirs::path_join(store_tmp_dir, &["info", "install"]))?;
+    // Child directories inherit case sensitivity from parent (store_tmp_dir).
+    // The parent should have case sensitivity set when created in store.rs.
+    lfs::create_dir_all(store_tmp_dir.join("fs"))?;
+    lfs::create_dir_all(crate::dirs::path_join(store_tmp_dir, &["info", format]))?;
+    lfs::create_dir_all(crate::dirs::path_join(store_tmp_dir, &["info", "install"]))?;
     Ok(())
 }
 
@@ -524,7 +526,9 @@ pub fn unpack_tar_archive<R: Read>(
 ) -> Result<()> {
     #[cfg(windows)]
     {
-        lfs::create_dir_all_with_case_sensitivity(dest)?;
+        // Child directories inherit case sensitivity from parent.
+        // The dest directory should be inside unpack/ which has case sensitivity enabled.
+        lfs::create_dir_all(dest)?;
         let mut hard_links: Vec<(PathBuf, PathBuf)> = Vec::new();
         let mut symlinks: Vec<(PathBuf, PathBuf)> = Vec::new(); // (link_path, target_path)
         let mut directories: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();

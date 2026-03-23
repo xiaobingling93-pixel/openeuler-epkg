@@ -246,10 +246,15 @@ pub fn unpack_mv_package_with_format(
     store_pkglines_by_pkgname: Option<&HashMap<String, Vec<String>>>,
     format_hint: Option<PackageFormat>,
 ) -> Result<std::path::PathBuf> {
-    // Create temporary directory for unpacking
+    // Ensure the unpack base directory exists with case sensitivity enabled.
+    // Child directories will inherit case sensitivity from the parent.
+    let unpack_base = crate::dirs::unpack_basedir();
+    lfs::create_dir_all_with_case_sensitivity(&unpack_base)?;
+
+    // Create temporary directory for unpacking (inherits case sensitivity from parent)
     let temp_name = Uuid::new_v4().to_string();
-    let store_tmp_dir = crate::dirs::unpack_basedir().join(&temp_name);
-    lfs::create_dir_all_with_case_sensitivity(&store_tmp_dir)?;
+    let store_tmp_dir = unpack_base.join(&temp_name);
+    lfs::create_dir_all(&store_tmp_dir)?;
 
     // Unpack the package (with optional format hint)
     general_unpack_package(Path::new(package_file), &store_tmp_dir, pkgkey, format_hint)
