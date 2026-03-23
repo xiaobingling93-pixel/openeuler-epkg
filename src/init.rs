@@ -576,6 +576,16 @@ fn ensure_home_epkg_symlinks(self_env_root: &Path, self_usr_bin: &Path) -> Resul
 fn link_home_epkg_subdir(home_epkg: &Path, name: &str, target: &Path) {
     let link = home_epkg.join(name);
 
+    // Ensure parent directory exists before creating symlink
+    if let Err(e) = lfs::create_dir_all(home_epkg) {
+        log::warn!(
+            "Failed to create directory {}: {}",
+            home_epkg.display(),
+            e
+        );
+        return;
+    }
+
     println!("Creating symlink: {} -> {}", link.display(), target.display());
     if let Err(e) = utils::force_symlink_to_directory(target, &link) {
         log::warn!(
