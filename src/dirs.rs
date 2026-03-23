@@ -1,4 +1,22 @@
+//! # Path layout (`dirs`) at startup
+//!
+//! How `EPKGDirs` is filled before the rest of epkg runs:
+//!
+//! 1. **Load YAML** — `load_config_from_matches` deserializes `options.yaml` (or `--config`) into
+//!    `EPKGConfig`. The `dirs` field may be empty or only partially set.
+//! 2. **Common options** — `parse_options_common` applies global CLI flags, arch, and
+//!    `init.shared_store` (except `self install`, which sets store mode from its own flags).
+//! 3. **Subcommand** — `parse_options_subcommand` runs the subcommand parser, then
+//!    `determine_environment_final` and `validate_env_name`.
+//! 4. **Finalize dirs** — [`init_config_dirs`] runs `EPKGDirs::build_dirs` (OS + `shared_store`),
+//!    merges into `config.dirs`, then moves that merged value into a process-global [`OnceLock`]
+//!    (YAML overrides preserved). The `dirs` field on the stored [`crate::models::EPKGConfig`] is
+//!    left empty after the move.
+//! 5. **Readers** — [`crate::models::dirs`] and [`dirs_ref`] return `&'static EPKGDirs` pointing at
+//!    that single `OnceLock` allocation (no per-call clone).
+
 use std::env;
+use std::sync::OnceLock;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -13,6 +31,19 @@ use crate::utils;
 use crate::userdb;
 use color_eyre::eyre::{self};
 use color_eyre::Result;
+
+/// Holds the merged [`EPKGDirs`] after [`init_config_dirs`] (exactly one `set`; read-only thereafter).
+static DIRS: OnceLock<EPKGDirs> = OnceLock::new();
+
+/// Read-only path layout for this process (same backing store as [`crate::models::dirs`]).
+///
+/// Prefer [`crate::models::dirs`] at call sites so [`crate::models::config`] is initialized first;
+/// use `dirs_ref` only when you know parsing has already run.
+#[inline]
+pub fn dirs_ref() -> &'static EPKGDirs {
+    DIRS.get()
+        .expect("dirs not initialized (init_config_dirs must run before dirs_ref)")
+}
 
 /// Join `parts` onto `base` with one `Path::join` per component (avoids `.join("a/b")` mixing
 /// separators on Windows.)
@@ -33,6 +64,13 @@ pub const EPKG_USR_BIN_NAME: &str = "epkg";
 
 #[cfg(unix)]
 impl EPKGDirs {
+    /// Computes the full default path layout for `options` (shared vs private store, home, username).
+    ///
+    /// **Steps:**
+    ///
+    /// 1. Called from `init_config_dirs` before `merge_from`.
+    /// 2. [`init_config_dirs`] merges this into `config.dirs`, then moves the result into the
+    ///    global `OnceLock` (see that function).
     pub fn build_dirs(options: &EPKGConfig) -> Result<Self> {
         let opt_epkg = PathBuf::from("/opt/epkg");
         let home = get_home()?;
@@ -80,6 +118,10 @@ impl EPKGDirs {
     }
 }
 
+/// Windows shared-install root: `D:\epkg` when drive `D:` exists, otherwise `C:\epkg`.
+///
+/// This only applies when you use a shared store install on Windows; the D: drive check avoids
+/// putting a large store on a small system C: when a second disk is available.
 #[cfg(windows)]
 fn windows_global_epkg_root() -> PathBuf {
     let d = Path::new("D:\\");
@@ -92,6 +134,13 @@ fn windows_global_epkg_root() -> PathBuf {
 
 #[cfg(windows)]
 impl EPKGDirs {
+    /// Computes the full default path layout for `options` (shared vs private store, `%USERPROFILE%`, etc.).
+    ///
+    /// **Steps:**
+    ///
+    /// 1. Called from `init_config_dirs` before `merge_from`.
+    /// 2. [`init_config_dirs`] merges this into `config.dirs`, then moves the result into the
+    ///    global `OnceLock` (see that function).
     pub fn build_dirs(options: &EPKGConfig) -> Result<Self> {
         let opt_epkg = windows_global_epkg_root();
 
@@ -143,15 +192,42 @@ impl EPKGDirs {
     }
 }
 
-/// Fill `config.dirs` from `EPKGDirs::build_dirs` for any path still empty (YAML may set `dirs` partially).
+/// Finishes your `dirs` configuration after CLI and `options.yaml` are loaded.
+///
+/// You may have set only some paths under `dirs:`; this fills every remaining empty field
+/// using the same rules as a fresh install ([`EPKGDirs::build_dirs`]), then installs the merged
+/// snapshot as the process-wide read-only path roots (see module docs).
+///
+/// **Steps:**
+///
+/// 1. `computed = EPKGDirs::build_dirs(config)?` — full default layout for current `EPKGConfig`.
+/// 2. `config.dirs.merge_from(&computed)` — YAML paths win; empty slots filled from `computed`.
+/// 3. `mem::take(&mut config.dirs)` into the global `OnceLock` — `config.dirs` becomes default-empty.
 pub fn init_config_dirs(config: &mut EPKGConfig) -> Result<()> {
+    if DIRS.get().is_some() {
+        return Err(eyre::eyre!("init_config_dirs: already initialized"));
+    }
     let computed = EPKGDirs::build_dirs(config)?;
     config.dirs.merge_from(&computed);
+    let merged = std::mem::take(&mut config.dirs);
+    DIRS.set(merged)
+        .map_err(|_| eyre::eyre!("init_config_dirs: DIRS.set failed (duplicate init)"))?;
     Ok(())
 }
 
 impl EPKGDirs {
-    /// Keep non-empty paths from `self`; fill empty slots from `computed`.
+    /// Keeps paths you already set in `options.yaml` and copies defaults from `computed` only into empty slots.
+    ///
+    /// So your explicit overrides win; anything you left out gets the usual defaults for your OS
+    /// and shared/private store mode.
+    ///
+    /// **Steps:**
+    ///
+    /// 1. For each path field, if `self` is empty, copy from the same field in `computed` (built by `build_dirs`).
+    /// 2. Non-empty `self` values (from YAML) are left unchanged.
+    ///
+    /// [`init_config_dirs`] then moves `self` out into the global `OnceLock`; callers read paths via
+    /// [`crate::models::dirs`] / [`dirs_ref`], not via the `dirs` field on [`EPKGConfig`] after init.
     pub fn merge_from(&mut self, computed: &EPKGDirs) {
         let m = |p: &mut PathBuf, q: &PathBuf| {
             if p.as_os_str().is_empty() {
@@ -172,7 +248,7 @@ impl EPKGDirs {
 
 /// Get the base path to unpack package temporarily
 pub fn unpack_basedir() -> PathBuf {
-    dirs().epkg_store.join("unpack")
+    dirs_ref().epkg_store.join("unpack")
 }
 
 pub fn get_env_root(env_name: String) -> Result<PathBuf> {
@@ -243,7 +319,7 @@ pub fn get_env_base_path(env_name: &str) -> PathBuf {
     }
 
     // Visit my own env
-    dirs().user_envs.join(env_name)
+    dirs_ref().user_envs.join(env_name)
 }
 
 /// Get the relative path to epkg environment config (etc/epkg/env.yaml)
@@ -404,7 +480,7 @@ pub fn get_repo_dir(repo: &RepoRevise) -> PathBuf {
     let repodata_name = repo.repodata_name.clone();
     #[cfg(windows)]
     let repodata_name = repodata_name.replace('/', "\\");
-    dirs()
+    dirs_ref()
         .epkg_channels_cache
         .join(&repo.channel)
         .join(repodata_name)
@@ -596,7 +672,7 @@ pub fn get_username() -> Result<String> {
 
 /// Get the base path to users' public environments directories
 pub fn public_envs_path() -> PathBuf {
-    dirs().opt_epkg.join("envs")
+    dirs_ref().opt_epkg.join("envs")
 }
 
 /// Walk all directories in the given parent directory and call the callback for each.
@@ -671,7 +747,7 @@ where
         walk_public_envs(&mut callback)?;
     } else {
         // Walk $HOME/.epkg/envs/* (private envs)
-        let personal_envs_root = &dirs().user_envs;
+        let personal_envs_root = &dirs_ref().user_envs;
         walk_bottom_dir(personal_envs_root, None, &mut callback)?;
 
         // Also walk public envs so users can see others' public environments

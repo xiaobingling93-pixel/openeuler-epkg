@@ -1012,7 +1012,23 @@ pub struct EPKGConfig {
     #[serde(skip)]
     pub subcommand: EpkgCommand,
 
-    /// All installation paths. Optional keys under `dirs:` in options.yaml; empty fields are filled by `dirs::init_config_dirs()`.
+    /// Where epkg keeps your data: store, caches, environment roots, etc.
+    ///
+    /// You can set `dirs:` in `~/.epkg/config/options.yaml` (or `--config`) to override any path.
+    /// Omit a field or leave it `""` to use the usual default for your OS and install mode
+    /// (private vs shared store). During parsing, [`crate::dirs::init_config_dirs`] merges defaults
+    /// into this field, then **moves** the merged value into a process-global [`std::sync::OnceLock`];
+    /// after that, this field is left empty and real paths are read only via [`dirs`] or
+    /// [`crate::dirs::dirs_ref`].
+    ///
+    /// **Startup path flow** (full detail: `crate::dirs` module documentation):
+    ///
+    /// 1. YAML deserializes into `dirs` (often empty or partial).
+    /// 2. `parse_options_common` loads flags and sets `init.shared_store` (except `self install`).
+    /// 3. `parse_options_subcommand` parses the subcommand and finalizes env name/root.
+    /// 4. `init_config_dirs` runs `build_dirs`, `merge_from`, then moves the merged `dirs` into the
+    ///    global `OnceLock`.
+    /// 5. `CONFIG` holds the rest of `EPKGConfig`; path roots are not duplicated here—use [`dirs`].
     #[serde(default)]
     pub dirs: EPKGDirs,
 }
@@ -1222,6 +1238,19 @@ pub struct ServiceOptions {
     pub all: bool, // Used for 'epkg status --all'
 }
 
+/// All filesystem paths for one epkg installation (yours, as resolved at startup).
+///
+/// Normally you do not edit this; it is populated from defaults and your `options.yaml`
+/// `dirs:` block. Each field is one root or subdirectory epkg uses (store, channel cache,
+/// per-user envs, etc.).
+///
+/// **Resolution steps:**
+///
+/// 1. Serde fills `dirs` from YAML (missing keys → empty paths).
+/// 2. [`crate::dirs::init_config_dirs`] merges in defaults: non-empty YAML paths kept, empty slots
+///    from `EPKGDirs::build_dirs` in `crate::dirs`.
+/// 3. The merged struct is moved into the process-global `OnceLock`; the `dirs` field on
+///    [`EPKGConfig`] is then empty. Read paths via [`dirs`] or [`crate::dirs::dirs_ref`].
 #[derive(Default, Debug, Clone, Deserialize)]
 pub struct EPKGDirs {
     // Base directories
@@ -1341,6 +1370,14 @@ pub fn clap_matches() -> &'static clap::ArgMatches {
 }
 
 /// Initialize global CONFIG and CLAP_MATCHES. Call once at startup for either applet or epkg main invocation.
+///
+/// **Steps:**
+///
+/// 1. Build `clap` `matches` (real argv or applet stub).
+/// 2. `parse_options_common` — YAML + common CLI (see [`crate::parse_options_common`]).
+/// 3. `CLAP_MATCHES.set(matches)` so `clap_matches()` works during subcommand parsing.
+/// 4. `parse_options_subcommand` — subcommand parsing, env finalization, `init_config_dirs`.
+/// 5. Store the final `EPKGConfig` in `CONFIG` (merged path roots live in `crate::dirs::dirs_ref`, not in `config.dirs`).
 #[cfg(not(test))]
 pub fn init_config(invoked_as_applet: bool) -> Result<()> {
     let matches = if invoked_as_applet {
@@ -1367,6 +1404,7 @@ pub fn init_config(invoked_as_applet: bool) -> Result<()> {
 // RwLock (not OnceLock): written once in init_config(), read by config(). We keep RwLock because
 // config_mut() is used in solver_tests to reset and override the global config per test; OnceLock
 // cannot be mutated after init, so tests would need a different design.
+// Path roots are not read from EPKGConfig.dirs after parse (see crate::dirs::init_config_dirs); use dirs().
 static CONFIG: RwLock<Option<EPKGConfig>> = RwLock::new(None);
 
 /// Guard that derefs to `EPKGConfig` (read-only).
@@ -1438,6 +1476,18 @@ pub fn config_mut() -> ConfigMutGuard {
     ConfigMutGuard(guard)
 }
 
-pub fn dirs() -> EPKGDirs {
-    config().dirs.clone()
+/// Returns the path layout epkg is using for this process: `&'static EPKGDirs` backed by a single
+/// [`std::sync::OnceLock`] filled in [`crate::dirs::init_config_dirs`] (no per-call allocation or
+/// deep clone of path strings).
+///
+/// Use this when you need a path to the store, download cache, env roots, etc. It reflects
+/// your `options.yaml` overrides and the usual OS defaults for anything you left unset.
+///
+/// **Steps:**
+///
+/// 1. `config()` ensures `CONFIG` is initialized (same parse path as `init_config` if needed).
+/// 2. Return [`crate::dirs::dirs_ref`] (same backing storage as this function).
+pub fn dirs() -> &'static EPKGDirs {
+    let _guard = config();
+    crate::dirs::dirs_ref()
 }

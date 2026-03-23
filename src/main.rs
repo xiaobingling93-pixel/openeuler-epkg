@@ -1159,6 +1159,18 @@ fn setup_parallel_params(config: &mut EPKGConfig, matches: &clap::ArgMatches) {
     }
 }
 
+/// Load `options.yaml` (or `--config`), apply common CLI flags, and resolve architecture and shared-store mode.
+///
+/// **Steps:**
+///
+/// 1. `load_config_from_matches` — YAML → `EPKGConfig` (`dirs` may be partial).
+/// 2. `determine_environment_explicit` — env hints from `-e` / `-r` / cwd.
+/// 3. `set_arch_and_validate` — `--arch` or default.
+/// 4. `set_common_flags` — dry-run, quiet, verbose, etc.
+/// 5. `set_command_line_and_subcommand` — argv string, `EpkgCommand`, `init.shared_store` (unless `self install`).
+/// 6. `set_metadata_expire_and_proxy`, `setup_parallel_params` — download/processing knobs.
+///
+/// Does not finalize `dirs`; that is step 4 of `parse_options_subcommand` via `init_config_dirs`.
 pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
     let mut config = load_config_from_matches(matches)?;
     determine_environment_explicit(matches, &mut config);
@@ -1646,6 +1658,16 @@ fn search_registered_envs(command: &str, options: &mut EPKGConfig) {
     }
 }
 
+/// Parse subcommand-specific options, finalize environment fields, then complete the path layout.
+///
+/// **Steps:**
+///
+/// 1. Dispatch the matching `parse_options_*` for the active subcommand (may set `init`, e.g. `self install`).
+/// 2. `determine_environment_final` — resolve env name and root from cwd, registration, etc.
+/// 3. `validate_env_name` — reject path-like names where a name is required.
+/// 4. `init_config_dirs` — `build_dirs`, `merge_from`, then move merged paths into the global `OnceLock`
+///    (`config.dirs` is cleared afterward).
+/// 5. Return the full `EPKGConfig` for `CONFIG`.
 pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConfig) -> Result<EPKGConfig> {
     match matches.subcommand() {
         Some(("self",       sub_matches))  =>  parse_options_self(&mut config, sub_matches).expect("Failed to parse self options"),
@@ -1671,7 +1693,9 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
     determine_environment_final(&mut config)?;
     validate_env_name(&config.common.env_name)?;
     crate::dirs::init_config_dirs(&mut config)?;
+    // `config.dirs` is empty here (merged paths live in `dirs::DIRS`); trace them separately.
     log::trace!("Configuration: {:#?}", config);
+    log::trace!("dirs: {:#?}", crate::dirs::dirs_ref());
     Ok(config)
 }
 
