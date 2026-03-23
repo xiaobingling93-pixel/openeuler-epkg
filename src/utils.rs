@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::io::{BufRead, BufReader, Read, Write, Seek, SeekFrom};
-use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 use color_eyre::Result;
@@ -362,62 +361,66 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
     }
 
     // Extract all entries (Unix: per-entry sanitize; Windows uses unpack_tar_archive above)
-    for entry in archive.entries()? {
-        let mut entry = match entry {
-            Ok(entry) => entry,
-            Err(e) => {
-                return Err(eyre::eyre!("Error reading tar entry: {}", e));
-            }
-        };
-
-        let path = match entry.path() {
-            Ok(path) => path,
-            Err(e) => {
-                return Err(eyre::eyre!("Error getting entry path: {}", e));
-            }
-        };
-
-        // Skip pax_global_header file
-        if path.file_name().map_or(false, |name| name == "pax_global_header") {
-            continue;
-        }
-
-        // Sanitize path for Windows (handles `::` in Perl man pages, etc.)
-        let sanitized_path = lfs::sanitize_path_for_windows(&path);
-        if path != sanitized_path {
-            log::debug!("Sanitized tar entry path: '{}' -> '{}'",
-                       path.display(), sanitized_path.display());
-        }
-
-        let full_path = dest_dir.join(&sanitized_path);
-
-        // Create parent directories if needed
-        if path.is_dir() {
-            lfs::create_dir_all(&full_path)?;
-            continue;
-        }
-
-        // only files
-        match entry.unpack(&full_path) {
-            Ok(_) => {
-                // Verify file was created - use symlink_metadata to handle symlinks
-                // (exists() returns false for broken symlinks whose targets don't exist yet)
-                if let Err(e) = fs::symlink_metadata(&full_path) {
-                    return Err(eyre::eyre!("Cannot access extracted file {}: {}", full_path.display(), e));
+    #[cfg(not(windows))]
+    {
+        for entry in archive.entries()? {
+            let mut entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    return Err(eyre::eyre!("Error reading tar entry: {}", e));
                 }
-            },
-            Err(e) => {
-                if e.kind() == ErrorKind::AlreadyExists {
-                    lfs::remove_file(&full_path)?;
-                    entry.unpack(&full_path)
-                        .with_context(|| format!("Error extracting {} after removal", full_path.display()))?;
-                } else {
-                    return Err(eyre::eyre!("Error extracting {}: {}", full_path.display(), e))
+            };
+
+            let path = match entry.path() {
+                Ok(path) => path,
+                Err(e) => {
+                    return Err(eyre::eyre!("Error getting entry path: {}", e));
+                }
+            };
+
+            // Skip pax_global_header file
+            if path.file_name().map_or(false, |name| name == "pax_global_header") {
+                continue;
+            }
+
+            // Sanitize path for Windows (handles `::` in Perl man pages, etc.)
+            let sanitized_path = lfs::sanitize_path_for_windows(&path);
+            if path != sanitized_path {
+                log::debug!("Sanitized tar entry path: '{}' -> '{}'",
+                           path.display(), sanitized_path.display());
+            }
+
+            let full_path = dest_dir.join(&sanitized_path);
+
+            // Create parent directories if needed
+            if path.is_dir() {
+                lfs::create_dir_all(&full_path)?;
+                continue;
+            }
+
+            // only files
+            match entry.unpack(&full_path) {
+                Ok(_) => {
+                    // Verify file was created - use symlink_metadata to handle symlinks
+                    // (exists() returns false for broken symlinks whose targets don't exist yet)
+                    if let Err(e) = fs::symlink_metadata(&full_path) {
+                        return Err(eyre::eyre!("Cannot access extracted file {}: {}", full_path.display(), e));
+                    }
+                },
+                Err(e) => {
+                    if e.kind() == io::ErrorKind::AlreadyExists {
+                        lfs::remove_file(&full_path)?;
+                        entry.unpack(&full_path)
+                            .with_context(|| format!("Error extracting {} after removal", full_path.display()))?;
+                    } else {
+                        return Err(eyre::eyre!("Error extracting {}: {}", full_path.display(), e))
+                    }
                 }
             }
         }
     }
 
+    #[cfg(not(windows))]
     Ok(())
 }
 

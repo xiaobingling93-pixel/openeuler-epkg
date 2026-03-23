@@ -483,7 +483,10 @@ pub fn create_dir_all_with_case_sensitivity<P: AsRef<Path>>(path: P) -> Result<(
 /// On Unix systems, case sensitivity is always enabled; delegate to create_dir_all.
 #[cfg(not(windows))]
 pub fn create_dir_all_with_case_sensitivity<P: AsRef<Path>>(path: P) -> Result<()> {
-    create_dir_all(path)
+    let path = path.as_ref();
+    create_dir_all(path)?;
+    set_case_sensitive(path)?;
+    Ok(())
 }
 
 /// Create a single directory, then enable case sensitivity on Windows.
@@ -503,7 +506,10 @@ pub fn create_dir_with_case_sensitivity<P: AsRef<Path>>(path: P) -> Result<()> {
 #[cfg(not(windows))]
 #[allow(dead_code)]
 pub fn create_dir_with_case_sensitivity<P: AsRef<Path>>(path: P) -> Result<()> {
-    create_dir(path)
+    let path = path.as_ref();
+    create_dir(path)?;
+    set_case_sensitive(path)?;
+    Ok(())
 }
 
 /////////////////////
@@ -736,11 +742,6 @@ pub fn is_symlink_or_junction(path: &Path) -> bool {
 fn normalize_symlink_target(target: &Path) -> PathBuf {
     let target_str = target.to_string_lossy();
     PathBuf::from(target_str.replace('/', "\\"))
-}
-
-#[cfg(not(windows))]
-fn normalize_symlink_target(target: &Path) -> PathBuf {
-    target.to_path_buf()
 }
 
 /// Debug assertion to catch mixed path separators on Windows.
