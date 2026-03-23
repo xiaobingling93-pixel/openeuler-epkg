@@ -144,7 +144,9 @@ fn collect_in_use_resources() -> Result<(HashSet<String>, HashSet<String>)> {
     let mut in_use_packages = HashSet::new();
 
     // Walk environments based on shared_store setting
-    walk_environments(|env_path, _owner| {
+    let shared_store = config().init.shared_store;
+    let user_envs = dirs_ref().user_envs.clone();
+    walk_environments(shared_store, &user_envs, |env_path, _owner| {
         collect_env_configs(env_path, &mut in_use_channels, &mut in_use_packages)
     })?;
 

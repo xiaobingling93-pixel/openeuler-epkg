@@ -45,6 +45,21 @@ pub fn dirs_ref() -> &'static EPKGDirs {
         .expect("dirs not initialized (init_config_dirs must run before dirs_ref)")
 }
 
+/// Compute `user_envs` path without relying on `dirs_ref()`.
+/// This can be called during config initialization.
+///
+/// - If shared_store: /opt/epkg/envs/$USER
+/// - If !shared_store: $HOME/.epkg/envs
+pub fn compute_user_envs(shared_store: bool) -> Result<PathBuf> {
+    if shared_store {
+        let username = get_username()?;
+        Ok(PathBuf::from("/opt/epkg/envs").join(&username))
+    } else {
+        let home = get_home()?;
+        Ok(PathBuf::from(&home).join(".epkg").join("envs"))
+    }
+}
+
 /// Join `parts` onto `base` with one `Path::join` per component (avoids `.join("a/b")` mixing
 /// separators on Windows.)
 #[inline]
@@ -710,7 +725,7 @@ fn walk_public_envs<F>(callback: &mut F) -> Result<()>
 where
     F: FnMut(&Path, Option<&str>) -> Result<()>,
 {
-    let allusers_envs_base = public_envs_path();
+    let allusers_envs_base = PathBuf::from("/opt/epkg/envs");
     match fs::read_dir(&allusers_envs_base) {
         Ok(entries) => {
             for entry in entries.flatten() {
@@ -738,17 +753,19 @@ where
 ///
 /// Calls the callback for each environment found with (env_path, owner_opt).
 /// owner_opt is Some(owner) for shared_store, None for private.
-pub fn walk_environments<F>(mut callback: F) -> Result<()>
+///
+/// **Note**: This function takes `shared_store` and `user_envs` as parameters to avoid calling
+/// `config()` and `dirs_ref()` which would cause deadlock during config initialization.
+pub fn walk_environments<F>(shared_store: bool, user_envs: &Path, mut callback: F) -> Result<()>
 where
     F: FnMut(&Path, Option<&str>) -> Result<()>,
 {
-    if config().init.shared_store {
+    if shared_store {
         // Walk /opt/epkg/envs/*/*
         walk_public_envs(&mut callback)?;
     } else {
         // Walk $HOME/.epkg/envs/* (private envs)
-        let personal_envs_root = &dirs_ref().user_envs;
-        walk_bottom_dir(personal_envs_root, None, &mut callback)?;
+        walk_bottom_dir(user_envs, None, &mut callback)?;
 
         // Also walk public envs so users can see others' public environments
         walk_public_envs(&mut callback)?;

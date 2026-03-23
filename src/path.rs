@@ -117,7 +117,8 @@ fn get_registered_env_paths() -> Result<Vec<String>> {
     let mut prepend: Vec<(i32, String, String)> = Vec::new();
     let mut append: Vec<(i32, String, String)> = Vec::new();
 
-    let configs = registered_env_configs();
+    let shared_store = config().init.shared_store;
+    let configs = registered_env_configs(shared_store);
     for config in configs {
         let ebin_path = Path::new(&config.env_root).join("ebin");
         // Use exists_or_any_symlink which handles directories (unlike exists_in_env which is file-only)

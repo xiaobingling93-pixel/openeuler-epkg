@@ -1651,7 +1651,8 @@ fn set_env_name_by_path(dot_eenv: &Path, options: &mut EPKGConfig) -> Result<()>
 }
 
 fn search_registered_envs(command: &str, options: &mut EPKGConfig) {
-    if let Ok(Some((env_name, env_root))) = find_command_in_registered_envs(command) {
+    let shared_store = options.init.shared_store;
+    if let Ok(Some((env_name, env_root))) = find_command_in_registered_envs(command, shared_store) {
         // Command found in a registered environment
         options.common.env_name = env_name;
         options.common.env_root = env_root.to_string_lossy().to_string();

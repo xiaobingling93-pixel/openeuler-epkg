@@ -102,7 +102,8 @@ fn push_env_var(
 }
 
 fn next_prepend_path_order() -> Result<i32> {
-    let registered = registered_env_configs();
+    let shared_store = config().init.shared_store;
+    let registered = registered_env_configs(shared_store);
     let used: HashSet<i32> = registered.into_iter()
         .filter(|cfg| cfg.register_path_order >= 0)
         .map(|cfg| cfg.register_path_order)
@@ -126,9 +127,11 @@ pub fn get_all_env_names() -> Result<Vec<(String, bool)>> {
     let mut my_envs = Vec::new();
     let mut other_envs = Vec::new();
     let current_user = get_username()?;
+    let shared_store = config().init.shared_store;
+    let user_envs = dirs_ref().user_envs.clone();
 
     // Walk environments (private and public)
-    walk_environments(|env_path, owner| {
+    walk_environments(shared_store, &user_envs, |env_path, owner| {
         let name = env_path.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or_default()
@@ -206,7 +209,8 @@ pub fn list_environments() -> Result<()> {
         .unwrap_or_default();
 
     // Get registered environment configs to retrieve register_path_order
-    let registered_configs = registered_env_configs();
+    let shared_store = config().init.shared_store;
+    let registered_configs = registered_env_configs(shared_store);
     let registered_map: HashMap<String, i32> = registered_configs
         .into_iter()
         .map(|cfg| (cfg.name, cfg.register_path_order))
@@ -1353,15 +1357,24 @@ pub fn set_environment_config(name: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn registered_env_configs() -> Vec<EnvConfig> {
+/// Get list of registered environment configs from env.yaml files.
+///
+/// **Note**: This function takes `shared_store` as parameter to avoid calling `config()`
+/// which would cause deadlock during config initialization.
+pub fn registered_env_configs(shared_store: bool) -> Vec<EnvConfig> {
     use std::fs;
 
     let mut configs = Vec::new();
     let current_user = get_username().unwrap_or_default();
-    let shared_store = config().init.shared_store;
+
+    // Compute user_envs without relying on dirs_ref() which may not be initialized yet
+    let user_envs = match compute_user_envs(shared_store) {
+        Ok(path) => path,
+        Err(_) => return configs,
+    };
 
     // Walk all environments (private and public based on shared_store setting)
-    let _ = walk_environments(|env_path, owner| {
+    let _ = walk_environments(shared_store, &user_envs, |env_path, owner| {
         let env_name = match env_path.file_name().and_then(|n| n.to_str()) {
             Some(name) => name,
             None => return Ok(()),
@@ -1460,9 +1473,12 @@ pub fn registered_env_configs() -> Vec<EnvConfig> {
 /// Find which registered environment contains a given command
 /// Returns the environment name and root path if found, None otherwise
 /// Searches environments in order of registration path-order (lower number first: earlier in PATH)
-pub fn find_command_in_registered_envs(cmd_name: &str) -> Result<Option<(String, PathBuf)>> {
+///
+/// **Note**: This function takes `shared_store` as parameter to avoid calling `config()`
+/// which would cause deadlock during config initialization.
+pub fn find_command_in_registered_envs(cmd_name: &str, shared_store: bool) -> Result<Option<(String, PathBuf)>> {
     // Get registered environment configs with PATH orders
-    let mut configs = registered_env_configs();
+    let mut configs = registered_env_configs(shared_store);
 
     // Sort by registration order (lower number = earlier in PATH = checked first)
     // For equal order, sort by name for deterministic results
@@ -1489,42 +1505,37 @@ pub fn find_command_in_registered_envs(cmd_name: &str) -> Result<Option<(String,
     #[cfg(not(windows))]
     let command_candidates = vec![cmd_name.to_string()];
 
-    for config in configs {
-        match get_env_root(config.name.clone()) {
-            Ok(env_root) => {
-                for bin_dir in &bin_dirs {
-                    #[cfg(windows)]
-                    let bin_path = PathBuf::from(bin_dir.replace('/', "\\"));
-                    #[cfg(not(windows))]
-                    let bin_path = Path::new(bin_dir);
+    for env_cfg in configs {
+        // Use env_root directly from EnvConfig instead of calling get_env_root()
+        // which would cause deadlock by calling config() during initialization
+        let env_root = PathBuf::from(&env_cfg.env_root);
+        for bin_dir in &bin_dirs {
+            #[cfg(windows)]
+            let bin_path = PathBuf::from(bin_dir.replace('/', "\\"));
+            #[cfg(not(windows))]
+            let bin_path = Path::new(bin_dir);
 
-                    for candidate in &command_candidates {
-                        let cmd_path = env_root.join(&bin_path).join(candidate);
-                        if !lfs::exists_in_env(&cmd_path) {
-                            continue;
-                        }
-                        // Check if executable (Unix only)
-                        #[cfg(unix)]
-                        {
-                            if let Ok(metadata) = lfs::symlink_metadata(&cmd_path) {
-                                let permissions = metadata.permissions();
-                                if permissions.mode() & 0o111 != 0 {
-                                    log::debug!("found command '{}' at path '{}'", cmd_name, cmd_path.display());
-                                    return Ok(Some((config.name.clone(), env_root)));
-                                }
-                            }
-                        }
-                        #[cfg(not(unix))]
-                        {
-                            // On non-Unix, just check existence
-                            return Ok(Some((config.name.clone(), env_root)));
+            for candidate in &command_candidates {
+                let cmd_path = env_root.join(&bin_path).join(candidate);
+                if !lfs::exists_in_env(&cmd_path) {
+                    continue;
+                }
+                // Check if executable (Unix only)
+                #[cfg(unix)]
+                {
+                    if let Ok(metadata) = lfs::symlink_metadata(&cmd_path) {
+                        let permissions = metadata.permissions();
+                        if permissions.mode() & 0o111 != 0 {
+                            log::debug!("found command '{}' at path '{}'", cmd_name, cmd_path.display());
+                            return Ok(Some((env_cfg.name.clone(), env_root)));
                         }
                     }
                 }
-            }
-            Err(_) => {
-                // Environment might have been removed; skip
-                continue;
+                #[cfg(not(unix))]
+                {
+                    // On non-Unix, just check existence
+                    return Ok(Some((env_cfg.name.clone(), env_root)));
+                }
             }
         }
     }
