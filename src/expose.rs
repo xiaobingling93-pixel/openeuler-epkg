@@ -642,18 +642,18 @@ fn create_shebang_line(env_root: &Path, first_line: &str, script_path: &Path) ->
 /// Create the wrapper for the interpreter in the ebin directory
 fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpreter_basename: &str, script_path: &Path) -> Result<String> {
     // Example: env_interpreter_path = "/home/wfg/.epkg/envs/main/ebin/sh"
-    let env_interpreter_path = format!("{}/ebin/{}", env_root.display(), interpreter_basename);
-    let env_interpreter = Path::new(&env_interpreter_path);
+    let env_interpreter = crate::dirs::path_join(env_root, &["ebin", interpreter_basename]);
 
-    if !lfs::exists_in_env(env_interpreter) {
+    if !lfs::exists_in_env(&env_interpreter) {
         // Example: interpreter_in_env = "/home/wfg/.epkg/envs/main/bin/sh"
         // Which is a symlink to: "/home/wfg/.epkg/store/twktsyye3ksj068w2fx9pz5fefwy70mw__bash__5.2.15__9.oe2403/fs/usr/bin/bash"
-        // use format!() instead of Path::join() to enforce simple string operation
-        let interpreter_in_env = format!("{}{}", env_root.display(), interpreter_path);
-        let interpreter_in_env = Path::new(&interpreter_in_env);
+        // Convert interpreter_path (Unix-style like "/usr/bin/python3.14") to Windows-style relative path
+        let interpreter_rel = interpreter_path.strip_prefix('/').unwrap_or(interpreter_path);
+        let interpreter_rel = lfs::normalize_path_separators(Path::new(interpreter_rel));
+        let interpreter_in_env = env_root.join(&interpreter_rel);
 
         // Find and link the interpreter if needed
-        match find_link_interpreter(interpreter_in_env, interpreter_basename, env_root) {
+        match find_link_interpreter(&interpreter_in_env, interpreter_basename, env_root) {
             Ok(()) => {}
             Err(e) => {
                 log::info!(
@@ -670,8 +670,8 @@ fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpret
         // Resolve to a path within the env first (e.g. env_root/usr/bin/yash), then canonicalize.
         // Using canonicalize(interpreter_in_env) would follow bin/sh -> /usr/bin/yash and fail with
         // ENOENT in containers where only env_root/usr/bin/yash exists.
-        let path_to_canonicalize = lfs::resolve_symlink_in_env(interpreter_in_env, env_root)
-            .unwrap_or_else(|| interpreter_in_env.to_path_buf());
+        let path_to_canonicalize = lfs::resolve_symlink_in_env(&interpreter_in_env, env_root)
+            .unwrap_or_else(|| interpreter_in_env.clone());
         let store_interpreter = fs::canonicalize(&path_to_canonicalize)
             .with_context(|| format!("Failed to resolve interpreter path: {}", path_to_canonicalize.display()))?;
 
@@ -683,10 +683,10 @@ fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpret
         // env_root="/home/wfg/.epkg/envs/main",
         // store_interpreter="/home/wfg/.epkg/store/twktsyye3ksj068w2fx9pz5fefwy70mw__bash__5.2.15__9.oe2403/fs/usr/bin/bash",
         // interpreter_in_env="/home/wfg/.epkg/envs/main/bin/sh"
-        handle_elf(env_interpreter, env_root, &store_interpreter)?;
+        handle_elf(&env_interpreter, env_root, &store_interpreter)?;
     }
 
-    Ok(env_interpreter_path)
+    Ok(env_interpreter.to_string_lossy().into_owned())
 }
 
 /// Find and link the appropriate interpreter if it doesn't exist

@@ -985,10 +985,9 @@ fn replace_symlinks_with_content(env_root: &Path) -> Result<()> {
     ];
 
     for symlink_path in &symlink_replace_list {
-        let full_symlink_path = env_root.join(
-            symlink_path.strip_prefix("/")
-            .unwrap_or(symlink_path)  // Fallback to original if no prefix
-        );
+        let relative_path = symlink_path.strip_prefix("/")
+            .unwrap_or(symlink_path);  // Fallback to original if no prefix
+        let full_symlink_path = lfs::normalize_path_separators(&env_root.join(relative_path));
 
         if lfs::exists_in_env(&full_symlink_path) && lfs::is_symlink(&full_symlink_path) {
             // Resolve the symlink to get the actual target file path
@@ -1043,7 +1042,7 @@ fn create_common_symlinks(env_root: &Path) -> Result<()> {
 
     for (link_name, possible_targets) in symlinks {
         log::trace!("Checking symlink: {}", link_name);
-        let link_path = env_root.join(link_name);
+        let link_path = lfs::normalize_path_separators(&env_root.join(link_name));
 
         // Skip if symlink already exists
         if lfs::exists_or_any_symlink(&link_path) {
@@ -1058,10 +1057,10 @@ fn create_common_symlinks(env_root: &Path) -> Result<()> {
             // Check if target exists within env_root, not host rootfs
             let target_check_path = if target.starts_with('/') {
                 // Absolute path: check in env_root
-                env_root.join(&target[1..]) // Remove leading slash
+                lfs::normalize_path_separators(&env_root.join(&target[1..])) // Remove leading slash
             } else {
                 // Relative path: relative to symlink's parent directory within env_root
-                env_root.join(link_name).parent().unwrap().join(target)
+                lfs::normalize_path_separators(&env_root.join(link_name).parent().unwrap().join(target))
             };
             log::trace!("  Target check path: {}", target_check_path.display());
 

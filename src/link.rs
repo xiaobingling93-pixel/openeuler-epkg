@@ -853,9 +853,26 @@ fn copy_symlink(fs_file: &Path, target_path: &Path) -> Result<()> {
 
     // Determine symlink type by checking the existing symlink in store.
     // On Windows, symlink_dir has FILE_ATTRIBUTE_DIRECTORY flag set.
-    // This is reliable even when symlink target doesn't exist (cross-package or dead links).
-    // We don't need to follow the symlink or check if target exists.
-    let is_dir = lfs::is_directory_symlink(fs_file);
+    // This is reliable for newly created symlinks.
+    // For legacy symlinks created before the fix, fall back to checking resolved target.
+    let mut is_dir = lfs::is_directory_symlink(fs_file);
+
+    // Fallback: if symlink type detection says file but target exists and is a directory,
+    // correct the type. This handles legacy symlinks created with wrong type.
+    if !is_dir {
+        // Resolve the symlink target relative to its parent directory
+        if let Some(parent) = fs_file.parent() {
+            let resolved_target = lfs::normalize_path_components(&parent.join(&adjusted_target));
+            if resolved_target.is_dir() {
+                log::debug!(
+                    "copy_symlink: correcting symlink type for {} - target {} is a directory",
+                    fs_file.display(),
+                    resolved_target.display()
+                );
+                is_dir = true;
+            }
+        }
+    }
 
     log::debug!(
         "copy_symlink: fs_file={}, adjusted_target={}, is_directory_symlink={}",
