@@ -262,10 +262,9 @@ fn remove_stale_init_sha256_files(init_plan: &InitPlan, epkg_download_dir: &Path
         Vec::new()
     };
 
-    if init_plan.local_elf_loader_path.is_none() && init_plan.need_download_elf_loader {
-        if let Some(ref elf_plan) = init_plan.elf_loader {
-            sha256_files_to_delete.push(elf_plan.sha_path(epkg_download_dir)?);
-        }
+    if let ElfLoaderPlan::Download { url, .. } = &init_plan.elf_loader {
+        let elf_plan = AssetDownloadPlan { url: url.clone(), path: std::path::PathBuf::new() };
+        sha256_files_to_delete.push(elf_plan.sha_path(epkg_download_dir)?);
     }
     #[cfg(feature = "libkrun")]
     if let Some(ref vmlinux_plan) = init_plan.vmlinux {
@@ -283,12 +282,11 @@ fn remove_stale_init_sha256_files(init_plan: &InitPlan, epkg_download_dir: &Path
 }
 
 fn verify_init_download_checksums(init_plan: &InitPlan, epkg_download_dir: &Path) -> Result<()> {
-    if init_plan.local_elf_loader_path.is_none() && init_plan.need_download_elf_loader {
-        if let Some(ref elf_plan) = init_plan.elf_loader {
-            let elf_sha_path = elf_plan.sha_path(epkg_download_dir)?;
-            utils::verify_sha256sum(&elf_sha_path)
-                .context("Failed to verify elf-loader checksum")?;
-        }
+    if let ElfLoaderPlan::Download { url, .. } = &init_plan.elf_loader {
+        let elf_plan = AssetDownloadPlan { url: url.clone(), path: std::path::PathBuf::new() };
+        let elf_sha_path = elf_plan.sha_path(epkg_download_dir)?;
+        utils::verify_sha256sum(&elf_sha_path)
+            .context("Failed to verify elf-loader checksum")?;
     }
 
     if let Some(ref epkg_plan) = init_plan.epkg_binary {
@@ -325,27 +323,27 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
         urls.extend(vec![epkg_plan.url.clone(), sha_url]);
     }
 
-    // Check for local elf-loader override (Linux only in practice, but represented as runtime optional).
-    if let Some(ref local_loader) = init_plan.local_elf_loader_path {
-        let elf_loader_path = init_plan
-            .elf_loader
-            .as_ref()
-            .ok_or_else(|| eyre::eyre!("Missing remote elf-loader plan while local_elf_loader_path exists"))?
-            .path
-            .clone();
-
-        // Ensure parent directory exists before copying
-        if let Some(parent) = elf_loader_path.parent() {
-            lfs::create_dir_all(parent)?;
+    // Handle elf-loader based on the explicit plan
+    match &init_plan.elf_loader {
+        ElfLoaderPlan::LocalCopy { source, target } => {
+            log::debug!(
+                "Copying local elf-loader from {} to {}",
+                source.display(),
+                target.display()
+            );
+            if let Some(parent) = target.parent() {
+                lfs::create_dir_all(parent)?;
+            }
+            lfs::copy(source, target)?;
+            println!("Using local elf-loader from {}", source.display());
         }
-        lfs::copy(local_loader, &elf_loader_path)?;
-        println!("Using local elf-loader from {}", local_loader.display());
-    } else if init_plan.need_download_elf_loader {
-        if let Some(ref elf_plan) = init_plan.elf_loader {
-            println!("Downloading elf-loader from {}", elf_plan.url);
+        ElfLoaderPlan::Download { url, target } => {
+            println!("Downloading elf-loader from {}", url);
+            let elf_plan = AssetDownloadPlan { url: url.clone(), path: target.clone() };
             let sha_url = elf_plan.sha_url();
-            urls.extend(vec![elf_plan.url.clone(), sha_url]);
+            urls.extend(vec![url.clone(), sha_url]);
         }
+        ElfLoaderPlan::None => {}
     }
 
     // Download vmlinux if built with libkrun feature
@@ -522,13 +520,18 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     // Copy elf-loader binary using atomic operation
     // On Linux: always needed for running glibc packages
     // On Windows/macOS with libkrun: needed for Linux distros running in VM
-    if let Some(ref elf_loader_plan) = init_plan.elf_loader {
-        if elf_loader_plan.path.exists() {
+    let elf_loader_source = match &init_plan.elf_loader {
+        ElfLoaderPlan::LocalCopy { target, .. } => Some(target.clone()),
+        ElfLoaderPlan::Download { target, .. } => Some(target.clone()),
+        ElfLoaderPlan::None => None,
+    };
+    if let Some(elf_loader_path) = elf_loader_source {
+        if elf_loader_path.exists() {
             let elf_loader_target = usr_bin.join("elf-loader");
-            copy_epkg_binary_atomically(&elf_loader_plan.path, &elf_loader_target, false)?;
+            copy_epkg_binary_atomically(&elf_loader_path, &elf_loader_target, false)?;
             log::info!("Installed elf-loader: {}", elf_loader_target.display());
         } else {
-            log::warn!("elf-loader binary not found at {}", elf_loader_plan.path.display());
+            log::warn!("elf-loader binary not found at {}", elf_loader_path.display());
         }
     }
 
@@ -1002,6 +1005,17 @@ impl AssetDownloadPlan {
     }
 }
 
+/// Elf-loader handling plan: explicitly models the three possible scenarios
+#[derive(Debug, Clone)]
+enum ElfLoaderPlan {
+    /// Copy from local source to target path (development mode)
+    LocalCopy { source: std::path::PathBuf, target: std::path::PathBuf },
+    /// Download from URL to target path
+    Download { url: String, target: std::path::PathBuf },
+    /// No elf-loader needed
+    None,
+}
+
 #[derive(Debug, Clone)]
 struct InitPlan {
     current: EpkgVersionInfo,
@@ -1012,7 +1026,7 @@ struct InitPlan {
 
     // Self-update assets (epkg + optional elf-loader + optional vmlinux)
     epkg_binary: Option<AssetDownloadPlan>,
-    elf_loader: Option<AssetDownloadPlan>,
+    elf_loader: ElfLoaderPlan,
     /// Linux ELF epkg binary for VM usage on Windows/macOS hosts
     epkg_linux: Option<AssetDownloadPlan>,
     #[cfg(feature = "libkrun")]
@@ -1021,10 +1035,7 @@ struct InitPlan {
     vmlinux_version: Option<String>,
     // Flags
     need_download_epkg_src: bool,
-    need_download_elf_loader: bool,
     using_local_repo: bool,
-    // Local elf-loader info
-    local_elf_loader_path: Option<std::path::PathBuf>,
 }
 
 /// Fetch the latest release information from Gitee API
@@ -1362,6 +1373,7 @@ fn resolve_assets_for_os(
             String::new()
         };
 
+        // Local elf-loader: no need to fetch URL, target path will use default
         let elf_loader_url = if is_linux {
             match &new_version.elf_loader_version {
                 Some(elf_loader_tag) => {
@@ -1371,7 +1383,11 @@ fn resolve_assets_for_os(
                         elf_loader_release.find_asset_urls_for_arch("elf-loader", arch)?;
                     Some(loader_url)
                 }
-                None => None,
+                None => {
+                    // No version info, but local elf-loader exists or not needed
+                    // Target path will be determined by download_package_manager_files()
+                    None
+                }
             }
         } else if cfg!(feature = "libkrun") {
             // On Windows/macOS with libkrun, still need elf-loader for Linux distros running in VM
@@ -1517,7 +1533,6 @@ fn check_for_updates() -> Result<InitPlan> {
     } else {
         None
     };
-    let has_local_elf_loader = local_elf_loader_path.as_ref().map(|p| p.exists()).unwrap_or(false);
 
     let ResolvedAssets {
         new_version,
@@ -1566,13 +1581,36 @@ fn check_for_updates() -> Result<InitPlan> {
     let need_download_epkg_binary = new_version.epkg_version != current_version.epkg_version
         && !epkg_binary_url.is_empty();
     let need_download_epkg_src = !using_local_repo;
-    let need_download_elf_loader = if is_linux {
-        !has_local_elf_loader
-    } else if cfg!(feature = "libkrun") {
-        // On Windows/macOS with libkrun, need elf-loader for Linux distros in VM
-        elf_loader_url.is_some()
+
+    // Determine elf-loader plan: LocalCopy, Download, or None
+    let elf_loader_plan = if let Some(ref source) = local_elf_loader_path {
+        if source.exists() {
+            // Local elf-loader exists: copy to default target path
+            let target = epkg_download_dir.join(format!("elf-loader-{}", arch));
+            log::debug!(
+                "elf-loader plan: LocalCopy from {} to {}",
+                source.display(),
+                target.display()
+            );
+            ElfLoaderPlan::LocalCopy {
+                source: source.clone(),
+                target,
+            }
+        } else if let Some(ref url) = elf_loader_url {
+            // Local path specified but file doesn't exist: download instead
+            let target = mirror::Mirrors::remote_url_to_path(url, &epkg_download_dir, "epkg")?;
+            log::debug!("elf-loader plan: Download from {} to {}", url, target.display());
+            ElfLoaderPlan::Download { url: url.clone(), target }
+        } else {
+            ElfLoaderPlan::None
+        }
+    } else if let Some(ref url) = elf_loader_url {
+        // No local elf-loader: download from remote
+        let target = mirror::Mirrors::remote_url_to_path(url, &epkg_download_dir, "epkg")?;
+        log::debug!("elf-loader plan: Download from {} to {}", url, target.display());
+        ElfLoaderPlan::Download { url: url.clone(), target }
     } else {
-        false
+        ElfLoaderPlan::None
     };
 
     // Optional addon (libkrun).
@@ -1590,24 +1628,6 @@ fn check_for_updates() -> Result<InitPlan> {
         None
     };
 
-    let elf_loader_plan: Option<AssetDownloadPlan> = if need_download_elf_loader {
-        if let Some(loader_url) = elf_loader_url {
-            let elf_loader_path =
-                mirror::Mirrors::remote_url_to_path(&loader_url, &epkg_download_dir, "epkg")?;
-            log::info!("elf-loader download plan: {} -> {}", loader_url, elf_loader_path.display());
-            Some(AssetDownloadPlan {
-                url: loader_url,
-                path: elf_loader_path,
-            })
-        } else {
-            log::debug!("elf-loader URL is None, skipping download");
-            None
-        }
-    } else {
-        log::debug!("need_download_elf_loader=false, skipping elf-loader download");
-        None
-    };
-
     // On Windows/macOS, download epkg-linux-$arch for VM usage.
     // This binary will be used as /usr/bin/init inside the Linux VM.
     let epkg_linux_plan: Option<AssetDownloadPlan> = if let Some(linux_url) = epkg_linux_url {
@@ -1622,7 +1642,7 @@ fn check_for_updates() -> Result<InitPlan> {
         None
     };
 
-    Ok(InitPlan {
+    let init_plan = InitPlan {
         current: current_version,
         new: new_version,
         epkg_src_url,
@@ -1635,14 +1655,23 @@ fn check_for_updates() -> Result<InitPlan> {
         #[cfg(feature = "libkrun")]
         vmlinux_version,
         need_download_epkg_src,
-        need_download_elf_loader,
         using_local_repo,
-        local_elf_loader_path: if has_local_elf_loader {
-            local_elf_loader_path
-        } else {
-            None
-        },
-    })
+    };
+
+    // Debug print the InitPlan
+    log::debug!(
+        "InitPlan: current.epkg={}, new.epkg={}, \
+         epkg_binary={:?}, elf_loader={:?}, \
+         need_download_epkg_src={}, using_local_repo={}",
+        init_plan.current.epkg_version,
+        init_plan.new.epkg_version,
+        init_plan.epkg_binary.as_ref().map(|p| &p.path),
+        &init_plan.elf_loader,
+        init_plan.need_download_epkg_src,
+        init_plan.using_local_repo,
+    );
+
+    Ok(init_plan)
 }
 
 
