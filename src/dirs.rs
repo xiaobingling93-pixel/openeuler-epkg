@@ -371,10 +371,13 @@ pub fn get_home() -> Result<String> {
 }
 
 pub fn get_repo_dir(repo: &RepoRevise) -> PathBuf {
+    let repodata_name = repo.repodata_name.clone();
+    #[cfg(windows)]
+    let repodata_name = repodata_name.replace('/', "\\");
     dirs()
         .epkg_channels_cache
         .join(&repo.channel)
-        .join(repo.repodata_name.clone())
+        .join(repodata_name)
         .join(repo.arch.clone())
 }
 
