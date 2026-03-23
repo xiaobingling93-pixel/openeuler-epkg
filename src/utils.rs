@@ -356,7 +356,12 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
     let tar = GzDecoder::new(tar_gz);
     let mut archive = Archive::new(tar);
 
-    // Extract all entries
+    #[cfg(windows)]
+    {
+        return crate::tar_extract::unpack_tar_archive(&mut archive, dest_dir, None);
+    }
+
+    // Extract all entries (Unix: per-entry sanitize; Windows uses unpack_tar_archive above)
     for entry in archive.entries()? {
         let mut entry = match entry {
             Ok(entry) => entry,

@@ -7,6 +7,91 @@ use color_eyre::Result;
 use crate::lfs;
 use crate::utils;
 
+#[cfg(windows)]
+fn rel_fs_path_under_fs_root(fs_root: &Path, full: &Path) -> Option<String> {
+    let rel = full.strip_prefix(fs_root).ok()?;
+    Some(rel.to_string_lossy().replace('\\', "/"))
+}
+
+/// Deferred Windows symlinks with correct file vs directory type, optional env_root (e.g. unpack_tar_archive),
+/// and optional global path lookup from [`crate::models::PACKAGE_CACHE::installed_path_lookup_for_unpack`].
+#[cfg(windows)]
+fn finalize_windows_tar_symlinks(
+    fs_root: &Path,
+    created_dirs: &HashSet<PathBuf>,
+    symlinks: Vec<(PathBuf, PathBuf)>,
+    env_root_override: Option<&Path>,
+) -> Result<()> {
+    for (link_path, target_path) in symlinks {
+        let target_full = if target_path.is_relative() {
+            link_path
+                .parent()
+                .map(|p| p.join(&target_path))
+                .unwrap_or_else(|| link_path.clone())
+        } else {
+            fs_root.join(&target_path)
+        };
+
+        let target_full_normalized = lfs::normalize_path_components(&target_full);
+        let mut is_dir = created_dirs.contains(&target_full_normalized);
+
+        if !is_dir {
+            if let Ok(guard) = crate::models::PACKAGE_CACHE.installed_path_lookup_for_unpack.read() {
+                if let Some(ref lookup) = *guard {
+                    if let Some(rel) = rel_fs_path_under_fs_root(fs_root, &target_full_normalized) {
+                        if crate::risks::installed_path_is_directory_in_map(lookup, &rel) {
+                            is_dir = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !is_dir {
+            let default_env_root = crate::dirs::get_default_env_root().ok();
+            let env = env_root_override.or(default_env_root.as_deref());
+            if let Some(env) = env {
+                let env_target = if target_path.is_absolute() {
+                    let relative = target_path.strip_prefix("/").unwrap_or(&target_path);
+                    env.join(relative)
+                } else if let Some(fs_pos) = link_path.to_string_lossy().find("/fs/") {
+                    let after_fs = &link_path.to_string_lossy()[fs_pos + 4..];
+                    if let Some(parent) = Path::new(after_fs).parent() {
+                        env.join(parent).join(&target_path)
+                    } else {
+                        env.join(&target_path)
+                    }
+                } else {
+                    env.join(&target_path)
+                };
+                let decoded_target = lfs::decode_path_from_windows(&env_target);
+                is_dir = env_target.is_dir() || decoded_target.is_dir();
+                if is_dir {
+                    log::debug!(
+                        "Symlink target {} found as directory in env_root: {}",
+                        target_path.display(),
+                        env_target.display()
+                    );
+                }
+            }
+        }
+
+        log::debug!(
+            "Creating symlink: {} -> {}, is_dir={}",
+            link_path.display(),
+            target_path.display(),
+            is_dir
+        );
+
+        if is_dir {
+            lfs::symlink_to_directory(&target_path, &link_path)?;
+        } else {
+            lfs::symlink_to_file(&target_path, &link_path)?;
+        }
+    }
+    Ok(())
+}
+
 /// Configuration for tar extraction
 #[derive(Debug, Clone)]
 pub struct ExtractConfig {
@@ -196,77 +281,8 @@ pub fn extract_archive_with_policy<R: Read>(
         }
     }
 
-    // Create symlinks with correct type (file vs directory) on Windows
     #[cfg(windows)]
-    for (link_path, target_path) in symlinks {
-        // Check if target is a directory:
-        // 1. First check if target is in current package's directories
-        // 2. Then check if target exists in env_root (for cross-package symlinks)
-        let target_full = if target_path.is_relative() {
-            link_path.parent()
-                .map(|p| p.join(&target_path))
-                .unwrap_or_else(|| link_path.clone())
-        } else {
-            config.target_dir.join(&target_path)
-        };
-
-        // Normalize the path to resolve ".." components for proper comparison
-        let target_full_normalized = lfs::normalize_path_components(&target_full);
-        let mut is_dir = created_dirs.contains(&target_full_normalized);
-
-        // Check env_root for cross-package directory symlinks
-        if !is_dir {
-            // Get env_root from parameter or try to get default
-            let default_env_root = crate::dirs::get_default_env_root().ok();
-            if let Some(env) = default_env_root.as_deref() {
-                // For absolute path targets (e.g., /usr/lib), check under env_root
-                // For relative path targets, resolve and check under env_root
-                let env_target = if target_path.is_absolute() {
-                    // Strip leading "/" and join with env_root
-                    let relative = target_path.strip_prefix("/").unwrap_or(&target_path);
-                    env.join(relative)
-                } else {
-                    // Relative path: resolve from the link's parent location in env
-                    // The link_path is under store/.../fs/, we need to find its location in env
-                    // link_path: store/xxx/fs/usr/lib/foo
-                    // env location: env_root/usr/lib/foo
-                    if let Some(fs_pos) = link_path.to_string_lossy().find("/fs/") {
-                        let after_fs = &link_path.to_string_lossy()[fs_pos + 4..];
-                        if let Some(parent) = Path::new(after_fs).parent() {
-                            env.join(parent).join(&target_path)
-                        } else {
-                            env.join(&target_path)
-                        }
-                    } else {
-                        env.join(&target_path)
-                    }
-                };
-                // Check both raw and decoded paths for PUA-encoded names
-                let decoded_target = lfs::decode_path_from_windows(&env_target);
-                is_dir = env_target.is_dir() || decoded_target.is_dir();
-                if is_dir {
-                    log::debug!(
-                        "Symlink target {} found as directory in env_root: {}",
-                        target_path.display(),
-                        env_target.display()
-                    );
-                }
-            }
-        }
-
-        log::debug!(
-            "Creating symlink: {} -> {}, is_dir={}",
-            link_path.display(),
-            target_path.display(),
-            is_dir
-        );
-
-        if is_dir {
-            lfs::symlink_to_directory(&target_path, &link_path)?;
-        } else {
-            lfs::symlink_to_file(&target_path, &link_path)?;
-        }
-    }
+    finalize_windows_tar_symlinks(&config.target_dir, &created_dirs, symlinks, None)?;
 
     // Create hard links after all files are extracted
     create_hard_links(&hard_links)?;
@@ -316,6 +332,8 @@ pub fn extract_archive<R: Read>(
     let mut entries_processed = 0;
     let mut hard_links: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut created_dirs: HashSet<PathBuf> = HashSet::new();
+    #[cfg(windows)]
+    let mut symlinks: Vec<(PathBuf, PathBuf)> = Vec::new();
 
     // Ensure target directory exists with case sensitivity on Windows
     lfs::create_dir_all_with_case_sensitivity(&config.target_dir)?;
@@ -357,6 +375,15 @@ pub fn extract_archive<R: Read>(
             }
         }
 
+        #[cfg(windows)]
+        if is_symlink {
+            if let Ok(Some(link_path)) = entry.link_name() {
+                let link_target = lfs::sanitize_path_for_windows(&link_path);
+                symlinks.push((target_path, link_target));
+                continue;
+            }
+        }
+
         // Ensure parent directory exists (with caching to avoid redundant calls)
         if let Some(parent) = target_path.parent() {
             if !created_dirs.contains(parent) {
@@ -365,7 +392,7 @@ pub fn extract_archive<R: Read>(
             }
         }
 
-        // Extract the file
+        // Extract the file (Windows symlinks are deferred above)
         entry.unpack(&target_path)?;
         // Skip permission fixup for symlinks - their permissions are meaningless (always lrwxrwxrwx)
         // and on Windows, setting EA on a symlink might affect the target instead
@@ -379,36 +406,10 @@ pub fn extract_archive<R: Read>(
         }
     }
 
-    // Now create all hard links after all files have been extracted
-    for (source_path, target_path) in hard_links {
-        // Ensure parent directory exists for the hard link target
-        if let Some(parent) = target_path.parent() {
-            if let Err(e) = lfs::create_dir_all(parent) {
-                log::warn!("Failed to create directory {} for hard link: {}", parent.display(), e);
-                continue;
-            }
-        }
+    #[cfg(windows)]
+    finalize_windows_tar_symlinks(&config.target_dir, &created_dirs, symlinks, None)?;
 
-        // Create the hard link if the source file exists
-        if lfs::exists_on_host(&source_path) {
-            // Remove existing file if present (in case of re-extraction)
-            if lfs::exists_on_host(&target_path) {
-                if let Err(e) = lfs::remove_file(&target_path) {
-                    log::warn!("Failed to remove existing file {}: {}", target_path.display(), e);
-                }
-            }
-
-            if let Err(e) = fs::hard_link(&source_path, &target_path) {
-                log::warn!("Failed to create hard link from {} to {}: {}",
-                    source_path.display(), target_path.display(), e);
-            } else {
-                log::trace!("Created hard link: {} -> {}", target_path.display(), source_path.display());
-            }
-        } else {
-            log::warn!("Cannot create hard link {}: source file {} does not exist",
-                target_path.display(), source_path.display());
-        }
-    }
+    create_hard_links(&hard_links)?;
 
     Ok(entries_processed)
 }
@@ -580,77 +581,8 @@ pub fn unpack_tar_archive<R: Read>(
             }
         }
 
-        // Create symlinks with correct type (file vs directory)
-        for (link_path, target_path) in symlinks {
-            // Check if target is a directory:
-            // 1. First check if target is in current package's directories
-            // 2. Then check if target exists in env_root (for cross-package symlinks)
-            let target_full = if target_path.is_relative() {
-                link_path.parent()
-                    .map(|p| p.join(&target_path))
-                    .unwrap_or_else(|| link_path.clone())
-            } else {
-                dest.join(&target_path)
-            };
-
-            // Normalize the path to resolve ".." components for proper comparison
-            let target_full_normalized = lfs::normalize_path_components(&target_full);
-            let mut is_dir = directories.contains(&target_full_normalized);
-
-            // Check env_root for cross-package directory symlinks
-            if !is_dir {
-                // Get env_root from parameter or try to get default
-                let default_env_root = crate::dirs::get_default_env_root().ok();
-                let env = env_root.or(default_env_root.as_deref());
-                if let Some(env) = env {
-                    // For absolute path targets (e.g., /usr/lib), check under env_root
-                    // For relative path targets, resolve and check under env_root
-                    let env_target = if target_path.is_absolute() {
-                        // Strip leading "/" and join with env_root
-                        let relative = target_path.strip_prefix("/").unwrap_or(&target_path);
-                        env.join(relative)
-                    } else {
-                        // Relative path: resolve from the link's parent location in env
-                        // The link_path is under store/.../fs/, we need to find its location in env
-                        // link_path: store/xxx/fs/usr/lib/foo
-                        // env location: env_root/usr/lib/foo
-                        if let Some(fs_pos) = link_path.to_string_lossy().find("/fs/") {
-                            let after_fs = &link_path.to_string_lossy()[fs_pos + 4..];
-                            if let Some(parent) = Path::new(after_fs).parent() {
-                                env.join(parent).join(&target_path)
-                            } else {
-                                env.join(&target_path)
-                            }
-                        } else {
-                            env.join(&target_path)
-                        }
-                    };
-                    // Check both raw and decoded paths for PUA-encoded names
-                    let decoded_target = lfs::decode_path_from_windows(&env_target);
-                    is_dir = env_target.is_dir() || decoded_target.is_dir();
-                    if is_dir {
-                        log::debug!(
-                            "Symlink target {} found as directory in env_root: {}",
-                            target_path.display(),
-                            env_target.display()
-                        );
-                    }
-                }
-            }
-
-            log::debug!(
-                "Creating symlink: {} -> {}, is_dir={}",
-                link_path.display(),
-                target_path.display(),
-                is_dir
-            );
-
-            if is_dir {
-                lfs::symlink_to_directory(&target_path, &link_path)?;
-            } else {
-                lfs::symlink_to_file(&target_path, &link_path)?;
-            }
-        }
+        directories.insert(dest.to_path_buf());
+        finalize_windows_tar_symlinks(dest, &directories, symlinks, env_root)?;
 
         // Create hard links after all files are extracted
         create_hard_links(&hard_links)?;

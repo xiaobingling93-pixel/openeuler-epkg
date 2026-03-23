@@ -1281,8 +1281,11 @@ pub struct PackageCache {
     /// Maps pkgname -> version constraint string (loaded from env world.json)
     /// Special key "no-install" stores space-separated list of package names to exclude
     pub world: RwLock<HashMap<String, String>>,
-    /// Maps pkgline -> Vec<String> (cached filelists from store, non-dir files only)
+    /// Maps pkgline -> Vec<String> (cached filelists from store; includes dirs with trailing `/`)
     pub pkgline2filelist: RwLock<HashMap<String, Vec<String>>>,
+    /// During package unpack: installed path map (path -> pkgkey) for Windows symlink dir detection.
+    /// Set by `install::download_and_unpack_packages`, cleared when unpack finishes.
+    pub installed_path_lookup_for_unpack: RwLock<Option<Arc<HashMap<String, String>>>>,
 }
 
 /// Global package cache instance

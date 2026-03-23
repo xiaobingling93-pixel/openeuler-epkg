@@ -7,12 +7,24 @@ use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
+use std::sync::Arc;
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use crate::models::InstalledPackagesMap;
 use crate::plan::{InstallationPlan, FilesystemInfo};
 use crate::models::PACKAGE_CACHE;
 use crate::package_cache::map_pkgline2filelist;
+
+/// Returns true if `rel_path` (relative path under package `fs/`, POSIX separators) is a directory
+/// according to `filelist.txt` entries (directory paths end with `/`).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn installed_path_is_directory_in_map(map: &HashMap<String, String>, rel_path: &str) -> bool {
+    let s = rel_path.trim().trim_start_matches('/').trim_end_matches('/');
+    if s.is_empty() {
+        return false;
+    }
+    map.contains_key(&format!("{}/", s))
+}
 
 /// Calculate total download and install sizes for the installation plan
 #[allow(dead_code)]
@@ -226,7 +238,8 @@ pub fn check_disk_space_for_plan(
     Ok(())
 }
 
-/// Build file map from installed packages, excluding those being removed or upgraded
+/// Build file map from installed packages, excluding those being removed or upgraded.
+/// Values are pkgkeys; keys are paths from `filelist.txt` (files and dirs; directory entries end with `/`).
 #[allow(dead_code)]
 pub fn build_installed_file_map(
     packages: &InstalledPackagesMap,
@@ -241,9 +254,7 @@ pub fn build_installed_file_map(
         if old_removes.contains(pkgkey) || upgrades_old.contains(pkgkey) {
             continue;
         }
-        // Get filelist using the cached function (already filters out dirs)
         if let Ok(file_list) = map_pkgline2filelist(store_root, &pkg_info.pkgline) {
-            // Process file list - all entries are files (dirs already filtered)
             for file_path in &file_list {
                 installed_files.insert(file_path.clone(), pkgkey.clone());
             }
@@ -255,13 +266,22 @@ pub fn build_installed_file_map(
     Ok(installed_files)
 }
 
+/// Snapshot of [`build_installed_file_map`] using transaction fields from `plan`.
+pub fn build_installed_file_map_from_plan(plan: &InstallationPlan) -> Result<HashMap<String, String>> {
+    let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+    build_installed_file_map(
+        &installed,
+        &plan.store_root,
+        &plan.old_removes,
+        &plan.upgrades_old,
+    )
+}
+
 /// Check risks for all packages at once (inode space, file conflicts)
 /// This is called before linking any packages to keep the environment clean
 /// Validate packages before linking - check inodes and file conflicts
 #[allow(dead_code)]
-pub fn validate_before_linking(
-    plan: &crate::plan::InstallationPlan,
-) -> Result<()> {
+pub fn validate_before_linking(plan: &mut crate::plan::InstallationPlan) -> Result<()> {
     let total_inodes_needed = validate_file_conflicts(plan)?;
     validate_inode_space(plan, total_inodes_needed)?;
     Ok(())
@@ -271,7 +291,7 @@ pub fn validate_before_linking(
 /// Returns total number of inodes (files) needed across all packages
 #[allow(dead_code)]
 pub fn validate_file_conflicts(
-    plan: &crate::plan::InstallationPlan,
+    plan: &mut crate::plan::InstallationPlan,
 ) -> color_eyre::Result<u64> {
     let store_root = &plan.store_root;
 
@@ -292,7 +312,6 @@ pub fn validate_file_conflicts(
     // Process each package
     for pkgkey in plan.batch.new_pkgkeys.iter() {
         if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
-            // Get filelist from cache or store (already filters out dirs)
             let file_list = map_pkgline2filelist(store_root, &package_info.pkgline)?;
             total_inodes_needed += file_list.len() as u64;
 
@@ -331,6 +350,8 @@ pub fn validate_file_conflicts(
             }
         }
     }
+
+    plan.installed_file_map = Some(Arc::new(file_map));
 
     Ok(total_inodes_needed)
 }

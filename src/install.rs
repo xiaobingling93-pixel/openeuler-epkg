@@ -393,6 +393,30 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
 fn download_and_unpack_packages(
     plan: &mut InstallationPlan,
 ) -> Result<InstalledPackagesMap> {
+    struct InstalledPathLookupGuard;
+    impl Drop for InstalledPathLookupGuard {
+        fn drop(&mut self) {
+            *crate::models::PACKAGE_CACHE.installed_path_lookup_for_unpack.write().unwrap() = None;
+        }
+    }
+
+    let _installed_path_lookup_guard = match crate::risks::build_installed_file_map_from_plan(plan) {
+        Ok(m) => {
+            let arc = Arc::new(m);
+            #[cfg(windows)]
+            {
+                plan.installed_file_map = Some(Arc::clone(&arc));
+            }
+            *crate::models::PACKAGE_CACHE.installed_path_lookup_for_unpack.write().unwrap() =
+                Some(Arc::clone(&arc));
+            Some(InstalledPathLookupGuard)
+        }
+        Err(e) => {
+            log::warn!("Could not build installed file map for unpack: {}", e);
+            None
+        }
+    };
+
     // Separate packages into those with pkglines (already in store) and those without (need download)
     // AUR packages are included in both categories and will be filtered later
     let mut packages_to_download: HashMap<String, Arc<InstalledPackageInfo>> = HashMap::new();

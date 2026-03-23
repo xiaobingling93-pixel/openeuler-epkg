@@ -170,6 +170,11 @@ pub struct InstallationPlan {
     /// Desktop integration flags tracking which types occurred during expose operations
     #[cfg(target_os = "linux")]
     pub desktop_integration_occurred: crate::xdesktop::DesktopIntegrationFlags,
+
+    /// Union of paths from installed packages (excluding removes/upgrades) plus new batch filelists
+    /// after validation. Keys are relative POSIX paths from `filelist.txt`; directory entries use a
+    /// trailing `/`. Used for global directory detection (e.g. Windows symlink type).
+    pub installed_file_map: Option<Arc<HashMap<String, String>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -238,6 +243,7 @@ impl Default for InstallationPlan {
             deb_activate_triggers_by_name: HashMap::new(),
             #[cfg(target_os = "linux")]
             desktop_integration_occurred: crate::xdesktop::DesktopIntegrationFlags::default(),
+            installed_file_map: None,
         }
     }
 }

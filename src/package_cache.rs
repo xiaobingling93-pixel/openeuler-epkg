@@ -20,6 +20,7 @@ impl PackageCache {
             pkgline2installed: RwLock::<InstalledPackagesMap>::default(),
             world: RwLock::new(HashMap::new()),
             pkgline2filelist: RwLock::new(HashMap::new()),
+            installed_path_lookup_for_unpack: RwLock::new(None),
         }
     }
 
@@ -33,6 +34,7 @@ impl PackageCache {
         self.pkgline2installed.write().unwrap().clear();
         self.world.write().unwrap().clear();
         self.pkgline2filelist.write().unwrap().clear();
+        *self.installed_path_lookup_for_unpack.write().unwrap() = None;
     }
 }
 
@@ -212,7 +214,7 @@ pub fn load_package_info(pkgkey: &str) -> Result<Arc<Package>> {
 
 /// Get filelist for a package, either from cache or from store
 /// Fills the cache if it wasn't already there
-/// Returns only non-directory files as relative paths
+/// Returns relative paths from `filelist.txt` (files and directories; dirs end with `/`).
 pub fn map_pkgline2filelist(
     store_root: &std::path::Path,
     pkgline: &str,
@@ -227,7 +229,7 @@ pub fn map_pkgline2filelist(
         }
     }
 
-    // Not in cache, get from store using get_package_files (which filters out dirs)
+    // Not in cache, get from store using get_package_files (reads filelist.txt; dirs have trailing `/`)
     let file_list = crate::utils::get_package_files(store_root, pkgline)
         .with_context(|| format!("Failed to get filelist for {}/{}/info/filelist.txt", store_root.display(), pkgline))?;
 
