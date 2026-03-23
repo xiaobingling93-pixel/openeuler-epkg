@@ -399,15 +399,18 @@ pub fn parse_simplified_mtree(content: &str) -> Result<Vec<MtreeFileInfo>> {
 /// Escape a path for mtree format according to mtree(5) specification.
 /// Encodes backslash and characters outside the 95 printable ASCII range (0x20-0x7E)
 /// as backslash followed by three octal digits.
+/// Multi-byte Unicode characters (codepoints > 0x7F) are preserved as-is,
+/// since they represent actual characters in the filename, not escape sequences.
 pub fn escape_mtree_path(path: &str) -> String {
     let mut result = String::with_capacity(path.len());
     for ch in path.chars() {
-        let byte = ch as u8;
         // Always escape backslash (0x5C = 134 octal)
         if ch == '\\' {
             result.push_str("\\134");
         }
-        // Escape characters outside printable ASCII (0x20-0x7E)
+        // Only escape ASCII control characters (0x00-0x1F) and DEL (0x7F)
+        // Multi-byte Unicode characters (codepoints > 0x7F) are preserved as-is
+        //
         // Space (0x20) is printable and SHOULD NOT be escaped per spec.
         // Note: Some implementations escape spaces (as \040) to avoid delimiter
         // ambiguity in mtree format, but this violates the specification.
@@ -416,8 +419,8 @@ pub fn escape_mtree_path(path: &str) -> String {
         // of previous value with a space separator.
         // Values for certain keys (type, mode, size, time, uid, gid, sha256digest, sha256)
         // must not contain spaces and will be rejected with an error.
-        else if byte < 0x20 || byte > 0x7E {
-            result.push_str(&format!("\\{:03o}", byte));
+        else if ch < '\x20' || ch == '\x7F' {
+            result.push_str(&format!("\\{:03o}", ch as u8));
         }
         else {
             result.push(ch);
@@ -430,31 +433,33 @@ pub fn escape_mtree_path(path: &str) -> String {
 /// Decodes backslash followed by three octal digits to the corresponding character.
 /// Handles mixed escaped/unescaped input for backward compatibility.
 /// Spaces are not escaped in mtree format and remain unchanged.
+/// Multi-byte Unicode characters are preserved as-is.
 pub fn unescape_mtree_path(escaped_path: &str) -> String {
-    let bytes = escaped_path.as_bytes();
     let mut result = String::with_capacity(escaped_path.len());
+    let chars: Vec<char> = escaped_path.chars().collect();
     let mut i = 0;
-    let len = bytes.len();
+    let len = chars.len();
 
     #[inline]
-    fn is_octal(b: u8) -> bool {
-        b >= b'0' && b <= b'7'
+    fn is_octal(c: char) -> bool {
+        c >= '0' && c <= '7'
     }
 
     while i < len {
-        if bytes[i] == b'\\' && i + 3 < len {
-            let d0 = bytes[i + 1];
-            let d1 = bytes[i + 2];
-            let d2 = bytes[i + 3];
+        // Check for backslash escape sequence: \ooo (3 octal digits)
+        if chars[i] == '\\' && i + 3 < len {
+            let d0 = chars[i + 1];
+            let d1 = chars[i + 2];
+            let d2 = chars[i + 3];
             if is_octal(d0) && is_octal(d1) && is_octal(d2) {
-                let val = (d0 - b'0') * 64 + (d1 - b'0') * 8 + (d2 - b'0');
+                let val = (d0 as u8 - b'0') * 64 + (d1 as u8 - b'0') * 8 + (d2 as u8 - b'0');
                 result.push(val as char);
                 i += 4;
                 continue;
             }
         }
-        // fallback: push current byte as char (ASCII guaranteed)
-        result.push(bytes[i] as char);
+        // Regular character (including multi-byte Unicode)
+        result.push(chars[i]);
         i += 1;
     }
     result
@@ -511,6 +516,32 @@ mod tests {
         let escaped3 = escape_mtree_path(path3);
         assert_eq!(escaped3, "file\\177");
         assert_eq!(unescape_mtree_path(&escaped3), path3);
+    }
+
+    #[test]
+    fn test_escape_unescape_unicode() {
+        // Test multi-byte Unicode characters (PUA encoded filenames)
+        // U+F03A is the PUA encoding for ':' on Windows
+        let pua_colon = '\u{F03A}';
+        let path = format!("usr/share/perl5/Text{pua_colon}{pua_colon}CharWidth.3pm.gz");
+
+        // Multi-byte Unicode characters should be preserved as-is (not escaped)
+        let escaped = escape_mtree_path(&path);
+        assert_eq!(escaped, path, "Multi-byte Unicode should not be escaped");
+
+        // Unescape should preserve the Unicode characters
+        let unescaped = unescape_mtree_path(&escaped);
+        assert_eq!(unescaped, path, "Multi-byte Unicode should be preserved");
+
+        // Test round-trip with both escaped and Unicode characters
+        let mixed = "file\\177.txt"; // escaped DEL
+        assert_eq!(unescape_mtree_path(mixed), "file\x7f.txt");
+
+        // Test that unescape handles UTF-8 correctly
+        let unicode_path = "日本語/ファイル.txt";
+        let escaped_unicode = escape_mtree_path(unicode_path);
+        assert_eq!(escaped_unicode, unicode_path);
+        assert_eq!(unescape_mtree_path(&escaped_unicode), unicode_path);
     }
 
     #[test]
