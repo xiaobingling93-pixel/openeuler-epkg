@@ -31,6 +31,42 @@
 
 Linux rootfs 需要 **任意目标字符串**、**不强制目标存在**、**统一 `readlink`/`lstat` 行为**；单靠 Win32 符号链接无法在所有部署上满足。
 
+### Directory Junction 的大小写敏感性
+
+**Junction 名称的大小写敏感性**：取决于**父目录**的大小写敏感设置。
+
+| 父目录设置 | Junction 名称行为 |
+|------------|-------------------|
+| 默认（未设置） | 大小写不敏感，`MyLink` 和 `mylink` 指向同一 junction |
+| 启用大小写敏感 | 大小写敏感，`MyLink` 和 `mylink` 是不同的 junction |
+
+Windows 10 **1803** 起，NTFS 支持通过 `fsutil.exe file setCaseSensitiveInfo` 按目录启用大小写敏感。子目录会继承父目录的设置。epkg 在创建关键目录时调用 `create_dir_all_with_case_sensitivity()` 启用此设置。
+
+**Junction target 路径**：
+
+| 特性 | 行为 |
+|------|------|
+| 存储时 | **保留**输入路径的大小写形式（如 `C:\Users\Tom\AppData\Local`） |
+| 解析时 | **大小写不敏感**，`C:\USERS`、`c:\users`、`C:\Users` 都指向同一目标 |
+| 路径格式 | 必须是**完整绝对路径**（包含盘符），相对路径创建时会被 Windows 自动转换为绝对路径 |
+| 路径分隔符 | **只能使用反斜杠 `\`**，不支持正斜杠 `/` |
+| 盘符大小写 | `C:\` 和 `c:\` 等效 |
+
+**与 Symbolic Link 的区别**：
+
+| 特性 | Directory Junction | Symbolic Link |
+|------|-------------------|---------------|
+| Target 类型 | 只能是本地目录 | 可以是文件或目录，支持远程路径 |
+| 大小写处理 | Case-insensitive 路径解析 | 同样是 case-insensitive |
+| 相对路径支持 | 创建时转为绝对路径 | 支持相对路径保留 |
+| 权限要求 | 无需管理员权限 | 创建目录符号链接需要管理员权限或开发者模式 |
+
+**开发注意事项**：
+
+1. **路径比较问题**：Python 的 `WindowsPath.resolve()` 会将盘符转为大写，而 `.absolute()` 保持原样，导致字符串比较时可能不一致。应直接比较 Path 对象，或统一大小写后再比较。
+2. **大小写一致性**：虽然 Windows 解析时不区分大小写，但建议保持 junction target 路径大小写一致，以避免潜在的工具兼容性问题。
+3. **路径分隔符**：junction target 必须使用反斜杠，代码中通过 `normalize_path_separators()` 函数确保正确转换。
+
 ### 分层策略（当前实现）
 
 实现集中在 `symlink.rs`，用 **少量内部辅助函数** 表达分支，避免 `symlink_to_*` 与底层 `create_dir_junction` / `symlink_or_hardlink_or_copy_file` 重复堆砌：

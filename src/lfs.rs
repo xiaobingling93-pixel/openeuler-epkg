@@ -104,6 +104,19 @@ pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<(
 /// Windows: directory symlink / junction / LX reparse (same implementation as libkrun
 /// `git/libkrun/src/devices/src/virtio/fs/windows/symlink.rs`, `include!`d from `main.rs`).
 ///
+/// ## Junction vs Symlink
+///
+/// When native symlink creation is unavailable (no Developer Mode or admin), this function
+/// falls back to creating a **directory junction** for existing directories. Key differences:
+///
+/// | Feature | Junction | Symlink |
+/// |---------|----------|---------|
+/// | Target type | Local directories only | Files, directories, remote paths |
+/// | Path format | Absolute path required | Relative or absolute |
+/// | Separators | Backslash `\` only | Both `/` and `\` |
+/// | Case sensitivity | Case-insensitive resolution | Case-insensitive resolution |
+/// | Privilege | No special privilege | Developer Mode or admin |
+///
 /// Note: `force_symlink_to_directory` in utils.rs removes an existing link first. "force" means
 /// overwrite, not infer symlink kind when the target is missing.
 #[cfg(windows)]
@@ -734,11 +747,16 @@ pub fn is_symlink_or_junction(path: &Path) -> bool {
     is_symlink(path)
 }
 
-/// Normalize path separators for Windows.
-/// Symlink targets may contain forward slashes (from POSIX-style symlinks created by
-/// msys2/cygwin), which cause "InvalidFilename" errors when joined with Windows paths.
-/// This function converts forward slashes to backslashes.
-#[cfg(windows)]
+/// Normalize path separators for Windows symlink targets.
+///
+/// Converts forward slashes `/` to backslashes `\` to ensure compatibility with:
+/// - **Junction creation**: Junctions require backslash separators only
+/// - **Windows native paths**: Mixed separators cause error 123 (InvalidFilename)
+///
+/// Symlink targets from POSIX sources (tar archives, msys2/cygwin) may contain
+/// forward slashes. This normalization prevents errors like:
+/// - `C:\path/to/file` (mixed separators)
+/// - Junction creation failure due to forward slashes
 fn normalize_symlink_target(target: &Path) -> PathBuf {
     let target_str = target.to_string_lossy();
     PathBuf::from(target_str.replace('/', "\\"))
