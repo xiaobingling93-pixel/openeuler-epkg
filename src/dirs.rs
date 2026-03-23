@@ -492,7 +492,6 @@ pub fn powershell_profile_paths() -> Vec<PathBuf> {
                     .join("Microsoft.PowerShell_profile.ps1"),
             );
         }
-        return paths;
     }
     #[cfg(not(windows))]
     {

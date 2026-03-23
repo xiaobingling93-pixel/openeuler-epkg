@@ -363,7 +363,7 @@ fn get_python_info(index_json: &IndexJson) -> Result<Option<PythonInfo>> {
     let (major, minor) = get_python_version_from_installed()
         .or_else(|| get_python_version_from_index(index_json))
         .unwrap_or_else(|| {
-            log::warn!("Could not determine Python version, defaulting to {}", DEFAULT_PYTHON_VERSION_STR);
+            log::debug!("Could not determine Python version, defaulting to {}", DEFAULT_PYTHON_VERSION_STR);
             DEFAULT_PYTHON_VERSION
         });
 
