@@ -215,8 +215,15 @@ fn create_ebin_wrappers(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate:
         }
         // Symlinks may not have mode; skip mode check for them
         if !fs_file_info.is_link() {
-            let mode = fs_file_info.mode.unwrap_or(0o644);
-            if mode & 0o111 == 0 {
+            let mode = fs_file_info.mode;
+            // If mode is missing, assume bin/sbin files are executable (common for MSYS2/Conda)
+            let is_executable = if let Some(m) = mode {
+                m & 0o111 != 0
+            } else {
+                // For files in bin/sbin directories without mode info, assume executable
+                is_bin_path
+            };
+            if !is_executable {
                 continue;
             }
         }

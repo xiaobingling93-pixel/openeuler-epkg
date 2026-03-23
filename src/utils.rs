@@ -1031,6 +1031,21 @@ fn replace_symlinks_with_content(env_root: &Path) -> Result<()> {
 /// Create common symlinks for shell and utilities if they don't exist
 fn create_common_symlinks(env_root: &Path) -> Result<()> {
     log::trace!("Creating common symlinks in {}", env_root.display());
+
+    // For MSYS2 on Windows: create lib -> usr/lib symlink for Python to find its stdlib
+    // Python with PYTHONHOME looks for $PYTHONHOME/lib/python3.x, but MSYS2 puts it in usr/lib
+    #[cfg(windows)]
+    {
+        let ch = crate::models::channel_config();
+        if ch.format == crate::models::PackageFormat::Pacman && ch.distro == "msys2" {
+            let lib_link = env_root.join("lib");
+            if !lfs::exists_or_any_symlink(&lib_link) {
+                log::debug!("Creating lib -> usr/lib symlink for MSYS2 Python");
+                lfs::symlink_to_directory("usr/lib", &lib_link)?;
+            }
+        }
+    }
+
     // List of symlinks to create: [(symlink, [possible_targets])]
     let symlinks: &[(&str, &[&str])] = &[
         ("usr/bin/sh", &["bash", "dash", "yash", "busybox"]),
