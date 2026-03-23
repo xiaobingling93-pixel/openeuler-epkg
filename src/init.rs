@@ -517,17 +517,17 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     // Copy epkg binary using atomic operation
     copy_epkg_binary_atomically(&epkg_source, &target_epkg, true)?;
 
-    // Copy elf-loader binary using atomic operation (Linux only)
-    #[cfg(target_os = "linux")]
-    {
-        let elf_loader_target = usr_bin.join("elf-loader");
-        let elf_loader_path = init_plan
-            .elf_loader
-            .as_ref()
-            .ok_or_else(|| eyre::eyre!("Missing elf_loader asset plan"))?
-            .path
-            .clone();
-        copy_epkg_binary_atomically(&elf_loader_path, &elf_loader_target, false)?;
+    // Copy elf-loader binary using atomic operation
+    // On Linux: always needed for running glibc packages
+    // On Windows/macOS with libkrun: needed for Linux distros running in VM
+    if let Some(ref elf_loader_plan) = init_plan.elf_loader {
+        if elf_loader_plan.path.exists() {
+            let elf_loader_target = usr_bin.join("elf-loader");
+            copy_epkg_binary_atomically(&elf_loader_plan.path, &elf_loader_target, false)?;
+            log::info!("Installed elf-loader: {}", elf_loader_target.display());
+        } else {
+            log::warn!("elf-loader binary not found at {}", elf_loader_plan.path.display());
+        }
     }
 
     // Copy epkg-linux binary for VM usage on Windows/macOS hosts
@@ -1308,6 +1308,17 @@ fn resolve_assets_for_os(
                 }
                 None => None,
             }
+        } else if cfg!(feature = "libkrun") {
+            // On Windows/macOS with libkrun, still need elf-loader for Linux distros running in VM
+            // Fetch the latest elf-loader release if no version is specified
+            let elf_loader_release = fetch_latest_release(GITEE_OWNER, REPO_ELF_LOADER)?;
+            match elf_loader_release.find_asset_urls_for_arch("elf-loader", arch) {
+                Ok((loader_url, _)) => Some(loader_url),
+                Err(e) => {
+                    log::warn!("Could not resolve elf-loader binary: {}", e);
+                    None
+                }
+            }
         } else {
             None
         };
@@ -1334,6 +1345,13 @@ fn resolve_assets_for_os(
     let epkg_version = epkg_release.tag_name.clone();
 
     let (elf_loader_version, elf_loader_url) = if is_linux {
+        let elf_loader_release = fetch_latest_release(GITEE_OWNER, REPO_ELF_LOADER)?;
+        let elf_loader_version = Some(elf_loader_release.tag_name.clone());
+        let (loader_url, _loader_sha_url) =
+            elf_loader_release.find_asset_urls_for_arch("elf-loader", arch)?;
+        (elf_loader_version, Some(loader_url))
+    } else if cfg!(feature = "libkrun") {
+        // On Windows/macOS with libkrun, still need elf-loader for Linux distros running in VM
         let elf_loader_release = fetch_latest_release(GITEE_OWNER, REPO_ELF_LOADER)?;
         let elf_loader_version = Some(elf_loader_release.tag_name.clone());
         let (loader_url, _loader_sha_url) =
@@ -1451,11 +1469,13 @@ fn check_for_updates() -> Result<InitPlan> {
 
     // Always show version information
     println!("  epkg: {} → {}", current_version.epkg_version, new_version.epkg_version);
-    if is_linux {
-        println!(
-            "  elf-loader: {:?} → {:?}",
-            current_version.elf_loader_version, new_version.elf_loader_version
-        );
+    if is_linux || cfg!(feature = "libkrun") {
+        if new_version.elf_loader_version.is_some() {
+            println!(
+                "  elf-loader: {:?} → {:?}",
+                current_version.elf_loader_version, new_version.elf_loader_version
+            );
+        }
     }
 
     let epkg_src_url = format!(
@@ -1481,7 +1501,14 @@ fn check_for_updates() -> Result<InitPlan> {
     let need_download_epkg_binary = new_version.epkg_version != current_version.epkg_version
         && !epkg_binary_url.is_empty();
     let need_download_epkg_src = !using_local_repo;
-    let need_download_elf_loader = is_linux && !has_local_elf_loader;
+    let need_download_elf_loader = if is_linux {
+        !has_local_elf_loader
+    } else if cfg!(feature = "libkrun") {
+        // On Windows/macOS with libkrun, need elf-loader for Linux distros in VM
+        elf_loader_url.is_some()
+    } else {
+        false
+    };
 
     // Optional addon (libkrun).
     #[cfg(feature = "libkrun")]
@@ -1502,14 +1529,17 @@ fn check_for_updates() -> Result<InitPlan> {
         if let Some(loader_url) = elf_loader_url {
             let elf_loader_path =
                 mirror::Mirrors::remote_url_to_path(&loader_url, &epkg_download_dir, "epkg")?;
+            log::info!("elf-loader download plan: {} -> {}", loader_url, elf_loader_path.display());
             Some(AssetDownloadPlan {
                 url: loader_url,
                 path: elf_loader_path,
             })
         } else {
+            log::debug!("elf-loader URL is None, skipping download");
             None
         }
     } else {
+        log::debug!("need_download_elf_loader=false, skipping elf-loader download");
         None
     };
 
