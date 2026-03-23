@@ -864,7 +864,15 @@ fn add_epkg_bin_dir_mount(spec_strings: &mut Vec<String>) {
 fn add_epkg_mount_spec_strings(spec_strings: &mut Vec<String>) {
     spec_strings.push(format!("{}:try", dirs().home_epkg.display()));
     spec_strings.push(format!("{}:try", dirs().home_cache.display()));
-    spec_strings.push(format!("{}:try", dirs().opt_epkg.display()));
+    // Mount /opt/epkg read-only if we're not root on host.
+    // In VM sandbox, we appear as root but host filesystem permissions still apply,
+    // so write attempts to /opt/epkg/cache would fail with EPERM.
+    let opt_epkg_opts = if crate::utils::should_mount_opt_epkg_readonly() {
+        "ro,try"
+    } else {
+        "try"
+    };
+    spec_strings.push(format!("{}:{}", dirs().opt_epkg.display(), opt_epkg_opts));
     add_epkg_bin_dir_mount(spec_strings);
 }
 

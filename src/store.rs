@@ -894,6 +894,8 @@ fn validate_store_integrity(pkgline: &str) -> bool {
     }
 
     // Sample check: verify a few files from filelist actually exist
+    // Note: For symlinks, we only check if the symlink itself exists (not the target)
+    // because symlink targets may reference paths that don't exist on the host
     let mut checked = 0;
     let mut missing = 0;
     for line in filelist_content.lines().take(10) {
@@ -908,7 +910,19 @@ fn validate_store_integrity(pkgline: &str) -> bool {
         }
         let path = unescape_mtree_path(escaped_path);
         let file_path = fs_dir.join(&path);
-        if !lfs::exists_on_host(&file_path) {
+
+        // Check if it's a symlink entry
+        let is_symlink = parts.iter().any(|p| p.starts_with("type=link"));
+
+        // For symlinks, check if the symlink itself exists (using symlink_metadata)
+        // For regular files, check if the file exists normally
+        let exists = if is_symlink {
+            std::fs::symlink_metadata(&file_path).is_ok()
+        } else {
+            lfs::exists_on_host(&file_path)
+        };
+
+        if !exists {
             missing += 1;
             log::trace!("validate_store_integrity: file missing in {}: {}", pkgline, path);
         }

@@ -287,7 +287,10 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
     // For system dirs, guest_path = host_path
     try_add_mount(&dirs().home_epkg, None, false, true);
     try_add_mount(&dirs().home_cache, None, false, true);
-    try_add_mount(&dirs().opt_epkg, None, false, true);
+    // Mount /opt/epkg read-only if we're not root on host.
+    // In VM sandbox, we appear as root but host filesystem permissions still apply,
+    // so write attempts to /opt/epkg/cache would fail with EPERM.
+    try_add_mount(&dirs().opt_epkg, None, crate::utils::should_mount_opt_epkg_readonly(), true);
 
     // Add epkg binary directory if outside env
     if let Ok(epkg_exe) = std::env::current_exe() {

@@ -757,6 +757,7 @@ pub fn is_symlink_or_junction(path: &Path) -> bool {
 /// forward slashes. This normalization prevents errors like:
 /// - `C:\path/to/file` (mixed separators)
 /// - Junction creation failure due to forward slashes
+#[cfg(windows)]
 fn normalize_symlink_target(target: &Path) -> PathBuf {
     let target_str = target.to_string_lossy();
     PathBuf::from(target_str.replace('/', "\\"))

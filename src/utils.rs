@@ -437,17 +437,63 @@ pub fn is_running_as_root() -> bool {
     false
 }
 
+/// Returns true if /opt/epkg should be mounted read-only in VM sandbox.
+/// When we're not root on host, /opt/epkg/cache is not writable (host permissions apply),
+/// so mounting it read-only prevents EPERM errors and forces fallback to user cache.
+pub fn should_mount_opt_epkg_readonly() -> bool {
+    !is_running_as_root()
+}
+
 /// Determine shared_store mode based on the decision sequence:
 /// 1. private if !is_running_as_root
-/// 2. public  if running as root and /opt/epkg/envs/ exists
+/// 2. public  if running as root and /opt/epkg/envs/ exists AND /opt/epkg/cache is writable
 /// 3. private if $HOME/.epkg/envs/ exists
-/// 4. public  if /opt/epkg/envs/ exists
+/// 4. public  if /opt/epkg/envs/ exists AND /opt/epkg/cache is writable
 /// 5. otherwise: neither envs exists, default to private (false)
 pub fn determine_shared_store() -> Result<bool> {
     use std::path::Path;
     use crate::dirs::get_home;
 
     let is_root = is_running_as_root();
+    let opt_envs = Path::new("/opt/epkg/envs");
+    let opt_cache = Path::new("/opt/epkg/cache");
+    let has_opt_envs = lfs::exists_on_host(opt_envs);
+
+    // Helper: check if /opt/epkg/cache is actually writable by attempting to create a temp file.
+    // This is more reliable than checking permissions, especially for virtiofs which may
+    // report writable permissions but actually reject writes.
+    let is_opt_cache_writable = || -> bool {
+        // First ensure the directory exists
+        if !lfs::exists_on_host(opt_cache) {
+            // Try to create it, or check if parent is writable
+            if let Some(parent) = opt_cache.parent() {
+                if !lfs::exists_on_host(parent) {
+                    return false;
+                }
+                // Try to create the cache directory
+                if std::fs::create_dir_all(opt_cache).is_err() {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+
+        // Try to create a temporary file to verify actual write access
+        let test_file = opt_cache.join(".write_test_tmp");
+        match std::fs::File::create(&test_file) {
+            Ok(_) => {
+                // Clean up the test file
+                let _ = std::fs::remove_file(&test_file);
+                log::trace!("is_opt_cache_writable: write test succeeded");
+                true
+            }
+            Err(e) => {
+                log::trace!("is_opt_cache_writable: write test failed: {}", e);
+                false
+            }
+        }
+    };
 
     // Rule 1: If no root permission, set to private
     if !is_root {
@@ -455,12 +501,15 @@ pub fn determine_shared_store() -> Result<bool> {
         return Ok(false);
     }
 
-    // Rule 2: If running as root and /opt/epkg/envs/ exists, set to public
-    let opt_envs = Path::new("/opt/epkg/envs");
-    let has_opt_envs = lfs::exists_on_host(opt_envs);
-    if is_root && has_opt_envs {
-        log::trace!("determine_shared_store: rule 2 -> public (root and /opt/epkg/envs exists)");
-        return Ok(true);
+    // Rule 2: If running as root and /opt/epkg/envs/ exists, check cache writability
+    if has_opt_envs {
+        if is_opt_cache_writable() {
+            log::trace!("determine_shared_store: rule 2 -> public (root and /opt/epkg/envs exists, cache writable)");
+            return Ok(true);
+        } else {
+            // Cache not writable (e.g., virtiofs with restricted permissions), fall through
+            log::trace!("determine_shared_store: /opt/epkg/cache not writable, falling through");
+        }
     }
 
     // Rule 3: If $HOME/.epkg/envs/ exists, set to private
@@ -472,14 +521,14 @@ pub fn determine_shared_store() -> Result<bool> {
         return Ok(false);
     }
 
-    // Rule 4: If /opt/epkg/envs/ exists, set to public
-    if has_opt_envs {
-        log::trace!("determine_shared_store: rule 4 -> public (/opt/epkg/envs exists)");
+    // Rule 4: If /opt/epkg/envs/ exists AND cache is writable, set to public
+    if has_opt_envs && is_opt_cache_writable() {
+        log::trace!("determine_shared_store: rule 4 -> public (/opt/epkg/envs exists, cache writable)");
         return Ok(true);
     }
 
-    // Rule 5: Otherwise: neither envs exists, default to private (false)
-    log::trace!("determine_shared_store: rule 5 -> private (neither envs exists)");
+    // Rule 5: Otherwise: neither envs exists or cache not writable, default to private (false)
+    log::trace!("determine_shared_store: rule 5 -> private (neither envs exists or cache not writable)");
     Ok(false)
 }
 
