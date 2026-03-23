@@ -21,7 +21,7 @@ test_sh() {
 
     log "Testing /bin/sh usability in $env_name"
     # Check if /bin/sh exists and can execute a simple command
-    if ! epkg -e "$env_name" run /bin/sh -c 'exit 0' >/dev/null 2>&1; then
+    if ! epkg -e "$env_name" run /bin/sh -c 'exit 0'; then
         error "/bin/sh not usable in $env_name"
     fi
     log "/bin/sh is usable in $env_name"
@@ -63,7 +63,7 @@ test_epkg_list_via_bash() {
 
     log "Testing epkg list via bash command in $env_name"
     # Determine epkg command to use inside environment
-    if epkg -e "$env_name" run bash -c "command -v epkg" >/dev/null 2>&1; then
+    if epkg -e "$env_name" run bash -c "command -v epkg"; then
         # epkg is in PATH inside environment
         epkg_cmd="epkg"
         log "epkg found in PATH inside environment"
@@ -77,7 +77,7 @@ test_epkg_list_via_bash() {
     fi
 
     # Test that epkg list works via bash command
-    if ! epkg -e "$env_name" run bash -c "$epkg_cmd list" >/dev/null; then
+    if ! epkg -e "$env_name" run bash -c "$epkg_cmd list"; then
         epkg -e "$env_name" run bash -c 'echo $PATH'
         error "epkg list via bash command failed in $env_name"
     fi
@@ -122,7 +122,7 @@ test_package_manager_queries() {
 test_epkg_info_bash() {
     local env_name="$1"
     log "Testing epkg info bash in $env_name"
-    if ! epkg -e "$env_name" info bash >/dev/null 2>&1; then
+    if ! epkg -e "$env_name" info bash; then
         error "epkg info bash failed in $env_name"
     fi
 }
@@ -133,7 +133,7 @@ test_epkg_search_paths() {
     case "$os" in
         openeuler|debian) # only test one for each format, since the filelist downloads for search are time consuming
             log "Testing epkg search --paths /bin/bash in $env_name"
-            if ! epkg -e "$env_name" search --paths /bin/bash >/dev/null 2>&1; then
+            if ! epkg -e "$env_name" search --paths /bin/bash; then
                 error "epkg search --paths /bin/bash failed in $env_name"
             fi
             ;;
@@ -143,7 +143,7 @@ test_epkg_search_paths() {
 cleanup_env() {
     local env_name="$1"
     log "Removing environment $env_name"
-    epkg --assume-yes env remove "$env_name" 2>/dev/null || true
+    epkg --assume-yes env remove "$env_name"
 }
 
 # Main test loop
