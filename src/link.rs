@@ -410,9 +410,9 @@ pub fn create_symlink2(target_path: &Path, fs_file: &Path) -> Result<()> {
 
 fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::mtree::MtreeFileInfo], link_type: LinkType, can_reflink: bool) -> Result<()> {
     for fs_file_info in fs_files {
-        let rel_host = lfs::host_path_from_manifest_rel_path(fs_file_info.path.trim_start_matches('/'));
-        let fs_file = store_fs_dir.join(&rel_host);
         let fhs_file = &fs_file_info.path;
+        let rel_host = lfs::host_path_from_manifest_rel_path(fhs_file.trim_start_matches('/'));
+        let fs_file = store_fs_dir.join(&rel_host);
         let target_path = env_root.join(&rel_host);
         log::trace!("mirror_dir: processing fhs_file={}, is_link={}, is_dir={}", fhs_file, fs_file_info.is_link(), fs_file_info.is_dir());
 
@@ -870,6 +870,27 @@ fn copy_symlink(fs_file: &Path, target_path: &Path) -> Result<()> {
                     resolved_target.display()
                 );
                 is_dir = true;
+            }
+        }
+        // Also check env_root for cross-package directory symlinks
+        if !is_dir {
+            if let Some(parent) = target_path.parent() {
+                if let Some(env_root) = find_env_root_from_path(parent) {
+                    let env_target = if adjusted_target.is_absolute() {
+                        let relative = adjusted_target.strip_prefix("/").unwrap_or(&adjusted_target);
+                        env_root.join(relative)
+                    } else {
+                        parent.join(&adjusted_target)
+                    };
+                    if env_target.is_dir() {
+                        log::debug!(
+                            "copy_symlink: correcting symlink type for {} - target {} is a directory in env_root",
+                            fs_file.display(),
+                            env_target.display()
+                        );
+                        is_dir = true;
+                    }
+                }
             }
         }
     }
