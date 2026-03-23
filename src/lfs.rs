@@ -197,6 +197,7 @@ pub fn copy<P: AsRef<Path>, Q: AsRef<Path>>(source: P, target: Q) -> Result<u64>
 }
 
 /// Rename a file or directory.
+#[cfg(not(windows))]
 pub fn rename<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()> {
     let from = from.as_ref();
     let to = to.as_ref();
@@ -205,6 +206,42 @@ pub fn rename<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()> {
     log::trace!("renaming: {} -> {}", from.display(), to.display());
     fs::rename(from, to)
         .wrap_err_with(|| format!("Failed to rename {} to {}", from.display(), to.display()))
+}
+
+/// Rename a file or directory on Windows.
+/// On Windows, fs::rename fails if the destination exists, so we use MoveFileEx with REPLACE_EXISTING.
+#[cfg(windows)]
+pub fn rename<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let from = from.as_ref();
+    let to = to.as_ref();
+    debug_assert_no_forward_slash(from);
+    debug_assert_no_forward_slash(to);
+    log::trace!("renaming: {} -> {}", from.display(), to.display());
+
+    // Convert paths to wide strings
+    let from_wide: Vec<u16> = from.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let to_wide: Vec<u16> = to.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+
+    // SAFETY: We're calling MoveFileExW with valid null-terminated wide strings
+    unsafe {
+        let result = MoveFileExW(
+            windows::core::PCWSTR(from_wide.as_ptr()),
+            windows::core::PCWSTR(to_wide.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        );
+        result.map_err(|e| color_eyre::eyre::eyre!(
+            "Failed to rename {} to {}: {}",
+            from.display(),
+            to.display(),
+            e
+        ))?;
+    }
+    Ok(())
 }
 
 /// Remove a file.
