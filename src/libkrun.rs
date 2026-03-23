@@ -343,14 +343,14 @@ fn parse_mount_spec_for_virtiofs(spec_str: &str, env_root: &Path) -> Option<(std
 
     // Handle @ prefix for env_root substitution (only for source)
     let host_path = if source.starts_with('@') {
-        env_root.join(&source[1..])
+        lfs::normalize_path_separators(&env_root.join(&source[1..]))
     } else {
         std::path::PathBuf::from(source)
     };
 
     // Guest path is the target (may also have @ prefix)
     let guest_path = if target.starts_with('@') {
-        env_root.join(&target[1..])
+        lfs::normalize_path_separators(&env_root.join(&target[1..]))
     } else {
         std::path::PathBuf::from(target)
     };

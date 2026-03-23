@@ -1118,9 +1118,9 @@ fn remove_files_by_patterns(env_root: &Path) -> Result<()> {
     for pattern in &remove_patterns {
         // Convert relative pattern to absolute path within env_root
         let absolute_pattern = if pattern.starts_with('/') {
-            env_root.join(&pattern[1..]) // Remove leading slash
+            lfs::normalize_path_separators(&env_root.join(&pattern[1..])) // Remove leading slash
         } else {
-            env_root.join(pattern)
+            lfs::normalize_path_separators(&env_root.join(pattern))
         };
 
         // Use glob to find matching files

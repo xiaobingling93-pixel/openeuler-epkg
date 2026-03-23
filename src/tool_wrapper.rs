@@ -192,7 +192,14 @@ fn check_env_var_set(tool: &str) -> bool {
 fn expand_tilde(path: &str) -> PathBuf {
     if path.starts_with("~/") {
         if let Ok(home) = dirs::get_home() {
-            return PathBuf::from(home).join(&path[2..]);
+            let rest = &path[2..];
+            #[cfg(windows)]
+            {
+                let rest = rest.replace('/', "\\");
+                return PathBuf::from(home).join(&rest);
+            }
+            #[cfg(not(windows))]
+            return PathBuf::from(home).join(rest);
         }
     }
     PathBuf::from(path)
