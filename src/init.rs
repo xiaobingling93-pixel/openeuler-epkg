@@ -544,8 +544,8 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
         }
     }
 
-    // Short CLI path: ~/.epkg/bin -> <self env>/usr/bin (e.g. ~/.epkg/bin/epkg)
-    ensure_home_epkg_bin_symlink(&usr_bin)?;
+    // Short paths under ~/.epkg/: bin -> self usr/bin, assets -> self usr/src/epkg/assets
+    ensure_home_epkg_symlinks(env_root, &usr_bin)?;
 
     // Create symlink to epkg binary in the first valid PATH component (Unix only)
     #[cfg(unix)]
@@ -555,41 +555,33 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     Ok(())
 }
 
-/// Symlink `$HOME/.epkg/bin` (or `%USERPROFILE%\\.epkg\\bin` on Windows) to the self env's
-/// `usr/bin` so users can run `~/.epkg/bin/epkg` without the long `envs/self/usr/bin` path.
-/// Works for private store, shared store, and any layout where `self_usr_bin` is the real bin dir.
-fn ensure_home_epkg_bin_symlink(self_usr_bin: &Path) -> Result<()> {
+/// Symlinks under `home_epkg` (`$HOME/.epkg` or `%USERPROFILE%\\.epkg`) into the self env:
+/// - `bin` -> self `usr/bin` (short path to `epkg` and other tools)
+/// - `assets` -> self `usr/src/epkg/assets` (short path to shipped assets)
+fn ensure_home_epkg_symlinks(self_env_root: &Path, self_usr_bin: &Path) -> Result<()> {
     let home_epkg = dirs().home_epkg.clone();
-    if let Err(e) = lfs::create_dir_all(&home_epkg) {
-        log::warn!(
-            "Could not create {} (skip short bin symlink): {}",
-            home_epkg.display(),
-            e
-        );
-        return Ok(());
-    }
 
-    let short_bin = home_epkg.join("bin");
-    let link_target = match std::fs::canonicalize(self_usr_bin) {
-        Ok(p) => p,
-        Err(_) => self_usr_bin.to_path_buf(),
-    };
-
-    println!(
-        "Creating symlink: {} -> {}",
-        short_bin.display(),
-        link_target.display()
-    );
-    if let Err(e) = utils::force_symlink_to_directory(&link_target, &short_bin) {
-        log::warn!(
-            "Failed to create short bin symlink {} -> {}: {}",
-            short_bin.display(),
-            link_target.display(),
-            e
-        );
+    let assets = crate::dirs::path_join(self_env_root, &["usr", "src", "epkg", "assets"]);
+    for (name, target) in [("bin", self_usr_bin), ("assets", assets.as_path())] {
+        link_home_epkg_subdir(&home_epkg, name, target);
     }
 
     Ok(())
+}
+
+/// `home_epkg/<name>` -> directory `target`.
+fn link_home_epkg_subdir(home_epkg: &Path, name: &str, target: &Path) {
+    let link = home_epkg.join(name);
+
+    println!("Creating symlink: {} -> {}", link.display(), target.display());
+    if let Err(e) = utils::force_symlink_to_directory(target, &link) {
+        log::warn!(
+            "Failed to create symlink {} -> {}: {}",
+            link.display(),
+            target.display(),
+            e
+        );
+    }
 }
 
 /// Safely copy a binary using atomic operations to avoid conflicts with running processes
