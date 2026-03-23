@@ -160,10 +160,12 @@ fn deduplicate_files_by_hardlink(
     for (sha256_val, (current_filename, _)) in &current_package_mapping {
         // Check if there's a matching file in other packages
         if let Some((existing_filename, existing_pkgline)) = other_packages_mapping.get(sha256_val) {
-            // Build paths
-            let current_file_path = fs_dir.join(current_filename);
+            // Build paths - normalize separators on Windows to avoid mixed separators
+            let current_file_path = lfs::normalize_path_separators(&fs_dir.join(current_filename));
             let existing_package_dir = dirs().epkg_store.join(existing_pkgline);
-            let existing_file_path = existing_package_dir.join("fs").join(existing_filename);
+            let existing_file_path = lfs::normalize_path_separators(
+                &existing_package_dir.join("fs").join(existing_filename)
+            );
 
             // Check if both files exist
             if lfs::exists_on_host(&current_file_path) && lfs::exists_on_host(&existing_file_path) {

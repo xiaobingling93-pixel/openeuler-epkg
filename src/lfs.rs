@@ -975,3 +975,17 @@ pub use win32_pua_paths::{
     sanitize_filename_for_windows,
     sanitize_path_for_windows,
 };
+
+/// Normalize path separators for Windows.
+/// Converts forward slashes to backslashes to avoid mixed separators.
+/// This is needed when joining Windows paths with Unix-style relative paths.
+#[cfg(windows)]
+pub fn normalize_path_separators(path: &Path) -> PathBuf {
+    let path_str = path.to_string_lossy();
+    PathBuf::from(path_str.replace('/', "\\"))
+}
+
+#[cfg(not(windows))]
+pub fn normalize_path_separators(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}

@@ -34,9 +34,12 @@ use crate::mirror::{Mirrors, UrlProtocol};
 
 /// Normalize path separators for Windows (convert forward slashes to backslashes).
 /// This prevents mixed separators when joining URL paths with Windows paths.
+/// Also sanitizes Windows-illegal characters like ':' (common in Arch Linux epoch versions).
 #[cfg(windows)]
 fn normalize_url_path_separators(path: &str) -> PathBuf {
-    PathBuf::from(path.replace('/', "\\"))
+    // First sanitize illegal characters, then convert separators
+    let sanitized = crate::utils::sanitize_filename_for_windows(path);
+    PathBuf::from(sanitized.replace('/', "\\"))
 }
 
 #[cfg(not(windows))]
@@ -374,10 +377,12 @@ impl Mirrors {
         let is_dir = url.ends_with('/');
 
         // Build path by joining output_dir with the stripped URL path segments
+        // Sanitize each path segment for Windows (replace illegal chars like ':')
         let parts: Vec<&str> = url_stripped.split('/').filter(|s| !s.is_empty()).collect();
         let mut path = output_dir.to_path_buf();
         for part in parts {
-            path = path.join(part);
+            let sanitized = crate::utils::sanitize_filename_for_windows(part);
+            path = path.join(&sanitized);
         }
 
         if is_site || is_dir {
