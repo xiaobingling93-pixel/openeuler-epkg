@@ -18,6 +18,9 @@ function Get-EpkgSelfEnvRoot {
         [void]$candidates.Add((Join-Path $env:USERPROFILE '.epkg/envs/self'))
     }
     [void]$candidates.Add((Join-Path $HOME '.epkg/envs/self'))
+    if (Test-Path -LiteralPath 'D:\') {
+        [void]$candidates.Add('D:\epkg\envs\root\self')
+    }
     [void]$candidates.Add('C:\epkg\envs\root\self')
     [void]$candidates.Add('/opt/epkg/envs/root/self')
     foreach ($c in $candidates) {

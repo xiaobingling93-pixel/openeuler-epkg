@@ -1011,6 +1011,10 @@ pub struct EPKGConfig {
     pub command_line: String,
     #[serde(skip)]
     pub subcommand: EpkgCommand,
+
+    /// All installation paths. Optional keys under `dirs:` in options.yaml; empty fields are filled by `dirs::init_config_dirs()`.
+    #[serde(default)]
+    pub dirs: EPKGDirs,
 }
 
 // Custom default function that ensures serde field-level defaults are applied
@@ -1218,14 +1222,17 @@ pub struct ServiceOptions {
     pub all: bool, // Used for 'epkg status --all'
 }
 
-#[derive(Debug)]
+#[derive(Default, Debug, Clone, Deserialize)]
 pub struct EPKGDirs {
     // Base directories
+    #[serde(default)]
     pub opt_epkg: PathBuf,
     /// Used on Unix for namespace isolation and VM sandbox mounts
+    #[serde(default)]
     #[allow(dead_code)]
     pub home_epkg: PathBuf,
     /// Used on Unix for namespace isolation and VM sandbox mounts
+    #[serde(default)]
     #[allow(dead_code)]
     pub home_cache: PathBuf,
 
@@ -1234,16 +1241,22 @@ pub struct EPKGDirs {
     // Per-User dirs
     // - If  shared_store:  /opt/epkg/envs/$USER
     // - If !shared_store:  $HOME/.epkg/envs
+    #[serde(default)]
     pub user_envs: PathBuf,
     // - If  shared_store:  /opt/epkg/cache/aur_builds/$USER
     // - If !shared_store:  $HOME/.cache/epkg/aur_builds
     /// AUR build directory, only used on Unix (Arch Linux)
+    #[serde(default)]
     #[allow(dead_code)]
     pub user_aur_builds: PathBuf,
 
+    #[serde(default)]
     pub epkg_store: PathBuf,
+    #[serde(default)]
     pub epkg_cache: PathBuf,
+    #[serde(default)]
     pub epkg_downloads_cache: PathBuf,
+    #[serde(default)]
     pub epkg_channels_cache: PathBuf,
 }
 
@@ -1345,10 +1358,7 @@ pub fn init_config(invoked_as_applet: bool) -> Result<()> {
         .set(matches)
         .map_err(|_| eyre::eyre!("init_config() must be called only once"))?;
     let matches_ref = CLAP_MATCHES.get().unwrap();
-    // Set CONFIG with common options so config() works during parse_options_subcommand
-    let common_cfg_clone = common_cfg.clone();
-    *CONFIG.write().unwrap_or_else(|e| e.into_inner()) = Some(common_cfg);
-    let final_cfg = parse_options_subcommand(matches_ref, common_cfg_clone)
+    let final_cfg = parse_options_subcommand(matches_ref, common_cfg)
         .wrap_err("Failed to parse subcommand options for CONFIG")?;
     *CONFIG.write().unwrap_or_else(|e| e.into_inner()) = Some(final_cfg);
     Ok(())
@@ -1374,11 +1384,6 @@ impl std::ops::Deref for ConfigGuard {
         self.0.as_ref().unwrap()
     }
 }
-
-static DIRS: LazyLock<EPKGDirs> = LazyLock::new(|| {
-    let _guard = config();
-    EPKGDirs::build_dirs(&*_guard).expect("Failed to initialize EPKGDirs")
-});
 
 pub fn config() -> ConfigGuard {
     {
@@ -1433,6 +1438,6 @@ pub fn config_mut() -> ConfigMutGuard {
     ConfigMutGuard(guard)
 }
 
-pub fn dirs() -> &'static EPKGDirs {
-    &DIRS
+pub fn dirs() -> EPKGDirs {
+    config().dirs.clone()
 }

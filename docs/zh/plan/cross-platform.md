@@ -438,7 +438,7 @@ pub fn is_running_as_root() -> bool {
 
 | 路径用途 | Linux | macOS | Windows |
 |---------|-------|-------|---------|
-| **全局安装目录** | `/opt/epkg` | `/opt/epkg` | `C:\epkg` |
+| **全局安装目录** | `/opt/epkg` | `/opt/epkg` | `D:\epkg`（若存在 `D:\`）否则 `C:\epkg` |
 | **用户安装目录** | `~/.epkg` | `~/.epkg` | `%USERPROFILE%\.epkg` |
 | **store (包存储)** | `~/.epkg/store` (private) 或 `/opt/epkg/store` (shared) | 同 Linux | `%USERPROFILE%\.epkg\store` (private) 或 `C:\epkg\store` (shared) |
 | **cache (下载缓存)** | `~/.cache/epkg` | `~/Library/Caches/epkg` | `%USERPROFILE%\.epkg\cache` (private) 或 `C:\epkg\cache` (shared) |

@@ -1670,6 +1670,7 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
     }
     determine_environment_final(&mut config)?;
     validate_env_name(&config.common.env_name)?;
+    crate::dirs::init_config_dirs(&mut config)?;
     log::trace!("Configuration: {:#?}", config);
     Ok(config)
 }

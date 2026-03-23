@@ -81,10 +81,19 @@ impl EPKGDirs {
 }
 
 #[cfg(windows)]
+fn windows_global_epkg_root() -> PathBuf {
+    let d = Path::new("D:\\");
+    if d.exists() {
+        PathBuf::from(r"D:\epkg")
+    } else {
+        PathBuf::from(r"C:\epkg")
+    }
+}
+
+#[cfg(windows)]
 impl EPKGDirs {
     pub fn build_dirs(options: &EPKGConfig) -> Result<Self> {
-        // Global (shared) install root: C:\epkg\
-        let opt_epkg = PathBuf::from(r"C:\epkg");
+        let opt_epkg = windows_global_epkg_root();
 
         // Per-user (private) layout: %USERPROFILE%\.epkg\ — store, envs, and cache live under
         // .epkg (no separate %USERPROFILE%\.cache\epkg).
@@ -131,6 +140,33 @@ impl EPKGDirs {
             epkg_store,
             epkg_cache,
         })
+    }
+}
+
+/// Fill `config.dirs` from `EPKGDirs::build_dirs` for any path still empty (YAML may set `dirs` partially).
+pub fn init_config_dirs(config: &mut EPKGConfig) -> Result<()> {
+    let computed = EPKGDirs::build_dirs(config)?;
+    config.dirs.merge_from(&computed);
+    Ok(())
+}
+
+impl EPKGDirs {
+    /// Keep non-empty paths from `self`; fill empty slots from `computed`.
+    pub fn merge_from(&mut self, computed: &EPKGDirs) {
+        let m = |p: &mut PathBuf, q: &PathBuf| {
+            if p.as_os_str().is_empty() {
+                *p = q.clone();
+            }
+        };
+        m(&mut self.opt_epkg, &computed.opt_epkg);
+        m(&mut self.home_epkg, &computed.home_epkg);
+        m(&mut self.home_cache, &computed.home_cache);
+        m(&mut self.user_envs, &computed.user_envs);
+        m(&mut self.user_aur_builds, &computed.user_aur_builds);
+        m(&mut self.epkg_store, &computed.epkg_store);
+        m(&mut self.epkg_cache, &computed.epkg_cache);
+        m(&mut self.epkg_downloads_cache, &computed.epkg_downloads_cache);
+        m(&mut self.epkg_channels_cache, &computed.epkg_channels_cache);
     }
 }
 
