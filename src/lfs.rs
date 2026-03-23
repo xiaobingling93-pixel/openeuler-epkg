@@ -116,7 +116,11 @@ pub fn symlink_to_directory<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q
     // joins them with backslash paths, creating mixed separators like:
     // C:\...\env\usr/share\file.txt
     let normalized_original = normalize_symlink_target(original);
-    let posix_target = normalized_original.to_string_lossy();
+    // Decode PUA-encoded characters to get the original POSIX path for the LX symlink.
+    // The LX symlink stores the target that the Linux guest will read, which expects
+    // the original POSIX path (e.g., "Text::WrapI18N.3pm.gz", not PUA-encoded).
+    let decoded_original = decode_path_from_windows(&normalized_original);
+    let posix_target = decoded_original.to_string_lossy();
     log::trace!(
         "symlink_to_directory: {} -> {}",
         link.display(),
@@ -142,7 +146,9 @@ pub fn symlink_to_file<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> 
     debug_assert_no_forward_slash(link);
     // Normalize the symlink target to use backslashes for Windows native access.
     let normalized_original = normalize_symlink_target(original);
-    let posix_target = normalized_original.to_string_lossy();
+    // Decode PUA-encoded characters to get the original POSIX path for the LX symlink.
+    let decoded_original = decode_path_from_windows(&normalized_original);
+    let posix_target = decoded_original.to_string_lossy();
     log::trace!("symlink_to_file: {} -> {}", link.display(), normalized_original.display());
     crate::krun_virtiofs_windows::symlink::symlink_to_file(&normalized_original, link, posix_target.as_ref())
         .wrap_err_with(|| {
@@ -162,7 +168,9 @@ pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<(
     debug_assert_no_forward_slash(link);
     // Normalize the symlink target to use backslashes for Windows native access.
     let normalized_original = normalize_symlink_target(original);
-    let posix_target = normalized_original.to_string_lossy();
+    // Decode PUA-encoded characters to get the original POSIX path for the LX symlink.
+    let decoded_original = decode_path_from_windows(&normalized_original);
+    let posix_target = decoded_original.to_string_lossy();
     log::trace!("creating symlink: {} -> {}", link.display(), normalized_original.display());
     crate::krun_virtiofs_windows::symlink::symlink(&normalized_original, link, posix_target.as_ref())
         .wrap_err_with(|| {
