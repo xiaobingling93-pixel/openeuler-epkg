@@ -438,14 +438,14 @@ pub fn is_running_as_root() -> bool {
 
 | 路径用途 | Linux | macOS | Windows |
 |---------|-------|-------|---------|
-| **全局安装目录** | `/opt/epkg` | `/opt/epkg` | `C:\Program Files\epkg` |
-| **用户安装目录** | `~/.epkg` | `~/.epkg` | `%LOCALAPPDATA%\epkg` |
-| **store (包存储)** | `~/.epkg/store` (private) 或 `/opt/epkg/store` (shared) | 同 Linux | `%LOCALAPPDATA%\epkg\store` |
-| **cache (下载缓存)** | `~/.cache/epkg` | `~/Library/Caches/epkg` | `%LOCALAPPDATA%\epkg\cache` |
-| **envs (环境目录)** | `~/.epkg/envs` (private) 或 `/opt/epkg/envs/$USER` (shared) | 同 Linux | `%LOCALAPPDATA%\epkg\envs` |
-| **epkg 二进制** | `~/.epkg/envs/self/usr/bin/epkg` | `~/.epkg/envs/self/usr/bin/epkg` | `%LOCALAPPDATA%\epkg\envs\self\usr\bin\epkg.exe` |
+| **全局安装目录** | `/opt/epkg` | `/opt/epkg` | `C:\epkg` |
+| **用户安装目录** | `~/.epkg` | `~/.epkg` | `%USERPROFILE%\.epkg` |
+| **store (包存储)** | `~/.epkg/store` (private) 或 `/opt/epkg/store` (shared) | 同 Linux | `%USERPROFILE%\.epkg\store` (private) 或 `C:\epkg\store` (shared) |
+| **cache (下载缓存)** | `~/.cache/epkg` | `~/Library/Caches/epkg` | `%USERPROFILE%\.epkg\cache` (private) 或 `C:\epkg\cache` (shared) |
+| **envs (环境目录)** | `~/.epkg/envs` (private) 或 `/opt/epkg/envs/$USER` (shared) | 同 Linux | `%USERPROFILE%\.epkg\envs` (private) 或 `C:\epkg\envs\<用户>` (shared) |
+| **epkg 二进制** | `~/.epkg/envs/self/usr/bin/epkg` | `~/.epkg/envs/self/usr/bin/epkg` | `%USERPROFILE%\.epkg\envs\self\usr\bin\epkg.exe` |
 | **elf-loader** | `~/.epkg/envs/self/usr/bin/elf-loader` | - | - |
-| **Linux ELF epkg** | - | `~/.epkg/envs/self/usr/bin/epkg-linux-<arch>`（例如 x86_64/aarch64） | `%LOCALAPPDATA%\epkg\envs\self\usr\bin\epkg-linux-<arch>`（VM guest 用，与 macOS 同类） |
+| **Linux ELF epkg** | - | `~/.epkg/envs/self/usr/bin/epkg-linux-<arch>`（例如 x86_64/aarch64） | `%USERPROFILE%\.epkg\envs\self\usr\bin\epkg-linux-<arch>`（VM guest 用，与 macOS 同类） |
 
 **说明**：
 - epkg 二进制统一放在 `~/.epkg/envs/self/usr/bin/` 目录下
@@ -476,8 +476,8 @@ pub fn get_cache_dir() -> PathBuf {
     }
     #[cfg(windows)]
     {
-        dirs::cache_dir().unwrap_or_else(|| PathBuf::from(".cache"))
-            .join("epkg")
+        PathBuf::from(std::env::var("USERPROFILE").unwrap_or_default())
+            .join(".epkg/cache")
     }
 }
 
@@ -486,12 +486,15 @@ pub fn get_epkg_store(shared: bool) -> PathBuf {
         #[cfg(unix)]
         { PathBuf::from("/opt/epkg/store") }
         #[cfg(windows)]
-        { PathBuf::from(r"C:\Program Files\epkg\store") }
+        { PathBuf::from(r"C:\epkg\store") }
     } else {
         #[cfg(unix)]
         { PathBuf::from(get_home().unwrap_or_default()).join(".epkg/store") }
         #[cfg(windows)]
-        { dirs::data_local_dir().unwrap().join("epkg/store") }
+        {
+            PathBuf::from(std::env::var("USERPROFILE").unwrap_or_default())
+                .join(".epkg/store")
+        }
     }
 }
 ```
@@ -609,7 +612,7 @@ prefix/
 1. **宿主二进制 + Linux ELF（VM guest）**
    - `epkg self install`：macOS / Windows 在需要 VM 时拉取 `epkg-linux-<arch>`，与原生宿主 `epkg` 并存
    - macOS 原生：`~/.epkg/envs/self/usr/bin/epkg`
-   - Windows 原生：`%LOCALAPPDATA%\epkg\envs\self\usr\bin\epkg.exe`
+   - Windows 原生：`%USERPROFILE%\.epkg\envs\self\usr\bin\epkg.exe`
    - Linux ELF（guest）：`.../epkg-linux-<arch>`（路径布局与 macOS 用户目录方案一致）
 
 2. **复用现有 IsolateMode::Vm 机制**

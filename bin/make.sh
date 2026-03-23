@@ -219,7 +219,7 @@ detect_package_manager() {
 
 # Install kernel for libkrun VM from local build or download.
 # For local development: copies vmlinux from git/sandbox-kernel/linux-stable into the self env boot dir.
-# On Unix that is ~/.epkg/envs/self/boot/; on Windows it matches src/dirs.rs (%LOCALAPPDATA%\epkg\envs\self\boot).
+# On Unix that is ~/.epkg/envs/self/boot/; on Windows it matches src/dirs.rs (%USERPROFILE%\.epkg\envs\self\boot).
 # Only works when building for host architecture.
 install_kernel_for_libkrun() {
     local arch="$1"
@@ -241,12 +241,10 @@ install_kernel_for_libkrun() {
             ;;
     esac
 
-    # Self env boot dir must match EPKGDirs (dirs.rs): Windows uses LOCALAPPDATA, not only $HOME/.epkg.
+    # Self env boot dir must match EPKGDirs (dirs.rs): Windows uses %USERPROFILE%\.epkg\envs\self\boot.
     local self_boot_dir="${HOME}/.epkg/envs/self/boot"
-    if [[ -n "${LOCALAPPDATA:-}" ]]; then
-        self_boot_dir="${LOCALAPPDATA//\\//}/epkg/envs/self/boot"
-    elif [[ -n "${USERPROFILE:-}" ]]; then
-        self_boot_dir="${USERPROFILE//\\//}/AppData/Local/epkg/envs/self/boot"
+    if [[ -n "${USERPROFILE:-}" ]]; then
+        self_boot_dir="${USERPROFILE//\\//}/.epkg/envs/self/boot"
     fi
     local self_boot_vmlinux="${self_boot_dir}/vmlinux"
     if [[ -f "$self_boot_vmlinux" ]]; then

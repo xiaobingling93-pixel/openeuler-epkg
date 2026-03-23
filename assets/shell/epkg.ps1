@@ -14,10 +14,11 @@
 
 function Get-EpkgSelfEnvRoot {
     $candidates = [System.Collections.ArrayList]@()
-    [void]$candidates.Add((Join-Path $HOME '.epkg/envs/self'))
-    if ($env:LOCALAPPDATA) {
-        [void]$candidates.Add((Join-Path $env:LOCALAPPDATA 'epkg/envs/self'))
+    if ($env:USERPROFILE) {
+        [void]$candidates.Add((Join-Path $env:USERPROFILE '.epkg/envs/self'))
     }
+    [void]$candidates.Add((Join-Path $HOME '.epkg/envs/self'))
+    [void]$candidates.Add('C:\epkg\envs\root\self')
     [void]$candidates.Add('/opt/epkg/envs/root/self')
     foreach ($c in $candidates) {
         if ($c -and (Test-Path -LiteralPath $c)) {

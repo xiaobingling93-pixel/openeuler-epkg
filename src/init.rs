@@ -555,7 +555,7 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     Ok(())
 }
 
-/// Symlink `$HOME/.epkg/bin` (or `%LOCALAPPDATA%\\epkg\\bin` on Windows) to the self env's
+/// Symlink `$HOME/.epkg/bin` (or `%USERPROFILE%\\.epkg\\bin` on Windows) to the self env's
 /// `usr/bin` so users can run `~/.epkg/bin/epkg` without the long `envs/self/usr/bin` path.
 /// Works for private store, shared store, and any layout where `self_usr_bin` is the real bin dir.
 fn ensure_home_epkg_bin_symlink(self_usr_bin: &Path) -> Result<()> {

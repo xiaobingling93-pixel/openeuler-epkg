@@ -80,33 +80,27 @@ impl EPKGDirs {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 impl EPKGDirs {
     pub fn build_dirs(options: &EPKGConfig) -> Result<Self> {
-        // Windows paths
-        let opt_epkg = PathBuf::from(r"C:\Program Files\epkg");
+        // Global (shared) install root: C:\epkg\
+        let opt_epkg = PathBuf::from(r"C:\epkg");
 
-        // Use LOCALAPPDATA for user data (standard Windows location)
-        let local_app_data = env::var("LOCALAPPDATA")
+        // Per-user (private) layout: %USERPROFILE%\.epkg\ — store, envs, and cache live under
+        // .epkg (no separate %USERPROFILE%\.cache\epkg).
+        let user_profile = env::var("USERPROFILE")
             .map(PathBuf::from)
-            .or_else(|_| {
-                // Fallback: try USERPROFILE\AppData\Local
-                env::var("USERPROFILE").map(|p| PathBuf::from(p).join("AppData").join("Local"))
-            })
-            .or_else(|_| {
-                // Last resort: HOME
-                env::var("HOME").map(PathBuf::from)
-            })
+            .or_else(|_| env::var("HOME").map(PathBuf::from))
             .unwrap_or_else(|_| PathBuf::from("."));
 
-        let home_epkg = local_app_data.join("epkg");
-        let home_cache = local_app_data.join("epkg").join("cache");
+        let home_epkg = user_profile.join(".epkg");
+        let home_cache = home_epkg.join("cache");
 
         let (epkg_store, epkg_cache) = if options.init.shared_store {
-            // Shared store/cache live under Program Files
+            // Shared store/cache under C:\epkg\
             (opt_epkg.join("store"), opt_epkg.join("cache"))
         } else {
-            // Non-shared store uses user profile
+            // User-private: under %USERPROFILE%\.epkg\
             (home_epkg.join("store"), home_cache.clone())
         };
 
@@ -116,10 +110,10 @@ impl EPKGDirs {
             .unwrap_or_else(|_| "user".to_string());
 
         let user_envs = if options.init.shared_store {
-            // C:\Program Files\epkg\envs\$USER
+            // C:\epkg\envs\<username>
             opt_epkg.join("envs").join(&username)
         } else {
-            // %LOCALAPPDATA%\epkg\envs
+            // %USERPROFILE%\.epkg\envs
             home_epkg.join("envs")
         };
 
