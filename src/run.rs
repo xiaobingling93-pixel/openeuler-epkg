@@ -373,87 +373,138 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
 
 #[cfg(not(target_os = "linux"))]
 fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<PathBuf> {
-    if Path::new(&run_options.command).is_absolute() {
-        Ok(PathBuf::from(&run_options.command))
-    } else if run_options.command.contains('/') {
-        Ok(PathBuf::from(&run_options.command))
-    } else {
-        // For relative commands, search in multiple locations
-        // Order: bin/ -> usr/bin/ -> Scripts/ -> Library/bin/ -> Library/mingw-w64/bin/ -> env_root
-        //
-        // Rationale:
-        // - bin/ is preferred because some programs (like cmake) calculate
-        //   their installation prefix based on the binary path.
-        //   bin/cmake -> looks for ../share/cmake (correct)
-        //   usr/bin/cmake -> looks for usr/share/cmake (wrong, should be ../../share/cmake)
-        // - Scripts/ is used by conda on Windows for pip-installed scripts
-        // - Library/bin/ is the standard conda location for Windows binaries (curl, etc.)
-        // - Library/mingw-w64/bin/ is used by conda-forge for mingw-w64 packages (jq, etc.)
-        // - env_root is used by conda on Windows for main executables (python.exe, etc.)
+    // On non-Linux platforms, Unix-style absolute paths (e.g., /usr/bin/sh from hooks)
+    // need to be resolved within the environment, not treated as host paths.
+    // Windows-style absolute paths (C:\...) are used as-is.
+    let is_unix_absolute = run_options.command.starts_with('/');
+
+    if is_unix_absolute {
+        // Unix-style absolute path: convert to environment path
+        // /usr/bin/sh -> env_root/usr/bin/sh (or .exe on Windows)
+        let relative_path = run_options.command.trim_start_matches('/');
+        let cmd_path = env_root.join(relative_path);
 
         // On Windows, also try with .exe extension
         #[cfg(windows)]
-        let cmd_with_exe: String;
-        #[cfg(windows)]
-        let cmd_names: Vec<&str> = if run_options.command.ends_with(".exe") {
-            vec![&run_options.command]
-        } else {
-            cmd_with_exe = format!("{}.exe", run_options.command);
-            vec![&run_options.command, &cmd_with_exe]
-        };
-        #[cfg(not(windows))]
-        let cmd_names: Vec<&str> = vec![&run_options.command];
-
-        for cmd_name in cmd_names {
-            let cmd_in_bin = env_root.join("bin").join(cmd_name);
-            if cmd_in_bin.exists() {
-                return Ok(cmd_in_bin);
-            }
-
-            let cmd_in_usr_bin = crate::dirs::path_join(env_root, &["usr", "bin"]).join(cmd_name);
-            if cmd_in_usr_bin.exists() {
-                return Ok(cmd_in_usr_bin);
-            }
-
-            // Check Scripts/ directory (conda on Windows)
-            let cmd_in_scripts = env_root.join("Scripts").join(cmd_name);
-            if cmd_in_scripts.exists() {
-                return Ok(cmd_in_scripts);
-            }
-
-            // Check Library/bin/ (standard conda location on Windows)
-            let cmd_in_library_bin = crate::dirs::path_join(env_root, &["Library", "bin"]).join(cmd_name);
-            if cmd_in_library_bin.exists() {
-                return Ok(cmd_in_library_bin);
-            }
-
-            // Check Library/mingw-w64/bin/ (conda-forge mingw packages on Windows)
-            let cmd_in_mingw = crate::dirs::path_join(env_root, &["Library", "mingw-w64", "bin"]).join(cmd_name);
-            if cmd_in_mingw.exists() {
-                return Ok(cmd_in_mingw);
-            }
-
-            // Check env_root directly (conda on Windows places main executables at root)
-            let cmd_in_root = env_root.join(cmd_name);
-            if cmd_in_root.exists() {
-                return Ok(cmd_in_root);
-            }
-
-            // Check MSYS2 MinGW subdirectories (ucrt64/bin, mingw64/bin, etc.)
-            // Order follows MSYS2's default priority: ucrt64 > mingw64 > mingw32 > clang* > msys
-            for msys2_prefix in &["ucrt64", "mingw64", "mingw32", "clang64", "clang32", "clangarm64"] {
-                let cmd_in_msys2 = env_root.join(msys2_prefix).join("bin").join(cmd_name);
-                if cmd_in_msys2.exists() {
-                    return Ok(cmd_in_msys2);
+        {
+            if !cmd_path.exists() && !run_options.command.ends_with(".exe") {
+                let cmd_with_exe = env_root.join(format!("{}.exe", relative_path));
+                if cmd_with_exe.exists() {
+                    return Ok(cmd_with_exe);
                 }
             }
         }
 
-        if lfs::exists_on_host(Path::new(&run_options.command)) {
-            Ok(PathBuf::from(&run_options.command))
-        } else {
-            Err(eyre::eyre!("Command '{}' not found in {}", run_options.command, env_root.display()))
+        if cmd_path.exists() {
+            return Ok(cmd_path);
         }
+
+        return Err(eyre::eyre!(
+            "Command '{}' not found at {}",
+            run_options.command,
+            cmd_path.display()
+        ));
+    }
+
+    // Windows-style absolute path (C:\...) - use as-is
+    if Path::new(&run_options.command).is_absolute() {
+        return Ok(PathBuf::from(&run_options.command));
+    }
+
+    // Relative path with '/' (e.g., bin/sh) - resolve within env_root
+    if run_options.command.contains('/') {
+        let cmd_path = env_root.join(&run_options.command);
+
+        #[cfg(windows)]
+        {
+            if !cmd_path.exists() && !run_options.command.ends_with(".exe") {
+                let cmd_with_exe = env_root.join(format!("{}.exe", &run_options.command));
+                if cmd_with_exe.exists() {
+                    return Ok(cmd_with_exe);
+                }
+            }
+        }
+
+        if cmd_path.exists() {
+            return Ok(cmd_path);
+        }
+    }
+
+    // For simple command names (no path separators), search in standard locations
+    // Order: bin/ -> usr/bin/ -> Scripts/ -> Library/bin/ -> Library/mingw-w64/bin/ -> env_root
+    //
+    // Rationale:
+    // - bin/ is preferred because some programs (like cmake) calculate
+    //   their installation prefix based on the binary path.
+    //   bin/cmake -> looks for ../share/cmake (correct)
+    //   usr/bin/cmake -> looks for usr/share/cmake (wrong, should be ../../share/cmake)
+    // - Scripts/ is used by conda on Windows for pip-installed scripts
+    // - Library/bin/ is the standard conda location for Windows binaries (curl, etc.)
+    // - Library/mingw-w64/bin/ is used by conda-forge for mingw-w64 packages (jq, etc.)
+    // - env_root is used by conda on Windows for main executables (python.exe, etc.)
+
+    // On Windows, also try with .exe extension
+    #[cfg(windows)]
+    let cmd_with_exe: String;
+    #[cfg(windows)]
+    let cmd_names: Vec<&str> = if run_options.command.ends_with(".exe") {
+        vec![&run_options.command]
+    } else {
+        cmd_with_exe = format!("{}.exe", run_options.command);
+        vec![&run_options.command, &cmd_with_exe]
+    };
+    #[cfg(not(windows))]
+    let cmd_names: Vec<&str> = vec![&run_options.command];
+
+    for cmd_name in cmd_names {
+        let cmd_in_bin = env_root.join("bin").join(cmd_name);
+        if cmd_in_bin.exists() {
+            return Ok(cmd_in_bin);
+        }
+
+        let cmd_in_usr_bin = crate::dirs::path_join(env_root, &["usr", "bin"]).join(cmd_name);
+        if cmd_in_usr_bin.exists() {
+            return Ok(cmd_in_usr_bin);
+        }
+
+        // Check Scripts/ directory (conda on Windows)
+        let cmd_in_scripts = env_root.join("Scripts").join(cmd_name);
+        if cmd_in_scripts.exists() {
+            return Ok(cmd_in_scripts);
+        }
+
+        // Check Library/bin/ (standard conda location on Windows)
+        let cmd_in_library_bin = crate::dirs::path_join(env_root, &["Library", "bin"]).join(cmd_name);
+        if cmd_in_library_bin.exists() {
+            return Ok(cmd_in_library_bin);
+        }
+
+        // Check Library/mingw-w64/bin/ (conda-forge mingw packages on Windows)
+        let cmd_in_mingw = crate::dirs::path_join(env_root, &["Library", "mingw-w64", "bin"]).join(cmd_name);
+        if cmd_in_mingw.exists() {
+            return Ok(cmd_in_mingw);
+        }
+
+        // Check env_root directly (conda on Windows places main executables at root)
+        let cmd_in_root = env_root.join(cmd_name);
+        if cmd_in_root.exists() {
+            return Ok(cmd_in_root);
+        }
+
+        // Check MSYS2 MinGW subdirectories (ucrt64/bin, mingw64/bin, etc.)
+        // Order follows MSYS2's default priority: ucrt64 > mingw64 > mingw32 > clang* > msys
+        for msys2_prefix in &["ucrt64", "mingw64", "mingw32", "clang64", "clang32", "clangarm64"] {
+            let cmd_in_msys2 = env_root.join(msys2_prefix).join("bin").join(cmd_name);
+            if cmd_in_msys2.exists() {
+                return Ok(cmd_in_msys2);
+            }
+        }
+    }
+
+    if lfs::exists_on_host(Path::new(&run_options.command)) {
+        Ok(PathBuf::from(&run_options.command))
+    } else {
+        Err(eyre::eyre!("Command '{}' not found in {}", run_options.command, env_root.display()))
     }
 }
 

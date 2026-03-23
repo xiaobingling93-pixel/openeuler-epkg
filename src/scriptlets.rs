@@ -484,6 +484,22 @@ fn try_scriptlet_interpreter_loop(
     let mut script_executed = false;
     for interpreter in interpreters {
         let interpreter_path = crate::dirs::path_join(env_root, &["usr", "bin"]).join(interpreter);
+
+        // On Windows, try with .exe extension if the base path doesn't exist
+        #[cfg(windows)]
+        let interpreter_path = {
+            if lfs::resolve_symlink_in_env(&interpreter_path, env_root).is_none() {
+                let path_with_exe = interpreter_path.with_extension("exe");
+                if lfs::resolve_symlink_in_env(&path_with_exe, env_root).is_some() {
+                    path_with_exe
+                } else {
+                    interpreter_path
+                }
+            } else {
+                interpreter_path
+            }
+        };
+
         if lfs::resolve_symlink_in_env(&interpreter_path, env_root).is_none() {
             log::debug!(
                 "Interpreter {} not found in environment, trying next interpreter",
