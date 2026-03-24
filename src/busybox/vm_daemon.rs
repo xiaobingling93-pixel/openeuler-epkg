@@ -76,6 +76,7 @@
 //! ## Debug Commands (for testing)
 //! ```bash
 //! epkg run --isolate=vm [--io=tty] bash /
+//! epkg run --isolate=vm --vm-keep-timeout 60 bash   # then: epkg run --isolate=vm --reuse …
 //! timeout 10 epkg run --isolate=vm [--io=tty|--io=stream|--io=batch] ls /
 //! file_list=$(timeout 10 epkg run --isolate=vm --io=batch ls /)
 //! ```
@@ -135,8 +136,8 @@ use crate::vm_client::StreamMessage;
 /// Poll timeout in milliseconds for PTY/pipe and TCP wait.
 const POLL_TIMEOUT_MS: u32 = 1000;
 
-/// When `reuse_vm` was used on the last command, wait this long for another vsock connection
-/// before shutting down the guest.
+/// Default idle window (ms) for another vsock connection when `reuse_vm` is set but
+/// `vm_keep_timeout_secs` is omitted in the JSON request.
 const VM_REUSE_IDLE_TIMEOUT_MS: u32 = 30_000;
 
 /// Maximum poll loop iterations in non-PTY mode before forcing exit (safety limit).
@@ -305,9 +306,13 @@ pub fn command() -> Command {
 
 #[derive(Debug, Deserialize)]
 struct CommandRequest {
-    /// After this command, wait for more connections (up to [`VM_REUSE_IDLE_TIMEOUT_MS`]) instead of exiting.
+    /// After this command, wait for more connections instead of powering off.
     #[serde(default)]
     reuse_vm: bool,
+    /// Idle time in whole seconds to wait for the next connection after this command completes.
+    /// When omitted with `reuse_vm`, [`VM_REUSE_IDLE_TIMEOUT_MS`] is used.
+    #[serde(default)]
+    vm_keep_timeout_secs: Option<u32>,
     #[serde(default)]
     command: Vec<String>,
     #[serde(default)]
@@ -329,8 +334,8 @@ struct CommandRequest {
 enum ConnectionDisposition {
     /// Stop accepting; guest will power off.
     Shutdown,
-    /// Keep listening for another command (install/upgrade VM reuse).
-    ReuseWait,
+    /// Keep listening for another command; poll interval before idle shutdown.
+    ReuseWait { idle_timeout_ms: u32 },
 }
 
 /// Outcome of spawning the child with pipes. Either the child and its stdio pipes, or we already sent an error and exit code.
@@ -1003,7 +1008,13 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
             }
 
             if request.reuse_vm {
-                Ok(ConnectionDisposition::ReuseWait)
+                let idle_ms = request
+                    .vm_keep_timeout_secs
+                    .map(|s| s.saturating_mul(1000))
+                    .unwrap_or(VM_REUSE_IDLE_TIMEOUT_MS);
+                Ok(ConnectionDisposition::ReuseWait {
+                    idle_timeout_ms: idle_ms,
+                })
             } else {
                 Ok(ConnectionDisposition::Shutdown)
             }
@@ -1090,6 +1101,7 @@ fn run_vsock_server() -> Result<()> {
 
     log::debug!("vm-daemon starting (vsock), listening on port {}", VSOCK_PORT);
 
+    let mut next_idle_timeout_ms = VM_REUSE_IDLE_TIMEOUT_MS;
     let mut first_accept = true;
     loop {
         let client_fd = if first_accept {
@@ -1097,8 +1109,11 @@ fn run_vsock_server() -> Result<()> {
             log::debug!("vm-daemon: calling accept()...");
             socket::accept(raw_fd).map_err(|e| eyre!("vsock accept failed: {}", e))?
         } else {
-            log::debug!("vm-daemon: waiting for next connection (reuse, {} ms)...", VM_REUSE_IDLE_TIMEOUT_MS);
-            match accept_vsock_with_timeout(raw_fd, VM_REUSE_IDLE_TIMEOUT_MS)? {
+            log::debug!(
+                "vm-daemon: waiting for next connection (reuse, {} ms)...",
+                next_idle_timeout_ms
+            );
+            match accept_vsock_with_timeout(raw_fd, next_idle_timeout_ms)? {
                 Some(fd) => fd,
                 None => {
                     log::debug!("vm-daemon: idle timeout, powering off guest");
@@ -1115,8 +1130,12 @@ fn run_vsock_server() -> Result<()> {
                 log::debug!("vm-daemon: connection closed, powering off guest (vsock)");
                 break;
             }
-            Ok(ConnectionDisposition::ReuseWait) => {
-                log::debug!("vm-daemon: reuse_vm — waiting for another connection");
+            Ok(ConnectionDisposition::ReuseWait { idle_timeout_ms }) => {
+                next_idle_timeout_ms = idle_timeout_ms;
+                log::debug!(
+                    "vm-daemon: reuse_vm — next idle window {} ms",
+                    next_idle_timeout_ms
+                );
                 continue;
             }
             Err(e) => {

@@ -183,12 +183,12 @@ fn exec_init_command(cmd_str: Option<String>) -> Result<()> {
             log::debug!("init: vsock already available (/dev/vsock exists)");
         }
 
-        // For vsock mode, network setup is optional (vsock works without network)
-        // Only attempt network setup if it will be quick (interfaces already present)
-        // or if we need to wait (TCP mode - but we're using vsock now)
-        // Skip the long network discovery wait for faster vm-daemon startup
-        log::debug!("init: skipping network setup for vsock mode (not needed)");
-        // Note: If network is needed in the future, call setup_network_for_vm_daemon()
+        // Load virtio_net (and deps) and configure QEMU user networking (10.0.2.15/24) so
+        // guest workloads can use DNS/HTTPS; vsock control plane does not need this.
+        match setup_network_for_vm_daemon() {
+            Ok(()) => log::debug!("init: guest network ready"),
+            Err(e) => log::debug!("init: guest network setup failed (continuing; vsock only): {}", e),
+        }
 
         log::debug!("init: exec vm-daemon");
         exec_vm_daemon()
@@ -500,7 +500,6 @@ fn try_load_module(name: &str) -> bool {
 /// Setup network for vm-daemon: load virtio_net driver and configure network interface.
 /// Returns error if network setup fails (caller may fallback to /bin/sh).
 #[cfg(target_os = "linux")]
-#[allow(dead_code)]
 fn setup_network_for_vm_daemon() -> Result<(), String> {
     log::debug!("init: checking virtio_net module / interfaces for vm-daemon");
 
@@ -544,7 +543,6 @@ fn setup_network_for_vm_daemon() -> Result<(), String> {
 
 /// Parse network interface flags, supporting both decimal and hex (0x prefix)
 #[cfg(target_os = "linux")]
-#[allow(dead_code)]
 fn parse_net_flags(s: &str) -> Option<u32> {
     let s = s.trim();
     if s.starts_with("0x") || s.starts_with("0X") {
@@ -556,7 +554,6 @@ fn parse_net_flags(s: &str) -> Option<u32> {
 
 /// Check if interface is suitable (non-loopback). Returns true if suitable, false if loopback.
 #[cfg(target_os = "linux")]
-#[allow(dead_code)]
 fn is_interface_suitable(name: &str, net_dir: &Path) -> bool {
     const IFF_LOOPBACK: u32 = 0x8;
     if name == "lo" {
@@ -583,7 +580,6 @@ fn is_interface_suitable(name: &str, net_dir: &Path) -> bool {
 /// Attempt to discover primary interface once. Returns Ok(Some(name)) if found,
 /// Ok(None) if not found yet, or Err on read_dir failure.
 #[cfg(target_os = "linux")]
-#[allow(dead_code)]
 fn try_discover_interface_once(net_dir: &Path, attempt: u32, log_first: bool) -> Result<Option<String>, std::io::Error> {
     let mut entries: Vec<_> = std::fs::read_dir(net_dir)?
         .filter_map(|e| e.ok())
@@ -609,7 +605,6 @@ fn try_discover_interface_once(net_dir: &Path, attempt: u32, log_first: bool) ->
 /// Returns Ok(interface) or Err(last_seen_names) for error context.
 /// Retries for up to 10 seconds (50 attempts * 200ms) to allow virtio_net driver to initialize.
 #[cfg(target_os = "linux")]
-#[allow(dead_code)]
 fn discover_primary_interface() -> Result<String, Vec<String>> {
     const MAX_ATTEMPTS: u32 = 50;      // Total attempts before giving up
     const RETRY_MS: u64 = 200;         // Delay between attempts (total: 10 seconds)
@@ -644,7 +639,6 @@ fn discover_primary_interface() -> Result<String, Vec<String>> {
 }
 
 #[cfg(target_os = "linux")]
-#[allow(dead_code)]
 fn configure_network() -> Result<(), String> {
     // QEMU user networking default configuration (matches -netdev user defaults)
     const GUEST_IP:      (u8, u8, u8, u8) = (10, 0, 2, 15);     // Guest IP address
