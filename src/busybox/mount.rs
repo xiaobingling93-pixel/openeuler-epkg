@@ -2,7 +2,6 @@ use clap::{Arg, ArgAction, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use nix::mount::{mount, MsFlags};
-use std::ffi::CString;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use libc;
@@ -316,17 +315,12 @@ fn single_mount(options: MountOptions) -> Result<()> {
     let fstype = options.fstype;
     let data = options.data;
 
-    let source_c = source.as_ref().map(|s| CString::new(s.as_str()).unwrap());
-    let target_c = CString::new(target.as_str()).unwrap();
-    let fstype_c = fstype.as_ref().map(|s| CString::new(s.as_str()).unwrap());
-    let data_c = data.as_ref().map(|s| CString::new(s.as_str()).unwrap());
-
     mount(
-        source_c.as_ref().map(|c| c.as_c_str()),
-        target_c.as_c_str(),
-        fstype_c.as_ref().map(|c| c.as_c_str()),
+        source.as_deref(),
+        target.as_str(),
+        fstype.as_deref(),
         options.flags,
-        data_c.as_ref().map(|c| c.as_bytes_with_nul()),
+        data.as_deref(),
     ).map_err(|e| eyre!("mount failed: {}", e))?;
 
     if options.verbose {
