@@ -763,6 +763,7 @@ test -r "$epkg_rc" && . "$epkg_rc"
     )
 }
 
+#[cfg(windows)]
 fn build_epkg_ps_block(self_env_root: &Path) -> String {
     let ps1_path = self_env_root
         .join("usr")
@@ -817,6 +818,7 @@ fn append_epkg_block_to_rc_file(rc_file_path: &str, rc_content: &str) -> Result<
     append_epkg_block_to_text_file(Path::new(rc_file_path), rc_content)
 }
 
+#[cfg(windows)]
 fn update_powershell_profile() -> Result<()> {
     let self_env_root = get_env_root(SELF_ENV.to_string())?;
     let block = build_epkg_ps_block(&self_env_root);
@@ -826,6 +828,11 @@ fn update_powershell_profile() -> Result<()> {
         }
         append_epkg_block_to_text_file(&profile_path, &block)?;
     }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn update_powershell_profile() -> Result<()> {
     Ok(())
 }
 
