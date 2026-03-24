@@ -14,6 +14,8 @@ use color_eyre::eyre::WrapErr;
 use serde_json;
 use serde_yaml;
 #[cfg(unix)]
+use nix::errno::Errno;
+#[cfg(unix)]
 use nix::unistd::chown;
 use glob;
 use crate::models::*;
@@ -611,9 +613,20 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
         let uid = nix::unistd::geteuid();
         let gid = nix::unistd::getegid();
 
-        // Set owner to current user
-        chown(env_root, Some(uid), Some(gid))
-            .wrap_err_with(|| format!("Failed to set owner for {}", env_root.display()))?;
+        // Set owner to current user (best-effort: user namespaces / some tmpfs setups return EINVAL)
+        match chown(env_root, Some(uid), Some(gid)) {
+            Ok(()) => {}
+            Err(e) if e == Errno::EINVAL || e == Errno::EPERM || e == Errno::ENOTSUP => {
+                log::debug!(
+                    "Could not chown private env at {} ({}); continuing",
+                    env_root.display(),
+                    e
+                );
+            }
+            Err(e) => {
+                return Err(e).wrap_err_with(|| format!("Failed to set owner for {}", env_root.display()));
+            }
+        }
 
         // Set mode to 700 (rwx------)
         crate::utils::set_permissions_from_mode(env_root, 0o700)
