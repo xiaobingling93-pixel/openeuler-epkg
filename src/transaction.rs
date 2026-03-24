@@ -63,6 +63,7 @@ use crate::models::PACKAGE_CACHE;
 use crate::plan::{InstallationPlan, PackageOperation, OperationType, remove_package_from_cache};
 use crate::hooks;
 use crate::hooks::{run_hooks, run_pkgkey_hooks_pair, HookWhen};
+use crate::utils;
 use crate::scriptlets::{run_scriptlet, run_trans_scriptlets, ScriptletType};
 #[cfg(unix)]
 use crate::run;
@@ -515,12 +516,17 @@ fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
         // Check if ldconfig exists in the environment before trying to run it
         match run::find_command_in_env_path("ldconfig", env_root) {
             Ok(ldconfig_path) => {
-                let run_options = run::RunOptions {
+                let mut run_options = run::RunOptions {
                     command: ldconfig_path.to_string_lossy().to_string(),
                     no_exit: true,
                     chdir_to_env_root: true, // ldconfig should run relative to environment root
                     ..Default::default()
                 };
+                // Nested under `epkg run --isolate=vm` (e.g. e2e): libc::clone with namespace flags
+                // can return EPERM; ldconfig only needs the env tree, not an extra namespace.
+                if utils::e2e_backend_is_vm() {
+                    run_options.skip_namespace_isolation = true;
+                }
 
                 // Execute ldconfig
                 run::fork_and_execute(env_root, &run_options)?;
