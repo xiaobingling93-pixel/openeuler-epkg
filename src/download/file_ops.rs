@@ -103,6 +103,14 @@ fn get_temp_pid_file_path(final_path: &Path) -> PathBuf {
     utils::append_suffix(final_path, "download.pid.tmp")
 }
 
+/// Get the hostname to identify the current namespace/machine
+fn get_hostname() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 /// Create a PID file for download coordination and clean up stale PID files
 pub(crate) fn create_pid_file(final_path: &Path) -> Result<PathBuf> {
     let pid_file = get_pid_file_path(final_path);
@@ -120,8 +128,9 @@ pub(crate) fn create_pid_file(final_path: &Path) -> Result<PathBuf> {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
+    let hostname = get_hostname();
 
-    let pid_content = format!("epkg=1\npid={}\ntime={}\n", pid, timestamp);
+    let pid_content = format!("epkg=1\npid={}\ntime={}\nhost={}\n", pid, timestamp, hostname);
 
     // Try to create the PID file atomically
     let temp_pid_file = get_temp_pid_file_path(final_path);
@@ -140,22 +149,27 @@ fn is_epkg_process(pid: u32) -> bool {
     // First try to get executable path (symlink target) - handles symlinked binaries like 'wget' -> 'epkg'
     if let Some(exe) = utils::get_process_exe(pid) {
         if let Some(name) = Path::new(&exe).file_name().and_then(|n| n.to_str()) {
-            if name.to_lowercase().contains("epkg") {
-                return true;
-            }
+            return name.to_lowercase().contains("epkg");
         }
     }
 
     // Then try process name (executable basename)
     if let Some(name) = utils::get_process_name(pid) {
-        if name.to_lowercase().contains("epkg") {
-            return true;
-        }
+        return name.to_lowercase().contains("epkg");
     }
 
-    // If we can't determine, assume it might be epkg for safety
-    // (prevents deleting PID file of a live epkg process we can't inspect)
-    true
+    // Can't determine process info - likely permission denied or different namespace.
+    // The hostname check in is_pid_file_active should have already caught cross-namespace
+    // cases. If we reach here with same hostname, treat as not epkg to avoid false positives.
+    // This is safe because:
+    // 1. We already checked hostname matches (so same machine/namespace)
+    // 2. If we can't inspect the process, it's likely not ours (different user, kernel thread, etc.)
+    // 3. Worst case: we allow concurrent downloads of the same file (handled by file locking)
+    log::debug!(
+        "Cannot determine process info for PID {}, treating as not epkg",
+        pid
+    );
+    false
 }
 
 /// Check if a PID file represents an active download
@@ -169,9 +183,10 @@ fn is_pid_file_active(pid_file: &Path) -> bool {
         Err(_) => return false,
     };
 
-    // Parse the new format: epkg=1\npid=123\ntime=456\n
+    // Parse the new format: epkg=1\npid=123\ntime=456\nhost=hostname\n
     let mut pid_opt = None;
     let mut has_epkg_magic = false;
+    let mut file_hostname: Option<String> = None;
 
     for line in content.lines() {
         if let Some(value) = line.strip_prefix("epkg=") {
@@ -181,7 +196,9 @@ fn is_pid_file_active(pid_file: &Path) -> bool {
         }
         if let Some(value) = line.strip_prefix("pid=") {
             pid_opt = value.parse::<u32>().ok();
-            // Continue parsing to also check for epkg= line
+        }
+        if let Some(value) = line.strip_prefix("host=") {
+            file_hostname = Some(value.to_string());
         }
     }
 
@@ -193,6 +210,31 @@ fn is_pid_file_active(pid_file: &Path) -> bool {
         Some(pid) => pid,
         None => return false,
     };
+
+    // Check hostname - if different, this PID file is from a different namespace/machine
+    let current_hostname = get_hostname();
+    match file_hostname {
+        Some(ref host) if host != &current_hostname => {
+            log::info!(
+                "PID file {} is from different host ({} vs current {}), treating as stale",
+                pid_file.display(),
+                host,
+                current_hostname
+            );
+            return false;
+        }
+        None => {
+            // Old format without hostname - treat as stale to handle upgrade case
+            log::info!(
+                "PID file {} has no hostname field, treating as stale",
+                pid_file.display()
+            );
+            return false;
+        }
+        _ => {
+            // Hostname matches or both are "unknown" - continue with PID check
+        }
+    }
 
     // Get current process ID
     let current_pid = std::process::id();
