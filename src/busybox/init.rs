@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::path::Path;
 use std::sync::OnceLock;
+use nix::unistd::{setgid, setuid, Gid, Uid};
 
 static CMDLINE: OnceLock<HashMap<String, String>> = OnceLock::new();
 
@@ -76,13 +77,18 @@ pub fn init_logging_early() {
         let decoded = percent_decode(&v);
         if !decoded.is_empty() {
             std::env::set_var("RUST_LOG", &decoded);
+            std::env::set_var("RUST_BACKTRACE", "1");
         }
     }
 }
 
 fn run_init() -> Result<()> {
-    let (pwd, cmd_str) = (get_cmdline_param("epkg.init_pwd"), get_cmdline_param("epkg.init_cmd"));
-    log::debug!("init: config pwd={:?} cmd={:?}", pwd, cmd_str.as_deref());
+    let (pwd, cmd_str, run_user) = (
+        get_cmdline_param("epkg.init_pwd"),
+        get_cmdline_param("epkg.init_cmd"),
+        get_cmdline_param("epkg.init_user"),
+    );
+    log::debug!("init: config pwd={:?} cmd={:?} user={:?}", pwd, cmd_str.as_deref(), run_user.as_deref());
 
     if let Err(e) = setup_mounts() {
         log::debug!("init: setup_mounts failed: {}", e);
@@ -114,7 +120,7 @@ fn run_init() -> Result<()> {
         }
         Ok(nix::unistd::ForkResult::Child) => {
             log::debug!("init: child process running exec_init_command");
-            match exec_init_command(cmd_str) {
+            match exec_init_command(cmd_str, run_user) {
                 Ok(_) => unreachable!(),
                 Err(e) => {
                     log::debug!("init: exec_init_command failed: {}", e);
@@ -162,7 +168,39 @@ fn pid1_idle_loop() -> Result<()> {
     }
 }
 
-fn exec_init_command(cmd_str: Option<String>) -> Result<()> {
+fn apply_requested_user(run_user: Option<&str>) -> Result<()> {
+    let Some(user) = run_user else {
+        return Ok(());
+    };
+    if user.is_empty() {
+        return Ok(());
+    }
+
+    let passwd_entries = crate::userdb::read_passwd(None)?;
+    let (uid, gid) = if user == "root" {
+        (0, 0)
+    } else if let Ok(uid_raw) = user.parse::<u32>() {
+        let gid_raw = passwd_entries
+            .iter()
+            .find(|u| u.uid == uid_raw)
+            .map(|u| u.gid)
+            .unwrap_or(uid_raw);
+        (uid_raw, gid_raw)
+    } else {
+        match passwd_entries.iter().find(|u| u.name == user) {
+            Some(u) => (u.uid, u.gid),
+            None => return Err(eyre!("init: requested user not found: {}", user)),
+        }
+    };
+
+    log::debug!("init: applying requested user uid={} gid={}", uid, gid);
+    setgid(Gid::from_raw(gid)).map_err(|e| eyre!("init: setgid({}) failed: {}", gid, e))?;
+    setuid(Uid::from_raw(uid)).map_err(|e| eyre!("init: setuid({}) failed: {}", uid, e))?;
+    Ok(())
+}
+
+fn exec_init_command(cmd_str: Option<String>, run_user: Option<String>) -> Result<()> {
+    apply_requested_user(run_user.as_deref())?;
     if let Some(cmd) = cmd_str {
         log::debug!("init: exec user command: {:?}", cmd);
         exec_command(&cmd)

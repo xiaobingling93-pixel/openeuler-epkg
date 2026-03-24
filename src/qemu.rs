@@ -456,6 +456,7 @@ fn build_qemu_command(
     vm_cpus: u8,
     vm_memory_mb: u32,
     init_cmd: Option<&str>,
+    init_user: Option<&str>,
 ) -> std::process::Command {
     use std::process::Command;
 
@@ -554,6 +555,11 @@ fn build_qemu_command(
             append_args.push_str(&format!(" epkg.init_cmd={}", cmd));
         }
     }
+    if let Some(user) = init_user {
+        if !user.is_empty() {
+            append_args.push_str(&format!(" epkg.init_user={}", percent_encode(user)));
+        }
+    }
     // Pass working directory (from client) to init
     if let Ok(pwd) = std::env::var("PWD") {
         if !pwd.is_empty() && pwd != "/" {
@@ -625,6 +631,7 @@ fn spawn_qemu(
     vm_cpus: u8,
     vm_memory_mb: u32,
     init_cmd: Option<&str>,
+    init_user: Option<&str>,
 ) -> Result<std::process::Child> {
     use std::process::Stdio;
 
@@ -641,6 +648,7 @@ fn spawn_qemu(
         vm_cpus,
         vm_memory_mb,
         init_cmd,
+        init_user,
     );
 
     // Conditionally log QEMU output based on RUST_LOG level
@@ -706,6 +714,7 @@ fn handle_guest_execution(
     io_mode: crate::models::IoMode,
     qemu_log_path: &std::path::Path,
     vm_keep_timeout: Option<u32>,
+    user: Option<&str>,
 ) -> Result<i32> {
     if use_vsock {
         // Vsock control plane: wait for guest ready, then connect to command port.
@@ -721,6 +730,7 @@ fn handle_guest_execution(
             None,
             reuse_session,
             vm_keep_timeout,
+            user,
             qemu_child,
             &qemu_stderr_path,
         ) {
@@ -793,6 +803,7 @@ pub fn run_command_in_qemu(
             &cmd_parts,
             run_options.io_mode,
             run_options.vm_keep_timeout,
+            run_options.user.as_deref(),
         )?;
         std::process::exit(code);
     }
@@ -822,6 +833,11 @@ pub fn run_command_in_qemu(
     } else {
         None
     };
+    let init_user_append = if use_cmdline_mode {
+        run_options.user.as_deref()
+    } else {
+        None
+    };
     let mut qemu_child = spawn_qemu(
         &kernel,
         &initrd,
@@ -835,6 +851,7 @@ pub fn run_command_in_qemu(
         vm_cpus,
         vm_memory_mb,
         init_cmd_append,
+        init_user_append,
     )?;
 
     let exit_code = handle_guest_execution(
@@ -845,6 +862,7 @@ pub fn run_command_in_qemu(
         run_options.io_mode,
         &qemu_log_path,
         run_options.vm_keep_timeout,
+        run_options.user.as_deref(),
     )?;
 
     cleanup_rootfs(rootfs_mode);

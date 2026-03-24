@@ -124,7 +124,7 @@ use std::process::Command as StdCommand;
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use nix::pty::{openpty, Winsize, OpenptyResult};
 use nix::sys::wait::{waitpid, WaitPidFlag};
-use nix::unistd::{fork, ForkResult, dup2, setsid, close, Pid};
+use nix::unistd::{fork, ForkResult, dup2, setsid, close, Pid, getuid, geteuid, getgid, getegid};
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use std::os::fd::{OwnedFd, AsRawFd, BorrowedFd, FromRawFd, RawFd};
 use nix::sys::socket::{self, AddressFamily, SockType, SockFlag, VsockAddr, Backlog};
@@ -141,10 +141,42 @@ const POLL_TIMEOUT_MS: u32 = 1000;
 const VM_REUSE_IDLE_TIMEOUT_MS: u32 = 30_000;
 
 /// Maximum poll loop iterations in non-PTY mode before forcing exit (safety limit).
-const MAX_POLL_ITERATIONS: u32 = 100;
 
 /// TCP line buffer size (must fit at least one JSON message line).
 const TCP_LINE_BUF_SIZE: usize = 4096;
+
+fn log_process_identity(tag: &str) {
+    log::debug!(
+        "{}: pid={} uid={} euid={} gid={} egid={}",
+        tag,
+        std::process::id(),
+        getuid().as_raw(),
+        geteuid().as_raw(),
+        getgid().as_raw(),
+        getegid().as_raw()
+    );
+
+    match std::fs::read_to_string("/proc/self/status") {
+        Ok(status) => {
+            for line in status.lines() {
+                if line.starts_with("Uid:")
+                    || line.starts_with("Gid:")
+                    || line.starts_with("Groups:")
+                    || line.starts_with("CapInh:")
+                    || line.starts_with("CapPrm:")
+                    || line.starts_with("CapEff:")
+                    || line.starts_with("CapBnd:")
+                    || line.starts_with("NoNewPrivs:")
+                {
+                    log::debug!("{}: {}", tag, line);
+                }
+            }
+        }
+        Err(e) => {
+            log::debug!("{}: failed to read /proc/self/status: {}", tag, e);
+        }
+    }
+}
 
 /// Write a single newline-delimited JSON stream message to the TCP stream.
 fn write_stream_message(stream: &mut TcpStream, msg: &StreamMessage) -> Result<()> {
@@ -320,6 +352,8 @@ struct CommandRequest {
     #[serde(default)]
     env: std::collections::HashMap<String, String>,
     #[serde(default)]
+    user: Option<String>,
+    #[serde(default)]
     stdin: String,
     #[serde(default)]
     pty: bool,
@@ -338,6 +372,34 @@ enum ConnectionDisposition {
     ReuseWait { idle_timeout_ms: u32 },
 }
 
+fn resolve_request_user(user: Option<&str>) -> Result<Option<(u32, u32)>> {
+    let Some(user_str) = user else {
+        return Ok(None);
+    };
+    if user_str.is_empty() {
+        return Ok(None);
+    }
+
+    let passwd_entries = crate::userdb::read_passwd(None)?;
+    if let Ok(uid_raw) = user_str.parse::<u32>() {
+        let gid_raw = passwd_entries
+            .iter()
+            .find(|u| u.uid == uid_raw)
+            .map(|u| u.gid)
+            .unwrap_or(uid_raw);
+        return Ok(Some((uid_raw, gid_raw)));
+    }
+
+    if user_str == "root" {
+        return Ok(Some((0, 0)));
+    }
+
+    match passwd_entries.iter().find(|u| u.name == user_str) {
+        Some(u) => Ok(Some((u.uid, u.gid))),
+        None => Err(eyre!("Requested user not found in guest: {}", user_str)),
+    }
+}
+
 /// Outcome of spawning the child with pipes. Either the child and its stdio pipes, or we already sent an error and exit code.
 enum SpawnOutcome {
     Spawned(
@@ -354,10 +416,17 @@ fn spawn_child_piped(
     request: &CommandRequest,
     stream: &mut TcpStream,
 ) -> Result<SpawnOutcome> {
+    log_process_identity("vm-daemon spawn_child_piped parent");
     let mut child = StdCommand::new(&request.command[0]);
     child.args(&request.command[1..]);
     if let Some(cwd) = &request.cwd {
         child.current_dir(cwd);
+    }
+    if let Some((uid, gid)) = resolve_request_user(request.user.as_deref())? {
+        use std::os::unix::process::CommandExt;
+        log::debug!("vm-daemon spawn_child_piped: setting child uid={} gid={}", uid, gid);
+        child.uid(uid);
+        child.gid(gid);
     }
     child.envs(&request.env);
     child.stdin(std::process::Stdio::piped());
@@ -389,6 +458,7 @@ fn spawn_child_piped(
 /// Run in the forked child: set up PTY as stdio and exec the command. Does not return on success.
 fn pty_run_child(request: &CommandRequest, master: OwnedFd, slave: OwnedFd) -> ! {
     use std::os::unix::process::CommandExt;
+    log_process_identity("vm-daemon pty child before stdio setup");
     close(master).expect("close master");
     setsid().expect("setsid");
     let slave_fd = slave.as_raw_fd();
@@ -405,7 +475,20 @@ fn pty_run_child(request: &CommandRequest, master: OwnedFd, slave: OwnedFd) -> !
     if let Some(cwd) = &request.cwd {
         cmd.current_dir(cwd);
     }
+    match resolve_request_user(request.user.as_deref()) {
+        Ok(Some((uid, gid))) => {
+            log::debug!("vm-daemon pty child: setting child uid={} gid={}", uid, gid);
+            cmd.uid(uid);
+            cmd.gid(gid);
+        }
+        Ok(None) => {}
+        Err(e) => {
+            log::debug!("vm-daemon pty child: failed to resolve user {:?}: {}", request.user, e);
+            std::process::exit(1);
+        }
+    }
     cmd.envs(&request.env);
+    log_process_identity("vm-daemon pty child before exec");
     let err = cmd.exec();
     log::debug!("Failed to execute command: {}", err);
     std::process::exit(1);
@@ -825,17 +908,7 @@ fn nonpty_poll_loop(
     }
 
     let mut child_status = None;
-    let mut iteration    = 0u32;
-
     loop {
-        iteration += 1;
-        if iteration > MAX_POLL_ITERATIONS {
-            log::debug!("execute_without_pty: too many iterations ({}), forcing break", iteration);
-            let _ = nix::sys::signal::kill(child_pid, nix::sys::signal::Signal::SIGKILL);
-            break;
-        }
-        log::debug!("execute_without_pty: poll loop iteration {}", iteration);
-
         if check_child_status(child_pid, &mut child_status) {
             log::debug!("execute_without_pty: child already exited, draining pipes");
             drain_pipes(stdout_file, stderr_file, stream, &mut buf, &mut seq_out, &mut seq_err)?;
@@ -952,6 +1025,7 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
 
 fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
     log::debug!("handle_connection: new connection");
+    log_process_identity("vm-daemon handle_connection");
     let mut buf = [0; TCP_LINE_BUF_SIZE];
     match stream.read(&mut buf) {
         Ok(n) if n > 0 => {
@@ -994,6 +1068,7 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
             }
 
             log::debug!("Received command: {:?}", request.command);
+            log_process_identity("vm-daemon before command dispatch");
 
             // Execute command
             if request.batch {
@@ -1049,6 +1124,7 @@ fn accept_vsock_with_timeout(raw_fd: RawFd, timeout_ms: u32) -> Result<Option<Ra
 #[cfg(target_os = "linux")]
 fn run_vsock_server() -> Result<()> {
     use std::os::fd::FromRawFd;
+    log_process_identity("vm-daemon run_vsock_server start");
 
     // Fixed vsock ports matching host/client side.
     const VSOCK_PORT: u32 = 10000;      // Command port

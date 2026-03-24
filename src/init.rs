@@ -1369,18 +1369,6 @@ fn resolve_assets_for_os(
     // - On Linux: skip binary download, use local elf-loader if available
     // - On Windows/macOS: skip native binary download, still need epkg-linux for VM
     if using_local_repo {
-        // MicroVM e2e: project tree is virtiofs-mounted and DNS to the internet may be broken.
-        // Skip all Gitee API calls; check_for_updates() will use local repo symlink + LocalCopy elf-loader.
-        if utils::e2e_backend_is_vm() {
-            let new_version = current_version.clone();
-            return Ok(ResolvedAssets {
-                new_version,
-                epkg_binary_url: String::new(),
-                elf_loader_url: None,
-                epkg_linux_url: None,
-            });
-        }
-
         let new_version = current_version.clone();
         let epkg_release = fetch_release_by_tag(GITEE_OWNER, REPO_EPKG, &new_version.epkg_version)?;
 
