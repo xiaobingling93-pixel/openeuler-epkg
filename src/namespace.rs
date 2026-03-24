@@ -599,9 +599,15 @@ fn determine_vmm_backend_order(vmm_order: &[String]) -> Vec<String> {
 fn try_vmm_backends(order: &[String], context: &UnifiedChildContext, guest_command: &Path) -> Result<()> {
     let _ = crate::qemu::ensure_vmm_log_dir();
 
+    let order: Vec<String> = if context.run_options.vm_reuse_connect {
+        vec!["qemu".to_string()]
+    } else {
+        order.to_vec()
+    };
+
     let mut last_err: Option<eyre::Report> = None;
 
-    for backend in order {
+    for backend in &order {
         match backend.as_str() {
             "libkrun" => {
                 if let Err(e) = try_krun_backend(context, guest_command) {
