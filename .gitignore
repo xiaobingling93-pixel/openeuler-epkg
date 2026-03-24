@@ -23,6 +23,7 @@
 files
 perf.data*
 tests/e2e/reproduce/
+tests/e2e/.e2e-launch.*
 
 # Auto-generated files
 /src/busybox/_modules_gen.rs
