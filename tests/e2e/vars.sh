@@ -1,11 +1,10 @@
 #!/bin/sh
-# Container-side e2e test variables (for scripts running inside docker)
+# Guest-side e2e test variables (scripts running inside epkg run --isolate=vm)
 
 # Common test variables
 ALL_OS="openeuler fedora  debian ubuntu  alpine archlinux conda"
 
-# E2E_DIR is set by docker.sh to the same path as on host
-# This allows the same directory layout inside and outside docker for easier debugging
+# E2E_DIR is set by vm.sh to the same path as on the host (project tree mounted read-only)
 if [ -z "$E2E_DIR" ]; then
     # Fallback: try to detect from script location
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

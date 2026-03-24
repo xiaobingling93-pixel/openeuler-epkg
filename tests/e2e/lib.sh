@@ -1,7 +1,7 @@
 #!/bin/sh
 # Common shell functions for e2e tests
 
-# Source vars.sh if not already sourced (container-side)
+# Source vars.sh if not already sourced (guest-side)
 if [ -z "$E2E_DIR" ]; then
     . "$(dirname "$0")/vars.sh"
 fi
@@ -128,32 +128,28 @@ error() {
     echo "ERROR: $*" >&2
 
     # Check if we're in interactive debug mode (-d flag)
-    if [ -n "${INTERACTIVE:-}" ] && [ -n "$IN_DOCKER$CONTAINER_ID$CONTAINER_NAME" ]; then
-        # Try to get container ID from cgroup or hostname
-        local container_id="$CONTAINER_ID$CONTAINER_NAME"
-        if [ -z "$container_id" ]; then
-            if [ -f /proc/self/cgroup ]; then
-                # Try to extract container ID from cgroup
-                container_id=$(cat /proc/self/cgroup 2>/dev/null | head -1 | sed 's/.*\///' | cut -c1-12 2>/dev/null || echo "")
-            fi
-	fi
-        if [ -z "$container_id" ]; then
-            # Fallback to hostname (often set to container ID)
-            container_id=$(hostname 2>/dev/null | cut -c1-12 || echo "")
+    if [ -n "${INTERACTIVE:-}" ] && [ -n "${IN_E2E:-}${E2E_BACKEND:-}$CONTAINER_NAME" ]; then
+        local hint_id="${CONTAINER_NAME:-}"
+        if [ -z "$hint_id" ]; then
+            hint_id=$(hostname 2>/dev/null | cut -c1-12 || echo "")
         fi
 
         echo "" >&2
         echo "=== Debug Mode ===" >&2
-        if [ -n "$container_id" ]; then
-            echo "To debug, run:" >&2
-            echo "  docker exec -it $container_id /bin/sh" >&2
+        if [ "${E2E_BACKEND:-}" = vm ]; then
+            echo "Running inside epkg VM sandbox; inspect latest VMM logs under ~/.cache/epkg/vmm-logs/ on the host." >&2
+        elif [ -n "$hint_id" ]; then
+            echo "If using a container, try: docker exec -it $hint_id /bin/sh" >&2
         else
-            echo "To debug, find the container ID and run:" >&2
-            echo "  docker exec -it <container_id> /bin/sh" >&2
+            echo "Attach to your test environment (container/VM) manually to inspect state." >&2
         fi
         echo "" >&2
-        echo "Press Enter to continue (or Ctrl+C to exit)..." >&2
-        read dummy || true
+        if [ -t 0 ]; then
+            echo "Press Enter to continue (or Ctrl+C to exit)..." >&2
+            read dummy || true
+        else
+            echo "Non-interactive stdin; skipping debug pause." >&2
+        fi
     fi
 
     exit 1

@@ -34,15 +34,9 @@ if [ ! -x "$TEST_SCRIPT" ]; then
     exit 1
 fi
 
-# Export variables for docker.sh
 export TEST_SCRIPT
 export INTERACTIVE
 export ADDITIONAL_ARGS
 
-if [ "${TEST_SCRIPT#*bare-rootfs/*}" != "$TEST_SCRIPT" ]; then
-	$TEST_SCRIPT
-else
-	# Run docker via docker.sh
-	. "$(dirname "$0")/docker.sh"
-fi
+. "$(dirname "$0")/vm.sh"
 

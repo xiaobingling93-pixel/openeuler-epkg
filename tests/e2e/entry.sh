@@ -1,14 +1,14 @@
-#!/bin/sh
-# Entry script for docker container
+#!/bin/bash
+# Entry script for e2e (runs inside epkg run --isolate=vm guest). Bash is required (lib.sh uses `local`).
 
-# E2E_DIR should be set by docker.sh as an environment variable
+# E2E_DIR should be set by vm.sh launch wrapper
 # Fallback: try to detect from script location (for manual debugging)
 if [ -z "$E2E_DIR" ]; then
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
     E2E_DIR="$SCRIPT_DIR"
 fi
 
-export IN_DOCKER=1
+export IN_E2E=1
 
 # Set up timezone symlink if TZ is set and zoneinfo exists
 if [ -n "$TZ" ] && [ -f "/usr/share/zoneinfo/$TZ" ]; then
@@ -18,13 +18,16 @@ elif [ -n "$TZ" ] && [ ! -f "/usr/share/zoneinfo/$TZ" ]; then
     echo "Warning: TZ=$TZ but zoneinfo file not found, timezone may not work correctly"
 fi
 
-echo Removing /opt/epkg/envs
-rm -fr /opt/epkg/envs
-
 # Initialize epkg
 "$EPKG_BINARY" --version
-"$EPKG_BINARY" self install
-ls -l /opt/epkg/envs/root/self/usr/bin/epkg
+if [ ! -x "$HOME/.epkg/envs/self/usr/bin/epkg" ] && [ ! -x "/opt/epkg/envs/root/self/usr/bin/epkg" ]; then
+	"$EPKG_BINARY" self install || exit 1
+fi
+if [ -x /opt/epkg/envs/root/self/usr/bin/epkg ]; then
+	ls -l /opt/epkg/envs/root/self/usr/bin/epkg
+elif [ -x "$HOME/.epkg/envs/self/usr/bin/epkg" ]; then
+	ls -l "$HOME/.epkg/envs/self/usr/bin/epkg"
+fi
 
 # Source vars and lib
 . "$E2E_DIR/vars.sh"
@@ -32,8 +35,8 @@ ls -l /opt/epkg/envs/root/self/usr/bin/epkg
 
 # Run the test script with additional args if provided
 if [ -n "$ADDITIONAL_ARGS" ]; then
-    "$E2E_DIR/$TEST_REL_PATH" $ADDITIONAL_ARGS
+    /bin/bash "$E2E_DIR/$TEST_REL_PATH" $ADDITIONAL_ARGS
 else
-    "$E2E_DIR/$TEST_REL_PATH"
+    /bin/bash "$E2E_DIR/$TEST_REL_PATH"
 fi
 

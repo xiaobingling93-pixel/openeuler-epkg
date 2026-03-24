@@ -1,140 +1,82 @@
 # End-to-End Tests for epkg
 
-This directory contains end-to-end tests for the epkg package manager.
+This directory contains end-to-end tests for the package manager. Tests run **inside a microVM** via `epkg run --isolate=vm` (see `vm.sh`), not Docker.
 
 ## Structure
 
-- `vars.sh` - Common variables and configuration
-- `lib.sh` - Common shell functions used by tests
-- `test-one.sh` - Script to run a single test (use `-d` flag for debug mode)
-- `test-all.sh` - Script to run all tests
-- `docker.sh` - Docker run command for e2e tests
-- `entry.sh` - Entry script executed inside docker container
-
-## Test Categories
-
-1. **install-remove-upgrade/** - Tests for install, remove, upgrade, and run --help commands
-   - Note: These tests are heavy-weight and skipped from `test-all.sh` to avoid accumulating cache on developer machines
-   - Use `./test-iur.sh` for predefined matrix testing
-   - Supports `-d`/`-dd` debug flags like `test-one.sh`
-2. **export-import/** - Tests for environment export and import functionality
-3. **history-restore/** - Tests for history and restore functionality
-4. **public-multi-user/** - Tests for public mode and multi-user scenarios
-5. **env-register-activate/** - Tests for environment registration, activation, and PATH management
-6. **bare-rootfs/** - Tests for bare rootfs installation on /
+- `cases/` — One shell script per test (e.g. `cases/bash-sh.sh`, `cases/bare-rootfs.sh`).
+- `host-vars.sh` — Host-side paths and `E2E_*` defaults (VM memory, VMM, harness env name).
+- `vars.sh` — Guest-side variables (e.g. `ALL_OS` for multi-distro tests).
+- `lib.sh` — Shared shell helpers (expects **bash** for `local` in functions).
+- `vm.sh` — Runs `epkg -e bare-alpine-e2e run --isolate=vm` with explicit mounts and `env KEY=VALUE ... /bin/bash entry.sh` (no temporary launch script).
+- `entry.sh` — Guest entry: optional wipe of `/opt/epkg/envs`, `self install` if needed, then the selected test script.
+- `test-one.sh` — Run a single test (`-d` / `-dd` / `-ddd` for debug).
+- `test-all.sh` — Run all tests in `cases/` except install-remove-upgrade and build-from-source (same exclusions as before).
+- `test-iur.sh` — Install/remove/upgrade matrix.
+- `e2e-combo.sh` — Thin wrapper to run one test with `E2E_VMM`, `E2E_OS`, etc. in the environment.
 
 ## Prerequisites
 
-- Docker installed and running
-- epkg binary built at `target/debug/epkg`
-- Static epkg binary from `make static` at `target/<triple>/debug/epkg` (e.g. `target/x86_64-unknown-linux-musl/debug/epkg`; for bare-rootfs test)
+- Linux host with working KVM/QEMU user networking, virtiofsd, and a static `epkg` at `target/<musl-triple>/debug/epkg` (`make static` / `make`).
+- Harness environment `bare-alpine-e2e` is created automatically by `vm.sh` (Alpine + `bash` + `busybox-static`).
+- First guest `self install` needs outbound HTTPS (release metadata). Host `~/.cache/epkg/downloads` is mounted at guest `/opt/epkg/cache/downloads` by default.
+
+## Environment variables (combinations)
+
+| Variable | Purpose |
+|----------|---------|
+| `E2E_BARE_ENV` | Harness env name (default `bare-alpine-e2e`). |
+| `E2E_VMM` | VMM preference, e.g. `qemu` or `libkrun,qemu` |
+| `E2E_VM_MEMORY` | VM RAM (default `16G`). |
+| `E2E_BARE_CHROOT` | Chroot root used by `cases/bare-rootfs.sh` (default `/tmp/epkg-bare-chroot`). |
+| `E2E_OS` | In `cases/bash-sh.sh`, restrict OS list without extra args. |
+| `E2E_DOWNLOAD_CACHE` | Host path bound to guest download cache. |
+| `E2E_LOG_DIR` | Host directory bound read-write to guest `/var/log/epkg-e2e` (default `~/.cache/epkg/e2e-logs`). |
+| `E2E_RESOLV_CONF` | Host file to mount as guest `/etc/resolv.conf` (overrides the default QEMU + fallback list built by `vm.sh`). |
+
+Single OS example:
+
+```bash
+./test-one.sh cases/bash-sh.sh debian
+```
+
+VM + memory example:
+
+```bash
+E2E_VMM=qemu E2E_VM_MEMORY=8G ./e2e-combo.sh cases/sandbox-run.sh
+```
 
 ## Usage
 
-### Run all tests (excluding install-remove-upgrade)
-
 ```bash
 ./test-all.sh
-```
-
-### Run install-remove-upgrade tests with predefined matrix
-
-```bash
+./test-one.sh cases/env-register-activate.sh
 ./test-iur.sh
 ```
 
-Supports `-d`/`-dd` debug flags.
-
-### Run a single test
+Alpine-focused VM runs (sets `E2E_OS=alpine` and runs a few cases):
 
 ```bash
-./test-one.sh install-remove-upgrade/test-install-remove-upgrade.sh
+./run-alpine-vm.sh
 ```
-
-### Debug a test
-
-```bash
-./test-one.sh -d install-remove-upgrade/test-install-remove-upgrade.sh
-```
-
-## Docker Configuration
-
-Tests run in Docker containers with the following setup:
-
-- **Privileged mode**: Required for namespace operations
-- **Tmpfs mounts**: `/root/.epkg/envs` and `/opt/epkg/envs` for efficient test runs
-- **Persistent mounts**: `/root/.cache/epkg`, `/opt/epkg/cache`, and `/opt/epkg/store` for caching
-- **Test directory**: Mounted as read-only at `/e2e`
-- **epkg project dir**: Mounted at same dir layout
-
-## Test Details
-
-### install-remove-upgrade
-
-Tests package installation, removal, upgrade, and command execution across multiple OS distributions. For each OS:
-- Creates a test environment
-- Gets available packages and processes them in batches
-- Installs packages with `--prefer-low-version`
-- Runs upgrades
-- Tests `--help` on installed executables
-- Removes packages and verifies behavior
-
-### export-import
-
-Tests environment export and import:
-- Creates an environment and installs packages
-- Exports the environment configuration
-- Creates a new environment from the export
-- Verifies packages match between environments
-- Tests command execution in imported environment
-
-### history-restore
-
-Tests generation history and restore:
-- Creates multiple generations by installing/removing packages
-- Verifies history shows correct generations
-- Restores to a previous generation
-- Verifies package state matches the restored generation
-
-### public-multi-user
-
-Tests public environments and multi-user scenarios:
-- Creates test users
-- Initializes epkg with shared store
-- Creates public and private environments
-- Verifies users can see and use public environments
-- Tests command execution across user boundaries
-
-### env-register-activate
-
-Tests environment registration and activation:
-- Creates multiple environments
-- Registers environments with different priorities
-- Activates and deactivates environments
-- Verifies PATH ordering matches priorities
-- Tests unregistration
-
-### bare-rootfs
-
-Tests installation on bare rootfs:
-- Starts empty Docker container
-- Initializes epkg
-- Creates system environment with `--path /`
-- Installs packages
-- Verifies commands are usable
-
-## Troubleshooting
-
-If a test fails:
-
-1. Use `test-one.sh -d` to reproduce the issue interactively
-2. Check the reproduce script saved in `reproduce/reproduce.sh`
-3. Review logs for specific error messages
-4. Check if problematic packages can be isolated
 
 ## Notes
 
-- All scripts use POSIX shell for compatibility with minimal Docker images
-- Tests are designed to be idempotent and clean up after themselves
-- Persistent cache and store directories speed up repeated test runs
+- The harness uses tmpfs `/opt/epkg` and root; epkg runs in global install mode inside the guest.
+- `vm.sh` passes `-u root` to `epkg run`, and VM command requests now propagate user selection end-to-end (`--user` works in vm-daemon/cmdline paths).
+- Guest `RUST_LOG` / `RUST_BACKTRACE` / `INTERACTIVE` are set from host via `env` in `vm.sh`; use `test-one.sh -dd` for `RUST_LOG=debug` and `RUST_BACKTRACE=1` in guest.
+- Debug pause in `lib.sh` now prompts only when stdin is a TTY; non-interactive runs print a skip message instead of blocking.
+- The VM launcher sets **`E2E_BACKEND=vm`** in the guest (see `vm.sh`). epkg uses this for nested-microVM behavior (no extra namespaces, `ld-linux` for `epkg run`, offline `self install` assets, etc.).
+- `cases/bare-rootfs.sh` runs only when `E2E_BACKEND=vm`: it builds a tmpfs chroot with busybox + epkg, runs `epkg self install`, then `epkg env create … --root /`, install, and `epkg run` checks.
 
+## VM reuse (host)
+
+After a command finishes, the guest can wait for another connection for a configurable idle period (`--vm-keep-timeout SECS`). Long-running commands (e.g. `bash`) keep the VM busy until they exit; only then does the idle timer apply.
+
+```bash
+epkg -e myenv run --isolate=vm --vmm=qemu --vm-keep-timeout 120 bash
+# another terminal, within the idle window after bash exits (or after shorter follow-ups):
+epkg -e myenv run --isolate=vm --vmm=qemu --reuse --vm-keep-timeout 60 -- sh -c 'echo hi'
+```
+
+Omit `--vm-keep-timeout` on the first command for a one-shot VM (no reuse session).

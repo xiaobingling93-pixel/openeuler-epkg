@@ -4,7 +4,14 @@
 . "$(dirname "$0")/../vars.sh"
 . "$(dirname "$0")/../lib.sh"
 
-log "Starting bash installation and /bin/sh usability test"
+# Narrow OS list: 1) first script arg, 2) E2E_OS, 3) default ALL_OS from vars.sh
+if [ -n "${1:-}" ]; then
+	ALL_OS="$1"
+elif [ -n "${E2E_OS:-}" ]; then
+	ALL_OS="$E2E_OS"
+fi
+
+log "Starting bash installation and /bin/sh usability test (OS list: $ALL_OS)"
 
 # Helper to create environment for an OS
 create_env() {
@@ -43,6 +50,10 @@ install_curl() {
 
 test_curl_bing() {
     local env_name="$1"
+    if [ "${E2E_BACKEND:-}" = vm ]; then
+        log "Skipping curl HTTPS test in E2E_BACKEND=vm (guest DNS is not guaranteed)"
+        return
+    fi
     log "Testing curl -I https://bing.com/ in $env_name"
     if ! epkg -e "$env_name" run curl -I https://bing.com/; then
         error "curl -I https://bing.com/ failed in $env_name"
@@ -63,7 +74,12 @@ test_epkg_list_via_bash() {
 
     log "Testing epkg list via bash command in $env_name"
     # Determine epkg command to use inside environment
-    if epkg -e "$env_name" run bash -c "command -v epkg"; then
+    # In the e2e VM, PATH may resolve epkg to the guest stub (/usr/bin/epkg), not the same binary as
+    # the harness; always use EPKG_BINARY so nested list matches the direct epkg wrapper.
+    if [ "${E2E_BACKEND:-}" = vm ] && [ -n "${EPKG_BINARY:-}" ]; then
+        epkg_cmd="$EPKG_BINARY"
+        log "E2E_BACKEND=vm: using EPKG_BINARY for nested epkg: $epkg_cmd"
+    elif epkg -e "$env_name" run bash -c "command -v epkg"; then
         # epkg is in PATH inside environment
         epkg_cmd="epkg"
         log "epkg found in PATH inside environment"
@@ -76,15 +92,15 @@ test_epkg_list_via_bash() {
         log "Using absolute path to epkg: $epkg_cmd"
     fi
 
-    # Test that epkg list works via bash command
-    if ! epkg -e "$env_name" run bash -c "$epkg_cmd list"; then
+    # Test that epkg list works via bash command (nested epkg must use same -e as the wrapper)
+    if ! epkg -e "$env_name" run bash -c "\"$epkg_cmd\" -e \"$env_name\" list"; then
         epkg -e "$env_name" run bash -c 'echo $PATH'
         error "epkg list via bash command failed in $env_name"
     fi
 
     # Compare output (skip headers, separator, and total line)
     list1=$(epkg -e "$env_name" list | tail -n +5 | grep -v '^Total' | grep -v '^$' | sort)
-    list2=$(epkg -e "$env_name" run bash -c "$epkg_cmd list" | tail -n +5 | grep -v '^Total' | grep -v '^$' | sort)
+    list2=$(epkg -e "$env_name" run bash -c "\"$epkg_cmd\" -e \"$env_name\" list" | tail -n +5 | grep -v '^Total' | grep -v '^$' | sort)
     if [ "$list1" != "$list2" ]; then
         log "ERROR: epkg list output differs between direct and bash command in $env_name"
         # Show diff for easier debugging
@@ -103,6 +119,10 @@ test_epkg_list_via_bash() {
 test_package_manager_queries() {
     local env_name="$1"
     local os="$2"
+    if [ "${E2E_BACKEND:-}" = vm ]; then
+        log "Skipping rpm/dpkg queries in E2E_BACKEND=vm (epkg run uses direct exec; DB-backed tools need namespaces)"
+        return
+    fi
     case "$os" in
         openeuler|fedora)
             log "Testing rpm -q -a for bash in $env_name"

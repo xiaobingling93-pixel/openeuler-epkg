@@ -3,6 +3,8 @@
 
 . "$(dirname "$0")/host-vars.sh"
 
+DOCKER_IMAGE="${DOCKER_IMAGE:-debian}"
+
 SCRIPT_DIR="$(dirname "$0")"
 FAILED_TESTS=""
 PASSED_TESTS=""
@@ -29,7 +31,7 @@ for docker_image in $DOCKER_IMAGES; do
     export DOCKER_IMAGE="$docker_image"
 
     # Run the build-from-source test
-    if "$SCRIPT_DIR/test-one.sh" -d "$SCRIPT_DIR/build-from-source-test/test-build-from-source.sh"; then
+    if "$SCRIPT_DIR/test-one.sh" -d "$SCRIPT_DIR/cases/build-from-source.sh"; then
         echo "PASSED: $docker_image"
         PASSED_TESTS="$PASSED_TESTS $docker_image"
     else
