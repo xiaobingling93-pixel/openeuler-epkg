@@ -174,7 +174,12 @@ fn connect_vsock_once(port: u32) -> std::io::Result<TcpStream> {
 }
 
 /// Build JSON command request for guest execution.
-fn build_command_request(cmd_parts: &[String], io_mode: IoMode, reuse_vm: bool) -> serde_json::Map<String, serde_json::Value> {
+fn build_command_request(
+    cmd_parts: &[String],
+    io_mode: IoMode,
+    reuse_session: bool,
+    vm_keep_timeout_secs: Option<u32>,
+) -> serde_json::Map<String, serde_json::Value> {
     let mut request = serde_json::Map::new();
     request.insert("command".to_string(), serde_json::Value::Array(
         cmd_parts.iter().map(|s| serde_json::Value::String(s.clone())).collect()
@@ -206,8 +211,11 @@ fn build_command_request(cmd_parts: &[String], io_mode: IoMode, reuse_vm: bool) 
         request.insert("batch".to_string(), serde_json::Value::Bool(true));
     }
 
-    if reuse_vm {
+    if reuse_session {
         request.insert("reuse_vm".to_string(), serde_json::Value::Bool(true));
+        if let Some(secs) = vm_keep_timeout_secs {
+            request.insert("vm_keep_timeout_secs".to_string(), serde_json::Value::Number(secs.into()));
+        }
     }
     request
 }
@@ -228,18 +236,29 @@ fn resolve_io_mode(io_mode: IoMode) -> (bool, bool) {
 
 /// Helper to send a command via TCP to the guest VM.
 pub fn send_command_via_tcp(cmd_parts: &[String], io_mode: IoMode) -> Result<i32> {
-    send_command_via_tcp_impl(cmd_parts, io_mode, false)
+    send_command_via_tcp_impl(cmd_parts, io_mode, false, None)
 }
 
-fn send_command_via_tcp_impl(cmd_parts: &[String], io_mode: IoMode, reuse_vm: bool) -> Result<i32> {
+fn send_command_via_tcp_impl(
+    cmd_parts: &[String],
+    io_mode: IoMode,
+    reuse_session: bool,
+    vm_keep_timeout_secs: Option<u32>,
+) -> Result<i32> {
     let (use_pty, is_batch) = resolve_io_mode(io_mode);
-    log::debug!("vm_client: io_mode={:?}, use_pty={}, is_batch={}, reuse_vm={}", io_mode, use_pty, is_batch, reuse_vm);
+    log::debug!(
+        "vm_client: io_mode={:?}, use_pty={}, is_batch={}, reuse_session={}",
+        io_mode,
+        use_pty,
+        is_batch,
+        reuse_session
+    );
     // Connect to guest TCP server with retry
     let mut stream = connect_with_retry(60)?;
     log::debug!("vm_client: TCP connected, sending command {:?}", cmd_parts);
 
     // Build and send JSON request
-    let request = build_command_request(cmd_parts, io_mode, reuse_vm);
+    let request = build_command_request(cmd_parts, io_mode, reuse_session, vm_keep_timeout_secs);
     let request_json = serde_json::to_vec(&request)?;
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
@@ -264,7 +283,17 @@ pub fn send_command_via_vsock(
     port: u32,
     unix_socket_path: Option<&std::path::Path>,
 ) -> Result<i32> {
-    send_command_via_vsock_impl(cmd_parts, io_mode, port, unix_socket_path, false)
+    send_command_via_vsock_impl(cmd_parts, io_mode, port, unix_socket_path, false, None)
+}
+
+/// Connect to an already-running QEMU guest (AF_VSOCK to fixed guest CID, command port) without
+/// the ready handshake. Use after starting a VM with `epkg run --isolate=vm --vm-keep-timeout …`.
+pub fn send_command_to_running_qemu_guest(
+    cmd_parts: &[String],
+    io_mode: IoMode,
+    vm_keep_timeout_secs: Option<u32>,
+) -> Result<i32> {
+    send_command_via_vsock_impl(cmd_parts, io_mode, 10000, None, true, vm_keep_timeout_secs)
 }
 
 fn send_command_via_vsock_impl(
@@ -272,16 +301,17 @@ fn send_command_via_vsock_impl(
     io_mode: IoMode,
     port: u32,
     unix_socket_path: Option<&std::path::Path>,
-    reuse_vm: bool,
+    reuse_session: bool,
+    vm_keep_timeout_secs: Option<u32>,
 ) -> Result<i32> {
     let (use_pty, is_batch) = resolve_io_mode(io_mode);
     log::debug!(
-        "vm_client: io_mode={:?}, use_pty={}, is_batch={} (vsock port {}), reuse_vm={}",
+        "vm_client: io_mode={:?}, use_pty={}, is_batch={} (vsock port {}), reuse_session={}",
         io_mode,
         use_pty,
         is_batch,
         port,
-        reuse_vm
+        reuse_session
     );
 
     let mut stream = if let Some(sock_path) = unix_socket_path {
@@ -294,7 +324,7 @@ fn send_command_via_vsock_impl(
     };
     log::debug!("vm_client: vsock connected, sending command {:?}", cmd_parts);
 
-    let request = build_command_request(cmd_parts, io_mode, reuse_vm);
+    let request = build_command_request(cmd_parts, io_mode, reuse_session, vm_keep_timeout_secs);
     let request_json = serde_json::to_vec(&request)?;
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
@@ -335,9 +365,19 @@ pub fn wait_ready_and_send_command(
     io_mode: IoMode,
     cmd_port: u32,
     unix_socket_path: Option<&std::path::Path>,
-    reuse_vm: bool,
+    reuse_session: bool,
+    vm_keep_timeout_secs: Option<u32>,
 ) -> Result<i32> {
-    wait_ready_and_send_command_impl(cmd_parts, io_mode, cmd_port, unix_socket_path, reuse_vm, None, None)
+    wait_ready_and_send_command_impl(
+        cmd_parts,
+        io_mode,
+        cmd_port,
+        unix_socket_path,
+        reuse_session,
+        vm_keep_timeout_secs,
+        None,
+        None,
+    )
 }
 
 /// Extended version with QEMU process monitoring for early failure detection.
@@ -346,11 +386,21 @@ pub fn wait_ready_and_send_command_with_qemu(
     io_mode: IoMode,
     cmd_port: u32,
     unix_socket_path: Option<&std::path::Path>,
-    reuse_vm: bool,
+    reuse_session: bool,
+    vm_keep_timeout_secs: Option<u32>,
     qemu_child: &mut std::process::Child,
     qemu_stderr_path: &std::path::Path,
 ) -> Result<i32> {
-    wait_ready_and_send_command_impl(cmd_parts, io_mode, cmd_port, unix_socket_path, reuse_vm, Some(qemu_child), Some(qemu_stderr_path))
+    wait_ready_and_send_command_impl(
+        cmd_parts,
+        io_mode,
+        cmd_port,
+        unix_socket_path,
+        reuse_session,
+        vm_keep_timeout_secs,
+        Some(qemu_child),
+        Some(qemu_stderr_path),
+    )
 }
 
 /// libkrun: wait on Unix ready socket, then send command via vsock bridge.
@@ -359,7 +409,8 @@ fn wait_ready_unix_socket_then_send(
     io_mode: IoMode,
     cmd_port: u32,
     cmd_path: &std::path::Path,
-    reuse_vm: bool,
+    reuse_session: bool,
+    vm_keep_timeout_secs: Option<u32>,
 ) -> Result<i32> {
     // Derive ready socket path from command socket path
     // e.g., vsock-123.sock → ready-123.sock
@@ -379,7 +430,7 @@ fn wait_ready_unix_socket_then_send(
     drop(stream);
     drop(listener);
 
-    send_command_via_vsock_impl(cmd_parts, io_mode, cmd_port, Some(cmd_path), reuse_vm)
+    send_command_via_vsock_impl(cmd_parts, io_mode, cmd_port, Some(cmd_path), reuse_session, vm_keep_timeout_secs)
 }
 
 /// QEMU: AF_VSOCK ready port, optional QEMU child monitoring, then send command.
@@ -387,7 +438,8 @@ fn wait_ready_qemu_vsock_then_send(
     cmd_parts: &[String],
     io_mode: IoMode,
     cmd_port: u32,
-    reuse_vm: bool,
+    reuse_session: bool,
+    vm_keep_timeout_secs: Option<u32>,
     mut qemu_child: Option<&mut std::process::Child>,
     qemu_stderr_path: Option<&std::path::Path>,
 ) -> Result<i32> {
@@ -487,7 +539,7 @@ fn wait_ready_qemu_vsock_then_send(
     let _ = nix::unistd::close(client_fd);
     let _ = nix::unistd::close(raw_fd);
 
-    send_command_via_vsock_impl(cmd_parts, io_mode, cmd_port, None, reuse_vm)
+    send_command_via_vsock_impl(cmd_parts, io_mode, cmd_port, None, reuse_session, vm_keep_timeout_secs)
 }
 
 fn wait_ready_and_send_command_impl(
@@ -495,29 +547,38 @@ fn wait_ready_and_send_command_impl(
     io_mode: IoMode,
     cmd_port: u32,
     unix_socket_path: Option<&std::path::Path>,
-    reuse_vm: bool,
+    reuse_session: bool,
+    vm_keep_timeout_secs: Option<u32>,
     qemu_child: Option<&mut std::process::Child>,
     qemu_stderr_path: Option<&std::path::Path>,
 ) -> Result<i32> {
     let (use_pty, is_batch) = resolve_io_mode(io_mode);
     log::debug!(
-        "vm_client: io_mode={:?}, use_pty={}, is_batch={} (cmd port {}), reuse_vm={}",
+        "vm_client: io_mode={:?}, use_pty={}, is_batch={} (cmd port {}), reuse_session={}",
         io_mode,
         use_pty,
         is_batch,
         cmd_port,
-        reuse_vm
+        reuse_session
     );
 
     if let Some(cmd_path) = unix_socket_path {
-        return wait_ready_unix_socket_then_send(cmd_parts, io_mode, cmd_port, cmd_path, reuse_vm);
+        return wait_ready_unix_socket_then_send(
+            cmd_parts,
+            io_mode,
+            cmd_port,
+            cmd_path,
+            reuse_session,
+            vm_keep_timeout_secs,
+        );
     }
 
     wait_ready_qemu_vsock_then_send(
         cmd_parts,
         io_mode,
         cmd_port,
-        reuse_vm,
+        reuse_session,
+        vm_keep_timeout_secs,
         qemu_child,
         qemu_stderr_path,
     )
