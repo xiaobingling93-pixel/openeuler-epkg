@@ -8,7 +8,7 @@ log "Starting build-from-source test in Docker container"
 
 # Determine project root directory (same as outside Docker)
 # E2E_DIR is set by vars.sh
-PROJECT_ROOT="${E2E_DIR%/tests/e2e}"
+PROJECT_ROOT="${E2E_DIR%/tests/in-vm}"
 export PROJECT_ROOT
 
 # Detect and log current OS

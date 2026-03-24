@@ -1,5 +1,5 @@
 #!/bin/sh
-# Common shell functions for e2e tests
+# Common shell functions for in-vm tests
 
 # Source vars.sh if not already sourced (guest-side)
 if [ -z "$E2E_DIR" ]; then
@@ -8,7 +8,7 @@ fi
 
 # Set PROJECT_ROOT based on E2E_DIR (needed for common.sh)
 if [ -z "$PROJECT_ROOT" ]; then
-    PROJECT_ROOT="${E2E_DIR%/tests/e2e*}"
+    PROJECT_ROOT="${E2E_DIR%/tests/in-vm*}"
     # If pattern didn't match, fall back to parent of tests/
     if [ "$PROJECT_ROOT" = "$E2E_DIR" ]; then
         PROJECT_ROOT="$(cd "$E2E_DIR/../.." && pwd)"

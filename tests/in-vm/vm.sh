@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run e2e entry inside a microVM (epkg run --isolate=vm) instead of Docker.
+# Run in-vm entry inside a microVM (epkg run --isolate=vm) instead of Docker.
 
 . "$(dirname "$0")/host-vars.sh"
 
@@ -35,7 +35,7 @@ ensure_e2e_bare_env() {
 	if "$EPKG_BINARY" -e "$E2E_BARE_ENV" list; then
 		return 0
 	fi
-	echo "Creating e2e harness environment '$E2E_BARE_ENV' (channel alpine)..." >&2
+	echo "Creating in-vm harness environment '$E2E_BARE_ENV' (channel alpine)..." >&2
 	"$EPKG_BINARY" env create "$E2E_BARE_ENV" -c alpine || exit 1
 	"$EPKG_BINARY" -e "$E2E_BARE_ENV" --assume-yes install bash busybox-static || exit 1
 }
@@ -71,7 +71,7 @@ else
 		fi
 	} | awk '/^nameserver / { if (!seen[$2]++) print }' >"$RESOLV_TMP"
 fi
-# Keep resolv.conf writable in VM e2e harness.
+# Keep resolv.conf writable in VM harness.
 # Some kernels/userns combinations reject read-only bind remount for regular files (EPERM),
 # which aborts the namespace setup before tests even start.
 MOUNTS="$MOUNTS -m $RESOLV_TMP:/etc/resolv.conf"
@@ -121,5 +121,5 @@ set -- \
 	E2E_LOG_DIR=/var/log/epkg-e2e \
 	/bin/bash "$E2E_DIR/entry.sh" $ADDITIONAL_ARGS
 
-echo "Running e2e in VM: $*" >&2
+	echo "Running in-vm test: $*" >&2
 exec "$@"

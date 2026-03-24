@@ -1,9 +1,9 @@
 #!/bin/sh
-# Host-side e2e test variables (scripts running on the host before epkg run --isolate=vm)
+# Host-side in-vm test variables (scripts running on the host before epkg run --isolate=vm)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 E2E_DIR="$SCRIPT_DIR"
-export PROJECT_ROOT="${SCRIPT_DIR%/tests/e2e*}"
+export PROJECT_ROOT="${SCRIPT_DIR%/tests/in-vm*}"
 
 # Static epkg for the VM guest (musl); host uses the same binary to run `epkg run`
 ARCH=$(uname -m)
