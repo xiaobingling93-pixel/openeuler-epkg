@@ -47,7 +47,7 @@ epkg -e $os run bash
 - **tests/solver** — 解析器测试。
 - **tests/lua** — Lua 测试。
 - **tests/busybox** — BusyBox 小程序测试和上游测试套件集成。
-- **tests/e2e** — 端到端：bare-rootfs、export-import、history-restore、public-multi-user、env-register-activate、install-remove-upgrade。从 `tests/e2e/` 运行（请参阅 [tests/e2e/README.md](../../../tests/e2e/README.md)）。
+- **tests/e2e** — 端到端脚本位于 `tests/e2e/cases/`（如 bare-rootfs、export-import、history-restore、public-multi-user、env-register-activate、install-remove-upgrade）。从 `tests/e2e/` 运行（请参阅 [tests/e2e/README.md](../../../tests/e2e/README.md)）。
 
 ## 另请参阅
 
