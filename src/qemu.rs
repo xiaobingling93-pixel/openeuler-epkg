@@ -705,19 +705,22 @@ fn handle_guest_execution(
     cmd_parts: &[String],
     io_mode: crate::models::IoMode,
     qemu_log_path: &std::path::Path,
+    vm_keep_timeout: Option<u32>,
 ) -> Result<i32> {
     if use_vsock {
         // Vsock control plane: wait for guest ready, then connect to command port.
         // QEMU uses AF_VSOCK, so pass None for unix_socket_path.
         // The ready notification uses AF_VSOCK port 10001.
-        // VM reuse across host commands is only implemented for libkrun; QEMU stays one-shot.
+        // `vm_keep_timeout: Some(_)` enables reuse_session + idle window for `epkg run --reuse`.
         let qemu_stderr_path = qemu_log_path.with_extension("stderr.log");
+        let reuse_session = vm_keep_timeout.is_some();
         match vm_client::wait_ready_and_send_command_with_qemu(
             cmd_parts,
             io_mode,
             10000,
             None,
-            false,
+            reuse_session,
+            vm_keep_timeout,
             qemu_child,
             &qemu_stderr_path,
         ) {
@@ -784,6 +787,16 @@ pub fn run_command_in_qemu(
     guest_cmd_path: &Path,
     existing_socket_path: Option<&Path>,
 ) -> Result<()> {
+    if run_options.vm_reuse_connect {
+        let (cmd_parts, _) = build_guest_command(guest_cmd_path, &run_options.args)?;
+        let code = vm_client::send_command_to_running_qemu_guest(
+            &cmd_parts,
+            run_options.io_mode,
+            run_options.vm_keep_timeout,
+        )?;
+        std::process::exit(code);
+    }
+
     crate::run::ensure_linux_kvm_ready_for_vm()?;
     let (kernel, initrd, qemu_bin, virtiofsd_bin, extra_qemu_args) = parse_vmm_config(run_options)?;
 
@@ -831,6 +844,7 @@ pub fn run_command_in_qemu(
         &cmd_parts,
         run_options.io_mode,
         &qemu_log_path,
+        run_options.vm_keep_timeout,
     )?;
 
     cleanup_rootfs(rootfs_mode);
