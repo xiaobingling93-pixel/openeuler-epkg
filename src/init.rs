@@ -1239,7 +1239,14 @@ fn get_current_epkg_version_info() -> Result<EpkgVersionInfo> {
 /// Shared by libkrun and qemu.
 #[cfg(any(feature = "libkrun", target_os = "linux"))]
 fn default_kernel_path() -> PathBuf {
-    dirs().user_envs.join(SELF_ENV).join("boot").join("vmlinux")
+    // ARM64 requires Image file for QEMU -kernel option
+    // x86_64 uses bzImage or vmlinuz
+    let kernel_name = if std::env::consts::ARCH == "aarch64" {
+        "Image"
+    } else {
+        "vmlinux"
+    };
+    dirs().user_envs.join(SELF_ENV).join("boot").join(kernel_name)
 }
 
 /// Returns the default kernel path as a string if the file exists; otherwise None.

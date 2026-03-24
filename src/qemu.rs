@@ -539,10 +539,19 @@ fn build_qemu_command(
     };
     // Use ttyAMA0 for aarch64, ttyS0 for x86_64
     let console_dev = if std::env::consts::ARCH == "aarch64" { "ttyAMA0" } else { "ttyS0" };
-    let mut append_args = format!(
-        "console={} panic=1 root={} rootfstype={} init=/usr/bin/init sysctl.fs.file-max=1048576",
-        console_dev, mount_tag, rootfstype
-    );
+    // rootdelay gives virtio devices time to initialize before kernel tries to mount root
+    // debug + earlycon for kernel debugging, loglevel=8 for verbose output
+    let mut append_args = if std::env::consts::ARCH == "aarch64" {
+        format!(
+            "console={} debug earlycon=pl011,0x9000000 panic=1 rootdelay=3 root={} rootfstype={} init=/usr/bin/init sysctl.fs.file-max=1048576 loglevel=8",
+            console_dev, mount_tag, rootfstype
+        )
+    } else {
+        format!(
+            "console={} debug panic=1 rootdelay=3 root={} rootfstype={} init=/usr/bin/init sysctl.fs.file-max=1048576 loglevel=8",
+            console_dev, mount_tag, rootfstype
+        )
+    };
     // Pass host RUST_LOG into guest so init can enable debug logging
     if let Ok(rust_log) = std::env::var("RUST_LOG") {
         if !rust_log.is_empty() {
