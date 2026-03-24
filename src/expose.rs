@@ -720,10 +720,11 @@ fn find_link_interpreter(interpreter_in_env: &Path, interpreter_basename: &str, 
         );
         lfs::remove_file(interpreter_in_env)?;
         // After removing broken symlink, continue to search for alternatives
-    } else {
-        // Not a symlink (regular file or directory) - leave it alone
+    } else if lfs::exists_on_host(interpreter_in_env) {
+        // File exists and is not a broken symlink (regular file or directory) - leave it alone
         return Ok(());
     }
+    // If we reach here, the file doesn't exist at all - try to find an alternative
 
     find_and_link_alternative_interpreter(interpreter_in_env, interpreter_basename)?;
 
