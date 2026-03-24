@@ -70,6 +70,12 @@ pub fn is_setuid() -> bool {
     true
 }
 
+/// True when e2e runs inside the QEMU microVM guest (`E2E_BACKEND=vm` from `tests/e2e/vm.sh`).
+#[inline]
+pub fn e2e_backend_is_vm() -> bool {
+    matches!(std::env::var("E2E_BACKEND").as_deref(), Ok("vm"))
+}
+
 
 /// Get all files/dirs from a package as relative paths
 /// Returns relative paths (without the fs/ directory prefix)
