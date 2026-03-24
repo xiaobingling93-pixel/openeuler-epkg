@@ -283,14 +283,49 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
         }
     };
 
-    // Add epkg system directories (matching add_epkg_mount_spec_strings)
-    // For system dirs, guest_path = host_path
-    try_add_mount(&dirs().home_epkg, None, false, true);
-    try_add_mount(&dirs().home_cache, None, false, true);
-    // Mount /opt/epkg read-only if we're not root on host.
-    // In VM sandbox, we appear as root but host filesystem permissions still apply,
-    // so write attempts to /opt/epkg/cache would fail with EPERM.
-    try_add_mount(&dirs().opt_epkg, None, crate::utils::should_mount_opt_epkg_readonly(), true);
+    // Add epkg system directories
+    //
+    // We need to consider both host user (who owns the files being mounted)
+    // and guest user (who will run in the VM, via -u option).
+    //
+    // Combinations to handle:
+    // 1. Host root + Guest root: Mount to same paths, all writable
+    // 2. Host root + Guest non-root: Same paths, but guest may not write to root-owned files
+    // 3. Host non-root + Guest root: Mount to /opt/epkg, root can write anywhere
+    // 4. Host non-root + Guest same UID: Works if UIDs match
+    // 5. Host non-root + Guest different UID: Guest can't write to host-owned dirs
+    //
+    // For cases 2, 4, 5 where there's a UID mismatch, we rely on the guest init
+    // to set up a writable temp location (e.g., /tmp) for operations that need it.
+    // The key is to ensure downloads and cache writes work for the typical case
+    // (host non-root, guest root) which is the default VM behavior.
+    #[cfg(unix)]
+    let is_host_root = run_options.host_uid.map_or(false, |uid| uid == 0);
+    #[cfg(not(unix))]
+    let is_host_root = false;
+
+    // Check if guest will run as root (no -u or -u root)
+    let is_guest_root = run_options.user.as_ref().map_or(true, |u| u == "root" || u == "0");
+
+    if is_host_root {
+        // For host root: mount to same path in guest (host path = guest path)
+        try_add_mount(&dirs().home_epkg, None, false, true);
+        try_add_mount(&dirs().home_cache, None, false, true);
+        try_add_mount(&dirs().opt_epkg, None, false, true);
+    } else if is_guest_root {
+        // For non-root host + root guest: mount user dirs to system paths
+        // Root in guest can write anywhere, so this works well
+        try_add_mount(&dirs().home_epkg, Some(Path::new("/opt/epkg")), false, true);
+        try_add_mount(&dirs().home_cache, Some(Path::new("/opt/epkg/cache")), false, true);
+        // Don't mount host /opt/epkg - it's not writable by non-root host user
+    } else {
+        // For non-root host + non-root guest: mount to same paths
+        // The guest user will have the same UID as the host user (via virtiofs
+        // passthrough), so they can access their own files
+        try_add_mount(&dirs().home_epkg, None, false, true);
+        try_add_mount(&dirs().home_cache, None, false, true);
+        // Don't mount host /opt/epkg - not writable by non-root user
+    }
 
     // Add user-provided mount specs from run_options
     for mount_spec_str in &run_options.effective_sandbox.mount_specs {

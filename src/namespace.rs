@@ -312,9 +312,14 @@ pub fn build_unified_context(
         &config.mount_spec_strings.iter().map(|s| s.as_str()).collect::<Vec<_>>()
     );
 
+    // Record the original host UID for VM mount configuration
+    // (this is before any namespace setup, so it's the real host UID)
+    let mut run_options = run_options.clone();
+    run_options.host_uid = Some(uid.as_raw());
+
     Ok(UnifiedChildContext {
         env_root: env_root.to_path_buf(),
-        run_options: run_options.clone(),
+        run_options,
         command,
         args,
         stdin_read_fd,

@@ -99,6 +99,10 @@ pub struct RunOptions {
     /// With `--isolate=vm`, after each command finishes (and while no follow-up is connected),
     /// wait this many seconds for another connection (`epkg run --reuse`). `None` = one-shot VM.
     pub vm_keep_timeout: Option<u32>,
+
+    /// Original host UID before any namespace setup (for VM mount configuration).
+    /// This is the real UID on the host, which may differ from the namespaced UID.
+    pub host_uid: Option<u32>,
 }
 
 /// Temporarily set SIGPIPE handler
