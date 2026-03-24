@@ -25,7 +25,7 @@ epkg -e "$ENV_NAME" --assume-yes install ripgrep || error "Failed to install rip
 
 # Verify history shows the above generations
 log "Checking history"
-HISTORY=$(epkg -e "$ENV_NAME" history 2>/dev/null || true)
+HISTORY=$(epkg -e "$ENV_NAME" history)
 
 if [ -z "$HISTORY" ]; then
     error "History is empty"
@@ -65,5 +65,5 @@ fi
 log "History/restore test completed successfully"
 
 # Cleanup
-epkg --assume-yes env remove "$ENV_NAME" 2>/dev/null || true
+epkg --assume-yes env remove "$ENV_NAME"
 

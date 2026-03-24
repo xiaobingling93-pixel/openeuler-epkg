@@ -8,7 +8,7 @@ log "Starting sandbox run test"
 
 ENV_NAME="sandbox-debian"
 # Idempotent: a previous run may have left the env if cleanup failed
-epkg env remove "$ENV_NAME" 2>/dev/null || true
+epkg env remove "$ENV_NAME"
 
 EPKG_BIN=$(realpath $EPKG_BINARY)
 EPKG_BIN_DIR=$(dirname $EPKG_BIN)

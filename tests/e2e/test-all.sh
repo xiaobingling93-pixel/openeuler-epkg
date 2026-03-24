@@ -25,12 +25,12 @@ SCRIPT_DIR="$(dirname "$0")"
 FAILED_TESTS=""
 PASSED_TESTS=""
 
-if [ -z "$(find "$SCRIPT_DIR/cases" -maxdepth 1 -type f -name '*.sh' 2>/dev/null | head -n 1)" ]; then
+if [ -z "$(find "$SCRIPT_DIR/cases" -maxdepth 1 -type f -name '*.sh' | head -n 1)" ]; then
     echo "No tests under cases/" >&2
     exit 1
 fi
 
-for test_script in $(find "$SCRIPT_DIR/cases" -maxdepth 1 -type f -name '*.sh' 2>/dev/null | sort); do
+for test_script in $(find "$SCRIPT_DIR/cases" -maxdepth 1 -type f -name '*.sh' | sort); do
     # Skip install-remove-upgrade (heavy; use test-iur.sh)
     if [ "$(basename "$test_script")" = "install-remove-upgrade.sh" ]; then
         echo "========================================="

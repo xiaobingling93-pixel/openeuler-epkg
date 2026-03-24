@@ -52,7 +52,7 @@ get_package_list() {
     local env_name="test-$os"
 
     log "Getting available packages for $os"
-    epkg -e "$env_name" list --available 2>/dev/null | awk 'NR>4 && /^[A_]/ {print $5}'
+    epkg -e "$env_name" list --available | awk 'NR>4 && /^[A_]/ {print $5}'
 }
 
 # Isolate problematic package set by repeatedly calling process_batch with reduced

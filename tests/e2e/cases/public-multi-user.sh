@@ -112,7 +112,7 @@ if ! echo "$ENV_LIST_B" | grep -q "pub_alpine"; then
 fi
 
 log "Verifying env list for root"
-ENV_LIST_ROOT=$(epkg env list 2>/dev/null)
+ENV_LIST_ROOT=$(epkg env list)
 if ! echo "$ENV_LIST_ROOT" | grep -q "pub_alpine"; then
     error "Root cannot see their own public env"
 fi
@@ -156,7 +156,7 @@ fi
 
 # Verify that root SELF_ENV.public is true
 log "Verifying root SELF_ENV public attribute is true"
-USER_A_SELF_PUBLIC=$(epkg -e self env config get public 2>/dev/null | grep -o true || echo "false")
+USER_A_SELF_PUBLIC=$(epkg -e self env config get public | grep -o true || echo "false")
 if [ "$USER_A_SELF_PUBLIC" != "true" ]; then
     error "SELF_ENV should be public (true) for root"
 fi
@@ -164,7 +164,7 @@ fi
 # Verify that 'main' environment is always private
 log "Verifying that 'main' environment is always private"
 run_as_user "$USER_A" "epkg env create main --public"
-USER_A_MAIN_PUBLIC=$(run_as_user "$USER_A" "epkg -e self env config get public" 2>/dev/null | grep -o true || echo "false")
+USER_A_MAIN_PUBLIC=$(run_as_user "$USER_A" "epkg -e self env config get public" | grep -o true || echo "false")
 if [ "$USER_A_MAIN_PUBLIC" != "false" ]; then
     error "MAIN_ENV should be private (false) for user A"
 fi

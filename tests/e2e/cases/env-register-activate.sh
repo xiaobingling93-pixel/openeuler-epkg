@@ -121,12 +121,12 @@ esac
 
 # Test that 'main' environment cannot be made public
 log "Testing that 'main' environment cannot be made public"
-if epkg env create main --public 2>/dev/null; then
+if epkg env create main --public; then
     error "Should not be able to create 'main' as public"
 fi
 
 # Verify 'main' is private
-MAIN_PUBLIC=$(epkg -e main env config get public 2>/dev/null | grep -i true || echo "false")
+MAIN_PUBLIC=$(epkg -e main env config get public | grep -i true || echo "false")
 if [ "$MAIN_PUBLIC" = "true" ]; then
     error "'main' environment should be private"
 fi
@@ -144,7 +144,7 @@ log "Creating test environment: $ENV_INSTALL"
 epkg env create "$ENV_INSTALL" -c alpine || error "Failed to create $ENV_INSTALL"
 
 # Get initial history count (before install)
-HISTORY_BEFORE=$(epkg -e "$ENV_INSTALL" history 2>/dev/null | grep -c "Install")
+HISTORY_BEFORE=$(epkg -e "$ENV_INSTALL" history | grep -c "Install")
 log "History install count before: $HISTORY_BEFORE"
 
 # Activate the environment
@@ -175,14 +175,14 @@ fi
 
 # Verify install appears in history
 log "Checking if install appears in history"
-HISTORY_AFTER=$(epkg -e "$ENV_INSTALL" history 2>/dev/null | grep -c "Install")
+HISTORY_AFTER=$(epkg -e "$ENV_INSTALL" history | grep -c "Install")
 log "History install count after: $HISTORY_AFTER"
 if [ "$HISTORY_AFTER" -le "$HISTORY_BEFORE" ]; then
     error "Install should be recorded in history (before: $HISTORY_BEFORE, after: $HISTORY_AFTER)"
 fi
 
 # Verify the latest history entry is for jq installation
-LATEST_HISTORY=$(epkg -e "$ENV_INSTALL" history 2>/dev/null | grep "Install" | tail -1)
+LATEST_HISTORY=$(epkg -e "$ENV_INSTALL" history | grep "Install" | tail -1)
 if ! echo "$LATEST_HISTORY" | grep -q "jq"; then
     error "Latest history entry should mention jq: $LATEST_HISTORY"
 fi
@@ -243,7 +243,7 @@ fi
 
 # Verify install appears in history
 log "Checking if install appears in history for pure mode"
-HISTORY_PURE=$(epkg -e "$ENV_PURE" history 2>/dev/null | grep -c "Install")
+HISTORY_PURE=$(epkg -e "$ENV_PURE" history | grep -c "Install")
 if [ "$HISTORY_PURE" -lt 1 ]; then
     error "Install should be recorded in history for pure mode env"
 fi
@@ -254,8 +254,8 @@ eval "$(epkg env deactivate)" || error "Failed to deactivate $ENV_PURE"
 
 # Cleanup
 log "Removing test environment: $ENV_PURE"
-epkg env unregister "$ENV_PURE" 2>/dev/null || true
-epkg env remove "$ENV_PURE" 2>/dev/null || true
+epkg env unregister "$ENV_PURE"
+epkg env remove "$ENV_PURE"
 
 log "Install to pure-activated environment test completed successfully"
 
@@ -306,7 +306,7 @@ fi
 
 # Verify install appears in ENV_STACK2's history
 log "Checking if install appears in $ENV_STACK2 history"
-HISTORY_STACK2=$(epkg -e "$ENV_STACK2" history 2>/dev/null | grep -c "Install" || echo 0)
+HISTORY_STACK2=$(epkg -e "$ENV_STACK2" history | grep -c "Install" || echo 0)
 if [ "$HISTORY_STACK2" -lt 1 ]; then
     error "Install should be recorded in $ENV_STACK2 history"
 fi
@@ -319,10 +319,10 @@ eval "$(epkg env deactivate)" || error "Failed to deactivate $ENV_STACK1"
 
 # Cleanup
 log "Removing test environments: $ENV_STACK1, $ENV_STACK2"
-epkg env unregister "$ENV_STACK1" 2>/dev/null || true
-epkg env remove "$ENV_STACK1" 2>/dev/null || true
-epkg env unregister "$ENV_STACK2" 2>/dev/null || true
-epkg env remove "$ENV_STACK2" 2>/dev/null || true
+epkg env unregister "$ENV_STACK1"
+epkg env remove "$ENV_STACK1"
+epkg env unregister "$ENV_STACK2"
+epkg env remove "$ENV_STACK2"
 
 log "Install to stacked environment test completed successfully"
 
@@ -331,7 +331,7 @@ log "Install to activated environment test completed successfully"
 log "Env register/activate test completed successfully"
 
 # Cleanup
-epkg env remove "$ENV1" 2>/dev/null || true
-epkg env remove "$ENV2" 2>/dev/null || true
-epkg env remove "$ENV3" 2>/dev/null || true
+epkg env remove "$ENV1"
+epkg env remove "$ENV2"
+epkg env remove "$ENV3"
 

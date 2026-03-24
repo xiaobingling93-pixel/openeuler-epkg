@@ -64,6 +64,6 @@ fi
 log "Export/import test completed successfully"
 
 # Cleanup
-epkg env remove "$ENV_NAME" 2>/dev/null || true
-epkg env remove "$ENV2_NAME" 2>/dev/null || true
+epkg env remove "$ENV_NAME"
+epkg env remove "$ENV2_NAME"
 

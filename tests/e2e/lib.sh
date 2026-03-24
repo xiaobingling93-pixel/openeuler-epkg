@@ -57,11 +57,11 @@ run_cmd_help() {
     local has_help=0
     local has_version=0
 
-    if grep -qa -- '--help' "$cmd_path" 2>/dev/null; then
+    if grep -qa -- '--help' "$cmd_path"; then
         has_help=1
     fi
 
-    if grep -qa -- '--version' "$cmd_path" 2>/dev/null; then
+    if grep -qa -- '--version' "$cmd_path"; then
         has_version=1
     fi
 
@@ -131,7 +131,7 @@ error() {
     if [ -n "${INTERACTIVE:-}" ] && [ -n "${IN_E2E:-}${E2E_BACKEND:-}$CONTAINER_NAME" ]; then
         local hint_id="${CONTAINER_NAME:-}"
         if [ -z "$hint_id" ]; then
-            hint_id=$(hostname 2>/dev/null | cut -c1-12 || echo "")
+            hint_id=$(hostname | cut -c1-12 || echo "")
         fi
 
         echo "" >&2

@@ -9,7 +9,7 @@ if [ "${E2E_BACKEND:-}" != vm ]; then
 	exit 0
 fi
 
-BUSYBOX_BIN="${BUSYBOX_BIN:-$(command -v busybox 2>/dev/null)}"
+BUSYBOX_BIN="${BUSYBOX_BIN:-$(command -v busybox)}"
 if [ -z "$BUSYBOX_BIN" ] && [ -x /bin/busybox ]; then
 	BUSYBOX_BIN=/bin/busybox
 fi
@@ -20,7 +20,7 @@ fi
 CHROOT="${E2E_BARE_CHROOT:-/tmp/epkg-bare-chroot}"
 
 cleanup() {
-	rm -rf "$CHROOT" 2>/dev/null || true
+	rm -rf "$CHROOT"
 }
 trap cleanup EXIT INT HUP
 
@@ -40,7 +40,7 @@ chmod +x "$CHROOT/usr/bin/epkg"
 if [ -s /etc/resolv.conf ]; then
 	cp -a /etc/resolv.conf "$CHROOT/etc/resolv.conf" || true
 fi
-if ! grep -q '^nameserver[[:space:]]' "$CHROOT/etc/resolv.conf" 2>/dev/null; then
+if ! grep -q '^nameserver[[:space:]]' "$CHROOT/etc/resolv.conf"; then
 	{
 		echo "nameserver 10.0.2.3"
 		echo "nameserver 1.1.1.1"

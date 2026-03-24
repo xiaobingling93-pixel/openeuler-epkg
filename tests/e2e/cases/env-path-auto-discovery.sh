@@ -88,7 +88,7 @@ if ! epkg --root "$COMPLEX_PATH" run htop --version; then
     error "htop not found in complex env via --root"
 fi
 # Clean up this environment (remove registration, root dir will be deleted with TEST_DIR)
-epkg env remove "$COMPLEX_NAME" 2>/dev/null || true
+epkg env remove "$COMPLEX_NAME"
 
 # ============================================================================
 # Test 2: Implicit discovery via .eenv directory
@@ -126,7 +126,7 @@ fi
 cd "$ORIG_DIR"
 
 # Clean up .eenv environment
-epkg env remove "$EENV_NAME" 2>/dev/null || true
+epkg env remove "$EENV_NAME"
 
 # ============================================================================
 # Test 3: Registered environment search for non--rootath commands
@@ -180,7 +180,7 @@ if ! epkg -e "$ENV3_NAME" --root "$ENV3_PATH" run htop --version; then
     error "htop not found when both -e and --root flags present (-e should win)"
 fi
 # Verify jq is not found (should error)
-if epkg -e "$ENV3_NAME" --root "$ENV3_PATH" run jq --version 2>/dev/null; then
+if epkg -e "$ENV3_NAME" --root "$ENV3_PATH" run jq --version; then
     error "jq found when -e should have overridden --root"
 fi
 
@@ -188,9 +188,9 @@ fi
 # Cleanup
 # ============================================================================
 log "Cleaning up environments"
-epkg env remove "$ENV2_NAME" 2>/dev/null || true
-epkg env remove "$ENV3_NAME" 2>/dev/null || true
-epkg env remove "$EXPECTED_NAME" 2>/dev/null || true
+epkg env remove "$ENV2_NAME"
+epkg env remove "$ENV3_NAME"
+epkg env remove "$EXPECTED_NAME"
 # Environments created with --root will have their root directories removed when TEST_DIR is deleted
 
 log "All tests passed!"
