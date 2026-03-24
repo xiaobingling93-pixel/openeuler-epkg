@@ -92,7 +92,7 @@ static SYSFS_MOUNTS_RW: &[&str] = &[
 ];
 
 /// Linux pseudo filesystem types that can be used as FS_TYPE in mount specifications
-static PSEUDO_FS_TYPES: &[&str] = &[
+pub static PSEUDO_FS_TYPES: &[&str] = &[
     "tmpfs", "proc", "devtmpfs", "devpts", "mqueue", "debugfs", "hugetlbfs", "tracefs",
     "fusectl", "configfs", "binfmt_misc", "rpc_pipefs", "sysfs", "cgroup", "cgroup2",
     "pstore", "bpf", "securityfs", "efivarfs", "ramfs", "overlay",

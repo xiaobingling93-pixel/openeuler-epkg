@@ -326,6 +326,15 @@ fn parse_mount_spec_for_virtiofs(spec_str: &str, env_root: &Path) -> Option<(std
     // For VM: SOURCE is host_path, TARGET is guest_path
     let parts: Vec<&str> = spec_str.split(':').collect();
 
+    // Check for special filesystem types that virtiofs cannot handle (e.g., "tmpfs:/path")
+    // These must be mounted inside the VM by the guest init, not shared from host via virtiofs
+    if parts.len() >= 2 {
+        let source = parts[0];
+        if crate::mount::PSEUDO_FS_TYPES.contains(&source) {
+            return None;
+        }
+    }
+
     let (source, target, options) = if parts.len() == 1 {
         // Just a path, use same path for both host and guest
         (parts[0], parts[0], "")
