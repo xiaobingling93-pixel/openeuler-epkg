@@ -363,6 +363,7 @@ fn parse_mount_spec_for_virtiofs(spec_str: &str, env_root: &Path) -> Option<(std
 
     // Check for special filesystem types that virtiofs cannot handle (e.g., "tmpfs:/path")
     // These must be mounted inside the VM by the guest init, not shared from host via virtiofs
+    #[cfg(target_os = "linux")]
     if parts.len() >= 2 {
         let source = parts[0];
         if crate::mount::PSEUDO_FS_TYPES.contains(&source) {
@@ -452,7 +453,10 @@ fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext) -> Result<std::path::Path
 
     unsafe {
         check_status("krun_disable_implicit_vsock", krun_disable_implicit_vsock(ctx.ctx_id))?;
-        check_status("krun_add_vsock", krun_add_vsock(ctx.ctx_id, 0))?;
+        // Enable TSI (Transparent Socket Impersonation) for network access.
+        // KRUN_TSI_HIJACK_INET (1 << 0) allows the guest to use host network via socket hijacking.
+        const KRUN_TSI_HIJACK_INET: u32 = 1 << 0;
+        check_status("krun_add_vsock", krun_add_vsock(ctx.ctx_id, KRUN_TSI_HIJACK_INET))?;
 
         #[cfg(unix)]
         {

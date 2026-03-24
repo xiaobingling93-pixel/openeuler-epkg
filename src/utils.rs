@@ -446,7 +446,8 @@ pub fn is_running_as_root() -> bool {
 /// Returns true if /opt/epkg should be mounted read-only in VM sandbox.
 /// When we're not root on host, /opt/epkg/cache is not writable (host permissions apply),
 /// so mounting it read-only prevents EPERM errors and forces fallback to user cache.
-pub fn should_mount_opt_epkg_readonly() -> bool {
+#[cfg(target_os = "linux")]
+pub(crate) fn should_mount_opt_epkg_readonly() -> bool {
     !is_running_as_root()
 }
 

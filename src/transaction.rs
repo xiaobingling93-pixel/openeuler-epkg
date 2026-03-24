@@ -63,6 +63,7 @@ use crate::models::PACKAGE_CACHE;
 use crate::plan::{InstallationPlan, PackageOperation, OperationType, remove_package_from_cache};
 use crate::hooks;
 use crate::hooks::{run_hooks, run_pkgkey_hooks_pair, HookWhen};
+#[cfg(unix)]
 use crate::utils;
 use crate::scriptlets::{run_scriptlet, run_trans_scriptlets, ScriptletType};
 #[cfg(unix)]
