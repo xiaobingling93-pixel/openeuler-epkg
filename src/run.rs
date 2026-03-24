@@ -94,6 +94,11 @@ pub struct RunOptions {
     /// Keep the microVM alive between `fork_and_execute` calls (install/upgrade on non-Linux hosts).
     /// Cleared after the transaction sends the reserved session-done command to the guest VM.
     pub reuse_vm: bool,
+    /// Skip QEMU and connect to an already-running QEMU guest over AF_VSOCK (`epkg run --reuse`).
+    pub vm_reuse_connect: bool,
+    /// With `--isolate=vm`, after each command finishes (and while no follow-up is connected),
+    /// wait this many seconds for another connection (`epkg run --reuse`). `None` = one-shot VM.
+    pub vm_keep_timeout: Option<u32>,
 }
 
 /// Temporarily set SIGPIPE handler
@@ -719,9 +724,31 @@ fn fork_and_execute_direct(env_root: &Path, run_options: &RunOptions) -> Result<
     debug!("Running command directly on host: {}", cmd_path.display());
     debug!("Args: {:?}", run_options.args);
 
+    // Without mount namespaces, exec of a glibc ELF fails (host/guest dynamic linker path). The
+    // e2e microVM cannot nest clone/unshare; run via the environment's ld-linux when present.
+    #[cfg(target_os = "linux")]
+    let use_env_ld_linux = crate::utils::e2e_backend_is_vm()
+        && cmd_path.starts_with(env_root)
+        && {
+            let ld = env_root.join("lib64").join("ld-linux-x86-64.so.2");
+            ld.is_file()
+        };
+    #[cfg(not(target_os = "linux"))]
+    let use_env_ld_linux = false;
+
     // Build the command
-    let mut cmd = Command::new(&cmd_path);
-    cmd.args(&run_options.args);
+    let mut cmd = if use_env_ld_linux {
+        let ld = env_root.join("lib64").join("ld-linux-x86-64.so.2");
+        debug!("E2E_BACKEND=vm: running via dynamic linker {}", ld.display());
+        let mut c = Command::new(&ld);
+        c.arg(&cmd_path);
+        c.args(&run_options.args);
+        c
+    } else {
+        let mut c = Command::new(&cmd_path);
+        c.args(&run_options.args);
+        c
+    };
 
     // Set up environment variables
     let mut env_vars = run_options.env_vars.clone();
@@ -747,6 +774,16 @@ fn fork_and_execute_direct(env_root: &Path, run_options: &RunOptions) -> Result<
     // Apply environment variables
     for (key, value) in &env_vars {
         cmd.env(key, value);
+    }
+
+    #[cfg(target_os = "linux")]
+    if use_env_ld_linux {
+        let prefix = format!("{}/lib64:{}/usr/lib64", env_root.display(), env_root.display());
+        let merged = env_vars
+            .get("LD_LIBRARY_PATH")
+            .map(|e| format!("{}:{}", prefix, e))
+            .unwrap_or(prefix);
+        cmd.env("LD_LIBRARY_PATH", merged);
     }
 
     // Set working directory if requested
@@ -1100,6 +1137,12 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
     if std::env::var("EPKG_SKIP_NAMESPACE").is_ok() {
         run_options.skip_namespace_isolation = true;
     }
+
+    // Nested under `epkg run --isolate=vm` (e2e guest): cannot create nested user/mount namespaces
+    // (clone/unshare EPERM). `fork_and_execute_direct` runs the target via env `ld-linux` when needed.
+    if crate::utils::e2e_backend_is_vm() && config_guard.subcommand == EpkgCommand::Run {
+        run_options.skip_namespace_isolation = true;
+    }
 }
 
 /// Check if the package format is a Linux format that requires VM on non-Linux hosts.
@@ -1381,6 +1424,19 @@ pub fn parse_options_run(options: &mut EPKGConfig, sub_matches: &clap::ArgMatche
         .map(|s| s.parse::<crate::models::IoMode>().expect("clap validates auto|tty|stream|batch"))
         .unwrap_or_default();
 
+    let vm_reuse_connect = sub_matches.get_flag("reuse");
+    let vm_keep_timeout = sub_matches
+        .get_one::<u32>("vm-keep-timeout")
+        .copied();
+    if vm_reuse_connect || vm_keep_timeout.is_some() {
+        let vm_mode = isolate_mode == Some(crate::models::IsolateMode::Vm);
+        if !vm_mode {
+            return Err(eyre::eyre!(
+                "--reuse and --vm-keep-timeout require --isolate=vm"
+            ));
+        }
+    }
+
     // Create sandbox options from CLI inputs
     let sandbox = crate::models::SandboxOptions {
         isolate_mode,
@@ -1401,6 +1457,8 @@ pub fn parse_options_run(options: &mut EPKGConfig, sub_matches: &clap::ArgMatche
         io_mode,
         sandbox,
         vmm_order,
+        vm_reuse_connect,
+        vm_keep_timeout,
         ..Default::default()
     };
 
