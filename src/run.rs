@@ -582,8 +582,15 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
     let mut prepared_opts = run_options.clone();
     prepare_run_options_for_command(env_root, &mut prepared_opts);
 
-    // Execute with prepared options (handles both Clone and Unshare strategies)
-    fork_and_execute_raw(env_root, &prepared_opts)
+    // For conda/homebrew/msys2 packages, they work like portable apps
+    // with their own library paths (RPATH), so we can run them directly
+    // from the host OS without namespace isolation
+    if prepared_opts.skip_namespace_isolation {
+        fork_and_execute_direct(env_root, &prepared_opts)
+    } else {
+        // Execute with prepared options (handles both Clone and Unshare strategies)
+        fork_and_execute_raw(env_root, &prepared_opts)
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -691,12 +698,23 @@ fn msys2_pacman_path_env(env_root: &Path) -> String {
 }
 
 /// Execute command directly on the host without namespace isolation.
-/// Used for conda/homebrew/msys2 packages on non-Linux platforms.
-#[cfg(not(target_os = "linux"))]
+/// Used for conda/homebrew/msys2 packages that have RPATH and can run natively.
 fn fork_and_execute_direct(env_root: &Path, run_options: &RunOptions) -> Result<Option<i32>> {
     use std::process::{Command, Stdio};
 
     let cmd_path = resolve_command_path(env_root, run_options)?;
+
+    // Convert guest path to host path if needed.
+    // When skip_namespace_isolation is true, resolve_command_path may return a guest path
+    // (e.g., /usr/bin/curl) but we need the full host path for direct execution.
+    let cmd_path = if cmd_path.is_absolute() && !cmd_path.starts_with(env_root) {
+        // This is a guest path - convert to host path
+        let host_path = env_root.join(cmd_path.strip_prefix("/").unwrap_or(&cmd_path));
+        debug!("Converting guest path {} to host path {}", cmd_path.display(), host_path.display());
+        host_path
+    } else {
+        cmd_path
+    };
 
     debug!("Running command directly on host: {}", cmd_path.display());
     debug!("Args: {:?}", run_options.args);
