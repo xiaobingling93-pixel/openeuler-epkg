@@ -455,8 +455,11 @@ fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext) -> Result<std::path::Path
         check_status("krun_disable_implicit_vsock", krun_disable_implicit_vsock(ctx.ctx_id))?;
         // Enable TSI (Transparent Socket Impersonation) for network access.
         // KRUN_TSI_HIJACK_INET (1 << 0) allows the guest to use host network via socket hijacking.
+        // KRUN_TSI_HIJACK_UNIX (1 << 1) enables Unix socket hijacking (required for full TSI support).
         const KRUN_TSI_HIJACK_INET: u32 = 1 << 0;
-        check_status("krun_add_vsock", krun_add_vsock(ctx.ctx_id, KRUN_TSI_HIJACK_INET))?;
+        const KRUN_TSI_HIJACK_UNIX: u32 = 1 << 1;
+        let tsi_features = KRUN_TSI_HIJACK_INET | KRUN_TSI_HIJACK_UNIX;
+        check_status("krun_add_vsock", krun_add_vsock(ctx.ctx_id, tsi_features))?;
 
         #[cfg(unix)]
         {
