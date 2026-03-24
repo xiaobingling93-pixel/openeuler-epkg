@@ -247,16 +247,16 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
     use crate::models::dirs;
 
     let mut mounts = Vec::new();
-    let mut seen_paths = std::collections::HashSet::new();
+    let mut seen_paths: Vec<std::path::PathBuf> = Vec::new();
 
     // Helper to add a mount if path is a directory and not already seen
     // guest_path defaults to host_path if not specified
     let mut try_add_mount = |host_path: &Path, guest_path: Option<&Path>, read_only: bool, try_only: bool| {
-        // Skip if already added
-        let path_str = host_path.to_string_lossy().to_string();
-        if seen_paths.contains(&path_str) {
+        // Skip if already added, or if a parent mount already covers this path.
+        if seen_paths.iter().any(|seen| host_path == seen || host_path.starts_with(seen)) {
             return;
         }
+        let path_str = host_path.to_string_lossy().to_string();
 
         // Skip if not a directory (virtiofs only supports directories)
         match fs::metadata(host_path) {
@@ -268,8 +268,8 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
                     .unwrap_or_else(|| path_str.clone());
                 log::debug!("libkrun: adding virtiofs mount: {} -> {} (guest: {}) ({})",
                            host_path.display(), tag, guest, if read_only { "ro" } else { "rw" });
-                mounts.push((tag, path_str.clone(), guest, read_only));
-                seen_paths.insert(path_str);
+                mounts.push((tag, host_path.to_string_lossy().to_string(), guest, read_only));
+                seen_paths.push(host_path.to_path_buf());
             }
             Ok(_) => {
                 log::info!("libkrun: skipping non-directory mount: {}", host_path.display());
@@ -292,7 +292,16 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
     // so write attempts to /opt/epkg/cache would fail with EPERM.
     try_add_mount(&dirs().opt_epkg, None, crate::utils::should_mount_opt_epkg_readonly(), true);
 
-    // Add epkg binary directory if outside env
+    // Add user-provided mount specs from run_options
+    for mount_spec_str in &run_options.effective_sandbox.mount_specs {
+        if let Some((host_path, guest_path, read_only, try_only)) = parse_mount_spec_for_virtiofs(mount_spec_str, env_root) {
+            try_add_mount(&host_path, Some(&guest_path), read_only, try_only);
+        }
+    }
+
+    // Add epkg binary directory if outside env.
+    // This runs after user mounts so a broader user mount (e.g. /c/epkg)
+    // can cover the binary directory and avoid consuming an extra virtiofs device.
     if let Ok(epkg_exe) = std::env::current_exe() {
         if let Some(epkg_bin_dir) = epkg_exe.parent() {
             if !epkg_bin_dir.starts_with(&dirs().home_epkg)
@@ -304,13 +313,6 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
 
     // Add /lib/modules if exists (for kernel module loading)
     try_add_mount(Path::new("/lib/modules"), None, true, true);
-
-    // Add user-provided mount specs from run_options
-    for mount_spec_str in &run_options.effective_sandbox.mount_specs {
-        if let Some((host_path, guest_path, read_only, try_only)) = parse_mount_spec_for_virtiofs(mount_spec_str, env_root) {
-            try_add_mount(&host_path, Some(&guest_path), read_only, try_only);
-        }
-    }
 
     mounts
 }
