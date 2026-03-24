@@ -1060,9 +1060,9 @@ pub fn host_uses_traditional_layout() -> bool {
 fn merge_sandbox_options(sources: &[&crate::models::SandboxOptions]) -> crate::models::SandboxOptions {
     let mut result = crate::models::SandboxOptions::default();
 
-    // Process sources in reverse order (lowest to highest priority)
-    // so higher priority can override lower priority
-    for source in sources.iter().rev() {
+    // Process sources in provided order (lowest to highest priority)
+    // so later (higher-priority) sources override earlier ones.
+    for source in sources {
         if let Some(mode) = source.isolate_mode {
             result.isolate_mode = Some(mode);
         }
