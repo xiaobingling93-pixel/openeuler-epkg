@@ -868,6 +868,14 @@ fn add_run_subcommand(cmd: Command) -> Command {
                         .value_parser(clap::value_parser!(String))
                 )
                 .arg(arg!(--timeout <SECONDS> "Timeout in seconds (0 = no timeout)").value_parser(clap::value_parser!(String)))
+                .arg(arg!(--reuse "With --isolate=vm: connect to an already-running QEMU guest over vsock (no new VM)"))
+                .arg(
+                    Arg::new("vm-keep-timeout")
+                        .long("vm-keep-timeout")
+                        .value_name("SECS")
+                        .help("With --isolate=vm: after each command exits, wait up to SECS seconds for another connection (e.g. epkg run --reuse). Omit for a one-shot VM.")
+                        .value_parser(clap::value_parser!(u32))
+                )
                 .arg(
                     Arg::new("io")
                         .short('i')
@@ -1592,6 +1600,16 @@ fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
     if try_apply_explicit_env_root(config)? {
         return Ok(());
     }
+    // `-e NAME` sets env_name + env_name_explicit. Do not let `/etc/epkg/env.yaml` on the current
+    // root (e.g. virtiofs / when the harness env is the guest filesystem) override the chosen
+    // environment — that would target the wrong directory for any subcommand.
+    if config.common.env_name_explicit && !config.common.env_name.is_empty() {
+        log::debug!(
+            "env: explicit -e {}, skipping /etc/epkg/env.yaml and further auto-detection",
+            config.common.env_name
+        );
+        return Ok(());
+    }
     if try_detect_environment_from_env_yaml(config)? {
         return Ok(());
     }
@@ -1706,6 +1724,9 @@ fn parse_options_self(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -
     // and is not used for regular package installations
     config.common.env_name = SELF_ENV.to_string();
     config.common.env_explicit = true;
+    // Same as `-e self`: do not let `/etc/epkg/env.yaml` (e.g. under `epkg run -e harness`)
+    // override env_name / env_root — that would target the harness env when creating `self`.
+    config.common.env_name_explicit = true;
     match sub_matches.subcommand() {
         Some(("install", sub_matches)) => {
             config.subcommand = EpkgCommand::SelfInstall;
