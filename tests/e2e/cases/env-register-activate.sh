@@ -12,6 +12,9 @@ ENV2="test-env2"
 ENV3="test-env3"
 
 log "Creating test environments"
+epkg env remove "$ENV1" 2>/dev/null
+epkg env remove "$ENV2" 2>/dev/null
+epkg env remove "$ENV3" 2>/dev/null
 epkg env create "$ENV1" -c debian || error "Failed to create env1"
 epkg env create "$ENV2" -c ubuntu || error "Failed to create env2"
 epkg env create "$ENV3" -c alpine || error "Failed to create env3"
@@ -252,11 +255,6 @@ fi
 log "Deactivating $ENV_PURE"
 eval "$(epkg env deactivate)" || error "Failed to deactivate $ENV_PURE"
 
-# Cleanup
-log "Removing test environment: $ENV_PURE"
-epkg env unregister "$ENV_PURE"
-epkg env remove "$ENV_PURE"
-
 log "Install to pure-activated environment test completed successfully"
 
 # ==============================================================================
@@ -317,21 +315,9 @@ eval "$(epkg env deactivate)" || error "Failed to deactivate $ENV_STACK2"
 log "Deactivating $ENV_STACK1"
 eval "$(epkg env deactivate)" || error "Failed to deactivate $ENV_STACK1"
 
-# Cleanup
-log "Removing test environments: $ENV_STACK1, $ENV_STACK2"
-epkg env unregister "$ENV_STACK1"
-epkg env remove "$ENV_STACK1"
-epkg env unregister "$ENV_STACK2"
-epkg env remove "$ENV_STACK2"
-
 log "Install to stacked environment test completed successfully"
 
 log "Install to activated environment test completed successfully"
 
 log "Env register/activate test completed successfully"
-
-# Cleanup
-epkg env remove "$ENV1"
-epkg env remove "$ENV2"
-epkg env remove "$ENV3"
 

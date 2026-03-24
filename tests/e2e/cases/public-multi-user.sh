@@ -9,6 +9,9 @@ set -o pipefail
 log "Starting public multi-user test"
 [ -n "$INTERACTIVE" ] && set -x
 
+# Idempotent: remove env if exists from previous run
+epkg env remove pub_alpine 2>/dev/null
+
 # For root: create public environment and install ripgrep and busybox-static
 log "Root: creating public environment and installing ripgrep and busybox-static"
 epkg env create --public pub_alpine -c alpine || error "Failed to create public env for root"
@@ -80,6 +83,9 @@ run_as_user "$USER_B" "epkg self install --store auto" || error "Failed to insta
 # run_as_user "$USER_A" "epkg -e puba --assume-yes install jq" || error "Failed to install jq for user A"
 # /opt/epkg/envs/ dir in env is empty if separate mounted
 # epkg -e pub_alpine run busybox.static ls /opt/epkg/envs/$USER_A/puba || error "Public env dir not visible in env"
+
+# Idempotent: remove user B's env if exists from previous run
+run_as_user "$USER_B" "epkg env remove privb" 2>/dev/null
 
 # For user B: create private environment and install htop
 log "User B: creating private environment and installing htop"
@@ -227,7 +233,3 @@ fi
 # fi
 
 log "Public multi-user test completed successfully"
-
-# Cleanup
-run_as_user "$USER_B" "epkg env remove privb"
-epkg env remove pub_alpine

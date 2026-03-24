@@ -39,6 +39,7 @@ create_test_environment() {
     local env_name="test-$os"
 
     log "Creating environment for $os"
+    epkg env remove "$env_name" 2>/dev/null
     if ! epkg env create "$env_name" -c "$os"; then
         error "Failed to create environment for $os"
         return 1
@@ -279,8 +280,6 @@ process_os() {
         fi
     done
 
-    # Clean up
-    cleanup_environment "$os"
 }
 
 # Clean up test environment

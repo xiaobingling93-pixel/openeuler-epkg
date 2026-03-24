@@ -11,6 +11,8 @@ ENV_NAME="test-export"
 ENV2_NAME="test-import"
 
 log "Creating environment: $ENV_NAME"
+epkg env remove "$ENV_NAME" 2>/dev/null
+epkg env remove "$ENV2_NAME" 2>/dev/null
 epkg env create "$ENV_NAME" -c alpine || error "Failed to create environment"
 
 log "Installing jq and htop"
@@ -62,8 +64,4 @@ if ! epkg -e "$ENV2_NAME" run htop --version; then
 fi
 
 log "Export/import test completed successfully"
-
-# Cleanup
-epkg env remove "$ENV_NAME"
-epkg env remove "$ENV2_NAME"
 

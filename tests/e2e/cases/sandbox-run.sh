@@ -8,7 +8,7 @@ log "Starting sandbox run test"
 
 ENV_NAME="sandbox-debian"
 # Idempotent: a previous run may have left the env if cleanup failed
-epkg env remove "$ENV_NAME"
+epkg env remove "$ENV_NAME" 2>/dev/null
 
 EPKG_BIN=$(realpath $EPKG_BINARY)
 EPKG_BIN_DIR=$(dirname $EPKG_BIN)
@@ -39,7 +39,4 @@ log "Running ls /sys with env isolate_mode=fs (no --isolate flag)"
 epkg -e "$ENV_NAME" run $SANDBOX_MOUNT_OPTS ls /sys || error "epkg run ls /sys failed with isolate_mode=fs"
 
 log "Sandbox run test completed successfully"
-
-log "Cleaning up environment $ENV_NAME"
-epkg env remove "$ENV_NAME"
 

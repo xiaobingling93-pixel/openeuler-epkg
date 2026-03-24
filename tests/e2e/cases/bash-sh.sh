@@ -19,6 +19,7 @@ create_env() {
     env_name="test-bash-$os"
 
     log "Creating environment for $os: $env_name"
+    epkg env remove "$env_name" 2>/dev/null
     epkg env create "$env_name" -c "$os" || error "Failed to create environment $env_name for $os"
 }
 
@@ -193,9 +194,6 @@ for os in $ALL_OS; do
     # This verifies ssl certs are properly installed.
     install_curl "$env_name"
     test_curl_bing "$env_name"
-
-    # Clean up environment
-    cleanup_env "$env_name"
 done
 
 log "All OSes passed bash installation and /bin/sh usability test"

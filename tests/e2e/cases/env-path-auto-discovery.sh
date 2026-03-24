@@ -75,8 +75,9 @@ fi
 log "Test 1b: Complex path with multiple slashes"
 COMPLEX_PATH="$TEST_DIR/some/deep/nested/env"
 mkdir -p "$(dirname "$COMPLEX_PATH")"
-epkg env create --root "$COMPLEX_PATH" -c alpine || error "Failed to create environment with complex path"
 COMPLEX_NAME=$(env_name_from_path "$COMPLEX_PATH")
+epkg env remove "$COMPLEX_NAME" 2>/dev/null
+epkg env create --root "$COMPLEX_PATH" -c alpine || error "Failed to create environment with complex path"
 log "Complex path auto-generated name: $COMPLEX_NAME"
 # Verify registration
 if ! epkg env list | grep -q "$COMPLEX_NAME"; then
@@ -87,8 +88,6 @@ epkg --root "$COMPLEX_PATH" --assume-yes install htop || error "Failed to instal
 if ! epkg --root "$COMPLEX_PATH" run htop --version; then
     error "htop not found in complex env via --root"
 fi
-# Clean up this environment (remove registration, root dir will be deleted with TEST_DIR)
-epkg env remove "$COMPLEX_NAME"
 
 # ============================================================================
 # Test 2: Implicit discovery via .eenv directory
@@ -97,9 +96,10 @@ log "Test 2: Implicit discovery via .eenv directory"
 # Create a .eenv directory as an environment root
 EENV_DIR="$TEST_DIR/project/.eenv"
 mkdir -p "$EENV_DIR"
+EENV_NAME=$(env_name_from_path "$EENV_DIR")
+epkg env remove "$EENV_NAME" 2>/dev/null
 # Create environment at .eenv path
 epkg env create --root "$EENV_DIR" -c alpine || error "Failed to create environment at .eenv"
-EENV_NAME=$(env_name_from_path "$EENV_DIR")
 
 # Install a package in that environment (we'll install htop)
 epkg --root "$EENV_DIR" --assume-yes install /bin/sh htop || error "Failed to install htop"
@@ -125,15 +125,13 @@ if ! epkg run ./test.sh; then
 fi
 cd "$ORIG_DIR"
 
-# Clean up .eenv environment
-epkg env remove "$EENV_NAME"
-
 # ============================================================================
 # Test 3: Registered environment search for non--rootath commands
 # ============================================================================
 log "Test 3: Registered environment search for non--rootath commands"
 # Create a new environment with a unique command installed
 ENV2_NAME="test-registered-search"
+epkg env remove "$ENV2_NAME" 2>/dev/null
 epkg env create "$ENV2_NAME" -c alpine || error "Failed to create environment $ENV2_NAME"
 epkg -e "$ENV2_NAME" --assume-yes install htop || error "Failed to install htop"
 
@@ -169,6 +167,7 @@ log "Test 5: -e overrides --root precedence"
 # Create two environments: one via --root, one via -e name
 ENV3_PATH="$TEST_DIR/env3"
 ENV3_NAME="explicit-name"
+epkg env remove "$ENV3_NAME" 2>/dev/null
 epkg env create --root "$ENV3_PATH" -c alpine || error "Failed to create env3 via --root"
 epkg env create "$ENV3_NAME" -c alpine || error "Failed to create env3 via -e"
 # Install different packages in each to distinguish
@@ -183,14 +182,5 @@ fi
 if epkg -e "$ENV3_NAME" --root "$ENV3_PATH" run jq --version; then
     error "jq found when -e should have overridden --root"
 fi
-
-# ============================================================================
-# Cleanup
-# ============================================================================
-log "Cleaning up environments"
-epkg env remove "$ENV2_NAME"
-epkg env remove "$ENV3_NAME"
-epkg env remove "$EXPECTED_NAME"
-# Environments created with --root will have their root directories removed when TEST_DIR is deleted
 
 log "All tests passed!"

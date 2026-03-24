@@ -9,6 +9,7 @@ log "Starting history/restore test"
 ENV_NAME="test-history"
 
 log "Creating environment: $ENV_NAME"
+epkg env remove "$ENV_NAME" 2>/dev/null
 epkg env create "$ENV_NAME" -c alpine || error "Failed to create environment"
 
 log "Installing jq and curl"
@@ -63,7 +64,4 @@ if epkg -e "$ENV_NAME" run rg --version >/dev/null 2>&1; then
 fi
 
 log "History/restore test completed successfully"
-
-# Cleanup
-epkg --assume-yes env remove "$ENV_NAME"
 
