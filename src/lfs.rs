@@ -142,7 +142,7 @@ pub fn symlink_dir_for_virtiofs<P: AsRef<Path>, Q: AsRef<Path>>(original: P, lin
         link.display(),
         normalized_original.display()
     );
-    crate::krun_virtiofs_windows::symlink::symlink_to_directory(&normalized_original, link, posix_target.as_ref())
+    crate::krun_virtiofs_windows::symlink::symlink_dir_for_virtiofs(&normalized_original, link, posix_target.as_ref())
         .wrap_err_with(|| {
             format!(
                 "Failed symlink_dir_for_virtiofs from {} to {}",
@@ -170,7 +170,7 @@ pub fn symlink_file_for_virtiofs<P: AsRef<Path>, Q: AsRef<Path>>(original: P, li
     let decoded_original = decode_path_from_windows(&normalized_original);
     let posix_target = decoded_original.to_string_lossy();
     log::trace!("symlink_file_for_virtiofs: {} -> {}", link.display(), normalized_original.display());
-    crate::krun_virtiofs_windows::symlink::symlink_to_file(&normalized_original, link, posix_target.as_ref())
+    crate::krun_virtiofs_windows::symlink::symlink_file_for_virtiofs(&normalized_original, link, posix_target.as_ref())
         .wrap_err_with(|| {
             format!(
                 "Failed symlink_file_for_virtiofs from {} to {}",
@@ -192,7 +192,7 @@ pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<(
     let decoded_original = decode_path_from_windows(&normalized_original);
     let posix_target = decoded_original.to_string_lossy();
     log::trace!("creating symlink: {} -> {}", link.display(), normalized_original.display());
-    crate::krun_virtiofs_windows::symlink::symlink(&normalized_original, link, posix_target.as_ref())
+    crate::krun_virtiofs_windows::symlink::symlink_for_virtiofs(&normalized_original, link, posix_target.as_ref())
         .wrap_err_with(|| {
             format!(
                 "Failed symlink from {} to {}",
