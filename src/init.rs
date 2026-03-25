@@ -435,6 +435,11 @@ fn setup_epkg_src(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
             lfs::remove_dir_all(&epkg_src)?;
         }
         let repo_root = find_repo_root()?;
+        // On Windows, use symlink_dir_for_native() to create a native Windows-accessible symlink.
+        // The regular symlink() creates LX reparse points that only work with virtiofs.
+        #[cfg(windows)]
+        lfs::symlink_dir_for_native(&repo_root, &epkg_src)?;
+        #[cfg(not(windows))]
         lfs::symlink(&repo_root, &epkg_src)?;
 
         println!("Using local git repository for epkg source code");

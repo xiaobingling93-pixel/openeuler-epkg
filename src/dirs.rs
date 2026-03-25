@@ -422,7 +422,20 @@ pub fn get_epkg_src_path() -> PathBuf {
         return user_path;
     }
 
-    let root_path = path_join(&public_envs_path(), &["root", "self", "usr", "src", "epkg"]);
+    // Compute public_envs path directly without calling public_envs_path() which uses dirs_ref()
+    let public_envs = if shared_store {
+        #[cfg(unix)]
+        { PathBuf::from("/opt/epkg/envs") }
+        #[cfg(windows)]
+        { windows_global_epkg_root().join("envs") }
+    } else {
+        #[cfg(unix)]
+        { PathBuf::from("/opt/epkg/envs") }
+        #[cfg(windows)]
+        { windows_global_epkg_root().join("envs") }
+    };
+
+    let root_path = path_join(&public_envs, &["root", "self", "usr", "src", "epkg"]);
     if root_path.exists() {
         log::debug!("Using root's epkg source path: {:?}", root_path);
         return root_path;
