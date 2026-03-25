@@ -463,8 +463,9 @@ fn build_qemu_command(
     let mut qemu_cmd = Command::new(qemu_bin);
 
     // aarch64 requires explicit machine type; x86_64 has default "pc"
+    // For virt machine with virtiofs/virtio devices, need highmem=on for proper PCI BAR allocation
     if std::env::consts::ARCH == "aarch64" {
-        qemu_cmd.arg("-machine").arg("virt");
+        qemu_cmd.arg("-machine").arg("virt,highmem=on");
     }
 
     qemu_cmd.arg("-enable-kvm");
@@ -495,11 +496,13 @@ fn build_qemu_command(
                 .arg("node,memdev=mem");
 
             // Wire virtiofs device for env root
+            // Use vhost-user-fs-device for virtio-mmio bus (required for aarch64 virt machine)
+            // vhost-user-fs-pci requires PCI which isn't available on virt machine without additional setup
             qemu_cmd
                 .arg("-chardev")
                 .arg(format!("socket,id=char0,path={}", socket_path.display()))
                 .arg("-device")
-                .arg(format!("vhost-user-fs-pci,queue-size=1024,chardev=char0,tag={}", mount_tag));
+                .arg(format!("vhost-user-fs-device,queue-size=1024,chardev=char0,tag={}", mount_tag));
         }
         RootFsMode::Plan9 => {
             // 9p filesystem using virtfs
