@@ -253,55 +253,6 @@ pub fn symlink_dir_for_native<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link:
         })
 }
 
-/// Create file link for virtiofs/Linux guest visibility with explicit posix_target.
-///
-/// - Creates LX reparse point with POSIX path for guest visibility
-/// - If target exists: also creates hardlink/copy for host accessibility
-/// - If target missing: LX symlink only (stores expected POSIX path)
-///
-/// Use this when you need explicit control over the POSIX path stored in the symlink.
-/// For auto-computed posix_target, use [`symlink_file_for_virtiofs`].
-#[cfg(windows)]
-pub fn symlink_file_for_virtiofs_with_target<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q, posix_target: &str) -> Result<()> {
-    let original = original.as_ref();
-    let link = link.as_ref();
-    debug_assert_no_forward_slash(link);
-    let normalized_original = normalize_symlink_target(original);
-    log::trace!("symlink_file_for_virtiofs_with_target: {} -> {}", link.display(), normalized_original.display());
-    crate::krun_virtiofs_windows::symlink::symlink_file_for_virtiofs(&normalized_original, link, posix_target)
-        .wrap_err_with(|| {
-            format!(
-                "Failed symlink_file_for_virtiofs_with_target from {} to {}",
-                normalized_original.display(),
-                link.display()
-            )
-        })
-}
-
-/// Create directory link for virtiofs/Linux guest visibility with explicit posix_target.
-///
-/// - For existing directories: native symlink or junction
-/// - For missing targets: LX symlink (stores expected POSIX path for guest)
-///
-/// Use this when you need explicit control over the POSIX path stored in the symlink.
-/// For auto-computed posix_target, use [`symlink_dir_for_virtiofs`].
-#[cfg(windows)]
-pub fn symlink_dir_for_virtiofs_with_target<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q, posix_target: &str) -> Result<()> {
-    let original = original.as_ref();
-    let link = link.as_ref();
-    debug_assert_no_forward_slash(link);
-    let normalized_original = normalize_symlink_target(original);
-    log::trace!("symlink_dir_for_virtiofs_with_target: {} -> {}", link.display(), normalized_original.display());
-    crate::krun_virtiofs_windows::symlink::symlink_dir_for_virtiofs(&normalized_original, link, posix_target)
-        .wrap_err_with(|| {
-            format!(
-                "Failed symlink_dir_for_virtiofs_with_target from {} to {}",
-                normalized_original.display(),
-                link.display()
-            )
-        })
-}
-
 /// Create symlink for native Windows (type detected at runtime).
 #[cfg(windows)]
 pub fn symlink_for_native<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
@@ -314,44 +265,6 @@ pub fn symlink_for_native<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) 
         .wrap_err_with(|| {
             format!(
                 "Failed symlink_for_native from {} to {}",
-                normalized_original.display(),
-                link.display()
-            )
-        })
-}
-
-/// Create symlink for virtiofs (type detected at runtime, auto-computes posix_target).
-#[cfg(windows)]
-pub fn symlink_for_virtiofs<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
-    let original = original.as_ref();
-    let link = link.as_ref();
-    debug_assert_no_forward_slash(link);
-    let normalized_original = normalize_symlink_target(original);
-    let decoded_original = decode_path_from_windows(&normalized_original);
-    let posix_target = decoded_original.to_string_lossy();
-    log::trace!("symlink_for_virtiofs: {} -> {}", link.display(), normalized_original.display());
-    crate::krun_virtiofs_windows::symlink::symlink_for_virtiofs(&normalized_original, link, posix_target.as_ref())
-        .wrap_err_with(|| {
-            format!(
-                "Failed symlink_for_virtiofs from {} to {}",
-                normalized_original.display(),
-                link.display()
-            )
-        })
-}
-
-/// Create symlink for virtiofs with explicit posix_target (type detected at runtime).
-#[cfg(windows)]
-pub fn symlink_for_virtiofs_with_target<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q, posix_target: &str) -> Result<()> {
-    let original = original.as_ref();
-    let link = link.as_ref();
-    debug_assert_no_forward_slash(link);
-    let normalized_original = normalize_symlink_target(original);
-    log::trace!("symlink_for_virtiofs_with_target: {} -> {}", link.display(), normalized_original.display());
-    crate::krun_virtiofs_windows::symlink::symlink_for_virtiofs(&normalized_original, link, posix_target)
-        .wrap_err_with(|| {
-            format!(
-                "Failed symlink_for_virtiofs_with_target from {} to {}",
                 normalized_original.display(),
                 link.display()
             )

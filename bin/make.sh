@@ -99,6 +99,8 @@ safe_cp() {
     local src="$1"
     local dst="$2"
     local cp_output cp_status
+    # Create parent directory if it doesn't exist
+    mkdir -p "$(dirname "$dst")" || return $?
     cp_output=$(cp -v --update "$src" "$dst" 2>&1) && echo "$cp_output" || {
         cp_status=$?
         if echo "$cp_output" | grep -q "Text file busy"; then
