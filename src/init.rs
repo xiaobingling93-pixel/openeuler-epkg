@@ -1,6 +1,5 @@
 #[cfg(unix)]
 use std::env;
-#[cfg(unix)]
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write as IoWrite;
@@ -12,7 +11,6 @@ use color_eyre::Result;
 use nix::unistd::{fork, ForkResult};
 use serde::{Deserialize, Serialize};
 
-use crate::deinit::remove_epkg_from_rc_file;
 use crate::dirs::{find_env_base, get_env_root};
 use crate::download::download_urls;
 use crate::mirror;
@@ -116,12 +114,8 @@ pub fn light_init() -> Result<()> {
     let env_config = crate::io::deserialize_env_config_for(MAIN_ENV.to_string())?;
     register_environment_for(MAIN_ENV, env_config)?;
 
-    // Update shell configuration (Unix only)
-    #[cfg(unix)]
-    update_shell_rc()?;
-
-    update_powershell_profile().unwrap_or_else(|e| {
-        log::warn!("Could not update PowerShell profile: {}", e);
+    update_shell_profile().unwrap_or_else(|e| {
+        log::warn!("Could not update shell profile: {}", e);
     });
 
     println!("Notice: for changes to take effect, close and re-open your current shell.");
@@ -208,8 +202,8 @@ pub fn install_epkg_with_force(force: bool) -> Result<()> {
 
     println!("Installation complete!");
 
-    update_powershell_profile().unwrap_or_else(|e| {
-        log::warn!("Could not update PowerShell profile: {}", e);
+    update_shell_profile().unwrap_or_else(|e| {
+        log::warn!("Could not update shell profile: {}", e);
     });
 
     Ok(())
@@ -718,40 +712,50 @@ fn create_epkg_symlink(epkg_binary_path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
-fn update_shell_rc() -> Result<()> {
+/// Update shell profile files with epkg configuration.
+/// Works on both Unix (bash/zsh rc files) and Windows (PowerShell profiles).
+fn update_shell_profile() -> Result<()> {
     let self_env_root = get_env_root(SELF_ENV.to_string())?;
-    let shell_rc_files = shell_rc_files_for_current_mode()?;
+    let profile_paths = shell_profile_paths();
 
-    if shell_rc_files.is_empty() {
+    if profile_paths.is_empty() {
         return Ok(());
     }
 
-    let rc_content = build_epkg_rc_block(&self_env_root);
+    let block = build_epkg_block(&self_env_root);
 
-    for rc_file_path in shell_rc_files {
-        append_epkg_block_to_rc_file(&rc_file_path, &rc_content)?;
+    for profile_path in profile_paths {
+        // Ensure parent directory exists
+        if let Some(parent) = profile_path.parent() {
+            lfs::create_dir_all(parent)?;
+        }
+        append_epkg_block_to_text_file(&profile_path, &block)?;
     }
 
     Ok(())
 }
 
-/// Determine which shell rc files should be updated based on the current installation mode.
+/// Get the list of shell profile paths to update.
 #[cfg(unix)]
-fn shell_rc_files_for_current_mode() -> Result<Vec<String>> {
-    if config().init.shared_store {
-        crate::dirs::get_global_shell_rc()
+fn shell_profile_paths() -> Vec<PathBuf> {
+    let paths: Vec<String> = if config().init.shared_store {
+        crate::dirs::get_global_shell_rc().unwrap_or_default()
     } else {
-        let home_path_str =
-            crate::dirs::get_home().wrap_err("Failed to get home directory.")?;
+        let home_path_str = crate::dirs::get_home().unwrap_or_default();
         let home_dir = PathBuf::from(home_path_str);
-        crate::dirs::get_user_shell_rc(&home_dir)
-    }
+        crate::dirs::get_user_shell_rc(&home_dir).unwrap_or_default()
+    };
+    paths.into_iter().map(PathBuf::from).collect()
 }
 
-/// Build the epkg rc block that will be appended to rc files.
+#[cfg(windows)]
+fn shell_profile_paths() -> Vec<PathBuf> {
+    crate::dirs::powershell_profile_paths()
+}
+
+/// Build the epkg block that will be appended to profile files.
 #[cfg(unix)]
-fn build_epkg_rc_block(self_env_root: &Path) -> String {
+fn build_epkg_block(self_env_root: &Path) -> String {
     format!(
         r#"
 # epkg begin
@@ -764,7 +768,7 @@ test -r "$epkg_rc" && . "$epkg_rc"
 }
 
 #[cfg(windows)]
-fn build_epkg_ps_block(self_env_root: &Path) -> String {
+fn build_epkg_block(self_env_root: &Path) -> String {
     let ps1_path = self_env_root
         .join("usr")
         .join("src")
@@ -785,10 +789,48 @@ if (Test-Path -LiteralPath $epkg_ps1) {{ . $epkg_ps1 }}
 }
 
 fn append_epkg_block_to_text_file(path: &Path, block_content: &str) -> Result<()> {
-    let path_str = path
-        .to_str()
-        .ok_or_else(|| eyre::eyre!("Path must be valid UTF-8: {}", path.display()))?;
-    let existing_content = remove_epkg_from_rc_file(path_str)?;
+    // Read existing content and check if it already has the correct block
+    let existing_content = if lfs::exists_on_host(path) {
+        fs::read_to_string(path)
+            .wrap_err_with(|| format!("Failed to read file: {}", path.display()))?
+    } else {
+        String::new()
+    };
+
+    // Check if the existing epkg block matches the new block
+    if existing_content.contains(block_content.trim()) {
+        // Block already exists with correct content, no need to update
+        return Ok(());
+    }
+
+    // Remove existing epkg block if present (without printing "Removed" message)
+    let cleaned_content = if existing_content.contains("# epkg begin") && existing_content.contains("# epkg end") {
+        let lines: Vec<&str> = existing_content.lines().collect();
+        let mut new_lines = Vec::new();
+        let mut in_epkg_block = false;
+
+        for line in lines {
+            if line.contains("# epkg begin") {
+                in_epkg_block = true;
+                continue;
+            }
+            if line.contains("# epkg end") {
+                in_epkg_block = false;
+                continue;
+            }
+            if !in_epkg_block {
+                new_lines.push(line);
+            }
+        }
+        new_lines.join("\n")
+    } else {
+        existing_content.clone()
+    };
+
+    // Write the cleaned content back if we modified it
+    if cleaned_content != existing_content {
+        lfs::write(path, &cleaned_content)?;
+    }
 
     println!("Adding epkg to: {}", path.display());
 
@@ -798,7 +840,7 @@ fn append_epkg_block_to_text_file(path: &Path, block_content: &str) -> Result<()
         .open(path)
         .with_context(|| format!("Failed to open or create file: {}", path.display()))?;
 
-    if !existing_content.is_empty() && !existing_content.ends_with('\n') {
+    if !cleaned_content.is_empty() && !cleaned_content.ends_with('\n') {
         file
             .write_all(b"\n")
             .with_context(|| format!("Failed to write newline to: {}", path.display()))?;
@@ -808,31 +850,6 @@ fn append_epkg_block_to_text_file(path: &Path, block_content: &str) -> Result<()
         .write_all(block_content.as_bytes())
         .with_context(|| format!("Failed to write to: {}", path.display()))?;
 
-    Ok(())
-}
-
-/// Append the epkg rc block to a given rc file, ensuring any previous epkg block is removed
-/// and newline formatting remains tidy.
-#[cfg(unix)]
-fn append_epkg_block_to_rc_file(rc_file_path: &str, rc_content: &str) -> Result<()> {
-    append_epkg_block_to_text_file(Path::new(rc_file_path), rc_content)
-}
-
-#[cfg(windows)]
-fn update_powershell_profile() -> Result<()> {
-    let self_env_root = get_env_root(SELF_ENV.to_string())?;
-    let block = build_epkg_ps_block(&self_env_root);
-    for profile_path in crate::dirs::powershell_profile_paths() {
-        if let Some(parent) = profile_path.parent() {
-            lfs::create_dir_all(parent)?;
-        }
-        append_epkg_block_to_text_file(&profile_path, &block)?;
-    }
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn update_powershell_profile() -> Result<()> {
     Ok(())
 }
 
