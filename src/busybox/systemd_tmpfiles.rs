@@ -643,7 +643,7 @@ fn process_symlink_line(parts: &[String], modifiers: &Modifiers, root: Option<&P
 
     // Create symlink if it doesn't exist
     if !lfs::exists_or_any_symlink(&full_path) {
-        lfs::symlink_for_virtiofs(target, &full_path)?;
+        lfs::symlink_for_native(target, &full_path)?;
     }
 
     Ok(())

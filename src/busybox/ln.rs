@@ -123,7 +123,7 @@ pub fn run(options: LnOptions) -> Result<()> {
     };
 
     if options.symbolic {
-        lfs::symlink_for_virtiofs(&actual_target, &link_path)?;
+        lfs::symlink_for_native(&actual_target, &link_path)?;
     } else {
         lfs::hard_link(&actual_target, &link_path)?;
     }

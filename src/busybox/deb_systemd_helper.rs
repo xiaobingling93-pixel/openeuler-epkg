@@ -285,7 +285,7 @@ fn dsh_action_enable(
         let _target = Path::new(&link.dest);
         #[cfg(unix)]
         {
-            lfs::symlink_file_for_virtiofs(_target, &link_full)?;
+            lfs::symlink_file_for_native(_target, &link_full)?;
         }
         #[cfg(not(unix))]
         {

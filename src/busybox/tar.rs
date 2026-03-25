@@ -333,7 +333,7 @@ fn extract_entry<R: std::io::Read>(entry: &mut tar::Entry<R>, extract_path: &str
             let linkname = lfs::sanitize_path_for_windows(&linkname);
             #[cfg(unix)]
             {
-                lfs::symlink_for_virtiofs(&linkname, &dest)
+                lfs::symlink_for_native(&linkname, &dest)
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             }
             #[cfg(not(unix))]
