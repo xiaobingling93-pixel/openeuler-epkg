@@ -649,11 +649,12 @@ fn try_discover_interface_once(net_dir: &Path, attempt: u32, log_first: bool) ->
 
 /// Discover the first non-loopback network interface (e.g. eth0, enp0s2).
 /// Returns Ok(interface) or Err(last_seen_names) for error context.
-/// Retries for up to 10 seconds (50 attempts * 200ms) to allow virtio_net driver to initialize.
+/// Retries for up to 50ms (10 attempts * 5ms) to allow virtio_net driver to initialize.
+/// Note: With libkrun TSI, network may not be needed for local operations.
 #[cfg(target_os = "linux")]
 fn discover_primary_interface() -> Result<String, Vec<String>> {
-    const MAX_ATTEMPTS: u32 = 50;      // Total attempts before giving up
-    const RETRY_MS: u64 = 200;         // Delay between attempts (total: 10 seconds)
+    const MAX_ATTEMPTS: u32 = 10;      // Total attempts before giving up
+    const RETRY_MS: u64 = 5;           // Delay between attempts (total: 50ms)
 
     let net_dir = Path::new("/sys/class/net");
     let mut last_seen: Vec<String> = vec![];
