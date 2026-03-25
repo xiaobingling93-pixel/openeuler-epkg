@@ -530,9 +530,11 @@ fn build_qemu_command(
     // Optional virtio-vsock device for vsock-based control plane.
     if use_vsock {
         // Guest CID 3 matches the host-side vm_client vsock connector.
+        // Use vhost-vsock-device (MMIO) instead of vhost-vsock-pci (PCI)
+        // to match 9p MMIO device and avoid PCI resource conflicts.
         qemu_cmd
             .arg("-device")
-            .arg("vhost-vsock-pci,guest-cid=3");
+            .arg("vhost-vsock-device,guest-cid=3");
     }
 
     // Kernel cmdline: console, panic, root filesystem, and epkg init parameters
