@@ -508,11 +508,13 @@ fn build_qemu_command(
             // 9p filesystem using virtfs
             // security_model=none: simplest mode, files accessed as QEMU user
             // Note: symlinks pointing outside shared directory may not resolve correctly
+            // Use virtio-9p-device (MMIO) instead of virtio-9p-pci (PCI) for faster init
+            // and to avoid PCI enumeration delays on aarch64 virt machine
             qemu_cmd
                 .arg("-fsdev")
                 .arg(format!("local,id=fsdev0,path={},security_model=none", env_root.display()))
                 .arg("-device")
-                .arg(format!("virtio-9p-pci,fsdev=fsdev0,mount_tag={}", mount_tag));
+                .arg(format!("virtio-9p-device,fsdev=fsdev0,mount_tag={}", mount_tag));
         }
     }
 
