@@ -73,26 +73,26 @@ use color_eyre::Result;
 /// Create a symbolic link that must point at a directory (or a missing path that should be a
 /// **directory symlink** on Windows).
 ///
-/// On Unix this is identical to [`symlink`]. On Windows, creates LX reparse + junction fallback
+/// On Unix creates a standard symbolic link. On Windows, creates LX reparse + junction fallback
 /// for virtiofs/Linux guest visibility.
 #[cfg(unix)]
 pub fn symlink_dir_for_virtiofs<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
-    symlink(original, link)
+    _symlink(original, link)
 }
 
 /// Create a symbolic link that must point at a regular file (or a missing path that should be a
 /// **file symlink** on Windows).
 ///
-/// On Unix this is identical to [`symlink`]. On Windows, creates LX reparse + hardlink/copy fallback
+/// On Unix creates a standard symbolic link. On Windows, creates LX reparse + hardlink/copy fallback
 /// for virtiofs/Linux guest visibility.
 #[cfg(unix)]
 pub fn symlink_file_for_virtiofs<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
-    symlink(original, link)
+    _symlink(original, link)
 }
 
-/// Create a symbolic link.
+/// Internal: Create a symbolic link (Unix only).
 #[cfg(unix)]
-pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
+fn _symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
     use std::os::unix::fs::symlink;
     let original = original.as_ref();
     let link = link.as_ref();
@@ -102,31 +102,31 @@ pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<(
 }
 
 /// Create symlink for virtiofs/Linux guest visibility (type detected at runtime).
-/// On Unix, identical to [`symlink`].
+/// On Unix, identical to [`symlink_file_for_virtiofs`].
 #[cfg(unix)]
 pub fn symlink_for_virtiofs<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
-    symlink(original, link)
+    _symlink(original, link)
 }
 
 /// Create symlink for native host access (type detected at runtime).
-/// On Unix, identical to [`symlink`].
+/// On Unix, identical to [`symlink_file_for_native`].
 #[cfg(unix)]
 pub fn symlink_for_native<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
-    symlink(original, link)
+    _symlink(original, link)
 }
 
 /// Create file symlink for native host access.
-/// On Unix, identical to [`symlink`].
+/// On Unix, creates a standard symbolic link.
 #[cfg(unix)]
 pub fn symlink_file_for_native<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
-    symlink(original, link)
+    _symlink(original, link)
 }
 
 /// Create directory symlink for native host access.
-/// On Unix, identical to [`symlink`].
+/// On Unix, creates a standard symbolic link.
 #[cfg(unix)]
 pub fn symlink_dir_for_native<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
-    symlink(original, link)
+    _symlink(original, link)
 }
 
 /// Create directory link for virtiofs/Linux guest visibility (auto-computes posix_target).
@@ -188,28 +188,6 @@ pub fn symlink_file_for_virtiofs<P: AsRef<Path>, Q: AsRef<Path>>(original: P, li
         .wrap_err_with(|| {
             format!(
                 "Failed symlink_file_for_virtiofs from {} to {}",
-                normalized_original.display(),
-                link.display()
-            )
-        })
-}
-
-/// Windows: generic symlink when target type is unknown; missing target → LX reparse (see virtiofs docs).
-#[cfg(windows)]
-pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
-    let original = original.as_ref();
-    let link = link.as_ref();
-    debug_assert_no_forward_slash(link);
-    // Normalize the symlink target to use backslashes for Windows native access.
-    let normalized_original = normalize_symlink_target(original);
-    // Decode PUA-encoded characters to get the original POSIX path for the LX symlink.
-    let decoded_original = decode_path_from_windows(&normalized_original);
-    let posix_target = decoded_original.to_string_lossy();
-    log::trace!("creating symlink: {} -> {}", link.display(), normalized_original.display());
-    crate::krun_virtiofs_windows::symlink::symlink_for_virtiofs(&normalized_original, link, posix_target.as_ref())
-        .wrap_err_with(|| {
-            format!(
-                "Failed symlink from {} to {}",
                 normalized_original.display(),
                 link.display()
             )

@@ -1,7 +1,6 @@
 use std::fs;
 use crate::lfs;
 use std::path::{Path, PathBuf};
-use crate::lfs::symlink;
 use color_eyre::eyre::{self, Result, WrapErr, ContextCompat};
 use time::OffsetDateTime;
 use time::macros::format_description;
@@ -75,7 +74,7 @@ pub fn update_current_generation_symlink_with_root(generations_root: &Path, new_
         lfs::remove_file(&current_link)?;
     }
 
-    symlink(&new_generation.file_name().unwrap(), &current_link)?;
+    lfs::symlink_dir_for_virtiofs(&new_generation.file_name().unwrap(), &current_link)?;
     Ok(())
 }
 
