@@ -175,8 +175,10 @@ fn build_libkrun_config(
     let (cmd_parts, init_cmd) = build_guest_command(Path::new(&guest_exec_path), &run_options.args)
         .map_err(|e| eyre::eyre!("Failed to build guest command: {}", e))?;
 
+    // root=/dev/root: specifies the virtiofs tag for root filesystem
+    // (krun_set_root sets up a virtiofs device with tag "/dev/root")
     let base_cmdline = "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 earlyprintk=hvc0 \
-                        loglevel=8 debug rootfstype=virtiofs rw no-kvmapf init=/usr/bin/init";
+                        loglevel=8 debug root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/usr/bin/init";
     let mut kernel_args = String::from(base_cmdline);
     if let Some(ref user_args) = run_options.kernel_args {
         kernel_args.push(' ');
