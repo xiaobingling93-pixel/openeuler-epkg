@@ -116,14 +116,16 @@ fn is_elf_kernel(kernel_path: &str) -> Result<bool> {
 }
 
 /// Detect kernel format for libkrun's krun_set_kernel().
-/// Returns: 1=ELF (vmlinux), error for non-ELF
+/// Returns: 0=Raw (Image), 1=ELF (vmlinux)
 #[cfg(feature = "libkrun")]
 #[allow(dead_code)]
 fn detect_kernel_format_for_libkrun(kernel_path: &str) -> Result<u32> {
     if is_elf_kernel(kernel_path)? {
         Ok(1) // ELF (vmlinux)
     } else {
-        Err(eyre::eyre!("Non-ELF kernel format not supported: {}", kernel_path))
+        // Assume Raw format (e.g., aarch64 Image)
+        log::debug!("libkrun: kernel {} is not ELF, assuming Raw format", kernel_path);
+        Ok(0) // Raw (Image)
     }
 }
 
@@ -555,10 +557,18 @@ fn create_and_configure_vm(
                        host_path, tag, guest_path, if *read_only { "ro" } else { "rw" });
         }
 
-        check_status("krun_split_irqchip",
-            krun_split_irqchip(ctx.ctx_id, true)
-        )?;
-        log::debug!("libkrun: split IRQ chip configured");
+        // split_irqchip is only supported on x86_64; skip on aarch64
+        #[cfg(target_arch = "x86_64")]
+        {
+            check_status("krun_split_irqchip",
+                krun_split_irqchip(ctx.ctx_id, true)
+            )?;
+            log::debug!("libkrun: split IRQ chip configured");
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            log::debug!("libkrun: skipping split IRQ chip (x86_64 only)");
+        }
 
         setup_console_output(ctx.ctx_id)?;
 
