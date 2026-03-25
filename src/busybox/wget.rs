@@ -14,12 +14,22 @@ pub struct WgetOptions {
     #[allow(dead_code)] pub quiet: bool,
 }
 
+/// Normalize URL by prepending http:// if no scheme is present.
+fn normalize_url(url: &str) -> String {
+    if url.contains("://") {
+        url.to_string()
+    } else {
+        eprintln!("Prepended http:// to '{}'", url);
+        format!("http://{}", url)
+    }
+}
+
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<WgetOptions> {
     let output_file = matches.get_one::<String>("output").cloned();
     let prefix_dir = matches.get_one::<String>("directory-prefix").cloned();
     let quiet = matches.get_flag("quiet");
     let urls: Vec<String> = matches.get_many::<String>("urls")
-        .map(|vals| vals.cloned().collect())
+        .map(|vals| vals.map(|u| normalize_url(u)).collect())
         .unwrap_or_default();
 
     // Validate: -O can only be used with single URL
