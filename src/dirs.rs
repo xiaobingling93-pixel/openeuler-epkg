@@ -400,8 +400,23 @@ pub fn find_env_root(env_name: &str) -> Option<PathBuf> {
 /// Find the first existing dir:
 /// - $HOME/.epkg/envs/self/usr/src/epkg
 /// - /opt/epkg/envs/root/self/usr/src/epkg
+/// Get the epkg source path for accessing assets (repos, mirrors, etc.)
+///
+/// This function is safe to call during config parsing because it does not
+/// call `config()` which could cause a deadlock during initialization.
+/// It uses `determine_shared_store()` and `compute_user_envs()` directly.
 pub fn get_epkg_src_path() -> PathBuf {
-    let user_path = path_join(&get_env_base_path(SELF_ENV), &["usr", "src", "epkg"]);
+    // Use determine_shared_store() to check store mode without calling config()
+    let shared_store = crate::utils::determine_shared_store().unwrap_or(false);
+
+    // Compute user_envs without calling get_env_base_path() which calls config()
+    let user_envs = compute_user_envs(shared_store).unwrap_or_else(|_| {
+        // Fallback: use home-based path
+        let home = std::env::var("HOME").unwrap_or_default();
+        PathBuf::from(home).join(".epkg").join("envs")
+    });
+
+    let user_path = path_join(&user_envs, &[SELF_ENV, "usr", "src", "epkg"]);
     if user_path.exists() {
         log::debug!("Using user's epkg source path: {:?}", user_path);
         return user_path;
