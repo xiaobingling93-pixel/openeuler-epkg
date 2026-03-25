@@ -593,9 +593,29 @@ pub fn create_all_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -
         } else {
             epkg_exe.clone()
         };
+
+        // Use appropriate symlink API based on target platform:
+        // - Native Windows (self env): symlink_file_for_native (hardlink/copy fallback, NO LX symlink)
+        // - Linux/VM targets: symlink_to_file (may create LX symlink for guest visibility)
+        #[cfg(windows)]
+        if is_windows_target(pkg_format) {
+            // Remove existing file first
+            if crate::lfs::symlink_metadata(&symlink_path).is_ok() {
+                crate::lfs::remove_file(&symlink_path)
+                    .with_context(|| format!("Failed to remove existing {}", symlink_path.display()))?;
+            }
+            crate::lfs::symlink_file_for_native(&target, &symlink_path)
+                .with_context(|| format!("Failed to create {} symlink in {}", cmd_name, symlink_path.display()))?;
+        } else {
+            force_symlink_to_file(&target, &symlink_path)
+                .with_context(|| format!("Failed to create {} symlink in {}", cmd_name, symlink_path.display()))?;
+        }
+
+        #[cfg(not(windows))]
         force_symlink_to_file(&target, &symlink_path)
             .with_context(|| format!("Failed to create {} symlink in {}", cmd_name, symlink_path.display()))?;
     }
+
     // Create [ symlink (alias for test)
     let bracket_leaf = applet_symlink_filename("[", pkg_format);
     let bracket_path = crate::dirs::path_join(env_root, &["usr", "bin", &bracket_leaf]);
@@ -604,6 +624,19 @@ pub fn create_all_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -
     } else {
         epkg_exe.clone()
     };
+
+    #[cfg(windows)]
+    if is_windows_target(pkg_format) {
+        if crate::lfs::symlink_metadata(&bracket_path).is_ok() {
+            crate::lfs::remove_file(&bracket_path)?;
+        }
+        crate::lfs::symlink_file_for_native(&bracket_target, &bracket_path)?;
+    } else {
+        force_symlink_to_file(&bracket_target, &bracket_path)?;
+    }
+
+    #[cfg(not(windows))]
     force_symlink_to_file(&bracket_target, &bracket_path)?;
+
     Ok(())
 }
