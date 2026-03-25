@@ -227,7 +227,7 @@ fn apply_alternative(
     // Compute target path relative to root, then make it relative to symlink location
     let _relative_target = make_relative_target(root, choice_path, &alt_name_path);
     #[cfg(unix)]
-    lfs::symlink(&_relative_target, &alt_name_path)?;
+    lfs::symlink_file_for_virtiofs(&_relative_target, &alt_name_path)?;
 
     let master_link_full = root_join(root, &a.master_link);
     if lfs::exists_or_any_symlink(&master_link_full) {
@@ -242,7 +242,7 @@ fn apply_alternative(
     #[cfg(unix)]
     {
         let alt_name_relative = make_relative_existing(&alt_name_path, &master_link_full);
-        lfs::symlink(&alt_name_relative, &master_link_full)?;
+        lfs::symlink_file_for_virtiofs(&alt_name_relative, &master_link_full)?;
     }
 
     for sl in &a.slaves {
@@ -258,7 +258,7 @@ fn apply_alternative(
             #[cfg(unix)]
             {
                 let slave_relative = make_relative_target(root, spath, &slave_alt);
-                lfs::symlink(&slave_relative, &slave_alt).ok();
+                lfs::symlink_file_for_virtiofs(&slave_relative, &slave_alt).ok();
             }
             if lfs::exists_or_any_symlink(&slave_link_full) {
                 if !force && !slave_link_full.is_symlink() {
@@ -272,7 +272,7 @@ fn apply_alternative(
             #[cfg(unix)]
             {
                 let slave_alt_relative = make_relative_existing(&slave_alt, &slave_link_full);
-                lfs::symlink(&slave_alt_relative, &slave_link_full).ok();
+                lfs::symlink_file_for_virtiofs(&slave_alt_relative, &slave_link_full).ok();
             }
         }
     }

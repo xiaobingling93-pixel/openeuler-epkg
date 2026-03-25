@@ -285,7 +285,7 @@ pub fn create_dpkg_info_symlinks(pkgname: &str, pkgline: &str) -> Result<()> {
         // Create relative symlink to store path
         // The path will be resolved inside the namespace
         let target = entry.path();
-        lfs::symlink(&target, &link_path)?;
+        lfs::symlink_file_for_virtiofs(&target, &link_path)?;
     }
 
     Ok(())

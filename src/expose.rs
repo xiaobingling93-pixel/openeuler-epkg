@@ -125,7 +125,7 @@ fn create_node_modules_symlink(env_root: &Path) -> Result<()> {
     }
 
     // Create symlink: usr/bin/node_modules -> ../lib/node_modules
-    lfs::symlink("../lib/node_modules", &node_modules_in_bin)
+    lfs::symlink_dir_for_virtiofs("../lib/node_modules", &node_modules_in_bin)
         .with_context(|| format!("Failed to create node_modules symlink at {}", node_modules_in_bin.display()))?;
 
     log::debug!("Created symlink: {} -> ../lib/node_modules", node_modules_in_bin.display());
@@ -367,7 +367,7 @@ pub fn create_libexec_bin_symlinks(env_root: &Path, store_fs_dir: &Path) -> Resu
             // Create symlink pointing to the libexec/bin entry
             // The symlink target will be relative: ../../libexec/bin/<name>
             let link_target = Path::new("../../libexec/bin").join(&name_sanitized);
-            match lfs::symlink(&link_target, &target_path) {
+            match lfs::symlink_file_for_virtiofs(&link_target, &target_path) {
                 Ok(()) => {
                     log::info!("Created libexec symlink: {} -> {}",
                               target_path.display(), link_target.display());
@@ -761,7 +761,7 @@ fn find_and_link_alternative_interpreter(interpreter_in_env: &Path, interpreter_
 
     // Create a symlink from the found interpreter to the expected location
     let target_sanitized = lfs::sanitize_path_for_windows(&target);
-    lfs::symlink(&target_sanitized, interpreter_in_env)?;
+    lfs::symlink_file_for_virtiofs(&target_sanitized, interpreter_in_env)?;
 
     Ok(())
 }

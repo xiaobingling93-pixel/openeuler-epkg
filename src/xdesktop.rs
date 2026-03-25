@@ -259,7 +259,7 @@ fn symlink_desktop_files(
             continue;
         }
 
-        lfs::symlink(&target_path, &dst_path)?;
+        lfs::symlink_file_for_virtiofs(&target_path, &dst_path)?;
 
         linked_items.push(dst_path.clone());
 

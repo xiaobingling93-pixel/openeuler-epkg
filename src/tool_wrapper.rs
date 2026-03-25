@@ -144,7 +144,9 @@ pub fn setup_tool_config_symlinks() -> Result<()> {
         if lfs::exists_no_follow(&env_vars_link) {
             lfs::remove_file(&env_vars_link)?;
         }
-        lfs::symlink(&env_vars_target, &env_vars_link)?;
+        // Use symlink_dir_for_native because env_vars_target is a directory
+        // and these symlinks need to be readable from Windows host
+        lfs::symlink_dir_for_native(&env_vars_target, &env_vars_link)?;
         log::info!("Created symlink: {} -> {}", env_vars_link.display(), env_vars_target.display());
     }
 
@@ -160,7 +162,8 @@ pub fn setup_tool_config_symlinks() -> Result<()> {
     if let Some(region) = get_region_code() {
         let iploc_target = config_dir.join("env_vars").join(&region);
         if lfs::exists_on_host(&iploc_target) {
-            lfs::symlink(&iploc_target, &iploc_link)?;
+            // Use symlink_dir_for_native because iploc_target is a directory
+            lfs::symlink_dir_for_native(&iploc_target, &iploc_link)?;
             log::info!("Created my_region symlink: {} -> {} (region: {})",
                       iploc_link.display(), iploc_target.display(), region);
         } else {

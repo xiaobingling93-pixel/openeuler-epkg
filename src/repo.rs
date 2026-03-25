@@ -1214,7 +1214,7 @@ fn create_filelists_symlink(revise: &RepoReleaseItem, output_path: &PathBuf) -> 
         lfs::remove_file(&output_path)?;
     }
 
-    lfs::symlink(&revise.download_path, output_path)?;
+    lfs::symlink_file_for_virtiofs(&revise.download_path, output_path)?;
 
     Ok(())
 }

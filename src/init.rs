@@ -440,7 +440,7 @@ fn setup_epkg_src(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
         #[cfg(windows)]
         lfs::symlink_dir_for_native(&repo_root, &epkg_src)?;
         #[cfg(not(windows))]
-        lfs::symlink(&repo_root, &epkg_src)?;
+        lfs::symlink_dir_for_native(&repo_root, &epkg_src)?;
 
         println!("Using local git repository for epkg source code");
         return Ok(());
@@ -463,7 +463,7 @@ fn setup_epkg_src(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
         .context("Failed to extract epkg source code tar file")?;
 
     // Create a symlink from epkg to epkg-master (or epkg-$version)
-    if let Err(e) = utils::force_symlink_to_directory(&epkg_extracted_dir, &epkg_src) {
+    if let Err(e) = utils::force_symlink_dir_for_native(&epkg_extracted_dir, &epkg_src) {
         eprintln!("[WARN] Failed to create symlink {} -> {}: {}",
                  epkg_src.display(), epkg_extracted_dir, e);
     }
@@ -586,7 +586,7 @@ fn link_home_epkg_subdir(home_epkg: &Path, name: &str, target: &Path) {
     }
 
     println!("Creating symlink: {} -> {}", link.display(), target.display());
-    if let Err(e) = utils::force_symlink_to_directory(target, &link) {
+    if let Err(e) = utils::force_symlink_dir_for_native(target, &link) {
         log::warn!(
             "Failed to create symlink {} -> {}: {}",
             link.display(),
@@ -693,7 +693,7 @@ fn create_epkg_symlink(epkg_binary_path: &Path) -> Result<()> {
         let usr_local_bin = PathBuf::from("/usr/local/bin");
         lfs::create_dir_all(&usr_local_bin)?;
         println!("Creating symlink: {}/epkg -> {}", usr_local_bin.display(), epkg_binary_path.display());
-        if let Err(e) = utils::force_symlink_to_file(epkg_binary_path, &usr_local_bin.join("epkg")) {
+        if let Err(e) = utils::force_symlink_file_for_native(epkg_binary_path, &usr_local_bin.join("epkg")) {
             log::warn!("Failed to create epkg symlink in {}: {}", usr_local_bin.display(), e);
         }
         return Ok(());
@@ -708,7 +708,7 @@ fn create_epkg_symlink(epkg_binary_path: &Path) -> Result<()> {
     if path_var.contains(&*home_bin.to_string_lossy()) {
         if home_bin.exists() {
             println!("Creating symlink: {}/epkg -> {}", home_bin.display(), epkg_binary_path.display());
-            if let Err(e) = utils::force_symlink_to_file(epkg_binary_path, &home_bin.join("epkg")) {
+            if let Err(e) = utils::force_symlink_file_for_native(epkg_binary_path, &home_bin.join("epkg")) {
                 log::warn!("Failed to create epkg symlink in {}: {}", home_bin.display(), e);
             }
         }
@@ -1367,7 +1367,12 @@ fn install_kernel(zst_path: &Path, config_path: Option<&Path>, version: &str, ar
     if kernel_link.exists() || lfs::is_symlink(&kernel_link) {
         lfs::remove_file(&kernel_link)?;
     }
-    lfs::symlink(&kernel_name, &kernel_link)?;
+    // On Windows, use symlink_file_for_native() because libkrun reads the kernel
+    // from the Windows host, and LX symlinks are not readable by native Windows.
+    #[cfg(windows)]
+    lfs::symlink_file_for_native(&kernel_name, &kernel_link)?;
+    #[cfg(not(windows))]
+    lfs::symlink_file_for_native(&kernel_name, &kernel_link)?;
 
     println!("  Installed kernel: {} ({} bytes)", kernel_path.display(), kernel_data.len());
 
@@ -1784,7 +1789,7 @@ fn fixup_host_lib64_symlink() -> Result<()> {
     }
 
     // Create the symlink using relative path
-    lfs::symlink(usr_lib64_target, lib64_path)?;
+    lfs::symlink_dir_for_native(usr_lib64_target, lib64_path)?;
 
     Ok(())
 }

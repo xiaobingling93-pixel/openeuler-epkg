@@ -129,7 +129,7 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
                             #[cfg(unix)]
                             {
                                 let link_target = lfs::sanitize_path_for_windows(Path::new(&file.metadata.linkto));
-                                if let Err(e) = lfs::symlink(&link_target, &file_path) {
+                                if let Err(e) = lfs::symlink_for_virtiofs(&link_target, &file_path) {
                                     log::warn!("Failed to create symlink {:?} -> {:?}: {}", file_path, link_target, e);
                                 }
                             }

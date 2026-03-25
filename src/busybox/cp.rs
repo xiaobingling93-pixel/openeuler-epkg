@@ -403,7 +403,7 @@ fn create_symbolic_link_if_requested(src: &Path, dst: &Path, options: &CpOptions
         src.to_path_buf()
     };
 
-    lfs::symlink(&link_target, dst)?;
+    lfs::symlink_for_virtiofs(&link_target, dst)?;
 
     if options.verbose {
         eprintln!("'{}' -> '{}'", src.display(), dst.display());
@@ -458,7 +458,7 @@ fn copy_based_on_file_type(
                 || {
                     let target = fs::read_link(src)
                         .map_err(|e| eyre!("cp: cannot read link '{}': {}", src.display(), e))?;
-                    lfs::symlink(&target, dst)
+                    lfs::symlink_for_virtiofs(&target, dst)
                 },
                 src,
                 dst,

@@ -546,7 +546,9 @@ fn try_symlink_from_global_cache(task: &DownloadTask) -> bool {
     }
 
     // Create symlink from local path to global path
-    match lfs::symlink(&global_path, local_path) {
+    // Use symlink_file_for_virtiofs because these are cache files that may be accessed
+    // from both host (downloading) and potentially VM (extraction)
+    match lfs::symlink_file_for_virtiofs(&global_path, local_path) {
         Ok(_) => log::debug!("Symlinked {} -> {}", local_path.display(), global_path.display()),
         Err(e) if e.downcast_ref::<std::io::Error>().map_or(false, |io_err| io_err.kind() == io::ErrorKind::AlreadyExists) => {
             // File already exists (maybe created by another process)
@@ -563,7 +565,7 @@ fn try_symlink_from_global_cache(task: &DownloadTask) -> bool {
     let global_meta_path = utils::append_suffix(&global_path, "etag.json");
     let local_meta_path = utils::append_suffix(local_path, "etag.json");
     if global_meta_path.exists() && !local_meta_path.exists() {
-        match lfs::symlink(&global_meta_path, &local_meta_path) {
+        match lfs::symlink_file_for_virtiofs(&global_meta_path, &local_meta_path) {
             Ok(_) => log::debug!("Symlinked metadata {} -> {}", local_meta_path.display(), global_meta_path.display()),
             Err(e) if e.downcast_ref::<std::io::Error>().map_or(false, |io_err| io_err.kind() == io::ErrorKind::AlreadyExists) => {
                 log::debug!("Metadata file already exists at {}, skipping symlink", local_meta_path.display());

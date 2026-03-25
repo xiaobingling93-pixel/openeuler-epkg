@@ -762,9 +762,9 @@ pub fn user_prompt_and_confirm() -> Result<bool> {
     Ok(true)
 }
 
-/// Remove any existing link at `symlink_path`, then create a **directory** symlink (see
-/// [`lfs::symlink_to_directory`]).
-pub fn force_symlink_to_directory<P: AsRef<Path>, Q: AsRef<Path>>(file_path: P, symlink_path: Q) -> Result<()> {
+/// Remove any existing link at `symlink_path`, then create a **directory** symlink for virtiofs.
+/// See [`lfs::symlink_dir_for_virtiofs`].
+pub fn force_symlink_dir_for_virtiofs<P: AsRef<Path>, Q: AsRef<Path>>(file_path: P, symlink_path: Q) -> Result<()> {
     let file_path = file_path.as_ref();
     let symlink_path = symlink_path.as_ref();
 
@@ -783,18 +783,18 @@ pub fn force_symlink_to_directory<P: AsRef<Path>, Q: AsRef<Path>>(file_path: P, 
     }
 
     log::debug!(
-        "Creating directory symlink: {} -> {}",
+        "Creating directory symlink for virtiofs: {} -> {}",
         symlink_path.display(),
         file_path.display()
     );
-    lfs::symlink_to_directory(file_path, symlink_path)?;
+    lfs::symlink_dir_for_virtiofs(file_path, symlink_path)?;
 
     Ok(())
 }
 
-/// Remove any existing link at `symlink_path`, then create a **file** symlink (see
-/// [`lfs::symlink_to_file`]).
-pub fn force_symlink_to_file<P: AsRef<Path>, Q: AsRef<Path>>(file_path: P, symlink_path: Q) -> Result<()> {
+/// Remove any existing link at `symlink_path`, then create a **file** symlink for virtiofs.
+/// See [`lfs::symlink_file_for_virtiofs`].
+pub fn force_symlink_file_for_virtiofs<P: AsRef<Path>, Q: AsRef<Path>>(file_path: P, symlink_path: Q) -> Result<()> {
     let file_path = file_path.as_ref();
     let symlink_path = symlink_path.as_ref();
 
@@ -803,14 +803,69 @@ pub fn force_symlink_to_file<P: AsRef<Path>, Q: AsRef<Path>>(file_path: P, symli
     }
 
     log::debug!(
-        "Creating file symlink: {} -> {}",
+        "Creating file symlink for virtiofs: {} -> {}",
         symlink_path.display(),
         file_path.display()
     );
-    lfs::symlink_to_file(file_path, symlink_path)?;
+    lfs::symlink_file_for_virtiofs(file_path, symlink_path)?;
 
     Ok(())
 }
+
+/// Remove any existing link at `symlink_path`, then create a **directory** symlink for native Windows.
+/// See [`lfs::symlink_dir_for_native`].
+#[cfg(windows)]
+pub fn force_symlink_dir_for_native<P: AsRef<Path>, Q: AsRef<Path>>(file_path: P, symlink_path: Q) -> Result<()> {
+    let file_path = file_path.as_ref();
+    let symlink_path = symlink_path.as_ref();
+
+    if lfs::symlink_metadata(symlink_path).is_ok() {
+        // Check if it's a symlink (can be removed with remove_file) or a real directory
+        if lfs::is_symlink(symlink_path) {
+            lfs::remove_file(symlink_path)?;
+        } else if symlink_path.is_dir() {
+            lfs::remove_dir(symlink_path)?;
+        } else {
+            lfs::remove_file(symlink_path)?;
+        }
+    }
+
+    log::debug!(
+        "Creating directory symlink for native: {} -> {}",
+        symlink_path.display(),
+        file_path.display()
+    );
+    lfs::symlink_dir_for_native(file_path, symlink_path)?;
+
+    Ok(())
+}
+
+/// Remove any existing link at `symlink_path`, then create a **file** symlink for native Windows.
+/// See [`lfs::symlink_file_for_native`].
+#[cfg(windows)]
+pub fn force_symlink_file_for_native<P: AsRef<Path>, Q: AsRef<Path>>(file_path: P, symlink_path: Q) -> Result<()> {
+    let file_path = file_path.as_ref();
+    let symlink_path = symlink_path.as_ref();
+
+    if lfs::symlink_metadata(symlink_path).is_ok() {
+        lfs::remove_file(symlink_path)?;
+    }
+
+    log::debug!(
+        "Creating file symlink for native: {} -> {}",
+        symlink_path.display(),
+        file_path.display()
+    );
+    lfs::symlink_file_for_native(file_path, symlink_path)?;
+
+    Ok(())
+}
+
+// Unix versions that delegate to virtiofs variants (on Unix, both are the same)
+#[cfg(unix)]
+pub use force_symlink_dir_for_virtiofs as force_symlink_dir_for_native;
+#[cfg(unix)]
+pub use force_symlink_file_for_virtiofs as force_symlink_file_for_native;
 
 /// Convert a path (relative or absolute) to an absolute path string.
 /// If the path is already absolute, returns it unchanged.
@@ -1107,7 +1162,7 @@ fn create_common_symlinks(env_root: &Path) -> Result<()> {
             let lib_link = env_root.join("lib");
             if !lfs::exists_or_any_symlink(&lib_link) {
                 log::debug!("Creating lib -> usr/lib symlink for MSYS2 Python");
-                lfs::symlink_to_directory("usr/lib", &lib_link)?;
+                lfs::symlink_dir_for_virtiofs("usr/lib", &lib_link)?;
             }
         }
     }
@@ -1160,9 +1215,9 @@ fn create_common_symlinks(env_root: &Path) -> Result<()> {
                     lfs::create_dir_all(parent)?;
                 }
                 // Use the original target string for the symlink (relative or absolute as specified)
-                // All symlinks in this function point to executables (files), use symlink_to_file
+                // All symlinks in this function point to executables (files), use symlink_file_for_virtiofs
                 log::debug!("  Creating symlink {} -> {}", link_path.display(), target);
-                lfs::symlink_to_file(target, &link_path)?;
+                lfs::symlink_file_for_virtiofs(target, &link_path)?;
                 break;
             }
         }
@@ -1341,7 +1396,7 @@ pub fn copy_scriptlets_by_mapping<P: AsRef<Path>>(
                     lfs::remove_file(&target_path)?;
                 }
                 log::debug!("Creating symlink: {} -> {}", target_path.display(), rel.display());
-                lfs::symlink(rel, &target_path)?;
+                lfs::symlink_file_for_virtiofs(&rel, &target_path)?;
                 log::debug!(
                     "Created script symlink: {} -> {}",
                     common_script.display(),

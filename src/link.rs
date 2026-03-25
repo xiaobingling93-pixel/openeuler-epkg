@@ -402,7 +402,7 @@ pub fn create_symlink2(target_path: &Path, fs_file: &Path) -> Result<()> {
     }
 
     // Create symlink2 -> fs_file
-    lfs::symlink(fs_file, &symlink2_path)?;
+    lfs::symlink_file_for_virtiofs(fs_file, &symlink2_path)?;
 
     log::debug!("Created symlink2: {} -> {}", symlink2_path.display(), fs_file.display());
     Ok(())
@@ -673,7 +673,7 @@ pub fn symlink_or_copy(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> R
         return Ok(());
     }
 
-    lfs::symlink(fs_file, target_path)
+    lfs::symlink_file_for_virtiofs(fs_file, target_path)
 }
 
 /// Decide whether a regular file should be materialized via hardlink-or-copy
@@ -904,11 +904,11 @@ fn copy_symlink(fs_file: &Path, target_path: &Path) -> Result<()> {
         is_dir
     );
 
-    // Use symlink_to_file or symlink_to_directory explicitly based on symlink type.
+    // Use symlink_file_for_virtiofs or symlink_dir_for_virtiofs explicitly based on symlink type.
     if is_dir {
-        lfs::symlink_to_directory(&adjusted_target, target_path)
+        lfs::symlink_dir_for_virtiofs(&adjusted_target, target_path)
     } else {
-        lfs::symlink_to_file(&adjusted_target, target_path)
+        lfs::symlink_file_for_virtiofs(&adjusted_target, target_path)
     }
     .with_context(|| format!("Failed to create symlink {} -> {}", target_path.display(), adjusted_target.display()))?;
     Ok(())

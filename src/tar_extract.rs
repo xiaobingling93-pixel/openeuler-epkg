@@ -84,9 +84,9 @@ fn finalize_windows_tar_symlinks(
         );
 
         if is_dir {
-            lfs::symlink_to_directory(&target_path, &link_path)?;
+            lfs::symlink_dir_for_virtiofs(&target_path, &link_path)?;
         } else {
-            lfs::symlink_to_file(&target_path, &link_path)?;
+            lfs::symlink_file_for_virtiofs(&target_path, &link_path)?;
         }
     }
     Ok(())

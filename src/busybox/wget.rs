@@ -150,7 +150,7 @@ fn link_downloaded_file(final_cached_path: &Path, output: &str) -> Result<()> {
     }
 
     // Create symlink from output to cached file
-    utils::force_symlink_to_file(final_cached_path, out_path)
+    utils::force_symlink_file_for_virtiofs(final_cached_path, out_path)
         .with_context(|| {
             format!(
                 "download: failed to create symlink from '{}' to '{}'",
