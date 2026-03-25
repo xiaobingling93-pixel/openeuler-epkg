@@ -496,25 +496,33 @@ fn build_qemu_command(
                 .arg("node,memdev=mem");
 
             // Wire virtiofs device for env root
-            // Use vhost-user-fs-device for virtio-mmio bus (required for aarch64 virt machine)
-            // vhost-user-fs-pci requires PCI which isn't available on virt machine without additional setup
+            // aarch64 virt machine has virtio-mmio, use vhost-user-fs-device (MMIO)
+            // x86_64 pc machine uses PCI, use vhost-user-fs-pci (PCI)
             qemu_cmd
                 .arg("-chardev")
                 .arg(format!("socket,id=char0,path={}", socket_path.display()))
                 .arg("-device")
-                .arg(format!("vhost-user-fs-device,queue-size=1024,chardev=char0,tag={}", mount_tag));
+                .arg(if std::env::consts::ARCH == "aarch64" {
+                    format!("vhost-user-fs-device,queue-size=1024,chardev=char0,tag={}", mount_tag)
+                } else {
+                    format!("vhost-user-fs-pci,queue-size=1024,chardev=char0,tag={}", mount_tag)
+                });
         }
         RootFsMode::Plan9 => {
             // 9p filesystem using virtfs
             // security_model=none: simplest mode, files accessed as QEMU user
             // Note: symlinks pointing outside shared directory may not resolve correctly
-            // Use virtio-9p-device (MMIO) instead of virtio-9p-pci (PCI) for faster init
-            // and to avoid PCI enumeration delays on aarch64 virt machine
+            // aarch64 virt machine has virtio-mmio, use virtio-9p-device (MMIO)
+            // x86_64 pc machine uses PCI, use virtio-9p-pci (PCI)
             qemu_cmd
                 .arg("-fsdev")
                 .arg(format!("local,id=fsdev0,path={},security_model=none", env_root.display()))
                 .arg("-device")
-                .arg(format!("virtio-9p-device,fsdev=fsdev0,mount_tag={}", mount_tag));
+                .arg(if std::env::consts::ARCH == "aarch64" {
+                    format!("virtio-9p-device,fsdev=fsdev0,mount_tag={}", mount_tag)
+                } else {
+                    format!("virtio-9p-pci,fsdev=fsdev0,mount_tag={}", mount_tag)
+                });
         }
     }
 
@@ -530,11 +538,15 @@ fn build_qemu_command(
     // Optional virtio-vsock device for vsock-based control plane.
     if use_vsock {
         // Guest CID 3 matches the host-side vm_client vsock connector.
-        // Use vhost-vsock-device (MMIO) instead of vhost-vsock-pci (PCI)
-        // to match 9p MMIO device and avoid PCI resource conflicts.
+        // aarch64 virt machine has virtio-mmio, use vhost-vsock-device (MMIO)
+        // x86_64 pc machine uses PCI, use vhost-vsock-pci (PCI)
         qemu_cmd
             .arg("-device")
-            .arg("vhost-vsock-device,guest-cid=3");
+            .arg(if std::env::consts::ARCH == "aarch64" {
+                "vhost-vsock-device,guest-cid=3".to_string()
+            } else {
+                "vhost-vsock-pci,guest-cid=3".to_string()
+            });
     }
 
     // Kernel cmdline: console, panic, root filesystem, and epkg init parameters
