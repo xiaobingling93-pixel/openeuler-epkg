@@ -2,7 +2,7 @@
 name = "epkg"
 description = "epkg package manager"
 version = "0.2.4"
-edition = "2021"
+edition = "2021" # PROJECT HARD REQUIREMENT: keep all crates edition to <=2021, in order to build in openeuler 24.03
 
 [features]
 libkrun = ["dep:libkrun"]
