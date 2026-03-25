@@ -546,23 +546,16 @@ fn build_qemu_command(
     };
     // Use ttyAMA0 for aarch64, ttyS0 for x86_64
     let console_dev = if std::env::consts::ARCH == "aarch64" { "ttyAMA0" } else { "ttyS0" };
-    // rootdelay gives devices time to initialize before kernel tries to mount root.
-    // Only needed for 9p (slower device init); virtiofs is fast enough without it.
-    // 9p needs ~3s for virtio-9p-pci device to be detected by the kernel.
-    let rootdelay = match rootfs_mode {
-        RootFsMode::Virtiofs(_, _) => "",
-        RootFsMode::Plan9 => " rootdelay=3",
-    };
     // debug + earlycon for kernel debugging, loglevel=8 for verbose output
     let mut append_args = if std::env::consts::ARCH == "aarch64" {
         format!(
-            "console={} debug earlycon=pl011,0x9000000 panic=1{} root={} rootfstype={} init=/usr/bin/init sysctl.fs.file-max=1048576 loglevel=8",
-            console_dev, rootdelay, mount_tag, rootfstype
+            "console={} debug earlycon=pl011,0x9000000 panic=1 root={} rootfstype={} init=/usr/bin/init sysctl.fs.file-max=1048576 loglevel=8",
+            console_dev, mount_tag, rootfstype
         )
     } else {
         format!(
-            "console={} debug panic=1{} root={} rootfstype={} init=/usr/bin/init sysctl.fs.file-max=1048576 loglevel=8",
-            console_dev, rootdelay, mount_tag, rootfstype
+            "console={} debug panic=1 root={} rootfstype={} init=/usr/bin/init sysctl.fs.file-max=1048576 loglevel=8",
+            console_dev, mount_tag, rootfstype
         )
     };
     // Pass host RUST_LOG into guest so init can enable debug logging
