@@ -608,6 +608,23 @@ fn setup_rootfs_mode(
     virtiofsd_bin: Option<&String>,
     virtiofsd_log_path: &Path,
 ) -> Result<RootFsMode> {
+    // Check env var for explicit rootfs selection (EPKG_VM_ROOTFS=9p or virtiofs)
+    if let Ok(rootfs_choice) = std::env::var("EPKG_VM_ROOTFS") {
+        match rootfs_choice.as_str() {
+            "9p" | "plan9" => {
+                log::info!("EPKG_VM_ROOTFS={} forcing 9p rootfs", rootfs_choice);
+                return Ok(RootFsMode::Plan9);
+            }
+            "virtiofs" => {
+                log::info!("EPKG_VM_ROOTFS=virtiofs forcing virtiofs rootfs");
+                // Fall through to virtiofsd logic - error if not available
+            }
+            _ => {
+                log::warn!("EPKG_VM_ROOTFS={} unknown, using default selection", rootfs_choice);
+            }
+        }
+    }
+
     // If existing socket is provided, use it directly
     if let Some(path) = existing_socket_path {
         return Ok(RootFsMode::Virtiofs(None, path.to_path_buf()));
@@ -620,6 +637,10 @@ fn setup_rootfs_mode(
                 return Ok(RootFsMode::Virtiofs(Some((tmpdir, child)), path));
             }
             Err(e) => {
+                // Check if virtiofs was forced via env var
+                if std::env::var("EPKG_VM_ROOTFS").as_deref() == Ok("virtiofs") {
+                    return Err(eyre::eyre!("EPKG_VM_ROOTFS=virtiofs forced but virtiofsd failed: {}", e));
+                }
                 log::warn!("virtiofsd failed to start ({}), falling back to 9p", e);
             }
         }
