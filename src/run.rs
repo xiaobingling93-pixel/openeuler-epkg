@@ -382,6 +382,9 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
 
 #[cfg(not(target_os = "linux"))]
 fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<PathBuf> {
+    // Check if we're in VM isolation mode - use different path resolution
+    let is_vm_mode = run_options.effective_sandbox.isolate_mode == Some(IsolateMode::Vm);
+
     // On non-Linux platforms, Unix-style absolute paths (e.g., /usr/bin/sh from hooks)
     // need to be resolved within the environment, not treated as host paths.
     // Windows-style absolute paths (C:\...) are used as-is.
@@ -404,7 +407,21 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
             }
         }
 
-        if cmd_path.exists() {
+        // For VM mode, use exists_in_env which handles symlinks correctly
+        let exists = if is_vm_mode {
+            lfs::exists_in_env(&cmd_path)
+        } else {
+            cmd_path.exists()
+        };
+
+        if exists {
+            return Ok(cmd_path);
+        }
+
+        // For VM mode with Linux distro, accept path even if not found on host
+        // The binary may be a Linux ELF that can't be checked on Windows host
+        if is_vm_mode {
+            debug!("VM mode: accepting Unix path {} (guest will resolve)", cmd_path.display());
             return Ok(cmd_path);
         }
 
@@ -434,7 +451,20 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
             }
         }
 
-        if cmd_path.exists() {
+        // For VM mode, use exists_in_env which handles symlinks correctly
+        let exists = if is_vm_mode {
+            lfs::exists_in_env(&cmd_path)
+        } else {
+            cmd_path.exists()
+        };
+
+        if exists {
+            return Ok(cmd_path);
+        }
+
+        // For VM mode with Linux distro, accept path even if not found on host
+        if is_vm_mode {
+            debug!("VM mode: accepting relative path {} (guest will resolve)", cmd_path.display());
             return Ok(cmd_path);
         }
     }
@@ -467,12 +497,12 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
 
     for cmd_name in cmd_names {
         let cmd_in_bin = env_root.join("bin").join(cmd_name);
-        if cmd_in_bin.exists() {
+        if lfs::exists_in_env(&cmd_in_bin) {
             return Ok(cmd_in_bin);
         }
 
         let cmd_in_usr_bin = crate::dirs::path_join(env_root, &["usr", "bin"]).join(cmd_name);
-        if cmd_in_usr_bin.exists() {
+        if lfs::exists_in_env(&cmd_in_usr_bin) {
             return Ok(cmd_in_usr_bin);
         }
 
@@ -508,6 +538,14 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
                 return Ok(cmd_in_msys2);
             }
         }
+    }
+
+    // For VM mode with Linux distro, construct default path in usr/bin
+    // Linux packages typically have binaries in /usr/bin
+    if is_vm_mode {
+        let cmd_path = env_root.join("usr").join("bin").join(&run_options.command);
+        debug!("VM mode: using default path {} for command '{}'", cmd_path.display(), run_options.command);
+        return Ok(cmd_path);
     }
 
     if lfs::exists_on_host(Path::new(&run_options.command)) {
