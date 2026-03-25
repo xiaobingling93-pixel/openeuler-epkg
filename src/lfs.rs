@@ -115,6 +115,20 @@ pub fn symlink_for_native<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) 
     symlink(original, link)
 }
 
+/// Create file symlink for native host access.
+/// On Unix, identical to [`symlink`].
+#[cfg(unix)]
+pub fn symlink_file_for_native<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
+    symlink(original, link)
+}
+
+/// Create directory symlink for native host access.
+/// On Unix, identical to [`symlink`].
+#[cfg(unix)]
+pub fn symlink_dir_for_native<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
+    symlink(original, link)
+}
+
 /// Create directory link for virtiofs/Linux guest visibility (auto-computes posix_target).
 ///
 /// - Creates LX reparse point with POSIX path for guest visibility
