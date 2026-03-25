@@ -221,11 +221,20 @@ fn exec_init_command(cmd_str: Option<String>, run_user: Option<String>) -> Resul
             log::debug!("init: vsock already available (/dev/vsock exists)");
         }
 
-        // Load virtio_net (and deps) and configure QEMU user networking (10.0.2.15/24) so
-        // guest workloads can use DNS/HTTPS; vsock control plane does not need this.
-        match setup_network_for_vm_daemon() {
-            Ok(()) => log::debug!("init: guest network ready"),
-            Err(e) => log::debug!("init: guest network setup failed (continuing; vsock only): {}", e),
+        // Check if TSI (Transparent Socket Impersonation) is enabled.
+        // When TSI is enabled, the guest uses host network via socket hijacking
+        // and does not need virtio_net or traditional network setup.
+        let tsi_enabled = get_cmdline_param("epkg.tsi").map_or(true, |v| v == "1" || v.is_empty());
+        if tsi_enabled {
+            log::debug!("init: TSI enabled, skipping virtio_net/network setup (using host network via TSI)");
+        } else {
+            log::debug!("init: TSI disabled, setting up traditional virtio networking");
+            // Load virtio_net (and deps) and configure QEMU user networking (10.0.2.15/24) so
+            // guest workloads can use DNS/HTTPS; vsock control plane does not need this.
+            match setup_network_for_vm_daemon() {
+                Ok(()) => log::debug!("init: guest network ready"),
+                Err(e) => log::debug!("init: guest network setup failed (continuing; vsock only): {}", e),
+            }
         }
 
         log::debug!("init: exec vm-daemon");

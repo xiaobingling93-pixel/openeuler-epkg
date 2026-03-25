@@ -194,6 +194,13 @@ fn build_libkrun_config(
         }
     }
 
+    // Pass TSI disablement status to guest init only when explicitly disabled.
+    // Default is TSI enabled, so we only pass the parameter when disabling.
+    if std::env::var("EPKG_TSI_DISABLE").is_ok() {
+        kernel_args.push_str(" epkg.tsi=0");
+        log::debug!("libkrun: TSI disabled via EPKG_TSI_DISABLE env var");
+    }
+
     if let Ok(pwd) = std::env::var("PWD") {
         if !pwd.is_empty() && pwd != "/" {
             kernel_args.push_str(&format!(" epkg.init_pwd={}", percent_encode(&pwd)));
