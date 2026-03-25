@@ -555,9 +555,8 @@ fn setup_network_for_vm_daemon() -> Result<(), String> {
             } else if std::path::Path::new("/lib/modules").exists() {
                 // Only attempt modprobe when /lib/modules exists; on minimal or
                 // sandbox-kernel-based systems there may be no module tree at all.
+                // modprobe handles module dependencies (failover, net_failover) via modules.dep
                 log::debug!("init: no non-loopback interface yet, trying virtio_net modprobe");
-                try_load_module("failover");
-                try_load_module("net_failover");
                 let net_loaded = try_load_module("virtio_net");
                 if net_loaded {
                     log::debug!("init: virtio_net module loaded");

@@ -323,6 +323,12 @@ pub fn find_module_file(module_name: &str, db: Option<&ModuleDb>, base_path: &Pa
     let base_exists = base_path.exists();
     log::debug!("modprobe: looking for module {} in {} (base exists={})", module_name, base_path.display(), base_exists);
 
+    // Early exit: if base path doesn't exist, skip all expensive searches
+    if !base_exists {
+        log::debug!("modprobe: module {} not found - base path {} does not exist", module_name, base_path.display());
+        return Err(eyre!("Module {} not found - base path {} does not exist", module_name, base_path.display()));
+    }
+
     if let Some(path) = try_exact_module_paths(module_name, base_path) {
         return Ok(path);
     }
