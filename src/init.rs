@@ -396,7 +396,7 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
             if vmlinux_plan.path.exists() {
                 let arch = &config().common.arch;
                 let cfg_path = vmlinux_plan.vmlinux_config_path(epkg_download_dir)?;
-                install_vmlinux(
+                install_kernel(
                     &vmlinux_plan.path,
                     Some(&cfg_path),
                     version,
@@ -988,29 +988,41 @@ impl AssetDownloadPlan {
             .to_string())
     }
 
-    /// Derive `config-*` URL from the `vmlinux-<ver>-<arch>.zst` URL.
+    /// Derive `config-*` URL from the `vmlinux-<ver>-<arch>.zst` or `Image-<ver>-<arch>.zst` URL.
+    /// Supports both naming conventions:
+    /// - x86_64: vmlinux-{version}-{arch}.zst (ELF format)
+    /// - aarch64/riscv64: Image-{version}-{arch}.zst (Raw format)
     #[cfg(feature = "libkrun")]
     fn vmlinux_config_url(&self) -> Result<String> {
         let file_name = self.file_name()?;
-        if !file_name.starts_with("vmlinux-") || !file_name.ends_with(".zst") {
-            return Err(eyre::eyre!("Unexpected vmlinux asset name: {}", file_name));
-        }
 
-        let inner = file_name
-            .strip_prefix("vmlinux-")
-            .and_then(|s| s.strip_suffix(".zst"))
-            .ok_or_else(|| eyre::eyre!("Failed to parse vmlinux asset name: {}", file_name))?;
+        // Determine kernel prefix and validate file name
+        let (prefix, inner) = if file_name.starts_with("vmlinux-") && file_name.ends_with(".zst") {
+            let inner = file_name
+                .strip_prefix("vmlinux-")
+                .and_then(|s| s.strip_suffix(".zst"))
+                .ok_or_else(|| eyre::eyre!("Failed to parse vmlinux asset name: {}", file_name))?;
+            ("vmlinux", inner)
+        } else if file_name.starts_with("Image-") && file_name.ends_with(".zst") {
+            let inner = file_name
+                .strip_prefix("Image-")
+                .and_then(|s| s.strip_suffix(".zst"))
+                .ok_or_else(|| eyre::eyre!("Failed to parse Image asset name: {}", file_name))?;
+            ("Image", inner)
+        } else {
+            return Err(eyre::eyre!("Unexpected kernel asset name (expected vmlinux-*.zst or Image-*.zst): {}", file_name));
+        };
 
         let (version, arch) = inner
             .rsplit_once('-')
-            .ok_or_else(|| eyre::eyre!("Failed to split vmlinux name: {}", file_name))?;
+            .ok_or_else(|| eyre::eyre!("Failed to split {} name: {}", prefix, file_name))?;
 
         let config_asset_name = format!("config-{}-{}", version, arch);
         let config_url = self
             .url
             .strip_suffix(&file_name)
             .map(|p| format!("{}{}", p, config_asset_name))
-            .ok_or_else(|| eyre::eyre!("Failed to derive vmlinux config url from {}", self.url))?;
+            .ok_or_else(|| eyre::eyre!("Failed to derive kernel config url from {}", self.url))?;
 
         Ok(config_url)
     }
@@ -1235,18 +1247,15 @@ fn get_current_epkg_version_info() -> Result<EpkgVersionInfo> {
     })
 }
 
-/// Path to the default VM kernel image (from vmlinux release, written during `epkg self install`).
+/// Path to the default VM kernel image (from kernel release, written during `epkg self install`).
 /// Shared by libkrun and qemu.
+/// Uses uniform "kernel" symlink pointing to the actual kernel file:
+/// - x86_64: vmlinux-{version}-{arch} (ELF format)
+/// - aarch64/riscv64: Image-{version}-{arch} (Raw format)
 #[cfg(any(feature = "libkrun", target_os = "linux"))]
 fn default_kernel_path() -> PathBuf {
-    // ARM64 requires Image file for QEMU -kernel option
-    // x86_64 uses bzImage or vmlinuz
-    let kernel_name = if std::env::consts::ARCH == "aarch64" {
-        "Image"
-    } else {
-        "vmlinux"
-    };
-    dirs().user_envs.join(SELF_ENV).join("boot").join(kernel_name)
+    // Uniform kernel symlink name
+    dirs().user_envs.join(SELF_ENV).join("boot").join("kernel")
 }
 
 /// Returns the default kernel path as a string if the file exists; otherwise None.
@@ -1309,30 +1318,36 @@ fn get_vmlinux_url() -> Result<Option<(String, String, String, String)>> {
     Ok(Some((url, sha_url, config_url, version)))
 }
 
-/// Install vmlinux from downloaded .zst file to self/boot directory.
+/// Install kernel from downloaded .zst file to self/boot directory.
+/// Uses unified naming convention:
+/// - x86_64: vmlinux-{version}-{arch} (ELF format)
+/// - aarch64/riscv64: Image-{version}-{arch} (Raw format)
+/// Creates "kernel" symlink pointing to the actual kernel file.
 #[cfg(feature = "libkrun")]
-fn install_vmlinux(zst_path: &Path, config_path: Option<&Path>, version: &str, arch: &str) -> Result<()> {
+fn install_kernel(zst_path: &Path, config_path: Option<&Path>, version: &str, arch: &str) -> Result<()> {
     let self_env_root = dirs().user_envs.join(SELF_ENV);
     let boot_dir = self_env_root.join("boot");
     lfs::create_dir_all(&boot_dir)?;
 
     // Decompress .zst file
-    println!("  Decompressing vmlinux-{}-{}...", version, arch);
+    println!("  Decompressing kernel-{}-{}...", version, arch);
     let kernel_data = zstd_decompress_file(zst_path)?;
 
-    // Write to vmlinux-$version-$arch
-    let vmlinux_name = format!("vmlinux-{}-{}", version, arch);
-    let vmlinux_path = boot_dir.join(&vmlinux_name);
-    lfs::write(&vmlinux_path, &kernel_data)?;
+    // Determine kernel name prefix based on architecture
+    // x86_64 uses vmlinux (ELF), aarch64/riscv64 use Image (Raw)
+    let kernel_prefix = if arch == "x86_64" { "vmlinux" } else { "Image" };
+    let kernel_name = format!("{}-{}-{}", kernel_prefix, version, arch);
+    let kernel_path = boot_dir.join(&kernel_name);
+    lfs::write(&kernel_path, &kernel_data)?;
 
-    // Create symlink vmlinux -> vmlinux-$version-$arch
-    let vmlinux_link = boot_dir.join("vmlinux");
-    if vmlinux_link.exists() || lfs::is_symlink(&vmlinux_link) {
-        lfs::remove_file(&vmlinux_link)?;
+    // Create/update "kernel" symlink pointing to actual kernel file
+    let kernel_link = boot_dir.join("kernel");
+    if kernel_link.exists() || lfs::is_symlink(&kernel_link) {
+        lfs::remove_file(&kernel_link)?;
     }
-    lfs::symlink(&vmlinux_name, &vmlinux_link)?;
+    lfs::symlink(&kernel_name, &kernel_link)?;
 
-    println!("  Installed kernel: {} ({} bytes)", vmlinux_path.display(), kernel_data.len());
+    println!("  Installed kernel: {} ({} bytes)", kernel_path.display(), kernel_data.len());
 
     // Install config file
     if let Some(cfg_path) = config_path {

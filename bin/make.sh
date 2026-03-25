@@ -246,33 +246,51 @@ install_kernel_for_libkrun() {
     if [[ -n "${USERPROFILE:-}" ]]; then
         self_boot_dir="${USERPROFILE//\\//}/.epkg/envs/self/boot"
     fi
-    local self_boot_vmlinux="${self_boot_dir}/vmlinux"
-    if [[ -f "$self_boot_vmlinux" ]]; then
+    # Check if kernel already installed (uniform "kernel" symlink)
+    local self_boot_kernel="${self_boot_dir}/kernel"
+    if [[ -L "$self_boot_kernel" ]] || [[ -f "$self_boot_kernel" ]]; then
         return 0
     fi
     # Legacy / alternate layout (e.g. manual copy under ~/.epkg on Windows)
-    if [[ "$self_boot_vmlinux" != "${HOME}/.epkg/envs/self/boot/vmlinux" ]] && [[ -f "${HOME}/.epkg/envs/self/boot/vmlinux" ]]; then
+    if [[ -f "${HOME}/.epkg/envs/self/boot/kernel" ]]; then
         return 0
     fi
 
     # Try to install from local build (sandbox-kernel)
-    local vmlinux="$PROJECT_ROOT/git/sandbox-kernel/linux-stable/vmlinux"
-    if [[ -f "$vmlinux" ]]; then
+    # Determine kernel prefix and path based on architecture
+    # x86_64: vmlinux (ELF format), aarch64/riscv64: Image (Raw format)
+    local kernel_prefix="vmlinux"
+    local kernel_path="$PROJECT_ROOT/git/sandbox-kernel/linux-stable/vmlinux"
+    if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
+        kernel_prefix="Image"
+        # Try common Image locations
+        if [[ -f "$PROJECT_ROOT/git/sandbox-kernel/linux-stable/arch/arm64/boot/Image" ]]; then
+            kernel_path="$PROJECT_ROOT/git/sandbox-kernel/linux-stable/arch/arm64/boot/Image"
+        elif [[ -f "$PROJECT_ROOT/git/sandbox-kernel/linux-stable/arch/riscv/boot/Image" ]]; then
+            kernel_path="$PROJECT_ROOT/git/sandbox-kernel/linux-stable/arch/riscv/boot/Image"
+        fi
+    fi
+
+    if [[ -f "$kernel_path" ]]; then
         mkdir -p "$self_boot_dir"
 
         # Get kernel version for naming
         local version
-        version=$(strings "$vmlinux" 2>/dev/null | grep -m1 "Linux version " | awk '{print $3}')
+        version=$(strings "$kernel_path" 2>/dev/null | grep -m1 "Linux version " | awk '{print $3}')
         version=$(echo "$version" | tr -cd '0-9.-')
 
         if [[ -n "$version" ]]; then
-            local named_vmlinux="${self_boot_dir}/vmlinux-${version}-${arch}"
-            cp -l "$vmlinux" "$named_vmlinux" 2>/dev/null || cp "$vmlinux" "$named_vmlinux"
-            ln -sf "vmlinux-${version}-${arch}" "$self_boot_vmlinux"
-            echo "Installed kernel from local build: vmlinux-${version}-${arch}"
+            local named_kernel="${self_boot_dir}/${kernel_prefix}-${version}-${arch}"
+            cp -l "$kernel_path" "$named_kernel" 2>/dev/null || cp "$kernel_path" "$named_kernel"
+            # Create uniform "kernel" symlink pointing to actual kernel file
+            ln -sf "${kernel_prefix}-${version}-${arch}" "$self_boot_dir/kernel"
+            echo "Installed kernel from local build: ${kernel_prefix}-${version}-${arch}"
         else
-            cp -l "$vmlinux" "$self_boot_vmlinux" 2>/dev/null || cp "$vmlinux" "$self_boot_vmlinux"
-            echo "Installed kernel from local build: vmlinux"
+            # No version detected, use generic name
+            local generic_name="${self_boot_dir}/${kernel_prefix}"
+            cp -l "$kernel_path" "$generic_name" 2>/dev/null || cp "$kernel_path" "$generic_name"
+            ln -sf "$kernel_prefix" "$self_boot_dir/kernel"
+            echo "Installed kernel from local build: $kernel_prefix"
         fi
         return 0
     fi

@@ -220,7 +220,7 @@ fn find_kernel_image() -> Result<String> {
     ))
 }
 
-/// Resolve kernel path for qemu. Order: run_options.kernel, then default (envs/self/boot/vmlinux
+/// Resolve kernel path for qemu. Order: run_options.kernel, then default (envs/self/boot/kernel
 /// from `epkg self install`), then host /boot auto-detect.
 pub fn resolve_vm_kernel_path(run_options: &RunOptions) -> Result<String> {
     let kernel = run_options

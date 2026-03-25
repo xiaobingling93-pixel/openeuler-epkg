@@ -215,7 +215,7 @@ fn build_libkrun_config(
     let kernel_path = if run_options.kernel.is_some() {
         run_options.kernel.clone()
     } else {
-        // Fall back to default kernel path (envs/self/boot/vmlinux from `epkg self install`)
+        // Fall back to default kernel path (envs/self/boot/kernel from `epkg self install`)
         crate::init::default_kernel_path_if_exists()
     };
     let kernel_format = if let Some(ref kernel) = kernel_path {
@@ -657,7 +657,7 @@ impl KrunContext {
     }
 
     #[allow(dead_code)]
-    /// kernel_format: 1 = ELF (vmlinux from sandbox-kernel)
+    /// kernel_format: 0 = Raw (Image for aarch64/riscv64), 1 = ELF (vmlinux for x86_64)
     /// kernel_cmdline: optional extra kernel command line (e.g. from --kernel-args)
     /// initrd_path: optional path to initrd image (e.g. from --initrd)
     unsafe fn set_kernel(
@@ -948,7 +948,10 @@ fn krun_no_vsock_join_vm_thread_exit(vm_thread: std::thread::JoinHandle<i32>, ct
 ///
 /// With `reuse_vm`, returns to the caller so another command can run in the same VM.
 ///
-/// The kernel is provided by sandbox-kernel as an ELF vmlinux file.
+/// The kernel is provided by sandbox-kernel as a unified kernel file.
+/// Architecture-specific format:
+/// - x86_64: ELF vmlinux format
+/// - aarch64/riscv64: Raw Image format
 #[cfg(feature = "libkrun")]
 pub fn run_command_in_krun(
     env_root: &Path,
