@@ -596,7 +596,7 @@ pub fn create_all_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -
 
         // Use appropriate symlink API based on target platform:
         // - Native Windows (self env): symlink_file_for_native (hardlink/copy fallback, NO LX symlink)
-        // - Linux/VM targets: symlink_to_file (may create LX symlink for guest visibility)
+        // - Linux/VM targets: symlink_file_for_virtiofs (may create LX symlink for guest visibility)
         #[cfg(windows)]
         if is_windows_target(pkg_format) {
             // Remove existing file first

@@ -657,7 +657,7 @@ fn create_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -> Result
     }
 
     // Automatically discover all applets and create links.
-    // On Windows, file symlinks use lfs::symlink_to_file (hardlink/copy when needed).
+    // On Windows, file symlinks use symlink_file_for_virtiofs (hardlink/copy when needed).
     crate::busybox::create_all_applet_symlinks(env_root, pkg_format)?;
 
     Ok(())

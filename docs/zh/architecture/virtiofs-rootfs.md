@@ -69,19 +69,20 @@ Windows 10 **1803** 起，NTFS 支持通过 `fsutil.exe file setCaseSensitiveInf
 
 ### 分层策略（当前实现）
 
-实现集中在 `symlink.rs`，用 **少量内部辅助函数** 表达分支，避免 `symlink_to_*` 与底层 `create_dir_junction` / `symlink_or_hardlink_or_copy_file` 重复堆砌：
+实现集中在 `symlink.rs`，用 **少量内部辅助函数** 表达分支，避免底层 `create_dir_junction` / `symlink_or_hardlink_or_copy_file` 重复堆砌：
 
 | 辅助函数 | 含义 |
 |----------|------|
 | `link_existing_directory` | 目标**已是目录**：若 `can_create_symlinks()` → **`symlink_dir`**；否则 → **`create_dir_junction`**（唯一封装 `junction::create`） |
 | `link_existing_file` | 目标**已是文件**：若可创建 symlink → **`symlink_or_hardlink_or_copy_file`**；否则 → **`create_lx_symlink`** |
-| `link_missing_directory_intent` | **`symlink_to_directory` 且目标不存在**：可 symlink → **`symlink_dir`**；否则 **`create_dir_junction`** → 失败则 **LX** |
-| `link_missing_file_intent` | **`symlink_to_file` 且目标不存在**：可 symlink → **`symlink_file`**；否则 **LX** |
+| `link_missing_directory_intent` | 目录意图且目标不存在：可 symlink → **`symlink_dir`**；否则 **`create_dir_junction`** → 失败则 **LX** |
+| `link_missing_file_intent` | 文件意图且目标不存在：可 symlink → **`symlink_file`**；否则 **LX** |
 
-对外 API：
+对外 API（epkg lfs 模块）：
 
-- **`symlink()`**（未知类型）：已存在目录 → `link_existing_directory`；已存在文件 → `link_existing_file`；不存在 → **仅 LX**（`posix_target`）。
-- **`symlink_to_directory()`** / **`symlink_to_file()`**：在「目标类型与意图冲突」时返回 **`InvalidInput`**。
+- **`symlink_dir_for_virtiofs()`** / **`symlink_file_for_virtiofs()`**：为 virtiofs/Linux guest 创建 symlink，在 Windows 上自动处理 LX reparse + junction/hardlink/copy fallback。
+- **`symlink_dir_for_native()`** / **`symlink_file_for_native()`**：为 native Windows 创建 symlink，无 Developer Mode 时使用 junction/hardlink/copy，**不会**创建 LX symlink。
+- **`symlink_for_virtiofs()`** / **`symlink_for_native()`**：类型由运行时检测。
 
 **要点**：已存在目录时 **并非**「先 junction」——若探测到 **具备创建符号链接能力**，则 **优先原生 `symlink_dir`**；仅当 **`!can_create_symlinks()`** 时才用 junction。导出 **`create_dir_junction`**（目录联接）与 **`symlink_or_hardlink_or_copy_file`**（文件：symlink → 硬链 → 复制），名称直接反映行为；内部用私有 **`try_symlink_file`** 仅发起一次 `symlink_file` 调用。
 

@@ -203,7 +203,7 @@ pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<(
 }
 
 // ============================================================================
-// New explicit-intent symlink APIs (Windows only)
+// Native Windows symlink APIs
 // ============================================================================
 
 /// Create file link for native Windows accessibility.
@@ -884,9 +884,8 @@ pub fn is_directory_symlink(path: &Path) -> bool {
 }
 
 /// Check if path is a symlink or Windows junction
-/// On Windows, junctions are directory reparse points created by lfs::symlink() /
-/// lfs::symlink_to_directory() when the target directory exists
-/// Use this when checking directory links that may be junctions
+/// On Windows, junctions are directory reparse points created by symlink_dir_for_native()
+/// when Developer Mode is unavailable. Use this when checking directory links that may be junctions.
 #[cfg(windows)]
 pub fn is_symlink_or_junction(path: &Path) -> bool {
     use std::os::windows::fs::MetadataExt;

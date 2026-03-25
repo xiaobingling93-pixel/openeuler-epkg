@@ -364,8 +364,8 @@ pub fn compute_link_type_and_reflink(
             log::info!("Windows symlink creation not available; using hardlinks instead");
             link_type = LinkType::Hardlink;
         }
-        // If different filesystems, keep symlink type - lfs::symlink / symlink_to_file
-        // handle the fallback (junction for dirs, hardlink/copy for files)
+        // If different filesystems, keep symlink type - symlink_file_for_virtiofs
+        // handles the fallback (junction for dirs, hardlink/copy for files)
     }
 
     plan.link = link_type;
