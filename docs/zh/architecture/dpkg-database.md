@@ -148,7 +148,7 @@ pub fn create_dpkg_info_symlinks(pkgname: &str, pkgline: &str) -> Result<()> {
         let link_path = info_dir.join(&link_name);
 
         // 创建相对符号链接
-        lfs::symlink(&entry.path(), &link_path)?;
+        lfs::symlink_file_for_virtiofs(&entry.path(), &link_path)?;
     }
 }
 ```
