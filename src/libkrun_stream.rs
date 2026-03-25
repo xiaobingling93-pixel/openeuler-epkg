@@ -88,11 +88,14 @@ fn resolve_io_mode(io_mode: IoMode) -> (bool, bool) {
 }
 
 fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32> {
-    let mut response = String::new();
-    stream.read_to_string(&mut response)?;
+    use std::io::BufReader;
+    use std::io::BufRead;
 
     if is_batch {
-        // Batch mode: expect {exit_code, stdout, stderr}
+        // Batch mode: read entire response as single JSON object
+        let mut response = String::new();
+        stream.read_to_string(&mut response)?;
+
         #[derive(Deserialize)]
         struct BatchResult {
             exit_code: i32,
@@ -112,14 +115,48 @@ fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32
         }
         Ok(result.exit_code)
     } else {
-        // Stream mode: expect exit message
-        let msg: StreamMessage = serde_json::from_str(&response)
-            .unwrap_or_else(|_| StreamMessage::Exit { code: 0 });
-        match msg {
-            StreamMessage::Exit { code } => Ok(code),
-            StreamMessage::Error { message } => Err(eyre::eyre!("VM error: {}", message)),
-            _ => Ok(0),
+        // Stream mode: read line by line, each line is a JSON message
+        let reader = BufReader::new(stream);
+        let mut exit_code = 0;
+
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            let msg: StreamMessage = match serde_json::from_str(&line) {
+                Ok(m) => m,
+                Err(e) => {
+                    log::debug!("Failed to parse stream message: {} (line: {})", e, line);
+                    continue;
+                }
+            };
+
+            match msg {
+                StreamMessage::Stdout { data, .. } => {
+                    let stdout_bytes = STANDARD.decode(&data)
+                        .map_err(|e| eyre::eyre!("Failed to decode stdout: {}", e))?;
+                    std::io::stdout().write_all(&stdout_bytes)?;
+                    std::io::stdout().flush()?;
+                }
+                StreamMessage::Stderr { data, .. } => {
+                    let stderr_bytes = STANDARD.decode(&data)
+                        .map_err(|e| eyre::eyre!("Failed to decode stderr: {}", e))?;
+                    std::io::stderr().write_all(&stderr_bytes)?;
+                    std::io::stderr().flush()?;
+                }
+                StreamMessage::Exit { code } => {
+                    exit_code = code;
+                    break;
+                }
+                StreamMessage::Error { message } => {
+                    return Err(eyre::eyre!("VM error: {}", message));
+                }
+                _ => {}
+            }
         }
+        Ok(exit_code)
     }
 }
 
