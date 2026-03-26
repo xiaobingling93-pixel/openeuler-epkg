@@ -1040,12 +1040,24 @@ fn ensure_owner_permissions(target_path: &Path, required_mask: u32, file_type: &
 pub fn fixup_file_permissions_with_mode(target_path: &Path, mode: u32, is_dir: bool) {
     // On Windows, store non-trivial permissions in NTFS EA for POSIX compatibility
     // This is used when running Linux packages in a VM environment
-
-    // Most package files have trivial permissions (755 dirs, 644 files, root ownership)
-    // The set_posix_mode function will skip NTFS EA for these cases to avoid overhead
+    //
+    // IMPORTANT: The mode from tar header only contains permission bits (0o755, 0o644, etc.)
+    // We MUST add the file type bits (S_IFREG/S_IFDIR) so virtiofs can correctly identify
+    // files vs directories. Without this, all files appear as directories in the VM!
     #[cfg(windows)]
     {
-        if let Err(e) = crate::ntfs_ea::set_posix_mode(target_path, mode, is_dir) {
+        // Linux file type bits (from libc)
+        const S_IFREG: u32 = 0o100000;  // Regular file
+        const S_IFDIR: u32 = 0o040000;  // Directory
+
+        // Add the file type bit to the mode
+        let full_mode = if is_dir {
+            S_IFDIR | (mode & 0o7777)  // Directory with permissions
+        } else {
+            S_IFREG | (mode & 0o7777)   // Regular file with permissions
+        };
+
+        if let Err(e) = crate::ntfs_ea::set_posix_mode(target_path, full_mode, is_dir) {
             log::warn!(
                 "Skipping POSIX mode for {}: {}",
                 target_path.display(),
