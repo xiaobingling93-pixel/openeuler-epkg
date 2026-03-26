@@ -21,7 +21,8 @@ use glob;
 use crate::models::*;
 use crate::dirs::*;
 use crate::repo::sync_channel_metadata;
-use crate::utils::{force_symlink_dir_for_virtiofs, force_symlink_file_for_virtiofs};
+use crate::utils::{force_symlink_dir_for_virtiofs, force_symlink_file_for_native};
+use crate::utils::force_symlink_file_for_virtiofs;
 use crate::deinit::force_remove_dir_all;
 #[cfg(unix)]
 use crate::deb_triggers::ensure_triggers_dir;
@@ -527,7 +528,7 @@ pub fn create_epkg_symlink(env_root: &Path, pkg_format: &PackageFormat) -> Resul
                 let self_epkg_linux = crate::dirs::path_join(&self_env_root, &["usr", "bin", &format!("epkg-linux-{}", arch)]);
                 if lfs::exists_in_env(&self_epkg_linux) {
                     log::debug!("Creating epkg symlink {} -> {} (Linux VM)", epkg_symlink.display(), self_epkg_linux.display());
-                    force_symlink_file_for_virtiofs(&self_epkg_linux, &epkg_symlink)
+                    force_symlink_file_for_native(&self_epkg_linux, &epkg_symlink)
                         .with_context(|| format!("Failed to create epkg symlink in {}", epkg_symlink.display()))?;
                     return Ok(());
                 } else {
@@ -541,7 +542,7 @@ pub fn create_epkg_symlink(env_root: &Path, pkg_format: &PackageFormat) -> Resul
         let self_epkg = crate::dirs::path_join(&self_env_root, &["usr", "bin", crate::dirs::EPKG_USR_BIN_NAME]);
         if lfs::exists_in_env(&self_epkg) {
             log::debug!("Creating epkg symlink {} -> {} (native)", epkg_symlink.display(), self_epkg.display());
-            force_symlink_file_for_virtiofs(&self_epkg, &epkg_symlink)
+            force_symlink_file_for_native(&self_epkg, &epkg_symlink)
                 .with_context(|| format!("Failed to create epkg symlink in {}", epkg_symlink.display()))?;
         }
     }
@@ -646,14 +647,10 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
 // If the distro provides the commands, they'll overwrite symlink to our implementation.
 fn create_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -> Result<()> {
     // Create a symlink from systemctl to /usr/bin/true to prevent blocking on systemctl daemon-reload
-    // This is Unix-specific as Windows doesn't have systemd
-    #[cfg(unix)]
-    {
-        let systemctl_path = crate::dirs::path_join(env_root, &["usr", "bin", "systemctl"]);
-        if !lfs::exists_in_env(&systemctl_path) {
-            force_symlink_file_for_virtiofs("/usr/bin/true", &systemctl_path)
-                .with_context(|| format!("Failed to create systemctl symlink in {}", systemctl_path.display()))?;
-        }
+    let systemctl_path = crate::dirs::path_join(env_root, &["usr", "bin", "systemctl"]);
+    if !lfs::exists_in_env(&systemctl_path) {
+        force_symlink_file_for_virtiofs("/usr/bin/true", &systemctl_path)
+            .with_context(|| format!("Failed to create systemctl symlink in {}", systemctl_path.display()))?;
     }
 
     // Automatically discover all applets and create links.
