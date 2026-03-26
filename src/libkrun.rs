@@ -177,6 +177,11 @@ fn build_libkrun_config(
 
     // root=/dev/root: specifies the virtiofs tag for root filesystem
     // (krun_set_root sets up a virtiofs device with tag "/dev/root")
+    // On Windows, use ttyS0 for serial console since libkrun auto-adds COM1 device
+    #[cfg(target_os = "windows")]
+    let base_cmdline = "reboot=k panic=-1 panic_print=0 nomodule console=ttyS0 earlyprintk=serial \
+                        loglevel=8 debug root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/usr/bin/init";
+    #[cfg(not(target_os = "windows"))]
     let base_cmdline = "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 earlyprintk=hvc0 \
                         loglevel=8 debug root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/usr/bin/init";
     let mut kernel_args = String::from(base_cmdline);
