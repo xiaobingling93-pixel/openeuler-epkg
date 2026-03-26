@@ -93,6 +93,18 @@ unsafe extern "C" {
     ) -> i32;
 }
 
+// Map vsock port to `\\.\pipe\<stem>` with listen support (Windows libkrun only).
+#[cfg(all(feature = "libkrun", windows))]
+#[allow(dead_code)]
+unsafe extern "C" {
+    fn krun_add_vsock_port2_windows(
+        ctx_id: u32,
+        port: u32,
+        c_pipe_name: *const std::ffi::c_char,
+        listen: bool,
+    ) -> i32;
+}
+
 // Force the staticlib to be linked when we only reference it via extern "C".
 #[cfg(feature = "libkrun")]
 fn ensure_libkrun_linked() {
@@ -494,8 +506,8 @@ fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext) -> Result<std::path::Path
             let stem = libkrun_bridge::pipe_name_from_sock_path(&sock_path)?;
             let stem_c = CString::new(stem).map_err(|e| eyre::eyre!("invalid vsock pipe name: {}", e))?;
             check_status(
-                "krun_add_vsock_port_windows",
-                krun_add_vsock_port_windows(ctx.ctx_id, 10000, stem_c.as_ptr()),
+                "krun_add_vsock_port2_windows",
+                krun_add_vsock_port2_windows(ctx.ctx_id, 10000, stem_c.as_ptr(), true),
             )?;
         }
         #[cfg(unix)]
@@ -512,8 +524,8 @@ fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext) -> Result<std::path::Path
             let stem = libkrun_bridge::pipe_name_from_sock_path(&ready_path)?;
             let stem_c = CString::new(stem).map_err(|e| eyre::eyre!("invalid ready pipe name: {}", e))?;
             check_status(
-                "krun_add_vsock_port_windows",
-                krun_add_vsock_port_windows(ctx.ctx_id, 10001, stem_c.as_ptr()),
+                "krun_add_vsock_port2_windows",
+                krun_add_vsock_port2_windows(ctx.ctx_id, 10001, stem_c.as_ptr(), false),
             )?;
         }
     }
