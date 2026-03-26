@@ -647,10 +647,12 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
 // If the distro provides the commands, they'll overwrite symlink to our implementation.
 fn create_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -> Result<()> {
     // Create a symlink from systemctl to /usr/bin/true to prevent blocking on systemctl daemon-reload
+    // Note: This requires LX symlink support (WSL on Windows). Skip if not available.
     let systemctl_path = crate::dirs::path_join(env_root, &["usr", "bin", "systemctl"]);
     if !lfs::exists_in_env(&systemctl_path) {
-        force_symlink_file_for_virtiofs("/usr/bin/true", &systemctl_path)
-            .with_context(|| format!("Failed to create systemctl symlink in {}", systemctl_path.display()))?;
+        if let Err(e) = force_symlink_file_for_virtiofs("/usr/bin/true", &systemctl_path) {
+            log::debug!("Skipping systemctl symlink: {}", e);
+        }
     }
 
     // Automatically discover all applets and create links.
