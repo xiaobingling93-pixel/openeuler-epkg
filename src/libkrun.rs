@@ -208,6 +208,9 @@ fn build_libkrun_config(
         log::debug!("libkrun: TSI disabled via EPKG_TSI_DISABLE env var");
     }
 
+    // Set init_pwd to current working directory.
+    // On Windows, skip this since PWD is a Windows path which is invalid in the Linux guest.
+    #[cfg(not(windows))]
     if let Ok(pwd) = std::env::var("PWD") {
         if !pwd.is_empty() && pwd != "/" {
             kernel_args.push_str(&format!(" epkg.init_pwd={}", percent_encode(&pwd)));
