@@ -176,3 +176,57 @@ panic=-1               # 禁止 panic（调试用）
 1. **APIC LINT 寄存器**: WHPX 不允许访问，需要软件模拟
 2. **TSC 频率**: 需要通过 MSR 模拟返回
 3. **VP Assist Page**: 需要软件清零 guest 物理页面
+
+## 重要注意事项
+
+### 在 MSYS2 环境中调试
+
+**关键点**: 我们在 MSYS2 环境中开发，不是在原生 Windows 或 guest OS 中！
+
+**这意味着**:
+1. `ls -la` 显示的文件类型可能不准确（MSYS2 对 Windows 文件系统的解释有限制）
+2. 必须通过 **NTFS EA 属性** 来判断文件类型，而不是 MSYS2 的 ls 输出
+3. virtiofs 返回给 guest 的文件类型由 NTFS EA 属性决定，而不是 Windows 文件系统 API 的直接返回值
+
+### virtiofs 调试日志
+
+**启用 VIRTIOFS 调试日志**:
+```bash
+LIBKRUN_WINDOWS_VERBOSE_DEBUG=1
+```
+
+**日志文件位置**:
+- `~/.epkg/cache/vmm-logs/virtiofs-debug.log` - passthrough 文件系统日志
+- `~/.epkg/cache/vmm-logs/virtiofs-worker.log` - virtio 队列处理日志
+- `~/.epkg/cache/vmm-logs/virtiofs-server.log` - FUSE 服务器日志
+- `~/.epkg/cache/vmm-logs/fuse-ops.log` - FUSE 操作日志
+- `~/.epkg/cache/vmm-logs/init-trace.log` - init 执行跟踪日志
+
+### 成功案例参考
+
+嵌入式 `init.krun` 在 Windows WHPX 上可以正常工作：
+- 构建命令: `cargo build --example boot_wsl2_kernel -p a3s-libkrun-sys`
+- 运行命令: `./target/debug/examples/boot_wsl2_kernel.exe <kernel> <root>`
+- 日志文件: `/tmp/boot_wsl2_kernel.log`
+
+**成功启动的特征**:
+```
+[VIRTIOFS-WORKER] FsWorker::work hpq_fd=... req_fd=... stop_fd=...
+[VIRTIOFS-SERVER] FsServer::handle_message opcode=26 unique=2 nodeid=0 len=104  # INIT
+[VIRTIOFS-SERVER] FsServer::handle_message opcode=3 ...                         # GETATTR
+[VIRTIOFS-SERVER] FsServer::handle_message opcode=1 ...                         # LOOKUP
+[VIRTIOFS-SERVER] FsServer::handle_message opcode=14 ...                        # OPEN
+[VIRTIOFS-SERVER] FsServer::handle_message opcode=15 ...                        # READ
+```
+
+### 符号链接创建注意事项
+
+**在 Windows 上创建 Linux 格式的符号链接**:
+1. 必须使用 `symlink_file_for_virtiofs()` 函数
+2. 该函数会设置正确的 NTFS EA 属性（LXSS 格式）
+3. 对于 Linux 格式的包（Apk/Deb/Rpm），不要添加 `.exe` 后缀
+4. virtiofs 会读取 NTFS EA 属性来返回正确的文件类型给 guest
+
+**常见错误**:
+- 在 MSYS2 中 `ls -la` 显示文件为目录，但实际上 NTFS EA 属性正确
+- 需要通过 guest 内核的行为来验证，而不是 MSYS2 的文件系统视图
