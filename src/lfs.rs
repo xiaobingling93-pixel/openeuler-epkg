@@ -141,22 +141,34 @@ pub fn symlink_dir_for_virtiofs<P: AsRef<Path>, Q: AsRef<Path>>(original: P, lin
     let original = original.as_ref();
     let link = link.as_ref();
     debug_assert_no_forward_slash(link);
+
+    // Check if this is a pure Unix/POSIX path (starts with '/')
+    // These paths are only meaningful in the Linux VM guest, not on Windows host.
+    // Preserve them as-is for the LX symlink content.
+    let original_str = original.to_string_lossy();
+    let is_unix_path = original_str.starts_with('/');
+
     // Normalize the symlink target to use backslashes for Windows native access.
-    // Forward slashes in symlink targets cause "InvalidFilename" errors when Windows
-    // joins them with backslash paths, creating mixed separators like:
-    // C:\...\env\usr/share\file.txt
-    let normalized_original = normalize_symlink_target(original);
-    // Decode PUA-encoded characters to get the original POSIX path for the LX symlink.
-    // The LX symlink stores the target that the Linux guest will read, which expects
-    // the original POSIX path (e.g., "Text::WrapI18N.3pm.gz", not PUA-encoded).
-    let decoded_original = decode_path_from_windows(&normalized_original);
-    let posix_target = decoded_original.to_string_lossy();
+    let normalized_original = if is_unix_path {
+        original.to_path_buf()
+    } else {
+        normalize_symlink_target(original)
+    };
+
+    // For posix_target: preserve original Unix path, or decode PUA characters for Windows paths.
+    let posix_target = if is_unix_path {
+        original_str.to_string()
+    } else {
+        let decoded_original = decode_path_from_windows(&normalized_original);
+        decoded_original.to_string_lossy().to_string()
+    };
+
     log::trace!(
         "symlink_dir_for_virtiofs: {} -> {}",
         link.display(),
         normalized_original.display()
     );
-    crate::krun_virtiofs_windows::symlink::symlink_dir_for_virtiofs(&normalized_original, link, posix_target.as_ref())
+    crate::krun_virtiofs_windows::symlink::symlink_dir_for_virtiofs(&normalized_original, link, &posix_target)
         .wrap_err_with(|| {
             format!(
                 "Failed symlink_dir_for_virtiofs from {} to {}",
@@ -178,13 +190,30 @@ pub fn symlink_file_for_virtiofs<P: AsRef<Path>, Q: AsRef<Path>>(original: P, li
     let original = original.as_ref();
     let link = link.as_ref();
     debug_assert_no_forward_slash(link);
+
+    // Check if this is a pure Unix/POSIX path (starts with '/')
+    // These paths are only meaningful in the Linux VM guest, not on Windows host.
+    // Preserve them as-is for the LX symlink content.
+    let original_str = original.to_string_lossy();
+    let is_unix_path = original_str.starts_with('/');
+
     // Normalize the symlink target to use backslashes for Windows native access.
-    let normalized_original = normalize_symlink_target(original);
-    // Decode PUA-encoded characters to get the original POSIX path for the LX symlink.
-    let decoded_original = decode_path_from_windows(&normalized_original);
-    let posix_target = decoded_original.to_string_lossy();
+    let normalized_original = if is_unix_path {
+        original.to_path_buf()
+    } else {
+        normalize_symlink_target(original)
+    };
+
+    // For posix_target: preserve original Unix path, or decode PUA characters for Windows paths.
+    let posix_target = if is_unix_path {
+        original_str.to_string()
+    } else {
+        let decoded_original = decode_path_from_windows(&normalized_original);
+        decoded_original.to_string_lossy().to_string()
+    };
+
     log::trace!("symlink_file_for_virtiofs: {} -> {}", link.display(), normalized_original.display());
-    crate::krun_virtiofs_windows::symlink::symlink_file_for_virtiofs(&normalized_original, link, posix_target.as_ref())
+    crate::krun_virtiofs_windows::symlink::symlink_file_for_virtiofs(&normalized_original, link, &posix_target)
         .wrap_err_with(|| {
             format!(
                 "Failed symlink_file_for_virtiofs from {} to {}",
