@@ -874,17 +874,26 @@ fn copy_channel_configs(env_root: &Path) -> Result<()> {
     let sources_path = crate::dirs::path_join(get_epkg_src_path().as_path(), &["assets", "repos"]);
     let (distro_name, distro_version) = parse_channel_option();
 
-    // On Windows, the source path may not exist if running from a standalone binary.
-    // Use embedded channel YAML for msys2 (pacman); otherwise default to Conda.
     if !sources_path.exists() {
         #[cfg(windows)]
         {
-            if distro_name == "msys2" {
-                create_default_msys2_channel_config(env_root)?;
-                return Ok(());
+            match distro_name.as_str() {
+                "msys2" => {
+                    create_default_msys2_channel_config(env_root)?;
+                    return Ok(());
+                }
+                "alpine" => {
+                    create_default_alpine_channel_config(env_root)?;
+                    return Ok(());
+                }
+                _ => {
+                    return Err(eyre::eyre!(
+                        "Channel '{}' is not supported. Sources not found at: {}",
+                        distro_name,
+                        sources_path.display()
+                    ));
+                }
             }
-            create_default_conda_channel_config(env_root)?;
-            return Ok(());
         }
         #[cfg(not(windows))]
         {
@@ -914,28 +923,16 @@ fn create_default_msys2_channel_config(env_root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Create a default Conda channel configuration for Windows
+/// Create Alpine channel configuration from embedded assets (standalone Windows binary).
 #[cfg(windows)]
-fn create_default_conda_channel_config(env_root: &Path) -> Result<()> {
-    let channel_content = r#"format: conda
-distro: conda
-distro_dirs:
-- anaconda
-versions:
-- "latest"
-repos:
-  main:
-  free:
-index_url: $mirror/pkgs/$repo/$conda_arch/$conda_repofile
-amend_index_urls:
-  noarch: $mirror/pkgs/$repo/noarch/$conda_repofile
-"#;
+fn create_default_alpine_channel_config(env_root: &Path) -> Result<()> {
+    let channel_content = include_str!("../assets/repos/alpine.yaml");
 
     let dest_channel_path = env_root_channel_yaml(env_root);
     lfs::create_dir_all(dest_channel_path.parent().unwrap())?;
     lfs::write(&dest_channel_path, channel_content)?;
 
-    println!("Created default Conda channel configuration");
+    println!("Created Alpine (apk) channel configuration");
     Ok(())
 }
 
