@@ -93,7 +93,13 @@ cargo run --bin epkg --features libkrun -- run --isolate=vm --timeout 60 -- /usr
 **常见原因**:
 - guest 物理地址无效
 - WHPX API 调用参数错误
-- 并发访问共享数据结构
+- ~~并发访问共享数据结构~~ (已修复)
+
+**已修复的 race condition**:
+
+在 vCPU 运行时，timer 线程调用 `WHvCancelRunVirtualProcessor()` 来强制 vCPU 退出以便注入中断。但 WHPX API 要求此函数只能在 vCPU 实际在 `WHvRunVirtualProcessor` 内部时调用。如果 vCPU 正在处理 MSR 或其他退出时被取消，会导致 undefined behavior。
+
+**解决方案**: 使用 `Arc<Vec<AtomicBool>>` 跟踪每个 vCPU 是否在 `WHvRunVirtualProcessor` 内部，只在此时调用 cancel。
 
 ### 3. virtiofs 错误 (-120 EREMOTEIO)
 
