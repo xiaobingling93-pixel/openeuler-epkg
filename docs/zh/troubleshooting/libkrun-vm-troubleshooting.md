@@ -101,7 +101,21 @@ cargo run --bin epkg --features libkrun -- run --isolate=vm --timeout 60 -- /usr
 
 **解决方案**: 使用 `Arc<Vec<AtomicBool>>` 跟踪每个 vCPU 是否在 `WHvRunVirtualProcessor` 内部，只在此时调用 cancel。
 
-### 3. virtiofs 错误 (-120 EREMOTEIO)
+### 3. 过多调试日志导致崩溃
+
+**症状**: VM 在早期启动阶段崩溃 (STATUS_ACCESS_VIOLATION)
+
+**诊断步骤**:
+1. 检查是否启用了 RUST_LOG=debug 或 LIBKRUN_WINDOWS_VERBOSE_DEBUG=1
+2. 观察崩溃是否发生在 CPUID 或中断注入后
+
+**根本原因**:
+`inject_pending_interrupt()` 函数在每次调用时都生成调试日志。由于该函数在 vCPU 运行循环中被高频调用（每次 VM 退出后），过多的字符串格式化和 I/O 操作可能导致性能问题甚至内存问题。
+
+**解决方案**:
+对调试日志进行速率限制，每 100 次调用才记录一次。
+
+### 4. virtiofs 错误 (-120 EREMOTEIO)
 
 **症状**: FUSE 请求返回远程 I/O 错误
 
