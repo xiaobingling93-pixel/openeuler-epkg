@@ -654,6 +654,16 @@ fn copy_epkg_binary_atomically(source: &Path, target: &Path, is_epkg: bool) -> R
             .context(format!("Failed to set permissions on temporary binary"))?;
     }
 
+    // Set POSIX mode on Windows for VM execution (virtiofs needs EA for execute bit)
+    #[cfg(windows)]
+    {
+        let _ = is_epkg; // suppress unused warning
+        let mode = 0o755; // Executable binary
+        if let Err(e) = crate::ntfs_ea::set_posix_mode(&temp_target, mode, false) {
+            log::warn!("Failed to set POSIX mode on {}: {}", temp_target.display(), e);
+        }
+    }
+
     // Atomically rename temporary file to target
     match lfs::rename(&temp_target, target) {
         Ok(_) => {

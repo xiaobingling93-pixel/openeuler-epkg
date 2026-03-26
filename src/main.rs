@@ -55,6 +55,12 @@ pub mod ntfs_ea {
 #[cfg(windows)]
 #[allow(dead_code)]
 mod krun_virtiofs_windows {
+    pub mod ntfs_ea {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/git/libkrun/src/devices/src/virtio/fs/windows/ntfs_ea.rs"
+        ));
+    }
     pub mod reparse_point {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
