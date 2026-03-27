@@ -659,7 +659,18 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
 
                 // Convert host path to guest path (strip env_root prefix if inside)
                 let guest_cmd_path = if let Ok(stripped) = cmd_path.strip_prefix(env_root) {
-                    Path::new("/").join(stripped)
+                    // On Windows, stripped path may have backslashes.
+                    // Convert to forward slashes for Linux VM guest.
+                    #[cfg(windows)]
+                    {
+                        let stripped_str = stripped.to_string_lossy();
+                        let guest_path = format!("/{}", stripped_str.replace('\\', "/").trim_start_matches('/'));
+                        PathBuf::from(guest_path)
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        Path::new("/").join(stripped)
+                    }
                 } else {
                     cmd_path.clone()
                 };

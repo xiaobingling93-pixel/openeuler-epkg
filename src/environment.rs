@@ -527,22 +527,56 @@ pub fn create_epkg_symlink(env_root: &Path, pkg_format: &PackageFormat) -> Resul
                 let arch = &crate::config().common.arch;
                 let self_epkg_linux = crate::dirs::path_join(&self_env_root, &["usr", "bin", &format!("epkg-linux-{}", arch)]);
                 if lfs::exists_in_env(&self_epkg_linux) {
-                    log::debug!("Creating epkg symlink {} -> {} (Linux VM)", epkg_symlink.display(), self_epkg_linux.display());
-                    force_symlink_file_for_native(&self_epkg_linux, &epkg_symlink)
-                        .with_context(|| format!("Failed to create epkg symlink in {}", epkg_symlink.display()))?;
+                    // For VM-mode environments, copy/hardlink the binary instead of creating a symlink.
+                    // This is necessary because:
+                    // 1. The VM's rootfs is the environment directory (e.g., alpine/)
+                    // 2. Symlinks to paths outside the rootfs won't work in the VM guest
+                    // 3. The epkg-linux binary must be accessible from within the VM
+                    //
+                    // We prefer hardlink for space efficiency, falling back to copy if not possible.
+
+                    log::debug!("Creating epkg binary for VM environment: {} from {}", epkg_symlink.display(), self_epkg_linux.display());
+
+                    // Remove existing file if present
+                    if lfs::exists_no_follow(&epkg_symlink) {
+                        lfs::remove_file(&epkg_symlink)?;
+                    }
+
+                    // Try hardlink first (more efficient), fall back to copy
+                    let used_hardlink = lfs::hard_link(&self_epkg_linux, &epkg_symlink).is_ok();
+                    if !used_hardlink {
+                        log::debug!("Hardlink failed, falling back to copy");
+                        lfs::copy(&self_epkg_linux, &epkg_symlink)?;
+                    }
+
+                    // Set execute permission on the epkg binary for virtiofs/Linux guest.
+                    // On Windows, virtiofs uses NTFS Extended Attributes ($LXMOD) to store POSIX mode.
+                    // Without this, the file gets default 644 permissions (no execute).
+                    #[cfg(windows)]
+                    {
+                        const MODE_755: u32 = 0o755; // rwxr-xr-x
+                        if let Err(e) = crate::ntfs_ea::set_posix_mode(&epkg_symlink, MODE_755, false) {
+                            log::warn!("Failed to set execute permission on {}: {}", epkg_symlink.display(), e);
+                        } else {
+                            log::debug!("Set execute permission (755) on {}", epkg_symlink.display());
+                        }
+                    }
 
                     // Also create init symlink for VM - kernel cmdline specifies init=/usr/bin/init
-                    // The init binary must be a Linux ELF, not a Windows executable
-                    // wfg: it's just for safe: AI repeated trying to create init symlink here, so let's keep it.
-                    // We actually will re-create this init symlink in later call to create_all_applet_symlinks()
+                    // This can be a relative symlink since it's within the same directory
                     let init_symlink = crate::dirs::path_join(env_root, &["usr", "bin", "init"]);
-                    log::debug!("Creating init symlink {} -> {} (Linux VM)", init_symlink.display(), self_epkg_linux.display());
-                    force_symlink_file_for_native(&self_epkg_linux, &init_symlink)
+                    log::debug!("Creating init symlink {} -> epkg (Linux VM)", init_symlink.display());
+                    // Remove existing symlink if present
+                    if lfs::exists_no_follow(&init_symlink) {
+                        lfs::remove_file(&init_symlink)?;
+                    }
+                    // Create relative symlink: init -> epkg
+                    force_symlink_file_for_virtiofs("epkg", &init_symlink)
                         .with_context(|| format!("Failed to create init symlink in {}", init_symlink.display()))?;
 
                     return Ok(());
                 } else {
-                    log::debug!("epkg-linux-{} not found in self env, skipping epkg symlink", arch);
+                    log::debug!("epkg-linux-{} not found in self env, skipping epkg binary", arch);
                     return Ok(());
                 }
             }
