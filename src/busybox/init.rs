@@ -55,14 +55,56 @@ pub fn parse_options(_matches: &clap::ArgMatches) -> Result<()> {
 /// epkg.rust_log from kernel cmdline (percent-encoded), sets RUST_LOG so env_logger sees it.
 #[cfg(target_os = "linux")]
 pub fn init_logging_early() {
-    eprintln!("init: init_logging_early() started");
+    // Write directly to /dev/console since stdio may not be set up yet
+    use std::io::Write;
+    use std::fs::OpenOptions;
+
+    // Redirect stderr to /dev/console so all subsequent logging (via env_logger)
+    // goes to the serial console. This is needed because the kernel doesn't
+    // connect init's stderr to the serial console.
+    if let Ok(console) = OpenOptions::new()
+        .write(true)
+        .open("/dev/console")
+    {
+        use std::os::fd::{AsFd, FromRawFd, IntoRawFd, OwnedFd};
+        // SAFETY: fd 1 and 2 are valid and we're taking ownership for dup2
+        let mut stderr: OwnedFd = unsafe { OwnedFd::from_raw_fd(2) };
+        let _ = nix::unistd::dup2(console.as_fd(), &mut stderr);
+        // Prevent OwnedFd from closing fd 2 on drop (we want it to remain as stderr)
+        let _ = stderr.into_raw_fd();
+
+        let mut stdout: OwnedFd = unsafe { OwnedFd::from_raw_fd(1) };
+        let _ = nix::unistd::dup2(console.as_fd(), &mut stdout);
+        let _ = stdout.into_raw_fd();
+    }
+
+    let mut console = OpenOptions::new()
+        .write(true)
+        .open("/dev/console")
+        .ok();
+
+    let mut write_msg = |msg: &str| {
+        if let Some(ref mut c) = console {
+            let _ = c.write_all(msg.as_bytes());
+            let _ = c.flush();
+        }
+    };
+
+    write_msg("init: init_logging_early() started\n");
+
     let proc_path = Path::new("/proc");
+    write_msg("init: checking /proc exists\n");
+
     if !proc_path.exists() {
+        write_msg("init: /proc does not exist, creating\n");
         if let Err(e) = std::fs::create_dir_all(proc_path) {
-            eprintln!("init: cannot create /proc: {} (later steps may fail)", e);
+            write_msg(&format!("init: cannot create /proc: {}\n", e));
         }
     }
+    write_msg("init: checking /proc exists again\n");
+
     if proc_path.exists() {
+        write_msg("init: mounting proc on /proc\n");
         if let Err(e) = nix::mount::mount(
             Some("proc"),
             proc_path,
@@ -70,16 +112,24 @@ pub fn init_logging_early() {
             nix::mount::MsFlags::empty(),
             None::<&str>,
         ) {
-            eprintln!("init: mount proc on /proc failed: {} (cmdline/RUST_LOG unavailable)", e);
+            write_msg(&format!("init: mount proc failed: {}\n", e));
+        } else {
+            write_msg("init: mounted proc successfully\n");
         }
+    } else {
+        write_msg("init: /proc still does not exist\n");
     }
+    write_msg("init: checking epkg.rust_log\n");
+
     if let Some(v) = get_cmdline_param("epkg.rust_log") {
+        write_msg(&format!("init: rust_log found\n"));
         let decoded = percent_decode(&v);
         if !decoded.is_empty() {
             std::env::set_var("RUST_LOG", &decoded);
             std::env::set_var("RUST_BACKTRACE", "1");
         }
     }
+    write_msg("init: init_logging_early() complete\n");
 }
 
 fn run_init() -> Result<()> {

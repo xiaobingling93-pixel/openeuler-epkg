@@ -1120,7 +1120,9 @@ fn setup_console_output(ctx_id: u32) -> Result<()> {
 /// Returns (cmd_parts for vsock, init_cmd for kernel cmdline).
 fn build_guest_command(cmd_path: &Path, args: &[String]) -> Result<(Vec<String>, String)> {
     let mut cmd_parts: Vec<String> = Vec::new();
-    cmd_parts.push(cmd_path.to_string_lossy().to_string());
+    // Convert Windows backslashes to forward slashes for Linux guest
+    let cmd_path_str = cmd_path.to_string_lossy().replace('\\', "/");
+    cmd_parts.push(cmd_path_str);
     cmd_parts.extend(args.iter().cloned());
     // Use shlex-style quoting to survive kernel cmdline parsing
     let raw_cmd = shlex::try_join(cmd_parts.iter().map(|s| s.as_str()))
