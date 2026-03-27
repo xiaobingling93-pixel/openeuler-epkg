@@ -586,6 +586,12 @@ pub fn create_all_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -
     // Get applet names based on target platform, not the running epkg's built-in applets
     let applet_names = get_applet_names_for_target(pkg_format);
     for cmd_name in &applet_names {
+        // Skip init - it's created as a copy/hardlink in create_epkg_symlink for VM environments
+        // Creating a symlink here would overwrite the copy needed for virtiofs
+        if cmd_name == "init" {
+            log::debug!("Skipping init symlink creation (handled in create_epkg_symlink)");
+            continue;
+        }
         let subdir = if is_sbin_command(cmd_name) { "sbin" } else { "bin" };
         let symlink_path = env_root.join("usr").join(subdir).join(applet_symlink_filename(cmd_name, pkg_format));
         let target = if let Some(parent) = symlink_path.parent() {

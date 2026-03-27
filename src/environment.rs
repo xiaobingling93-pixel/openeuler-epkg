@@ -564,17 +564,35 @@ pub fn create_epkg_symlink(env_root: &Path, pkg_format: &PackageFormat) -> Resul
                         }
                     }
 
-                    // Also create init symlink for VM - kernel cmdline specifies init=/usr/bin/init
-                    // This can be a relative symlink since it's within the same directory
-                    let init_symlink = crate::dirs::path_join(env_root, &["usr", "bin", "init"]);
-                    log::debug!("Creating init symlink {} -> epkg (Linux VM)", init_symlink.display());
-                    // Remove existing symlink if present
-                    if lfs::exists_no_follow(&init_symlink) {
-                        lfs::remove_file(&init_symlink)?;
+                    // Also create init for VM - kernel cmdline specifies init=/usr/bin/init
+                    // On Windows, use copy instead of symlink for virtiofs compatibility
+                    let init_path = crate::dirs::path_join(env_root, &["usr", "bin", "init"]);
+                    log::debug!("Creating init copy {} -> epkg (Linux VM)", init_path.display());
+                    // Remove existing file if present
+                    if lfs::exists_no_follow(&init_path) {
+                        lfs::remove_file(&init_path)?;
                     }
-                    // Create relative symlink: init -> epkg
-                    force_symlink_file_for_virtiofs("epkg", &init_symlink)
-                        .with_context(|| format!("Failed to create init symlink in {}", init_symlink.display()))?;
+                    // Copy epkg to init (hardlink or copy)
+                    let epkg_source = crate::dirs::path_join(env_root, &["usr", "bin", "epkg"]);
+                    {
+                        // On Windows hosts, use hardlink/copy for virtiofs compatibility
+                        // Symlinks don't work well in virtiofs/VM environment
+                        let used_hardlink = lfs::hard_link(&epkg_source, &init_path).is_ok();
+                        if !used_hardlink {
+                            log::debug!("Hardlink failed, falling back to copy");
+                            lfs::copy(&epkg_source, &init_path)?;
+                        }
+
+                        // Set execute permission on init for virtiofs/Linux guest
+                        // On Windows, virtiofs uses NTFS Extended Attributes ($LXMOD) to store POSIX mode.
+                        const S_IFREG: u32 = 0o100000;
+                        const MODE_755: u32 = S_IFREG | 0o755;
+                        if let Err(e) = crate::ntfs_ea::set_posix_mode(&init_path, MODE_755, false) {
+                            log::warn!("Failed to set execute permission on {}: {}", init_path.display(), e);
+                        } else {
+                            log::debug!("Set execute permission (100755) on {}", init_path.display());
+                        }
+                    }
 
                     return Ok(());
                 } else {
