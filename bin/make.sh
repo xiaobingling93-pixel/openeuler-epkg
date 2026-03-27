@@ -37,6 +37,29 @@ LUA_VERSION=5.4.7
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUTPUT_DIR=dist
 
+# On Windows (MSYS2/MinGW), ensure TMP/TEMP points to a writable directory.
+# MinGW linker may default to C:\WINDOWS\ which requires admin privileges.
+setup_windows_temp() {
+    if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+        # If TMP/TEMP is not set or points to a non-writable location, use user's temp
+        if [[ -z "${TMP:-}" || ! -w "${TMP:-}" ]]; then
+            local user_temp
+            if [[ -n "${USERPROFILE:-}" ]]; then
+                user_temp="${USERPROFILE}/AppData/Local/Temp"
+            elif [[ -n "${HOME:-}" ]]; then
+                user_temp="${HOME}/.cache/tmp"
+            else
+                user_temp="/tmp"
+            fi
+            mkdir -p "$user_temp" 2>/dev/null || true
+            export TMP="$user_temp"
+            export TEMP="$user_temp"
+            echo "Windows: set TMP/TEMP to $user_temp"
+        fi
+    fi
+}
+setup_windows_temp
+
 # Setup PATH to include cargo if available
 # This ensures 'cargo' and 'rustup' commands work even if not in shell PATH
 if [[ -d "$HOME/.cargo/bin" ]]; then
