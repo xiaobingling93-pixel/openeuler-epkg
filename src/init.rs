@@ -1601,80 +1601,79 @@ fn resolve_vmlinux_plan(
     Ok((None, None))
 }
 
-fn check_for_updates() -> Result<InitPlan> {
-    println!("Checking for updates...");
+struct UpdateContext {
+    arch: String,
+    os: String,
+    is_linux: bool,
+    epkg_download_dir: PathBuf,
+    repo_root: PathBuf,
+    using_local_repo: bool,
+    local_elf_loader_path: Option<PathBuf>,
+}
 
+fn resolve_update_context() -> Result<(UpdateContext, EpkgVersionInfo)> {
     let current_version = get_current_epkg_version_info()?;
 
-    let arch = &config().common.arch;
+    let arch = config().common.arch.clone();
+    let os = std::env::consts::OS.to_string();
+    let is_linux = os == "linux";
+
     let dirs = dirs();
-    // Use the base downloads cache directory (without "epkg" subdirectory)
-    // The download_urls() function uses epkg_downloads_cache directly, so we need to match that
-    let epkg_download_dir = &dirs.epkg_downloads_cache;
+    let epkg_download_dir = dirs.epkg_downloads_cache.clone();
 
     // Check for local repo BEFORE making API calls
     let repo_root = find_repo_root()?;
     let using_local_repo = is_valid_local_repo(&repo_root);
-    // Resolve OS family at runtime to keep asset-resolution logic centralized.
-    let os = std::env::consts::OS;
-    let is_linux = os == "linux";
 
     let local_elf_loader_path = if is_linux {
-        Some(crate::dirs::path_join(&repo_root, &["git", "elf-loader", "src", "loader"]))
+        Some(crate::dirs::path_join(
+            &repo_root,
+            &["git", "elf-loader", "src", "loader"],
+        ))
     } else {
         None
     };
 
-    let ResolvedAssets {
-        new_version,
-        epkg_binary_url,
-        elf_loader_url,
-        epkg_linux_url,
-    } = resolve_assets_for_os(
-        &current_version,
-        arch,
-        os,
-        is_linux,
-        using_local_repo,
-    )?;
+    Ok((
+        UpdateContext {
+            arch,
+            os,
+            is_linux,
+            epkg_download_dir,
+            repo_root,
+            using_local_repo,
+            local_elf_loader_path,
+        },
+        current_version,
+    ))
+}
 
-    // Always show version information
-    println!("  epkg: {} → {}", current_version.epkg_version, new_version.epkg_version);
+fn print_version_info(current: &EpkgVersionInfo, new: &EpkgVersionInfo, is_linux: bool) {
+    println!("  epkg: {} → {}", current.epkg_version, new.epkg_version);
     if is_linux || cfg!(feature = "libkrun") {
-        if new_version.elf_loader_version.is_some() {
+        if new.elf_loader_version.is_some() {
             println!(
                 "  elf-loader: {:?} → {:?}",
-                current_version.elf_loader_version, new_version.elf_loader_version
+                current.elf_loader_version, new.elf_loader_version
             );
         }
     }
+}
 
-    let epkg_src_url = format!(
+fn build_epkg_src_url(version: &str) -> String {
+    format!(
         "https://gitee.com/{}/{}/repository/archive/{}.tar.gz",
-        GITEE_OWNER, REPO_EPKG, new_version.epkg_version
-    );
+        GITEE_OWNER, REPO_EPKG, version
+    )
+}
 
-    // Set up file paths using the same resolution logic as the download system.
-    // This ensures paths match where files are actually downloaded.
-    // Note: epkg_binary_url may be empty on Windows/macOS with local dev mode
-    let epkg_binary_path = if epkg_binary_url.is_empty() {
-        PathBuf::new() // Won't be used
-    } else {
-        mirror::Mirrors::remote_url_to_path(&epkg_binary_url, &epkg_download_dir, "epkg")?
-    };
-    let epkg_src_path =
-        mirror::Mirrors::remote_url_to_path(&epkg_src_url, &epkg_download_dir, "epkg")?;
-
-    // Determine what needs to be downloaded.
-    // epkg binary is downloaded only when:
-    // - version differs AND
-    // - we have a URL (non-empty, i.e., not local dev mode on Windows/macOS)
-    let need_download_epkg_binary = new_version.epkg_version != current_version.epkg_version
-        && !epkg_binary_url.is_empty();
-    let need_download_epkg_src = !using_local_repo;
-
-    // Determine elf-loader plan: LocalCopy, Download, or None
-    let elf_loader_plan = if let Some(ref source) = local_elf_loader_path {
+fn resolve_elf_loader_plan(
+    arch: &str,
+    epkg_download_dir: &Path,
+    local_elf_loader_path: &Option<PathBuf>,
+    elf_loader_url: &Option<String>,
+) -> Result<ElfLoaderPlan> {
+    Ok(if let Some(ref source) = local_elf_loader_path {
         if source.exists() {
             // Local elf-loader exists: copy to default target path
             let target = epkg_download_dir.join(format!("elf-loader-{}", arch));
@@ -1689,39 +1688,35 @@ fn check_for_updates() -> Result<InitPlan> {
             }
         } else if let Some(ref url) = elf_loader_url {
             // Local path specified but file doesn't exist: download instead
-            let target = mirror::Mirrors::remote_url_to_path(url, &epkg_download_dir, "epkg")?;
+            let target = mirror::Mirrors::remote_url_to_path(url, epkg_download_dir, "epkg")?;
             log::debug!("elf-loader plan: Download from {} to {}", url, target.display());
-            ElfLoaderPlan::Download { url: url.clone(), target }
+            ElfLoaderPlan::Download {
+                url: url.clone(),
+                target,
+            }
         } else {
             ElfLoaderPlan::None
         }
     } else if let Some(ref url) = elf_loader_url {
         // No local elf-loader: download from remote
-        let target = mirror::Mirrors::remote_url_to_path(url, &epkg_download_dir, "epkg")?;
+        let target = mirror::Mirrors::remote_url_to_path(url, epkg_download_dir, "epkg")?;
         log::debug!("elf-loader plan: Download from {} to {}", url, target.display());
-        ElfLoaderPlan::Download { url: url.clone(), target }
+        ElfLoaderPlan::Download {
+            url: url.clone(),
+            target,
+        }
     } else {
         ElfLoaderPlan::None
-    };
+    })
+}
 
-    // Optional addon (libkrun).
-    #[cfg(feature = "libkrun")]
-    let (vmlinux_plan, vmlinux_version) = resolve_vmlinux_plan(epkg_download_dir)?;
-    #[cfg(not(feature = "libkrun"))]
-    let _ = resolve_vmlinux_plan(epkg_download_dir)?;
-
-    let epkg_binary_plan: Option<AssetDownloadPlan> = if need_download_epkg_binary {
-        Some(AssetDownloadPlan {
-            url: epkg_binary_url.clone(),
-            path: epkg_binary_path,
-        })
-    } else {
-        None
-    };
-
-    // On Windows/macOS, install epkg-linux-$arch for VM usage.
-    // Prefer local repo build target/debug/epkg when available, otherwise download.
-    let epkg_linux_plan: Option<AssetDownloadPlan> = if !is_linux {
+fn resolve_epkg_linux_plan(
+    is_linux: bool,
+    repo_root: &Path,
+    epkg_download_dir: &Path,
+    epkg_linux_url: Option<String>,
+) -> Result<Option<AssetDownloadPlan>> {
+    Ok(if !is_linux {
         let local_epkg_linux = repo_root.join("target").join("debug").join("epkg");
         if local_epkg_linux.exists() {
             log::debug!(
@@ -1734,19 +1729,83 @@ fn check_for_updates() -> Result<InitPlan> {
                 path: local_epkg_linux,
             })
         } else if let Some(linux_url) = epkg_linux_url {
-            let linux_path =
-                mirror::Mirrors::remote_url_to_path(&linux_url, &epkg_download_dir, "epkg")?;
+            let linux_path = mirror::Mirrors::remote_url_to_path(&linux_url, epkg_download_dir, "epkg")?;
             log::debug!("epkg-linux plan: download {} -> {}", linux_url, linux_path.display());
-            Some(AssetDownloadPlan {
-                url: linux_url,
-                path: linux_path,
-            })
+            Some(AssetDownloadPlan { url: linux_url, path: linux_path })
         } else {
             None
         }
     } else {
         None
+    })
+}
+
+fn check_for_updates() -> Result<InitPlan> {
+    println!("Checking for updates...");
+
+    let (ctx, current_version) = resolve_update_context()?;
+
+    let ResolvedAssets {
+        new_version,
+        epkg_binary_url,
+        elf_loader_url,
+        epkg_linux_url,
+    } = resolve_assets_for_os(
+        &current_version,
+        &ctx.arch,
+        &ctx.os,
+        ctx.is_linux,
+        ctx.using_local_repo,
+    )?;
+
+    // Always show version information
+    print_version_info(&current_version, &new_version, ctx.is_linux);
+
+    let epkg_src_url = build_epkg_src_url(&new_version.epkg_version);
+
+    // Set up file paths using the same resolution logic as the download system.
+    // This ensures paths match where files are actually downloaded.
+    // Note: epkg_binary_url may be empty on Windows/macOS with local dev mode
+    let epkg_binary_path = if epkg_binary_url.is_empty() {
+        PathBuf::new() // Won't be used
+    } else {
+        mirror::Mirrors::remote_url_to_path(&epkg_binary_url, &ctx.epkg_download_dir, "epkg")?
     };
+    let epkg_src_path =
+        mirror::Mirrors::remote_url_to_path(&epkg_src_url, &ctx.epkg_download_dir, "epkg")?;
+
+    // Determine what needs to be downloaded.
+    // epkg binary is downloaded only when:
+    // - version differs AND
+    // - we have a URL (non-empty, i.e., not local dev mode on Windows/macOS)
+    let need_download_epkg_binary = new_version.epkg_version != current_version.epkg_version
+        && !epkg_binary_url.is_empty();
+    let need_download_epkg_src = !ctx.using_local_repo;
+
+    let elf_loader_plan = resolve_elf_loader_plan(
+        &ctx.arch,
+        &ctx.epkg_download_dir,
+        &ctx.local_elf_loader_path,
+        &elf_loader_url,
+    )?;
+
+    // Optional addon (libkrun).
+    #[cfg(feature = "libkrun")]
+    let (vmlinux_plan, vmlinux_version) = resolve_vmlinux_plan(&ctx.epkg_download_dir)?;
+    #[cfg(not(feature = "libkrun"))]
+    let _ = resolve_vmlinux_plan(&ctx.epkg_download_dir)?;
+
+    let epkg_binary_plan: Option<AssetDownloadPlan> = if need_download_epkg_binary {
+        Some(AssetDownloadPlan {
+            url: epkg_binary_url.clone(),
+            path: epkg_binary_path,
+        })
+    } else {
+        None
+    };
+
+    let epkg_linux_plan =
+        resolve_epkg_linux_plan(ctx.is_linux, &ctx.repo_root, &ctx.epkg_download_dir, epkg_linux_url)?;
 
     let init_plan = InitPlan {
         current: current_version,
@@ -1761,7 +1820,7 @@ fn check_for_updates() -> Result<InitPlan> {
         #[cfg(feature = "libkrun")]
         vmlinux_version,
         need_download_epkg_src,
-        using_local_repo,
+        using_local_repo: ctx.using_local_repo,
     };
 
     // Debug print the InitPlan
