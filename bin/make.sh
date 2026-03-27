@@ -155,6 +155,75 @@ deploy_release_binary() {
     popd >/dev/null
 
     echo "Deployed: $PROJECT_ROOT/$OUTPUT_DIR/$out_name"
+
+    # Best-effort dev deployment to native Windows self environment.
+    # This allows WSL-built epkg artifacts to be immediately usable by
+    # already-installed Windows `epkg.exe` without waiting for downloads.
+    local win_self_usr_bin_dir=""
+    local win_profile_wsl=""
+    if win_profile_wsl="$(get_windows_user_profile_wsl 2>/dev/null)"; then
+        win_self_usr_bin_dir="${win_profile_wsl}/.epkg/envs/self/usr/bin"
+    fi
+    if [[ -n "${win_self_usr_bin_dir}" ]]; then
+        local win_install_name="$out_name"
+        if [[ "$out_name" == epkg-windows-*.exe ]]; then
+            win_install_name="epkg.exe"
+        fi
+
+        # Only deploy known VM/native artifacts
+        if [[ "$win_install_name" == epkg.exe || "$win_install_name" == epkg-linux-* ]]; then
+            mkdir -p "$win_self_usr_bin_dir"
+            safe_cp "$src" "$win_self_usr_bin_dir/$win_install_name"
+            echo "Deployed (native Windows): $win_self_usr_bin_dir/$win_install_name"
+        fi
+    fi
+}
+
+# Convert Windows USERPROFILE (e.g. C:\Users\epkg) to a WSL filesystem path.
+get_windows_user_profile_wsl() {
+    # If already provided (MSYS2/Cygwin), it may already be a Windows path.
+    local win_profile="${USERPROFILE:-}"
+    if [[ -n "$win_profile" && "$win_profile" == *"\\Users\\"* && -x /usr/bin/wslpath ]]; then
+        wslpath -u "$win_profile" 2>/dev/null || true
+        return 0
+    fi
+
+    # WSL2 + Windows interop: query via cmd.exe and extract "X:\Users\NAME"
+    local cmd="/mnt/c/Windows/System32/cmd.exe"
+    if [[ ! -x "$cmd" ]]; then
+        return 1
+    fi
+
+    local out win
+    out="$("$cmd" /c echo %USERPROFILE% 2>/dev/null || true)"
+    win="$(printf "%s" "$out" | awk 'match($0,/[A-Za-z]:\\\\Users\\\\[^[:space:]]+/){print substr($0,RSTART,RLENGTH); exit}')"
+
+    if [[ -n "$win" ]]; then
+        local win_profile_wsl
+        win_profile_wsl="$(wslpath -u "$win" 2>/dev/null)" || win_profile_wsl=""
+        if [[ -n "$win_profile_wsl" ]]; then
+            echo "$win_profile_wsl"
+            return 0
+        fi
+    fi
+
+    # Fallback: derive Windows username via whoami.exe and map to /mnt/<drive>/Users/<name>.
+    # Example whoami output: "P16S\epkg" -> "/mnt/c/Users/epkg"
+    local whoami_cmd="/mnt/c/Windows/System32/whoami.exe"
+    if [[ -x "$whoami_cmd" ]]; then
+        local whoami_out win_user
+        whoami_out="$("$whoami_cmd" 2>/dev/null || true)"
+        win_user="$(printf "%s" "$whoami_out" | awk -F'\\\\' 'NF>=2 {u=$NF; gsub(/\r/, "", u); print u; exit}')"
+        if [[ -n "$win_user" ]]; then
+            local user_profile_guess="/mnt/c/Users/${win_user}"
+            if [[ -d "$user_profile_guess" ]]; then
+                echo "$user_profile_guess"
+                return 0
+            fi
+        fi
+    fi
+
+    return 1
 }
 
 # Detect OS and version
@@ -1381,6 +1450,19 @@ cross-windows() {
 
     # Deploy for release uploads (asset names: epkg-windows-<arch>.exe)
     deploy_release_binary "target/$target/release/${BINARY_NAME}.exe" "epkg-windows-${arch}.exe"
+
+    # Also deploy the locally built Linux ELF (epkg-linux-$arch) into the
+    # native Windows install so `epkg.exe` can run VM mode without relying
+    # on the gitee `epkg-x86_64` download.
+    #
+    # Note: this is best-effort; if you haven't run `make` (Linux build)
+    # beforehand, we skip with a warning.
+    local linux_epkg="${PROJECT_ROOT}/target/${RUST_TARGET_X86_64}/debug/${BINARY_NAME}"
+    if [[ -f "$linux_epkg" ]]; then
+        deploy_release_binary "$linux_epkg" "epkg-linux-${arch}"
+    else
+        echo "Warning: local Linux epkg not found at $linux_epkg (run 'make' to build it)" >&2
+    fi
 }
 
 # Run tests (module-level unit tests)
