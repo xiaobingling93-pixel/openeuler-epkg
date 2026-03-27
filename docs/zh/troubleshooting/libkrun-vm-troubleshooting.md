@@ -283,3 +283,78 @@ chmod +x ~/.epkg/envs/alpine/usr/bin/init
 
 **注意**: 在 Windows 上，virtiofs 通过 NTFS EA 属性读取文件权限，
 而不是 Windows 文件系统权限。需要确保 EA 属性正确设置。
+
+### NTFS EA 文件类型位问题
+
+**症状**: `Kernel panic - not syncing: Requested init /usr/bin/init failed (error -5)` (EIO)
+
+**根本原因**: 设置 NTFS EA 权限时，MODE 值必须包含文件类型位（S_IFREG）。
+- 错误: `MODE_755 = 0o755` (仅权限位)
+- 正确: `MODE_755 = 0o100755` (包含 S_IFREG = 0o100000)
+
+virtiofs 的 `metadata_to_stat()` 函数直接使用 EA 值作为 `st_mode`，
+如果缺少文件类型位，内核会无法识别文件类型，导致 EIO 错误。
+
+**解决方案**:
+```rust
+// 正确的 MODE 设置
+const S_IFREG: u32 = 0o100000;  // Regular file type bit
+const MODE_755: u32 = S_IFREG | 0o755;  // 0o100755
+```
+
+### 在 WSL2 中调试 Windows 可执行文件
+
+**WSLENV 环境变量传递**:
+
+在 WSL2 中运行 Windows 可执行文件时，需要使用 `WSLENV` 来传递环境变量：
+
+```bash
+# 设置 WSLENV 以传递环境变量到 Windows 进程
+export WSLENV=RUST_LOG:1:LIBKRUN_WINDOWS_VERBOSE_DEBUG:1
+export RUST_LOG=debug
+export LIBKRUN_WINDOWS_VERBOSE_DEBUG=1
+
+# 运行 Windows 可执行文件
+/home/wfg/epkg/dist/epkg-windows-x86_64.exe run -e alpine --isolate=vm ls /
+```
+
+**WSLENV 格式说明**:
+- `VAR:1` - 传递变量 VAR 到 Windows 进程
+- `VAR:0` 或 `VAR` - 传递变量 VAR，但转换 Windows 路径格式
+- 多个变量用冒号分隔
+
+**常用调试命令**:
+```bash
+# 完整调试输出
+export WSLENV=RUST_LOG:1:LIBKRUN_WINDOWS_VERBOSE_DEBUG:1
+export RUST_LOG=debug
+export LIBKRUN_WINDOWS_VERBOSE_DEBUG=1
+
+# 带 timeout 运行
+/home/wfg/epkg/dist/epkg-windows-x86_64.exe run -e alpine --isolate=vm --timeout 30 ls /
+```
+
+**日志文件位置**:
+- `~/.epkg/cache/vmm-logs/virtiofs-device.log` - VIRTIOFS 设备日志
+- `~/.epkg/cache/vmm-logs/virtiofs-debug.log` - passthrough 文件系统日志
+- `~/.epkg/cache/vmm-logs/init-trace.log` - init 执行跟踪日志
+- `~/.epkg/cache/vmm-logs/libkrun-console-*.log` - 内核控制台输出
+
+**WSL2 特定注意事项**:
+1. WSL2 中 `ls -la` 显示的文件权限可能不准确（显示 `----------`）
+2. 实际权限由 NTFS EA 属性决定，virtiofs 会正确读取
+3. 可以通过 virtiofs-debug.log 验证 EA 是否正确读取
+4. 日志时间戳可能不更新（WSL2 文件系统缓存问题）
+
+**构建注意事项**:
+```bash
+# 构建 Windows 版本（带 libkrun 特性）
+make cross-windows
+
+# 或显式启用 libkrun 特性
+FEATURES=libkrun make cross-windows
+
+# 检查构建的版本
+./dist/epkg-windows-x86_64.exe --version
+# 应显示正确的 git commit hash
+```
