@@ -161,10 +161,8 @@ impl EPKGDirs {
 
         // Per-user (private) layout: %USERPROFILE%\.epkg\ — store, envs, and cache live under
         // .epkg (no separate %USERPROFILE%\.cache\epkg).
-        let user_profile = env::var("USERPROFILE")
-            .map(PathBuf::from)
-            .or_else(|_| env::var("HOME").map(PathBuf::from))
-            .unwrap_or_else(|_| PathBuf::from("."));
+        // Use get_home() which handles MSYS2/Cygwin HOME paths correctly.
+        let user_profile = PathBuf::from(get_home()?);
 
         let home_epkg = user_profile.join(".epkg");
         let home_cache = home_epkg.join("cache");
@@ -448,6 +446,42 @@ pub fn get_epkg_src_path() -> PathBuf {
 /// Retrieves the home directory path, trying multiple methods.
 /// When running as setuid, validates environment variables against real UID for security.
 pub fn get_home() -> Result<String> {
+    // On Windows, prioritize USERPROFILE over HOME since HOME may be set by
+    // MSYS2/Cygwin and point to their internal directories instead of the
+    // actual Windows user profile.
+    #[cfg(windows)]
+    {
+        // First try USERPROFILE (Windows native)
+        if let Ok(userprofile) = env::var("USERPROFILE") {
+            return Ok(userprofile);
+        }
+
+        // MSYS2/Cygwin don't pass USERPROFILE to MinGW binaries, so we need to
+        // detect and convert MSYS2/Cygwin home paths to Windows user paths.
+        // MSYS2 home: C:\msys64\home\username or C:\cygwin64\home\username
+        // Windows home: C:\Users\username
+        if let Ok(home) = env::var("HOME") {
+            let home_lower = home.to_lowercase();
+            // Check if this is an MSYS2 or Cygwin home path
+            if home_lower.contains("msys") || home_lower.contains("cygwin") {
+                // Extract username from the path (last component)
+                if let Some(username) = home.rsplit('\\').next() {
+                    if !username.is_empty() && username != "home" {
+                        let win_home = format!("C:\\Users\\{}", username);
+                        return Ok(win_home);
+                    }
+                }
+            }
+            // Not an MSYS2/Cygwin path, use HOME as-is
+            return Ok(home);
+        }
+
+        // Last resort: try USERNAME to construct Windows home
+        if let Ok(username) = env::var("USERNAME") {
+            return Ok(format!("C:\\Users\\{}", username));
+        }
+    }
+
     // Security check: if running as setuid, get home from real UID and validate env vars
     #[cfg(unix)]
     if utils::is_suid() {
