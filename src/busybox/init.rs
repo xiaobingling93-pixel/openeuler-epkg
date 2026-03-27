@@ -65,7 +65,7 @@ pub fn init_logging_early() {
         .write(true)
         .open("/dev/kmsg")
         .ok();
-    let mut write_kmsg = |msg: &str| {
+    let write_kmsg = |kmsg: &mut Option<std::fs::File>, msg: &str| {
         if let Some(ref mut k) = kmsg {
             // Prepend kernel log level <6> (info)
             let _ = write!(k, "<6>{}", msg);
@@ -73,7 +73,7 @@ pub fn init_logging_early() {
         }
     };
 
-    write_kmsg("init: init_logging_early() started\n");
+    write_kmsg(&mut kmsg, "init: init_logging_early() started\n");
 
     // Open console for writing (keep it open for the entire function)
     let mut console = OpenOptions::new()
@@ -81,63 +81,63 @@ pub fn init_logging_early() {
         .open("/dev/console")
         .ok();
 
-    let mut write_msg = |msg: &str| {
+    let write_msg = |console: &mut Option<std::fs::File>, kmsg: &mut Option<std::fs::File>, msg: &str| {
         if let Some(ref mut c) = console {
             match c.write_all(msg.as_bytes()) {
                 Ok(_) => {}
                 Err(e) => {
-                    write_kmsg(&format!("init: console write error: {}\n", e));
+                    write_kmsg(kmsg, &format!("init: console write error: {}\n", e));
                 }
             }
             match c.flush() {
                 Ok(_) => {}
                 Err(e) => {
-                    write_kmsg(&format!("init: console flush error: {}\n", e));
+                    write_kmsg(kmsg, &format!("init: console flush error: {}\n", e));
                 }
             }
         } else {
-            write_kmsg(&format!("init: no console for: {}", msg));
+            write_kmsg(kmsg, &format!("init: no console for: {}", msg));
         }
     };
 
-    write_msg("init: init_logging_early() started\n");
-    write_kmsg("init: after first console write\n");
+    write_msg(&mut console, &mut kmsg, "init: init_logging_early() started\n");
+    write_kmsg(&mut kmsg, "init: after first console write\n");
 
     // Redirect stderr/stdout to /dev/console so all subsequent logging (via env_logger)
     // goes to the serial console. This is needed because the kernel doesn't
     // connect init's stderr to the serial console.
     // Use dup2_stderr/dup2_stdout which handle the case where fds may not be set up.
-    if let Some(ref c) = console {
-        use std::os::fd::AsRawFd;
+    if let Some(ref c) = console.as_ref() {
+        use std::os::fd::{AsRawFd, BorrowedFd};
         let console_fd = c.as_raw_fd();
         // Try to redirect stderr and stdout to console
         // These calls may fail silently if fds are not set up, which is OK
-        match nix::unistd::dup2_stderr(console_fd) {
-            Ok(_) => write_kmsg("init: dup2_stderr ok\n"),
-            Err(e) => write_kmsg(&format!("init: dup2_stderr failed: {}\n", e)),
+        match nix::unistd::dup2_stderr(unsafe { BorrowedFd::borrow_raw(console_fd) }) {
+            Ok(_) => write_kmsg(&mut kmsg, "init: dup2_stderr ok\n"),
+            Err(e) => write_kmsg(&mut kmsg, &format!("init: dup2_stderr failed: {}\n", e)),
         }
-        match nix::unistd::dup2_stdout(console_fd) {
-            Ok(_) => write_kmsg("init: dup2_stdout ok\n"),
-            Err(e) => write_kmsg(&format!("init: dup2_stdout failed: {}\n", e)),
+        match nix::unistd::dup2_stdout(unsafe { BorrowedFd::borrow_raw(console_fd) }) {
+            Ok(_) => write_kmsg(&mut kmsg, "init: dup2_stdout ok\n"),
+            Err(e) => write_kmsg(&mut kmsg, &format!("init: dup2_stdout failed: {}\n", e)),
         }
     }
 
-    write_msg("init: after dup2\n");
-    write_kmsg("init: after dup2 (kmsg)\n");
+    write_msg(&mut console, &mut kmsg, "init: after dup2\n");
+    write_kmsg(&mut kmsg, "init: after dup2 (kmsg)\n");
 
     let proc_path = Path::new("/proc");
-    write_msg("init: checking /proc exists\n");
+    write_msg(&mut console, &mut kmsg, "init: checking /proc exists\n");
 
     if !proc_path.exists() {
-        write_msg("init: /proc does not exist, creating\n");
+        write_msg(&mut console, &mut kmsg, "init: /proc does not exist, creating\n");
         if let Err(e) = std::fs::create_dir_all(proc_path) {
-            write_msg(&format!("init: cannot create /proc: {}\n", e));
+            write_msg(&mut console, &mut kmsg, &format!("init: cannot create /proc: {}\n", e));
         }
     }
-    write_msg("init: checking /proc exists again\n");
+    write_msg(&mut console, &mut kmsg, "init: checking /proc exists again\n");
 
     if proc_path.exists() {
-        write_msg("init: mounting proc on /proc\n");
+        write_msg(&mut console, &mut kmsg, "init: mounting proc on /proc\n");
         if let Err(e) = nix::mount::mount(
             Some("proc"),
             proc_path,
@@ -145,24 +145,24 @@ pub fn init_logging_early() {
             nix::mount::MsFlags::empty(),
             None::<&str>,
         ) {
-            write_msg(&format!("init: mount proc failed: {}\n", e));
+            write_msg(&mut console, &mut kmsg, &format!("init: mount proc failed: {}\n", e));
         } else {
-            write_msg("init: mounted proc successfully\n");
+            write_msg(&mut console, &mut kmsg, "init: mounted proc successfully\n");
         }
     } else {
-        write_msg("init: /proc still does not exist\n");
+        write_msg(&mut console, &mut kmsg, "init: /proc still does not exist\n");
     }
-    write_msg("init: checking epkg.rust_log\n");
+    write_msg(&mut console, &mut kmsg, "init: checking epkg.rust_log\n");
 
     if let Some(v) = get_cmdline_param("epkg.rust_log") {
-        write_msg(&format!("init: rust_log found\n"));
+        write_msg(&mut console, &mut kmsg, "init: rust_log found\n");
         let decoded = percent_decode(&v);
         if !decoded.is_empty() {
             std::env::set_var("RUST_LOG", &decoded);
             std::env::set_var("RUST_BACKTRACE", "1");
         }
     }
-    write_msg("init: init_logging_early() complete\n");
+    write_msg(&mut console, &mut kmsg, "init: init_logging_early() complete\n");
 }
 
 fn run_init() -> Result<()> {
