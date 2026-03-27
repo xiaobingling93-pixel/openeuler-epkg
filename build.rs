@@ -111,6 +111,10 @@ fn main() {
     println!("cargo:rustc-env=EPKG_VERSION_TAG=v{}", env!("CARGO_PKG_VERSION"));
     println!("cargo:rustc-env=EPKG_VERSION_INFO={}", epkg_version_info);
 
+    // Rerun build script when git commit changes
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/index");
+
     println!("cargo::rustc-check-cfg=cfg(epkg_ntfs_ea)");
     // `ntfs_ea.rs` uses `crate::lfs::sanitize_path_for_windows` when built inside epkg (see cfg above).
     println!("cargo:rustc-cfg=epkg_ntfs_ea");
