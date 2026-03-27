@@ -1711,25 +1711,43 @@ fn resolve_elf_loader_plan(
 }
 
 fn resolve_epkg_linux_plan(
+    arch: &str,
     is_linux: bool,
     repo_root: &Path,
     epkg_download_dir: &Path,
     epkg_linux_url: Option<String>,
 ) -> Result<Option<AssetDownloadPlan>> {
     Ok(if !is_linux {
-        let local_epkg_linux = repo_root.join("target").join("debug").join("epkg");
-        if local_epkg_linux.exists() {
-            log::debug!(
-                "epkg-linux plan: local copy from {}",
-                local_epkg_linux.display()
-            );
+        // Prefer the real cross-build output. The `target/debug/epkg` path is often
+        // a symlink and may not resolve correctly from native Windows runs under WSL.
+        let candidates = [
+            repo_root.join("target").join("debug").join("epkg"),
+            repo_root
+                .join("target")
+                .join(format!("{}-unknown-linux-musl", arch))
+                .join("debug")
+                .join("epkg"),
+            repo_root
+                .join("target")
+                .join(format!("{}-unknown-linux-gnu", arch))
+                .join("debug")
+                .join("epkg"),
+        ];
+
+        let local_epkg_linux = candidates.into_iter().find(|p| p.exists());
+        if let Some(local_epkg_linux) = local_epkg_linux {
+            log::debug!("epkg-linux plan: local copy from {}", local_epkg_linux.display());
             Some(AssetDownloadPlan {
                 // Empty URL means local-copy mode (skip download + checksum flow).
                 url: String::new(),
                 path: local_epkg_linux,
             })
         } else if let Some(linux_url) = epkg_linux_url {
-            let linux_path = mirror::Mirrors::remote_url_to_path(&linux_url, epkg_download_dir, "epkg")?;
+            let linux_path = mirror::Mirrors::remote_url_to_path(
+                &linux_url,
+                epkg_download_dir,
+                "epkg",
+            )?;
             log::debug!("epkg-linux plan: download {} -> {}", linux_url, linux_path.display());
             Some(AssetDownloadPlan { url: linux_url, path: linux_path })
         } else {
@@ -1804,8 +1822,13 @@ fn check_for_updates() -> Result<InitPlan> {
         None
     };
 
-    let epkg_linux_plan =
-        resolve_epkg_linux_plan(ctx.is_linux, &ctx.repo_root, &ctx.epkg_download_dir, epkg_linux_url)?;
+    let epkg_linux_plan = resolve_epkg_linux_plan(
+        &ctx.arch,
+        ctx.is_linux,
+        &ctx.repo_root,
+        &ctx.epkg_download_dir,
+        epkg_linux_url,
+    )?;
 
     let init_plan = InitPlan {
         current: current_version,
