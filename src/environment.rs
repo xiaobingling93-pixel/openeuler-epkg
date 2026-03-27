@@ -552,13 +552,15 @@ pub fn create_epkg_symlink(env_root: &Path, pkg_format: &PackageFormat) -> Resul
                     // Set execute permission on the epkg binary for virtiofs/Linux guest.
                     // On Windows, virtiofs uses NTFS Extended Attributes ($LXMOD) to store POSIX mode.
                     // Without this, the file gets default 644 permissions (no execute).
+                    // Note: MODE must include S_IFREG (0o100000) for regular files.
                     #[cfg(windows)]
                     {
-                        const MODE_755: u32 = 0o755; // rwxr-xr-x
+                        const S_IFREG: u32 = 0o100000; // Regular file type bit
+                        const MODE_755: u32 = S_IFREG | 0o755; // 0o100755 = regular file, rwxr-xr-x
                         if let Err(e) = crate::ntfs_ea::set_posix_mode(&epkg_symlink, MODE_755, false) {
                             log::warn!("Failed to set execute permission on {}: {}", epkg_symlink.display(), e);
                         } else {
-                            log::debug!("Set execute permission (755) on {}", epkg_symlink.display());
+                            log::debug!("Set execute permission (100755) on {}", epkg_symlink.display());
                         }
                     }
 

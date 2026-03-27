@@ -669,7 +669,8 @@ fn copy_epkg_binary_atomically(source: &Path, target: &Path, is_epkg: bool) -> R
     #[cfg(windows)]
     {
         let _ = is_epkg; // suppress unused warning
-        let mode = 0o755; // Executable binary
+        const S_IFREG: u32 = 0o100000; // Regular file type bit
+        let mode = S_IFREG | 0o755; // 0o100755 = regular executable binary
         if let Err(e) = crate::ntfs_ea::set_posix_mode(&temp_target, mode, false) {
             log::warn!("Failed to set POSIX mode on {}: {}", temp_target.display(), e);
         }
