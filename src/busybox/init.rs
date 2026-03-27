@@ -59,25 +59,23 @@ pub fn init_logging_early() {
     use std::io::Write;
     use std::fs::OpenOptions;
 
-    // Redirect stderr to /dev/console so all subsequent logging (via env_logger)
-    // goes to the serial console. This is needed because the kernel doesn't
-    // connect init's stderr to the serial console.
-    if let Ok(console) = OpenOptions::new()
+    // Debug: write to /dev/kmsg (kernel message buffer) which is always available
+    // This helps diagnose where we are in the init process
+    let mut kmsg = OpenOptions::new()
         .write(true)
-        .open("/dev/console")
-    {
-        use std::os::fd::{AsFd, FromRawFd, IntoRawFd, OwnedFd};
-        // SAFETY: fd 1 and 2 are valid and we're taking ownership for dup2
-        let mut stderr: OwnedFd = unsafe { OwnedFd::from_raw_fd(2) };
-        let _ = nix::unistd::dup2(console.as_fd(), &mut stderr);
-        // Prevent OwnedFd from closing fd 2 on drop (we want it to remain as stderr)
-        let _ = stderr.into_raw_fd();
+        .open("/dev/kmsg")
+        .ok();
+    let mut write_kmsg = |msg: &str| {
+        if let Some(ref mut k) = kmsg {
+            // Prepend kernel log level <6> (info)
+            let _ = write!(k, "<6>{}", msg);
+            let _ = k.flush();
+        }
+    };
 
-        let mut stdout: OwnedFd = unsafe { OwnedFd::from_raw_fd(1) };
-        let _ = nix::unistd::dup2(console.as_fd(), &mut stdout);
-        let _ = stdout.into_raw_fd();
-    }
+    write_kmsg("init: init_logging_early() started\n");
 
+    // Open console for writing (keep it open for the entire function)
     let mut console = OpenOptions::new()
         .write(true)
         .open("/dev/console")
@@ -85,12 +83,47 @@ pub fn init_logging_early() {
 
     let mut write_msg = |msg: &str| {
         if let Some(ref mut c) = console {
-            let _ = c.write_all(msg.as_bytes());
-            let _ = c.flush();
+            match c.write_all(msg.as_bytes()) {
+                Ok(_) => {}
+                Err(e) => {
+                    write_kmsg(&format!("init: console write error: {}\n", e));
+                }
+            }
+            match c.flush() {
+                Ok(_) => {}
+                Err(e) => {
+                    write_kmsg(&format!("init: console flush error: {}\n", e));
+                }
+            }
+        } else {
+            write_kmsg(&format!("init: no console for: {}", msg));
         }
     };
 
     write_msg("init: init_logging_early() started\n");
+    write_kmsg("init: after first console write\n");
+
+    // Redirect stderr/stdout to /dev/console so all subsequent logging (via env_logger)
+    // goes to the serial console. This is needed because the kernel doesn't
+    // connect init's stderr to the serial console.
+    // Use dup2_stderr/dup2_stdout which handle the case where fds may not be set up.
+    if let Some(ref c) = console {
+        use std::os::fd::AsRawFd;
+        let console_fd = c.as_raw_fd();
+        // Try to redirect stderr and stdout to console
+        // These calls may fail silently if fds are not set up, which is OK
+        match nix::unistd::dup2_stderr(console_fd) {
+            Ok(_) => write_kmsg("init: dup2_stderr ok\n"),
+            Err(e) => write_kmsg(&format!("init: dup2_stderr failed: {}\n", e)),
+        }
+        match nix::unistd::dup2_stdout(console_fd) {
+            Ok(_) => write_kmsg("init: dup2_stdout ok\n"),
+            Err(e) => write_kmsg(&format!("init: dup2_stdout failed: {}\n", e)),
+        }
+    }
+
+    write_msg("init: after dup2\n");
+    write_kmsg("init: after dup2 (kmsg)\n");
 
     let proc_path = Path::new("/proc");
     write_msg("init: checking /proc exists\n");
