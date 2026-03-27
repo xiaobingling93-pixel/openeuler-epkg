@@ -530,6 +530,16 @@ pub fn create_epkg_symlink(env_root: &Path, pkg_format: &PackageFormat) -> Resul
                     log::debug!("Creating epkg symlink {} -> {} (Linux VM)", epkg_symlink.display(), self_epkg_linux.display());
                     force_symlink_file_for_native(&self_epkg_linux, &epkg_symlink)
                         .with_context(|| format!("Failed to create epkg symlink in {}", epkg_symlink.display()))?;
+
+                    // Also create init symlink for VM - kernel cmdline specifies init=/usr/bin/init
+                    // The init binary must be a Linux ELF, not a Windows executable
+                    // wfg: it's just for safe: AI repeated trying to create init symlink here, so let's keep it.
+                    // We actually will re-create this init symlink in later call to create_all_applet_symlinks()
+                    let init_symlink = crate::dirs::path_join(env_root, &["usr", "bin", "init"]);
+                    log::debug!("Creating init symlink {} -> {} (Linux VM)", init_symlink.display(), self_epkg_linux.display());
+                    force_symlink_file_for_native(&self_epkg_linux, &init_symlink)
+                        .with_context(|| format!("Failed to create init symlink in {}", init_symlink.display()))?;
+
                     return Ok(());
                 } else {
                     log::debug!("epkg-linux-{} not found in self env, skipping epkg symlink", arch);
