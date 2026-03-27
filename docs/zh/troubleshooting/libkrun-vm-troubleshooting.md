@@ -230,3 +230,56 @@ LIBKRUN_WINDOWS_VERBOSE_DEBUG=1
 **常见错误**:
 - 在 MSYS2 中 `ls -la` 显示文件为目录，但实际上 NTFS EA 属性正确
 - 需要通过 guest 内核的行为来验证，而不是 MSYS2 的文件系统视图
+
+### init 二进制文件架构问题
+
+**症状**: `Kernel panic - not syncing: Requested init /usr/bin/init failed (error -13)` 或 `(error -5)`
+
+**诊断步骤**:
+1. 检查 init 二进制文件的架构: `file /path/to/init`
+2. 确认是否为 Linux ELF 格式，而不是 Windows PE 格式
+
+**根本原因**:
+内核命令行指定 `init=/usr/bin/init`，该文件必须是 Linux ELF 可执行文件。
+在 Windows/macOS 主机上，不能直接复制 Windows 可执行文件作为 init。
+
+**解决方案**:
+1. `epkg-linux-$arch` 是预编译的 Linux 静态二进制文件，用于 VM 内部执行
+2. 在创建 Linux 格式包的环境时，需要创建 `init -> epkg-linux-$arch` 符号链接
+3. 该符号链接由 `environment.rs::create_epkg_symlink()` 自动创建
+
+**验证方法**:
+```bash
+# 检查 init 文件是否为 Linux ELF
+file ~/.epkg/envs/alpine/usr/bin/init
+# 应显示: ELF 64-bit LSB pie executable, x86-64, ..., static-pie linked
+
+# 检查文件大小是否正确 (Linux 二进制约 13MB，Windows 二进制约 220MB)
+ls -la ~/.epkg/envs/alpine/usr/bin/init
+```
+
+### init 二进制权限问题
+
+**症状**: `Kernel panic - not syncing: Requested init /usr/bin/init failed (error -13)` (EACCES)
+
+**诊断步骤**:
+1. 检查控制台日志中的错误码
+2. Error -13 = EACCES (权限被拒绝)
+3. 检查文件是否具有可执行权限
+
+**可能原因**:
+1. 文件没有可执行权限 (`chmod +x`)
+2. NTFS EA 属性中的权限位不正确
+3. 文件是 Windows 可执行文件 (错误 -13 后可能变为 -5)
+
+**解决方案**:
+```bash
+# 方法1: 设置可执行权限
+chmod +x ~/.epkg/envs/alpine/usr/bin/init
+
+# 方法2: 使用 epkg 的 symlink_file_for_native() 创建符号链接
+# 这会自动设置正确的 NTFS EA 权限
+```
+
+**注意**: 在 Windows 上，virtiofs 通过 NTFS EA 属性读取文件权限，
+而不是 Windows 文件系统权限。需要确保 EA 属性正确设置。
