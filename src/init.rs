@@ -265,7 +265,9 @@ fn remove_stale_init_sha256_files(init_plan: &InitPlan, epkg_download_dir: &Path
         sha256_files_to_delete.push(vmlinux_plan.sha_path(epkg_download_dir)?);
     }
     if let Some(ref epkg_linux_plan) = init_plan.epkg_linux {
-        sha256_files_to_delete.push(epkg_linux_plan.sha_path(epkg_download_dir)?);
+        if epkg_linux_plan.is_download() {
+            sha256_files_to_delete.push(epkg_linux_plan.sha_path(epkg_download_dir)?);
+        }
     }
     for sha256_path in &sha256_files_to_delete {
         if sha256_path.exists() {
@@ -290,9 +292,11 @@ fn verify_init_download_checksums(init_plan: &InitPlan, epkg_download_dir: &Path
     }
 
     if let Some(ref epkg_linux_plan) = init_plan.epkg_linux {
-        let epkg_linux_sha_path = epkg_linux_plan.sha_path(epkg_download_dir)?;
-        utils::verify_sha256sum(&epkg_linux_sha_path)
-            .context("Failed to verify epkg-linux checksum")?;
+        if epkg_linux_plan.is_download() {
+            let epkg_linux_sha_path = epkg_linux_plan.sha_path(epkg_download_dir)?;
+            utils::verify_sha256sum(&epkg_linux_sha_path)
+                .context("Failed to verify epkg-linux checksum")?;
+        }
     }
 
     Ok(())
@@ -357,9 +361,16 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
 
     // Download epkg-linux for VM usage on Windows/macOS hosts
     if let Some(ref epkg_linux_plan) = init_plan.epkg_linux {
-        println!("Downloading epkg-linux (for VM) from {}", epkg_linux_plan.url);
-        let sha_url = epkg_linux_plan.sha_url();
-        urls.extend(vec![epkg_linux_plan.url.clone(), sha_url]);
+        if epkg_linux_plan.is_download() {
+            println!("Downloading epkg-linux (for VM) from {}", epkg_linux_plan.url);
+            let sha_url = epkg_linux_plan.sha_url();
+            urls.extend(vec![epkg_linux_plan.url.clone(), sha_url]);
+        } else {
+            println!(
+                "Using local epkg-linux (for VM) from {}",
+                epkg_linux_plan.path.display()
+            );
+        }
     }
 
     if urls.is_empty() {
@@ -1002,6 +1013,10 @@ struct AssetDownloadPlan {
 }
 
 impl AssetDownloadPlan {
+    fn is_download(&self) -> bool {
+        !self.url.is_empty()
+    }
+
     fn sha_url(&self) -> String {
         format!("{}.sha256", self.url)
     }
@@ -1704,16 +1719,31 @@ fn check_for_updates() -> Result<InitPlan> {
         None
     };
 
-    // On Windows/macOS, download epkg-linux-$arch for VM usage.
-    // This binary will be used as /usr/bin/init inside the Linux VM.
-    let epkg_linux_plan: Option<AssetDownloadPlan> = if let Some(linux_url) = epkg_linux_url {
-        let linux_path =
-            mirror::Mirrors::remote_url_to_path(&linux_url, &epkg_download_dir, "epkg")?;
-        log::debug!("epkg-linux download plan: {} -> {}", linux_url, linux_path.display());
-        Some(AssetDownloadPlan {
-            url: linux_url,
-            path: linux_path,
-        })
+    // On Windows/macOS, install epkg-linux-$arch for VM usage.
+    // Prefer local repo build target/debug/epkg when available, otherwise download.
+    let epkg_linux_plan: Option<AssetDownloadPlan> = if !is_linux {
+        let local_epkg_linux = repo_root.join("target").join("debug").join("epkg");
+        if local_epkg_linux.exists() {
+            log::debug!(
+                "epkg-linux plan: local copy from {}",
+                local_epkg_linux.display()
+            );
+            Some(AssetDownloadPlan {
+                // Empty URL means local-copy mode (skip download + checksum flow).
+                url: String::new(),
+                path: local_epkg_linux,
+            })
+        } else if let Some(linux_url) = epkg_linux_url {
+            let linux_path =
+                mirror::Mirrors::remote_url_to_path(&linux_url, &epkg_download_dir, "epkg")?;
+            log::debug!("epkg-linux plan: download {} -> {}", linux_url, linux_path.display());
+            Some(AssetDownloadPlan {
+                url: linux_url,
+                path: linux_path,
+            })
+        } else {
+            None
+        }
     } else {
         None
     };
