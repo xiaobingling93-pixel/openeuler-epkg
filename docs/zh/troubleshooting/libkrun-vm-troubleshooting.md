@@ -98,6 +98,26 @@ vCPU 创建流程:
 - 可能与 `WHvCreateVirtualProcessor` 或寄存器配置有关
 - 监控线程在 vCPU 启动后立即创建，可能干扰
 
+### init 执行失败问题
+
+**症状**: 内核 panic - `Requested init /usr/bin/init failed (error -5)` 或 `(error -13)`
+
+**错误码含义：**
+- error -5 = EIO (Input/output error) - 文件类型位问题（已修复）
+- error -13 = EACCES (Permission denied) - 权限问题
+
+**可能原因：**
+1. virtiofs 文件系统竞态条件
+2. NTFS EA 属性读取不稳定
+3. init 文件权限在 WSL2/Windows 边界上不一致
+
+**验证方法：**
+```bash
+# 检查 init 文件类型（应在 WSL2 中执行）
+file /mnt/c/Users/epkg/.epkg/envs/alpine/usr/bin/init
+# 应显示: ELF 64-bit LSB executable, x86-64, ...
+```
+
 ---
 
 ## WSL2 中调试 Windows 可执行文件
