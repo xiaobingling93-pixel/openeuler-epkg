@@ -13,6 +13,11 @@ use color_eyre::Result;
 use crate::lfs;
 use crate::run::RunOptions;
 
+// Embed init.krun binary for Windows VM environments
+// This is the Linux init binary from libkrun that will be written to the environment root
+#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+static INIT_KRUN_BYTES: &[u8] = include_bytes!("../git/libkrun/init/init");
+
 #[cfg(feature = "libkrun")]
 #[path = "libkrun_bridge.rs"]
 mod libkrun_bridge;
@@ -161,12 +166,42 @@ struct LibkrunConfig {
     virtiofs_mounts:     Vec<(String, String, String, bool)>,
 }
 
+#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+/// Ensure init.krun is written to the environment root for VM boot.
+/// This embeds the Linux init binary into epkg and writes it to the target environment.
+fn ensure_init_krun(env_root: &Path) -> Result<()> {
+    let init_krun_path = env_root.join("init.krun");
+
+    // Always overwrite to ensure we have the correct version
+    log::debug!("Writing embedded init.krun to {}", init_krun_path.display());
+    lfs::write(&init_krun_path, INIT_KRUN_BYTES)
+        .map_err(|e| eyre::eyre!("Failed to write init.krun to {}: {}", init_krun_path.display(), e))?;
+
+    // Set execute permission using NTFS EA on Windows
+    const S_IFREG: u32 = 0o100000;
+    const MODE_755: u32 = S_IFREG | 0o755;
+    if let Err(e) = crate::ntfs_ea::set_posix_mode(&init_krun_path, MODE_755, false) {
+        log::warn!("Failed to set execute permission on init.krun: {}", e);
+    } else {
+        log::debug!("Set execute permission (100755) on init.krun");
+    }
+
+    log::info!("init.krun ({:.1} KB) written to {}",
+        INIT_KRUN_BYTES.len() as f64 / 1024.0,
+        init_krun_path.display());
+    Ok(())
+}
+
 #[cfg(feature = "libkrun")]
 fn build_libkrun_config(
     env_root: &Path,
     run_options: &RunOptions,
     guest_cmd_path: &Path,
 ) -> Result<LibkrunConfig> {
+    // Ensure init.krun is present for VM boot (embedded binary)
+    #[cfg(not(target_os = "linux"))]
+    ensure_init_krun(env_root)?;
+
     let use_cmdline_mode = std::env::var("EPKG_VM_NO_DAEMON").is_ok();
     let use_vsock = !use_cmdline_mode;
     log::debug!("libkrun: mode: cmdline={}, vsock={}", use_cmdline_mode, use_vsock);
@@ -192,7 +227,7 @@ fn build_libkrun_config(
     // On Windows, use ttyS0 for serial console since libkrun auto-adds COM1 device
     #[cfg(target_os = "windows")]
     let base_cmdline = "reboot=k panic=-1 panic_print=0 nomodule console=ttyS0 earlyprintk=serial \
-                        loglevel=8 debug root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/usr/bin/init";
+                        loglevel=8 debug root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/init.krun";
     #[cfg(not(target_os = "windows"))]
     let base_cmdline = "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 earlyprintk=hvc0 \
                         loglevel=8 debug root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/usr/bin/init";
