@@ -157,7 +157,7 @@ pub fn resolve_vm_cpus(run_options: &RunOptions) -> u8 {
 /// 1. RunOptions.vm_memory_mib (from --memory, already normalized to MiB)
 /// 2. EPKG_VM_MEMORY as a human-readable size (e.g. "2048M", "2G") via parse_size_bytes_opt
 /// 3. EPKG_VM_MEMORY parsed as plain MiB (u32) for backward compatibility
-/// 4. Default: 2048 MiB
+/// 4. Default: 4096 MiB
 #[cfg(any(target_os = "linux", feature = "libkrun"))]
 pub fn resolve_vm_memory_mib(run_options: &RunOptions) -> u32 {
     if let Some(mib) = run_options.vm_memory_mib {
@@ -172,7 +172,7 @@ pub fn resolve_vm_memory_mib(run_options: &RunOptions) -> u32 {
                 s.parse::<u32>().ok()
             }
         })
-        .unwrap_or(2048)
+        .unwrap_or(4096)
 }
 
 /// Fail fast when `/dev/kvm` is missing or unusable so libkrun and QEMU (`-enable-kvm`) surface a
@@ -1436,7 +1436,7 @@ pub fn parse_options_run(options: &mut EPKGConfig, sub_matches: &clap::ArgMatche
         } else {
             mem_str.parse::<u32>().map_err(|e| {
                 eyre::eyre!(
-                    "Invalid --memory value '{}': {} (expected size like 2048M or MiB integer)",
+                    "Invalid --memory value '{}': {} (expected size like 4096M or MiB integer)",
                     mem_str,
                     e
                 )
