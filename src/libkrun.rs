@@ -62,6 +62,14 @@ unsafe extern "C" {
     /// Set the kernel console device (e.g., "ttyS0" or "hvc0").
     /// Must be called before krun_start_enter.
     fn krun_set_kernel_console(ctx_id: u32, console_id: *const std::ffi::c_char) -> i32;
+    /// Add a legacy serial console device (ttyS0) with the given input/output fds.
+    /// This is required for Windows WHPX VMs to have working serial console.
+    /// Must be called before krun_start_enter.
+    fn krun_add_serial_console_default(
+        ctx_id: u32,
+        input_fd: libc::c_int,
+        output_fd: libc::c_int,
+    ) -> i32;
     /// Mount an additional directory via virtiofs into the guest.
     /// tag: the filesystem tag (e.g., "self")
     /// path: the host directory path to mount
@@ -727,6 +735,14 @@ fn create_and_configure_vm(
         setup_console_output(ctx.ctx_id)?;
         log::info!("libkrun: console output configured");
 
+        // Add serial console device for Windows VMs
+        // This is required for the kernel to have a working console on WHPX
+        #[cfg(target_os = "windows")]
+        {
+            ctx.add_serial_console(0, 1)?;
+            log::info!("libkrun: serial console added (ttyS0)");
+        }
+
         if config.use_vsock {
             let sock_path = setup_libkrun_vsock_host_sockets(&ctx)?;
             let vsock_sock_path = Some(sock_path);
@@ -870,6 +886,17 @@ impl KrunContext {
 
     unsafe fn start_enter(&self) -> i32 {
         unsafe { krun_start_enter(self.ctx_id) }
+    }
+
+    /// Add a legacy serial console device (ttyS0) for Windows VMs.
+    /// This is required for the kernel to have a working console on WHPX.
+    /// input_fd: stdin file descriptor (0)
+    /// output_fd: stdout file descriptor (1)
+    unsafe fn add_serial_console(&self, input_fd: libc::c_int, output_fd: libc::c_int) -> Result<()> {
+        check_status(
+            "krun_add_serial_console_default",
+            unsafe { krun_add_serial_console_default(self.ctx_id, input_fd, output_fd) }
+        )
     }
 
     /// Get the shutdown eventfd for triggering VM shutdown from host.
