@@ -166,7 +166,7 @@ struct LibkrunConfig {
     virtiofs_mounts:     Vec<(String, String, String, bool)>,
 }
 
-#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+#[cfg(all(feature = "libkrun", target_os = "windows"))]
 /// Ensure init.krun is written to the environment root for VM boot.
 /// This embeds the Linux init binary into epkg and writes it to the target environment.
 fn ensure_init_krun(env_root: &Path) -> Result<()> {
@@ -199,7 +199,7 @@ fn build_libkrun_config(
     guest_cmd_path: &Path,
 ) -> Result<LibkrunConfig> {
     // Ensure init.krun is present for VM boot (embedded binary)
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
     ensure_init_krun(env_root)?;
 
     let use_cmdline_mode = std::env::var("EPKG_VM_NO_DAEMON").is_ok();
