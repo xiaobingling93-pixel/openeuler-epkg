@@ -1,6 +1,42 @@
 # libkrun/VM 故障排查指南
 
-## 最新状态 (2026-03-28)
+## 当前状态更新 (2026-03-28)
+
+### 最新发现
+
+**VM 实际上已经可以正常启动！**
+
+从控制台日志观察：
+```
+[    0.000000] Linux version 6.19.8-dirty ...
+[    0.437374] Run /usr/bin/init as init process
+[    0.438097]     /usr/bin/init
+[    0.438397]     tsi_hijack
+init: init_loggi[    1.257042] sysrq: Power Off
+[    1.259110] reboot: Power down
+[    1.259488] reboot: Power off not available: System halted instead
+```
+
+**证明：**
+1. ✅ Linux 内核成功启动（6.19.8）
+2. ✅ 2 个 vCPU 被正确识别和配置
+3. ✅ virtiofs 成功挂载（/dev/root, .epkg_4831）
+4. ✅ init 进程被执行（/usr/bin/init）
+5. ✅ VM 正常关闭（sysrq power off）
+
+**问题：**
+- 退出代码仍然是 -1073741819 (0xC0000005 Access Violation)
+- 可能是 vsock 通信或 Windows 端清理代码问题
+- init 的输出可能没有正确传回主机
+
+### 下一步调试方向
+
+1. 检查 vsock 通信是否正常
+2. 检查 init.krun 是否正确执行命令并返回输出
+3. 检查 Windows 端代码在等待 VM 输出时的处理
+4. 可能需要添加更多日志来跟踪 vsock 通信流程
+
+---
 
 ### 当前 VM 启动状态
 
@@ -33,6 +69,34 @@
 1. vCPU 线程启动时的竞态条件
 2. WHPX API 调用参数问题
 3. 内存映射权限问题
+
+### 多 vCPU 启动问题分析
+
+**现象：**
+- vCPU 0 配置成功
+- vCPU 1 启动时崩溃 (Access Violation)
+- 单 vCPU 测试 (`--cpus 1`) 同样崩溃
+
+**代码分析：**
+
+`start_threaded()` 函数流程 (vstate.rs:955-1394):
+1. 创建 vCPU 线程 (std::thread::Builder::new().spawn(...))
+2. 线程内调用 `configure_x86_64()` 配置寄存器
+3. 等待 `VcpuEvent::Resume` 事件
+4. 启动监控线程检测卡死
+5. 进入主运行循环调用 `whpx_vcpu.run()`
+
+vCPU 创建流程:
+- 默认 vCPU 数量: 2 (run.rs:151 resolve_vm_cpus 默认返回 2)
+- 可通过 `--cpus 1` 或 `EPKG_VM_CPUS=1` 设置单 vCPU
+- 每个 vCPU 调用 `WhpxVcpu::new()` → `WHvCreateVirtualProcessor()`
+- 然后在线程中配置寄存器 `WHvSetVirtualProcessorRegisters()`
+
+**关键观察：**
+- 崩溃发生在 `start_threaded` 调用后，实际执行前
+- 单 vCPU 也崩溃，说明不是多 vCPU 竞态条件
+- 可能与 `WHvCreateVirtualProcessor` 或寄存器配置有关
+- 监控线程在 vCPU 启动后立即创建，可能干扰
 
 ---
 
@@ -266,7 +330,20 @@ cargo run --bin epkg --features libkrun -- run --isolate=vm --timeout 60 -- /usr
 # 串口输出以单个字符形式记录，需要提取
 grep -o "data: 0x[0-9a-f]* ('.') " tmp_whpx_io.log | \
   sed "s/.*('\(.\)').*/\1/" | tr -d '\n'
+
+# 通过 PowerShell 查看最新控制台日志
+/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command \
+  "Get-Content 'C:\Users\epkg\.epkg\cache\vmm-logs\latest-console.log'"
+
+# 查看所有控制台日志
+/mnt/c/Windows/System32/cmd.exe /c \
+  'dir C:\Users\epkg\.epkg\cache\vmm-logs\libkrun-console-*.log'
 ```
+
+**关键观察点：**
+- `Run /usr/bin/init as init process` - init 进程已启动
+- `sysrq: Power Off` - VM 正常关闭
+- `reboot: Power down` - 关机流程完成
 
 ### 追踪特定 GPA 的 MMIO 访问
 
@@ -278,6 +355,27 @@ grep -o "data: 0x[0-9a-f]* ('.') " tmp_whpx_io.log | \
 - `[IRQ] inject` - 中断注入
 - `[IRQ] request_ok` - 中断请求成功
 - `[IRQ0] ioapic` - IRQ0 定时器中断
+
+### 测试不同模式
+
+**命令行模式 (不使用 vsock，通过内核参数传递命令):**
+```bash
+export EPKG_VM_NO_DAEMON=1
+/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command \
+  "& { \$env:EPKG_VM_NO_DAEMON='1'; C:\Users\epkg\.epkg\envs\self\usr\bin\epkg.exe run -e alpine --isolate=vm ls / }"
+```
+
+**保持 VM 不超时（用于调试）:**
+```bash
+export EPKG_VM_KEEP_TIMEOUT=1
+```
+
+**单 vCPU 模式:**
+```bash
+export EPKG_VM_CPUS=1
+```
+
+---
 
 ## Hyper-V Enlightenments
 
