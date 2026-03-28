@@ -938,7 +938,7 @@ fn add_run_subcommand(cmd: Command) -> Command {
                         .value_parser(clap::value_parser!(String))
                 )
                 .arg(
-                    arg!(--memory <SIZE> "Virtual memory size for --isolate=vm (e.g. 2048M, 2G)")
+                    arg!(--memory <SIZE> "Virtual memory size for --isolate=vm (e.g. 4096M, 4G)")
                         .value_parser(clap::value_parser!(String))
                 )
                 .arg(arg!(--timeout <SECONDS> "Timeout in seconds (0 = no timeout)").value_parser(clap::value_parser!(String)))
