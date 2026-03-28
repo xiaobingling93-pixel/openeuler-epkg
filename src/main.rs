@@ -144,7 +144,6 @@ mod rpm_verify;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::exit;
-use std::io::Write;
 use std::panic;
 
 use time::OffsetDateTime;
@@ -209,6 +208,7 @@ fn main() -> Result<()> {
     // Init CONFIG (and CLAP_MATCHES) for either applet or epkg main invocation
     let invoked_as_applet = crate::busybox::is_invoked_as_applet();
     init_config(invoked_as_applet)?;
+    attach_session_log_under_epkg_cache();
     setup_ctrlc();
 
     // SIGPIPE handling principles:
@@ -281,12 +281,22 @@ fn main() -> Result<()> {
 }
 
 #[cfg(not(test))]
+use std::fs::{self, OpenOptions};
+#[cfg(not(test))]
+use std::sync::Mutex;
+
+#[cfg(not(test))]
+/// Global file writer for optional session log file under `epkg_cache/logs`
+static LOG_FILE_WRITER: std::sync::OnceLock<Mutex<std::fs::File>> = std::sync::OnceLock::new();
+
+#[cfg(not(test))]
 fn setup_logging() {
     env_logger::Builder::from_default_env()
         .filter_module("ureq_proto", LevelFilter::Warn)
         .format(|buf, record| {
-            writeln!(
-                buf,
+            use std::io::Write;
+
+            let formatted = format!(
                 "[{} {} {}:{}] {}",
                 match OffsetDateTime::now_local() {
                     Ok(dt) => dt.format(&format_description!("[year]-[month]-[day] [hour repr:24]:[minute]:[second].[subsecond digits:3] [offset_hour sign:mandatory][offset_minute]")).unwrap_or_else(|_| "<time_fmt_err>".to_string()),
@@ -296,9 +306,67 @@ fn setup_logging() {
                 record.file().unwrap_or("unknown"),
                 record.line().unwrap_or(0),
                 record.args()
-            )
+            );
+
+            if let Some(writer) = LOG_FILE_WRITER.get() {
+                if let Ok(mut file) = writer.lock() {
+                    if let Err(e) = writeln!(file, "{}", formatted) {
+                        eprintln!("[epkg log error] write failed: {}", e);
+                    } else if let Err(e) = file.flush() {
+                        eprintln!("[epkg log error] flush failed: {}", e);
+                    }
+                }
+            }
+
+            writeln!(buf, "{}", formatted)
         })
         .init();
+}
+
+#[cfg(not(test))]
+fn session_log_basename() -> String {
+    let timestamp = match OffsetDateTime::now_local() {
+        Ok(dt) => dt.format(&format_description!(
+            "[year][month][day]_[hour][minute][second]"
+        )).unwrap_or_else(|_| "unknown".to_string()),
+        Err(_) => "unknown".to_string(),
+    };
+    let pid = std::process::id();
+    format!("epkg_{}_{}.log", timestamp, pid)
+}
+
+#[cfg(not(test))]
+fn try_open_session_log_in_dir(log_dir: &Path) {
+    if LOG_FILE_WRITER.get().is_some() {
+        return;
+    }
+    let path = log_dir.join(session_log_basename());
+    let _ = fs::create_dir_all(log_dir);
+    match OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(file) => {
+            let mut file = file;
+            let header = b"=== epkg log started ===\n";
+            let _ = std::io::Write::write_all(&mut file, header);
+            let _ = std::io::Write::flush(&mut file);
+
+            let _ = LOG_FILE_WRITER.set(Mutex::new(file));
+            eprintln!("[epkg] Logging to: {}", path.display());
+        }
+        Err(e) => {
+            eprintln!("[epkg] Failed to open log file {}: {}", path.display(), e);
+        }
+    }
+}
+
+/// After `init_config`, session logs go under `epkg_cache/logs` (same root as downloads/channels on every OS).
+#[cfg(not(test))]
+fn attach_session_log_under_epkg_cache() {
+    let dir = crate::models::dirs().epkg_cache.join("logs");
+    try_open_session_log_in_dir(&dir);
 }
 
 #[cfg(not(test))]
