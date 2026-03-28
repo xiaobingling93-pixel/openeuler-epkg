@@ -604,3 +604,75 @@ FEATURES=libkrun make cross-windows
 ./dist/epkg-windows-x86_64.exe --version
 # 应显示正确的 git commit hash
 ```
+
+## 最新调试发现 (2026-03-28)
+
+### 当前状态
+
+**问题**: VM 仍然崩溃，退出代码 -1073741819 (0xC0000005 = STATUS_ACCESS_VIOLATION)
+
+**Windows 事件日志分析**:
+```
+Faulting module: winhvplatform.dll (version 10.0.26100.7920)
+Exception code: 0xc0000005 (Access Violation)
+Fault offset: 0x0000000000013010
+```
+
+**已尝试的修复** (未解决问题):
+1. ✅ 修复了 `WHvCancelRunVirtualProcessor` 竞态条件 (commit d962a75)
+2. ✅ 添加了调试日志速率限制 (commit 5d8faf1)
+3. ✅ 测试了单 vCPU 模式 (`--cpus 1`)
+4. ✅ 测试了减少内存 (`--memory 512M`)
+5. ✅ 测试了命令行模式 (`EPKG_VM_NO_DAEMON=1`)
+6. ✅ 测试了禁用 PIT 定时器 (`LIBKRUN_WHPX_DISABLE_PIT_TIMER=1`)
+7. ✅ 测试了禁用 vCPU cancel (`LIBKRUN_WHPX_DISABLE_VCPU_CANCEL=1`)
+
+**观察结果**:
+- 崩溃发生在 WHPX DLL 内部，不是 epkg/libkrun 代码
+- 每次启动都崩溃，不是随机/竞态问题
+- 内核配置成功，但在 vCPU 运行阶段崩溃
+- 控制台日志为空，说明内核未及输出即崩溃
+
+**可能原因**:
+1. Windows 11 24H2/25H2 (build 26200) 的 WHPX 兼容性问题
+2. 内存映射或页表配置与 WHPX 不兼容
+3. vCPU 寄存器配置问题
+4. 需要进一步分析 winhvplatform.dll 崩溃位置
+
+**新增调试发现** (2026-03-28 14:00):
+
+经过深入分析 WHPX 代码和崩溃日志，发现以下关键信息：
+
+1. **崩溃位置**: winhvplatform.dll + 0x13010
+   - 每次崩溃偏移量相同，说明是确定性的代码路径
+   - 不是竞态条件或内存损坏
+
+2. **vCPU 启动流程分析**:
+   ```
+   Vcpu::start_threaded() [vstate.rs:955]
+     └─> thread spawn
+         └─> configure_x86_64() [vstate.rs:971]
+             └─> WHvSetVirtualProcessorRegisters() - 成功
+         └─> wait for Resume event - 成功
+         └─> monitor thread spawn [vstate.rs:1012]
+         └─> loop [vstate.rs:1304]
+             └─> Vcpu::run() [vstate.rs:1318]
+                 └─> WhpxVcpu::run() [whpx_vcpu.rs:2688]
+                     └─> WHvRunVirtualProcessor() [whpx_vcpu.rs:2723] ← 崩溃点
+   ```
+
+3. **可能原因**:
+   - Windows 11 24H2/25H2 (build 26200) 的 WHPX 可能有 API 行为变化
+   - `WHvRunVirtualProcessor` 可能在某些参数组合下崩溃
+   - 可能是 APIC 模拟与 WHPX 的新版本不兼容
+
+4. **需要进一步测试**:
+   - 禁用 APIC 模拟 (`enable_apic=false`) 测试
+   - 测试最简单的 HLT 程序（见 vstate.rs 中的 smoke tests）
+   - 使用 WinDbg 附加分析崩溃堆栈
+
+**下一步**:
+1. 在 Windows 11 23H2 (build 22631) 上测试验证
+2. 联系 Microsoft 确认 Windows 11 24H2 的 WHPX 已知问题
+3. 考虑添加 Windows 版本检测和兼容性模式
+4. 可能需要为 24H2+ 版本禁用某些 WHPX 特性

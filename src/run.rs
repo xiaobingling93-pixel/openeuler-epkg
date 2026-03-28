@@ -1150,12 +1150,17 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
     }
 
     // Normalise skip_namespace_isolation based on channel and environment context.
-    let ch = crate::models::channel_config();
-    let channel_format = ch.format;
+    // Load channel config from the target environment (not the global default)
+    // to correctly determine the package format for VM mode auto-selection.
+    let channel_configs = crate::io::deserialize_channel_config_from_root(&env_root.to_path_buf())
+        .unwrap_or_default();
+    let ch = channel_configs.first();
+    let (channel_format, distro) = ch.map(|c| (c.format, c.distro.clone()))
+        .unwrap_or((crate::models::PackageFormat::Apk, "alpine".to_string()));
     let is_conda = channel_format == crate::models::PackageFormat::Conda;
     let is_brew = channel_format == crate::models::PackageFormat::Brew;
-    let is_msys2 = channel_format == crate::models::PackageFormat::Pacman && ch.distro == "msys2";
-    let is_linux_format = is_linux_package_format(channel_format, &ch.distro);
+    let is_msys2 = channel_format == crate::models::PackageFormat::Pacman && distro == "msys2";
+    let is_linux_format = is_linux_package_format(channel_format, &distro);
     if is_conda || is_brew || is_msys2 {
         // conda ELF binary has RPATH; brew bottles are native macOS binaries;
         // MSYS2/MinGW binaries are native Windows PE and run on the host
@@ -1167,7 +1172,7 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
     #[cfg(not(target_os = "linux"))]
     if is_linux_format && run_options.sandbox.isolate_mode.is_none() {
         debug!("Auto-enabling VM sandbox for Linux package format: {:?}/{}",
-               channel_format, ch.distro);
+               channel_format, distro);
         run_options.effective_sandbox.isolate_mode = Some(IsolateMode::Vm);
         if matches!(
             config_guard.subcommand,
