@@ -1103,8 +1103,8 @@ build_static() {
         cargo_features="${FEATURES:-}"
     fi
 
-    # Warn if user tries to force libkrun on unsupported platform
-    if [[ "$cargo_features" == *"libkrun"* ]]; then
+    # Warn if user tries to force libkrun (or embedded_init, which enables libkrun) on unsupported platform
+    if [[ "$cargo_features" == *"libkrun"* || "$cargo_features" == *"embedded_init"* ]]; then
         local target_os="linux"
         [[ "$host_os" == "Darwin" ]] && target_os="darwin"
         [[ "$host_os" == MINGW* || "$host_os" == MSYS* || "$host_os" == CYGWIN* ]] && target_os="windows"
@@ -1158,7 +1158,7 @@ build_static() {
     # If we're building with libkrun support, ensure kernel is available.
     # Note: On macOS, libkrun doesn't need a kernel image (it uses hypervisor framework)
     # Note: On Linux and Windows hosts, install_kernel_for_libkrun prepares the guest kernel
-    if [[ "$cargo_features" == *"libkrun"* ]]; then
+    if [[ "$cargo_features" == *"libkrun"* || "$cargo_features" == *"embedded_init"* ]]; then
         if [[ "$is_macos" == "false" ]]; then
             install_kernel_for_libkrun "$arch"
         fi
@@ -1431,12 +1431,19 @@ cross-windows() {
         cargo_features="${FEATURES:-}"
     fi
 
-    if [[ "$cargo_features" == *"libkrun"* ]] && ! should_enable_libkrun "$arch" "windows"; then
+    if [[ "$cargo_features" == *"libkrun"* || "$cargo_features" == *"embedded_init"* ]] && ! should_enable_libkrun "$arch" "windows"; then
         echo "Warning: libkrun is not supported on Windows $arch, build may fail"
     fi
 
-    if [[ "$cargo_features" == *"libkrun"* ]]; then
+    if [[ "$cargo_features" == *"libkrun"* || "$cargo_features" == *"embedded_init"* ]]; then
         install_kernel_for_libkrun "$arch"
+        # devices/embedded_init builds a Linux guest wrapper that embeds init/init; only needed with --features embedded_init
+        if [[ "$cargo_features" == *"embedded_init"* ]]; then
+            (cd "$PROJECT_ROOT/git/libkrun" && make init/init) || {
+                echo "Error: failed to build git/libkrun/init/init (required for cargo feature embedded_init)" >&2
+                exit 1
+            }
+        fi
     fi
 
     local cargo_feature_args=()
