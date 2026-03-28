@@ -172,23 +172,32 @@ struct LibkrunConfig {
 fn ensure_init_krun(env_root: &Path) -> Result<()> {
     let init_krun_path = env_root.join("init.krun");
 
-    // Always overwrite to ensure we have the correct version
-    log::debug!("Writing embedded init.krun to {}", init_krun_path.display());
-    lfs::write(&init_krun_path, INIT_KRUN_BYTES)
-        .map_err(|e| eyre::eyre!("Failed to write init.krun to {}: {}", init_krun_path.display(), e))?;
+    // Check if already exists and has correct size
+    if let Ok(meta) = std::fs::metadata(&init_krun_path) {
+        if meta.len() == INIT_KRUN_BYTES.len() as u64 {
+            log::debug!("init.krun already exists with correct size ({} bytes)", meta.len());
+            return Ok(());
+        }
+        log::info!("init.krun exists but wrong size ({} vs {} bytes), overwriting",
+            meta.len(), INIT_KRUN_BYTES.len());
+    }
+
+    log::info!("Writing embedded init.krun ({} bytes) to {}",
+        INIT_KRUN_BYTES.len(), init_krun_path.display());
+    if let Err(e) = lfs::write(&init_krun_path, INIT_KRUN_BYTES) {
+        return Err(eyre::eyre!("Failed to write init.krun to {}: {}", init_krun_path.display(), e));
+    }
+    log::info!("init.krun written successfully");
 
     // Set execute permission using NTFS EA on Windows
     const S_IFREG: u32 = 0o100000;
     const MODE_755: u32 = S_IFREG | 0o755;
-    if let Err(e) = crate::ntfs_ea::set_posix_mode(&init_krun_path, MODE_755, false) {
-        log::warn!("Failed to set execute permission on init.krun: {}", e);
-    } else {
-        log::debug!("Set execute permission (100755) on init.krun");
+    match crate::ntfs_ea::set_posix_mode(&init_krun_path, MODE_755, false) {
+        Ok(_) => log::info!("Set execute permission (100755) on init.krun"),
+        Err(e) => log::warn!("Failed to set execute permission on init.krun: {}", e),
     }
 
-    log::info!("init.krun ({:.1} KB) written to {}",
-        INIT_KRUN_BYTES.len() as f64 / 1024.0,
-        init_krun_path.display());
+    log::info!("init.krun ready at {}", init_krun_path.display());
     Ok(())
 }
 
@@ -593,8 +602,20 @@ fn create_and_configure_vm(
     log::debug!("libkrun: kernel cmdline: {}", config.kernel_args);
     unsafe {
         ctx.set_vm_config(cpus, memory_mib)?;
+        log::info!("libkrun: VM config set: {} vCPUs, {} MiB RAM", cpus, memory_mib);
 
         if let Some(ref kernel) = config.kernel_path {
+            // Verify kernel file exists and is readable
+            match std::fs::metadata(kernel) {
+                Ok(meta) => {
+                    log::info!("libkrun: kernel file: {} ({} bytes)", kernel, meta.len());
+                }
+                Err(e) => {
+                    log::error!("libkrun: kernel file not accessible: {}: {}", kernel, e);
+                    return Err(eyre::eyre!("Kernel file not accessible: {}", e));
+                }
+            }
+
             if let Some(format) = config.kernel_format {
                 let format_str = match format {
                     0 => "Raw",
@@ -607,17 +628,20 @@ fn create_and_configure_vm(
                     log::debug!("libkrun: no initrd provided");
                 }
                 ctx.set_kernel(kernel, format, Some(&config.kernel_args), run_options.initrd.as_deref())?;
-                log::debug!("libkrun: kernel set via krun_set_kernel() with format={} ({})", format, format_str);
+                log::info!("libkrun: kernel configured (format={} ({}))", format, format_str);
             }
+        } else {
+            log::error!("libkrun: no kernel path configured!");
+            return Err(eyre::eyre!("No kernel configured for VM"));
         }
 
         ctx.set_root(env_root.to_str().unwrap())?;
-        log::debug!("libkrun: rootfs configured via virtiofs: {:?}", env_root);
+        log::info!("libkrun: rootfs configured: {:?}", env_root);
 
         // Add additional virtiofs mounts
         for (tag, host_path, guest_path, read_only) in &config.virtiofs_mounts {
             ctx.add_virtiofs(tag, host_path)?;
-            log::debug!("libkrun: added virtiofs mount: {} -> {} (guest: {}) ({})",
+            log::info!("libkrun: virtiofs mount: {} -> {} (guest: {}) ({})",
                        host_path, tag, guest_path, if *read_only { "ro" } else { "rw" });
         }
 
@@ -627,7 +651,7 @@ fn create_and_configure_vm(
             check_status("krun_split_irqchip",
                 krun_split_irqchip(ctx.ctx_id, true)
             )?;
-            log::debug!("libkrun: split IRQ chip configured");
+            log::info!("libkrun: split IRQ chip enabled");
         }
         #[cfg(not(target_arch = "x86_64"))]
         {
@@ -635,6 +659,7 @@ fn create_and_configure_vm(
         }
 
         setup_console_output(ctx.ctx_id)?;
+        log::info!("libkrun: console output configured");
 
         if config.use_vsock {
             let sock_path = setup_libkrun_vsock_host_sockets(&ctx)?;
@@ -655,15 +680,17 @@ fn create_and_configure_vm(
 
 #[cfg(feature = "libkrun")]
 fn start_libkrun_vm(ctx: KrunContext, start_failed_tx: std::sync::mpsc::Sender<()>) -> std::thread::JoinHandle<i32> {
+    log::info!("libkrun: starting VM thread (ctx_id={})...", ctx.ctx_id);
     thread::spawn(move || {
         unsafe {
+            log::info!("libkrun: entering krun_start_enter (ctx_id={})...", ctx.ctx_id);
             let status = ctx.start_enter();
             if status < 0 {
-                log::error!("krun_start_enter failed with status {}", status);
+                log::error!("libkrun: krun_start_enter failed with status {} (ctx_id={})", status, ctx.ctx_id);
                 // Signal failure to main thread so it doesn't wait for timeout
                 let _ = start_failed_tx.send(());
             } else {
-                log::debug!("libkrun: krun_start_enter returned status {}", status);
+                log::info!("libkrun: krun_start_enter returned status {} (VM exited normally)", status);
             }
             status
         }
@@ -1028,12 +1055,14 @@ pub fn run_command_in_krun(
     if config.use_vsock {
         if run_options.reuse_vm {
             if let Some(code) = try_reuse_existing_krun_session(env_root, &config, run_options)? {
-                log::debug!("libkrun: reused VM session, exit code {}", code);
+                log::info!("libkrun: reused VM session, exit code {}", code);
                 return apply_krun_exit_policy(code, run_options);
             }
         }
 
+        log::info!("libkrun: creating and configuring VM...");
         let vm_ctx = create_and_configure_vm(env_root, run_options, &config)?;
+        log::info!("libkrun: VM configured (ctx_id={})", vm_ctx.ctx.ctx_id);
 
         #[cfg(unix)]
         let ready_listener = libkrun_bridge::setup_vsock_ready_listener()?
@@ -1042,7 +1071,8 @@ pub fn run_command_in_krun(
         let ready_pipe = libkrun_bridge::setup_vsock_ready_listener()?
             .ok_or_else(|| eyre::eyre!("libkrun: missing ready listener"))?;
 
-        log::debug!("libkrun: starting VM thread...");
+        log::info!("libkrun: vsock ready listener set up");
+
         let ctx_id = vm_ctx.ctx.ctx_id;
         let shutdown_fd = vm_ctx.shutdown_fd;
         let vsock_sock_path = vm_ctx
@@ -1054,11 +1084,12 @@ pub fn run_command_in_krun(
         let (start_failed_tx, start_failed_rx) = std::sync::mpsc::channel();
         let vm_thread = start_libkrun_vm(vm_ctx.ctx, start_failed_tx);
 
-        log::debug!("libkrun: waiting for guest to be ready (with timeout)...");
+        log::info!("libkrun: waiting for guest to be ready (with timeout)...");
         #[cfg(unix)]
         libkrun_bridge::wait_guest_ready_unix(&ready_listener, Some(&start_failed_rx))?;
         #[cfg(windows)]
         libkrun_bridge::wait_guest_ready_windows(&ready_pipe, Some(&start_failed_rx))?;
+        log::info!("libkrun: guest is ready, sending command via vsock...");
 
         let exit_code = libkrun_stream::send_command_via_vsock(
             &config.cmd_parts,
@@ -1087,9 +1118,11 @@ pub fn run_command_in_krun(
         krun_vsock_shutdown_join_free_exit(vm_thread, shutdown_fd, ctx_id, exit_code);
     }
 
+    // No-vsock mode (EPKG_VM_NO_DAEMON set)
+    log::info!("libkrun: starting VM in no-vsock mode (EPKG_VM_NO_DAEMON)...");
     let vm_ctx = create_and_configure_vm(env_root, run_options, &config)?;
-    log::debug!("libkrun: starting VM thread...");
     let ctx_id = vm_ctx.ctx.ctx_id;
+    log::info!("libkrun: VM configured (ctx_id={})", ctx_id);
     // Channel for signaling VM start failure (unused in no-vsock path)
     let (start_failed_tx, _start_failed_rx) = std::sync::mpsc::channel();
     let vm_thread = start_libkrun_vm(vm_ctx.ctx, start_failed_tx);
