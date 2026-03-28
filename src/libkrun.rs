@@ -693,11 +693,19 @@ fn create_and_configure_vm(
             return Err(eyre::eyre!("No kernel configured for VM"));
         }
 
-        ctx.set_root(env_root.to_str().unwrap())?;
-        log::info!("libkrun: rootfs configured: {:?}", env_root);
+        let root_path_str = env_root.to_str()
+            .ok_or_else(|| eyre::eyre!("Environment root path contains invalid UTF-8: {:?}", env_root))?;
+        ctx.set_root(root_path_str)?;
+        log::info!("libkrun: rootfs configured: {}", root_path_str);
 
         // Add additional virtiofs mounts
         for (tag, host_path, guest_path, read_only) in &config.virtiofs_mounts {
+            // Verify mount source exists before adding
+            if !std::path::Path::new(host_path).exists() {
+                log::warn!("libkrun: skipping virtiofs mount for {}: source path does not exist: {}",
+                    tag, host_path);
+                continue;
+            }
             ctx.add_virtiofs(tag, host_path)?;
             log::info!("libkrun: virtiofs mount: {} -> {} (guest: {}) ({})",
                        host_path, tag, guest_path, if *read_only { "ro" } else { "rw" });
