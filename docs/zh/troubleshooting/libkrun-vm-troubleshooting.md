@@ -36,6 +36,98 @@
 
 ---
 
+## WSL2 中调试 Windows 可执行文件
+
+### PowerShell 和 cmd.exe 路径
+
+在 WSL2 中调用 Windows 可执行文件：
+
+```bash
+# PowerShell 路径
+/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
+
+# cmd.exe 路径
+/mnt/c/Windows/System32/cmd.exe
+
+# 验证可用性
+/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command "Write-Host 'PowerShell works!'"
+/mnt/c/Windows/System32/cmd.exe /c "echo cmd.exe works!"
+```
+
+### 环境变量传递
+
+**WSLENV 格式：**
+```bash
+# 传递环境变量到 Windows 进程
+export WSLENV=RUST_LOG:1:LIBKRUN_WINDOWS_VERBOSE_DEBUG:1
+
+# :1 表示传递但不转换路径格式
+# :0 或省略表示传递并转换 Windows 路径格式
+```
+
+**完整调试命令：**
+```bash
+# 设置调试环境
+export WSLENV=RUST_LOG:1:LIBKRUN_WINDOWS_VERBOSE_DEBUG:1:EPKG_VM_DEBUG:1
+export RUST_LOG=trace
+export LIBKRUN_WINDOWS_VERBOSE_DEBUG=1
+export EPKG_VM_DEBUG=1
+
+# 运行测试
+/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command "
+  \$env:RUST_LOG='trace'
+  \$env:LIBKRUN_WINDOWS_VERBOSE_DEBUG='1'
+  C:\Users\epkg\.epkg\envs\self\usr\bin\epkg.exe run -e alpine --isolate=vm --timeout 30 ls /
+  Write-Host 'Exit code:' \$LASTEXITCODE
+"
+```
+
+### 查看 Windows 日志
+
+```bash
+# 列出日志文件
+/mnt/c/Windows/System32/cmd.exe /c 'dir /b C:\Users\epkg\.epkg\cache\vmm-logs\'
+
+# 查看控制台日志
+/mnt/c/Windows/System32/cmd.exe /c 'type C:\Users\epkg\.epkg\cache\vmm-logs\libkrun-console-XXXX.log'
+
+# PowerShell 查看日志
+/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command "
+  Get-Content 'C:\Users\epkg\.epkg\cache\vmm-logs\latest-console.log' -ErrorAction SilentlyContinue
+"
+```
+
+### 调试技巧
+
+**捕获完整输出：**
+```bash
+# 保存所有输出到文件
+/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command "
+  \$env:RUST_LOG='trace'
+  C:\Users\epkg\.epkg\envs\self\usr\bin\epkg.exe run -e alpine --isolate=vm --timeout 30 ls / 2>&1
+" > vm_test.log 2>&1
+
+# 查看最后 50 行
+/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command "
+  Get-Content vm_test.log -Tail 50
+"
+```
+
+**检查退出代码：**
+```bash
+/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command "
+  C:\Users\epkg\.epkg\envs\self\usr\bin\epkg.exe run -e alpine --isolate=vm ls /
+  Write-Host 'Exit code:' \$LASTEXITCODE
+"
+```
+
+**常用退出代码：**
+- `0` - 成功
+- `-1073741819` - Access Violation (0xC0000005)
+- `-1` - 一般错误
+
+---
+
 ## 环境变量
 
 调试 VM 问题时，以下环境变量非常有用：
