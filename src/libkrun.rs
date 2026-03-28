@@ -13,10 +13,8 @@ use color_eyre::Result;
 use crate::lfs;
 use crate::run::RunOptions;
 
-// Embed init.krun binary for Windows VM environments
-// This is the Linux init binary from libkrun that will be written to the environment root
-#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
-static INIT_KRUN_BYTES: &[u8] = include_bytes!("../git/libkrun/init/init");
+// Windows guest init: either virtiofs virtual /init.krun (cargo feature embedded_init -> libkrun devices)
+// or init=/usr/bin/init (epkg Linux ELF in the env root for vsock / vm_daemon).
 
 #[cfg(feature = "libkrun")]
 #[path = "libkrun_bridge.rs"]
@@ -203,11 +201,6 @@ fn setup_windows_vm_diagnostics() {
     }
 }
 
-#[cfg(all(feature = "libkrun", not(target_os = "windows")))]
-fn setup_windows_vm_diagnostics() {
-    // No-op on non-Windows platforms
-}
-
 #[cfg(feature = "libkrun")]
 fn check_status(op: &str, status: i32) -> Result<()> {
     if status < 0 {
@@ -228,50 +221,20 @@ struct LibkrunConfig {
     virtiofs_mounts:     Vec<(String, String, String, bool)>,
 }
 
-#[cfg(all(feature = "libkrun", target_os = "windows"))]
-/// Ensure init.krun is written to the environment root for VM boot.
-/// This embeds the Linux init binary into epkg and writes it to the target environment.
-fn ensure_init_krun(env_root: &Path) -> Result<()> {
-    let init_krun_path = env_root.join("init.krun");
-
-    // Check if already exists and has correct size
-    if let Ok(meta) = std::fs::metadata(&init_krun_path) {
-        if meta.len() == INIT_KRUN_BYTES.len() as u64 {
-            log::debug!("init.krun already exists with correct size ({} bytes)", meta.len());
-            return Ok(());
-        }
-        log::info!("init.krun exists but wrong size ({} vs {} bytes), overwriting",
-            meta.len(), INIT_KRUN_BYTES.len());
-    }
-
-    log::info!("Writing embedded init.krun ({} bytes) to {}",
-        INIT_KRUN_BYTES.len(), init_krun_path.display());
-    if let Err(e) = lfs::write(&init_krun_path, INIT_KRUN_BYTES) {
-        return Err(eyre::eyre!("Failed to write init.krun to {}: {}", init_krun_path.display(), e));
-    }
-    log::info!("init.krun written successfully");
-
-    // Set execute permission using NTFS EA on Windows
-    const S_IFREG: u32 = 0o100000;
-    const MODE_755: u32 = S_IFREG | 0o755;
-    match crate::ntfs_ea::set_posix_mode(&init_krun_path, MODE_755, false) {
-        Ok(_) => log::info!("Set execute permission (100755) on init.krun"),
-        Err(e) => log::warn!("Failed to set execute permission on init.krun: {}", e),
-    }
-
-    log::info!("init.krun ready at {}", init_krun_path.display());
-    Ok(())
-}
-
 #[cfg(feature = "libkrun")]
 fn build_libkrun_config(
     env_root: &Path,
     run_options: &RunOptions,
     guest_cmd_path: &Path,
 ) -> Result<LibkrunConfig> {
-    // Ensure init.krun is present for VM boot (embedded binary)
-    #[cfg(target_os = "windows")]
-    ensure_init_krun(env_root)?;
+    #[cfg(all(target_os = "windows", feature = "embedded_init"))]
+    log::info!(
+        "libkrun: embedded_init enabled: guest uses virtual /init.krun (libkrun devices; no epkg file extract)"
+    );
+    #[cfg(all(target_os = "windows", not(feature = "embedded_init")))]
+    log::info!(
+        "libkrun: guest init is /usr/bin/init (epkg Linux ELF in env). For early bootstrap only, rebuild with --features embedded_init (virtual init.krun)."
+    );
 
     let use_cmdline_mode = std::env::var("EPKG_VM_NO_DAEMON").is_ok();
     let use_vsock = !use_cmdline_mode;
@@ -295,10 +258,14 @@ fn build_libkrun_config(
 
     // root=/dev/root: specifies the virtiofs tag for root filesystem
     // (krun_set_root sets up a virtiofs device with tag "/dev/root")
-    // On Windows, use ttyS0 for serial console since libkrun auto-adds COM1 device
-    #[cfg(target_os = "windows")]
+    // On Windows, use ttyS0 for serial console since libkrun auto-adds COM1 device.
+    // embedded_init: virtiofs synthetic /init.krun. Otherwise: epkg guest at /usr/bin/init.
+    #[cfg(all(target_os = "windows", feature = "embedded_init"))]
     let base_cmdline = "reboot=k panic=-1 panic_print=0 nomodule console=ttyS0 earlyprintk=serial \
                         loglevel=8 debug root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/init.krun";
+    #[cfg(all(target_os = "windows", not(feature = "embedded_init")))]
+    let base_cmdline = "reboot=k panic=-1 panic_print=0 nomodule console=ttyS0 earlyprintk=serial \
+                        loglevel=8 debug root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/usr/bin/init";
     #[cfg(not(target_os = "windows"))]
     let base_cmdline = "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 earlyprintk=hvc0 \
                         loglevel=8 debug root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/usr/bin/init";
@@ -892,6 +859,7 @@ impl KrunContext {
     /// This is required for the kernel to have a working console on WHPX.
     /// input_fd: stdin file descriptor (0)
     /// output_fd: stdout file descriptor (1)
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     unsafe fn add_serial_console(&self, input_fd: libc::c_int, output_fd: libc::c_int) -> Result<()> {
         check_status(
             "krun_add_serial_console_default",
