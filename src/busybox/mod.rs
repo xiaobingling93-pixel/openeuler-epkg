@@ -318,10 +318,50 @@ fn strip_windows_exe_suffix(name: String) -> String {
 /// Get the applet name from the invocation (if any)
 /// Returns None if not invoked as an applet
 fn get_applet_name_from_invocation() -> Option<String> {
-    let args: Vec<String> = std::env::args_os()
+    // Try reading from /proc/self/cmdline to see what the kernel passed
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::Write;
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            match std::fs::read_to_string("/proc/self/cmdline") {
+                Ok(cmdline) => {
+                    let args: Vec<&str> = cmdline.split('\0').filter(|s| !s.is_empty()).collect();
+                    let _ = write!(kmsg, "<6>get_applet_name: /proc/self/cmdline args count={}\n", args.len());
+                    for (i, arg) in args.iter().enumerate() {
+                        let _ = write!(kmsg, "<6>get_applet_name: cmdline[{}]=[{}]\n", i, arg);
+                    }
+                }
+                Err(e) => {
+                    let _ = write!(kmsg, "<6>get_applet_name: /proc/self/cmdline read failed: {}\n", e);
+                }
+            }
+        }
+    }
+
+    // Get raw args to see what's happening
+    let raw_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::Write;
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            let _ = write!(kmsg, "<6>get_applet_name: rust args count={}\n", raw_args.len());
+        }
+    }
+
+    let args: Vec<String> = raw_args
+        .iter()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
+
     if args.is_empty() {
+        #[cfg(target_os = "linux")]
+        {
+            use std::io::Write;
+            if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+                let _ = write!(kmsg, "<6>get_applet_name: args is empty, returning None\n");
+            }
+        }
         return None;
     }
 
@@ -333,6 +373,17 @@ fn get_applet_name_from_invocation() -> Option<String> {
         .file_name()
         .and_then(|n| n.to_str())
         .map(|s| s.to_string());
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::Write;
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            match &applet_name {
+                Some(name) => { let _ = write!(kmsg, "<6>get_applet_name: final name='{}'\n", name); }
+                None => { let _ = write!(kmsg, "<6>get_applet_name: no name extracted\n"); }
+            }
+        }
+    }
 
     let applet_name = match applet_name {
         Some(name) => name,
@@ -366,9 +417,36 @@ pub fn is_invoked_as_applet() -> bool {
 /// Handle applet invocation - parse arguments and execute the applet
 /// Returns Ok(Some(())) if handled as an applet, Ok(None) if not an applet, Err on error
 pub fn handle_applet_invocation() -> Result<Option<()>> {
+    // Debug: trace via kmsg for init debugging
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::Write;
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            let _ = write!(kmsg, "<6>handle_applet: started\n");
+        }
+    }
+
     let invoked_applet_name = match get_applet_name_from_invocation() {
-        Some(name) => name,
-        None => return Ok(None), // Not invoked as an applet
+        Some(name) => {
+            #[cfg(target_os = "linux")]
+            {
+                use std::io::Write;
+                if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+                    let _ = write!(kmsg, "<6>handle_applet: got name='{}'\n", name);
+                }
+            }
+            name
+        }
+        None => {
+            #[cfg(target_os = "linux")]
+            {
+                use std::io::Write;
+                if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+                    let _ = write!(kmsg, "<6>handle_applet: no applet name, returning None\n");
+                }
+            }
+            return Ok(None); // Not invoked as an applet
+        }
     };
 
     // Normalize special invocation aliases.
@@ -396,12 +474,46 @@ pub fn handle_applet_invocation() -> Result<Option<()>> {
     };
 
     // Get all applet commands and find the matching one in a single pass
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::Write;
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            let _ = write!(kmsg, "<6>handle_applet: getting subcommands for {}\n", applet_name);
+        }
+    }
+
     let applet_commands = busybox_subcommands();
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::Write;
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            let _ = write!(kmsg, "<6>handle_applet: got {} subcommands\n", applet_commands.len());
+        }
+    }
+
     let applet_cmd = match applet_commands.iter()
         .find(|cmd| cmd.get_name() == applet_name) {
         Some(cmd) => cmd,
-        None => return Ok(None), // Not a valid applet, fall back to normal epkg operation
+        None => {
+            #[cfg(target_os = "linux")]
+            {
+                use std::io::Write;
+                if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+                    let _ = write!(kmsg, "<6>handle_applet: applet {} not found\n", applet_name);
+                }
+            }
+            return Ok(None); // Not a valid applet, fall back to normal epkg operation
+        }
     };
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::Write;
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            let _ = write!(kmsg, "<6>handle_applet: found applet {}, about to run\n", applet_name);
+        }
+    }
 
     // Parse arguments using the applet's command structure.
     // Pass raw OsString so path args (e.g. touch) keep bytes that are not valid UTF-8.

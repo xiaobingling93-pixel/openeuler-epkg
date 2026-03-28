@@ -194,7 +194,25 @@ fn main() -> Result<()> {
     if invoked_as_init {
         crate::busybox::init::init_logging_early();
     }
+
+    // Debug: trace init progress via kmsg
+    #[cfg(target_os = "linux")]
+    if invoked_as_init {
+        use std::io::Write;
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            let _ = write!(kmsg, "<6>main: before setup_logging\n");
+        }
+    }
+
     setup_logging();
+
+    #[cfg(target_os = "linux")]
+    if invoked_as_init {
+        use std::io::Write;
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            let _ = write!(kmsg, "<6>main: after setup_logging\n");
+        }
+    }
 
     log::info!("{}", env!("EPKG_VERSION_INFO"));
     if cfg!(debug_assertions) {
@@ -207,9 +225,52 @@ fn main() -> Result<()> {
 
     // Init CONFIG (and CLAP_MATCHES) for either applet or epkg main invocation
     let invoked_as_applet = crate::busybox::is_invoked_as_applet();
+
+    #[cfg(target_os = "linux")]
+    if invoked_as_init {
+        use std::io::Write;
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            let _ = write!(kmsg, "<6>main: before init_config applet={}\n", invoked_as_applet);
+        }
+    }
+
     init_config(invoked_as_applet)?;
+
+    #[cfg(target_os = "linux")]
+    if invoked_as_init {
+        use std::io::Write;
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            let _ = write!(kmsg, "<6>main: after init_config\n");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    if invoked_as_init {
+        use std::io::Write;
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            let _ = write!(kmsg, "<6>main: before attach_session_log\n");
+        }
+    }
+
     attach_session_log_under_epkg_cache();
+
+    #[cfg(target_os = "linux")]
+    if invoked_as_init {
+        use std::io::Write;
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            let _ = write!(kmsg, "<6>main: after attach_session_log\n");
+        }
+    }
+
     setup_ctrlc();
+
+    #[cfg(target_os = "linux")]
+    if invoked_as_init {
+        use std::io::Write;
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            let _ = write!(kmsg, "<6>main: after setup_ctrlc\n");
+        }
+    }
 
     // SIGPIPE handling principles:
     // 1. Package manager should ignore SIGPIPE and handle EPIPE explicitly
@@ -226,22 +287,35 @@ fn main() -> Result<()> {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 
+    #[cfg(target_os = "linux")]
+    if invoked_as_init {
+        use std::io::Write;
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            let _ = write!(kmsg, "<6>main: after SIGPIPE setup, applet={}\n", invoked_as_applet);
+        }
+    }
+
+    // If invoked as init (guest VMM mode), handle it BEFORE applet check.
+    // This is a workaround for Windows/WHPX where std::env::args_os() returns empty
+    // values when running as init, causing the applet check to fail.
+    #[cfg(target_os = "linux")]
+    if invoked_as_init {
+        use std::io::Write;
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            let _ = write!(kmsg, "<6>main: running as init, bypassing applet check\n");
+        }
+        log::debug!("init: invoked as init, running init process");
+        use crate::busybox::init::run;
+        run(()).wrap_err("init: init::run failed")?;
+        return Ok(());
+    }
+
     // If invoked as an applet (via symlink/hardlink), handle it and return early
     if invoked_as_applet {
         match crate::busybox::handle_applet_invocation()? {
             Some(_) => return Ok(()), // Handled as applet, exit
             None => {} // Should not happen after is_invoked_as_applet()
         }
-    }
-
-    // If invoked as init (guest VMM mode), run the init process which reads
-    // epkg.init_cmd and epkg.init_pwd from cmdline and executes the command
-    #[cfg(target_os = "linux")]
-    if invoked_as_init {
-        log::debug!("init: invoked as init, running init process");
-        use crate::busybox::init::run;
-        run(()).wrap_err("init: init::run failed")?;
-        return Ok(());
     }
 
     log::trace!("Application starting with config: {:#?}", &*config());

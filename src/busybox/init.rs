@@ -18,6 +18,14 @@ use nix::unistd::{setgid, setuid, Gid, Uid};
 
 static CMDLINE: OnceLock<HashMap<String, String>> = OnceLock::new();
 
+/// Helper to write to kernel message buffer for early debugging
+fn kmsg_write(msg: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut kmsg = std::fs::OpenOptions::new().write(true).open("/dev/kmsg")?;
+    write!(kmsg, "{}", msg)?;
+    kmsg.flush()
+}
+
 fn parse_cmdline() -> HashMap<String, String> {
     let mut map = HashMap::new();
     if let Err(e) = std::fs::read_to_string("/proc/cmdline").map(|cmdline| {
@@ -174,24 +182,33 @@ pub fn init_logging_early() {
 }
 
 fn run_init() -> Result<()> {
+    use std::io::Write;
+    let _ = kmsg_write("<6>run_init: started\n");
+
     let (pwd, cmd_str, run_user) = (
         get_cmdline_param("epkg.init_pwd"),
         get_cmdline_param("epkg.init_cmd"),
         get_cmdline_param("epkg.init_user"),
     );
+    let _ = kmsg_write(&format!("<6>run_init: cmd={:?}\n", cmd_str));
     log::debug!("init: config pwd={:?} cmd={:?} user={:?}", pwd, cmd_str.as_deref(), run_user.as_deref());
 
+    let _ = kmsg_write("<6>run_init: about to setup_mounts\n");
     if let Err(e) = setup_mounts() {
         log::debug!("init: setup_mounts failed: {}", e);
         return Err(e).wrap_err("init: setup_mounts failed");
     }
+    let _ = kmsg_write("<6>run_init: setup_mounts done\n");
 
     // Mount user virtiofs volumes from kernel cmdline (epkg.vol_N=tag:guest_path[:ro])
+    let _ = kmsg_write("<6>run_init: about to mount_virtiofs_volumes\n");
     if let Err(e) = mount_virtiofs_volumes() {
         log::debug!("init: mount_virtiofs_volumes failed: {}", e);
         // Non-fatal: continue even if some volumes fail to mount
     }
+    let _ = kmsg_write("<6>run_init: mount_virtiofs_volumes done\n");
 
+    let _ = kmsg_write("<6>run_init: about to chdir\n");
     if let Some(ref r) = pwd {
         if let Err(e) = std::env::set_current_dir(r) {
             log::debug!("init: chdir {} failed: {}", r, e);
@@ -199,18 +216,23 @@ fn run_init() -> Result<()> {
             log::debug!("init: chdir {} ok", r);
         }
     }
+    let _ = kmsg_write("<6>run_init: about to raise_system_file_limit\n");
     raise_system_file_limit();
+
+    let _ = kmsg_write("<6>run_init: about to fork\n");
 
     // Fork and run command in child process
     match unsafe { nix::unistd::fork() } {
         Ok(nix::unistd::ForkResult::Parent { child }) => {
+            let _ = kmsg_write(&format!("<6>run_init: parent, child pid={}\n", child));
             log::debug!("init: forked child pid={}, parent entering idle loop", child);
             let status = pid1_idle_loop();
             log::debug!("init: parent idle_loop returned with status: {:?}", status);
             Ok(())
         }
         Ok(nix::unistd::ForkResult::Child) => {
-            log::debug!("init: child process running exec_init_command");
+            let _ = kmsg_write("<6>run_init: child started\n");
+            let _ = kmsg_write("<6>run_init: child about to exec\n");
             match exec_init_command(cmd_str, run_user) {
                 Ok(_) => unreachable!(),
                 Err(e) => {
@@ -291,16 +313,24 @@ fn apply_requested_user(run_user: Option<&str>) -> Result<()> {
 }
 
 fn exec_init_command(cmd_str: Option<String>, run_user: Option<String>) -> Result<()> {
+    let _ = kmsg_write("<6>exec_init_command: started\n");
+
+    let _ = kmsg_write("<6>exec_init_command: applying user\n");
     apply_requested_user(run_user.as_deref())?;
+
+    let _ = kmsg_write("<6>exec_init_command: checking for user cmd\n");
     if let Some(cmd) = cmd_str {
         log::debug!("init: exec user command: {:?}", cmd);
         exec_command(&cmd)
     } else {
+        let _ = kmsg_write("<6>exec_init_command: no user cmd, going to vm-daemon\n");
         log::debug!("init: no command, starting vm-daemon");
 
         // Check if vsock is already available (kernel built-in)
         // If /dev/vsock exists, vsock is ready and we can skip module loading
+        let _ = kmsg_write("<6>exec_init_command: checking /dev/vsock exists\n");
         let vsock_ready = std::path::Path::new("/dev/vsock").exists();
+        let _ = kmsg_write(&format!("<6>exec_init_command: vsock_ready={}\n", vsock_ready));
 
         if !vsock_ready {
             // Load vsock modules if not already available
@@ -309,13 +339,16 @@ fn exec_init_command(cmd_str: Option<String>, run_user: Option<String>) -> Resul
             try_load_module("vsock");
             try_load_module("vmw_vsock_virtio_transport");
         } else {
+            let _ = kmsg_write("<6>exec_init_command: vsock available\n");
             log::debug!("init: vsock already available (/dev/vsock exists)");
         }
 
         // Check if TSI (Transparent Socket Impersonation) is enabled.
         // When TSI is enabled, the guest uses host network via socket hijacking
         // and does not need virtio_net or traditional network setup.
+        let _ = kmsg_write("<6>exec_init_command: checking TSI\n");
         let tsi_enabled = get_cmdline_param("epkg.tsi").map_or(true, |v| v == "1" || v.is_empty());
+        let _ = kmsg_write(&format!("<6>exec_init_command: tsi_enabled={}\n", tsi_enabled));
         if tsi_enabled {
             log::debug!("init: TSI enabled, skipping virtio_net/network setup (using host network via TSI)");
         } else {
@@ -328,6 +361,7 @@ fn exec_init_command(cmd_str: Option<String>, run_user: Option<String>) -> Resul
             }
         }
 
+        let _ = kmsg_write("<6>exec_init_command: about to exec_vm_daemon\n");
         log::debug!("init: exec vm-daemon");
         exec_vm_daemon()
     }
@@ -361,61 +395,48 @@ fn exec_init_command(cmd_str: Option<String>, run_user: Option<String>) -> Resul
 /// Returns Ok(()) on success, Err on critical mount failures.
 #[cfg(target_os = "linux")]
 fn setup_mounts() -> Result<()> {
+    let _ = kmsg_write("<6>setup_mounts: starting\n");
+
     // Virtiofs mounts root readonly; remount rw so we can create /dev, etc.
+    let _ = kmsg_write("<6>setup_mounts: remounting root rw\n");
     if let Err(e) = crate::mount::remount_root_rw() {
         log::debug!("init: remount / rw failed: {} (continuing; /dev creation may fail)", e);
     }
+    let _ = kmsg_write("<6>setup_mounts: remount done\n");
 
     // Debug: check if self env is visible through bind mounts
+    let _ = kmsg_write("<6>setup_mounts: checking self_epkg exists\n");
     let self_epkg = Path::new("/home/wfg/.epkg/envs/self/usr/bin/epkg");
     if self_epkg.exists() {
         log::debug!("init: self epkg exists at {:?}", self_epkg);
     } else {
         log::debug!("init: self epkg NOT found at {:?}", self_epkg);
-        // Check what's in /home/wfg/.epkg
-        if let Ok(entries) = std::fs::read_dir("/home/wfg/.epkg") {
-            log::debug!("init: /home/wfg/.epkg contents:");
-            for entry in entries.flatten() {
-                log::debug!("  {:?}", entry.file_name());
-            }
-        } else {
-            log::debug!("init: /home/wfg/.epkg does not exist or cannot be read");
-        }
     }
+    let _ = kmsg_write("<6>setup_mounts: self_epkg check done\n");
 
     // Debug: check vm-daemon and epkg symlinks
+    let _ = kmsg_write("<6>setup_mounts: checking vm-daemon exists\n");
     let vm_daemon = Path::new("/usr/bin/vm-daemon");
-    let epkg = Path::new("/usr/bin/epkg");
-    log::debug!("init: /usr/bin/vm-daemon exists: {}", vm_daemon.exists());
-    log::debug!("init: /usr/bin/epkg exists: {}", epkg.exists());
-    if let Ok(link) = std::fs::read_link(vm_daemon) {
-        log::debug!("init: vm-daemon -> {:?}", link);
-    }
-    if let Ok(link) = std::fs::read_link(epkg) {
-        log::debug!("init: epkg -> {:?}", link);
-    }
-    // Check if we can stat the final target
-    if let Ok(meta) = std::fs::metadata(vm_daemon) {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = meta.permissions().mode();
-        log::debug!("init: vm-daemon metadata: is_file={}, mode={:o}, executable={}",
-            meta.is_file(), mode & 0o777, (mode & 0o111) != 0);
-    } else {
-        log::debug!("init: vm-daemon metadata: FAILED");
-    }
+    let _ = vm_daemon.exists();
+    let _ = kmsg_write("<6>setup_mounts: vm-daemon check done\n");
 
     let init_specs = crate::mount::vmm_init_mount_spec_strings();
+    let _ = kmsg_write("<6>setup_mounts: about to mount_spec_strings\n");
     log::debug!("init: applying {} mount specs (proc, tmp, ...)", init_specs.len());
     crate::mount::mount_spec_strings(
         &init_specs,
         Path::new("/"),
         crate::models::IsolateMode::Vm,
     ).wrap_err_with(|| format!("init: mount_spec_strings failed (specs: {:?})", init_specs))?;
+    let _ = kmsg_write("<6>setup_mounts: mount_spec_strings done\n");
 
+    let _ = kmsg_write("<6>setup_mounts: checking /dev exists\n");
     if Path::new("/dev").exists() && Path::new("/dev/null").exists() {
         log::debug!("init: /dev already populated, skip devtmpfs/tmpfs");
     } else {
+        let _ = kmsg_write("<6>setup_mounts: creating /dev\n");
         fs_create_dir_if_missing("/dev").wrap_err("init: create /dev")?;
+        let _ = kmsg_write("<6>setup_mounts: mounting devtmpfs\n");
         if let Err(e) = nix::mount::mount(
             Some("devtmpfs"),
             Path::new("/dev"),
@@ -435,9 +456,12 @@ fn setup_mounts() -> Result<()> {
             log::debug!("init: mounted devtmpfs on /dev");
         }
     }
+    let _ = kmsg_write("<6>setup_mounts: /dev setup done\n");
 
+    let _ = kmsg_write("<6>setup_mounts: ensure_minimal_dev\n");
     log::debug!("init: ensure_minimal_dev (symlinks, nodes, devpts)");
     ensure_minimal_dev().wrap_err("init: ensure_minimal_dev")?;
+    let _ = kmsg_write("<6>setup_mounts: complete\n");
     Ok(())
 }
 
@@ -512,11 +536,15 @@ fn mount_virtiofs_volumes() -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn exec_vm_daemon() -> Result<()> {
+    let _ = kmsg_write("<6>exec_vm_daemon: starting\n");
+
     // Call vm_daemon::run() directly instead of exec-ing the binary.
     // This avoids issues with symlink resolution when vm-daemon -> epkg -> /home/wfg/.epkg/envs/self/...
     // and the epkg binary is accessed via virtiofs bind mounts.
     log::debug!("init: starting vm-daemon directly (no exec)");
+    let _ = kmsg_write("<6>exec_vm_daemon: creating options\n");
     let options = crate::busybox::vm_daemon::VmDaemonOptions::default();
+    let _ = kmsg_write("<6>exec_vm_daemon: about to call vm_daemon::run\n");
     let result = crate::busybox::vm_daemon::run(options);
     log::debug!("init: vm_daemon::run() returned: {:?}", result);
     // vm_daemon returns after handling command; trigger immediate shutdown

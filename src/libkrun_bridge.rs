@@ -274,13 +274,16 @@ pub fn wait_guest_ready_windows(
 pub fn connect_vsock_bridge(sock_path: &Path, max_retries: u32) -> Result<std::fs::File> {
     let pipe_name = pipe_name_from_sock_path(sock_path)?;
     let full = format!("\\\\.\\pipe\\{}", pipe_name);
+    eprintln!("[epkg-debug] libkrun_bridge: connecting to named pipe: {}", full);
     let c_path = std::ffi::CString::new(full.as_bytes())
         .map_err(|_| eyre::eyre!("invalid pipe path"))?;
 
     let mut retry_count = 0;
     let mut last_error = None;
+    eprintln!("[epkg-debug] libkrun_bridge: starting connection retry loop (max={})", max_retries);
     while retry_count < max_retries {
         unsafe {
+            eprintln!("[epkg-debug] libkrun_bridge: attempt {} - waiting for named pipe...", retry_count);
             if WaitNamedPipeA(
                 windows::core::PCSTR(c_path.as_ptr() as *const u8),
                 30_000,
@@ -288,6 +291,7 @@ pub fn connect_vsock_bridge(sock_path: &Path, max_retries: u32) -> Result<std::f
             .is_err()
             {
                 last_error = Some(std::io::Error::last_os_error());
+                eprintln!("[epkg-debug] libkrun_bridge: WaitNamedPipeA failed: {:?}", last_error);
                 retry_count += 1;
                 if retry_count >= max_retries {
                     break;
@@ -295,6 +299,7 @@ pub fn connect_vsock_bridge(sock_path: &Path, max_retries: u32) -> Result<std::f
                 std::thread::sleep(Duration::from_millis(5));
                 continue;
             }
+            eprintln!("[epkg-debug] libkrun_bridge: named pipe is available, connecting...");
 
             let handle = CreateFileW(
                 PCWSTR(to_wide_null(&full).as_ptr()),
@@ -308,10 +313,16 @@ pub fn connect_vsock_bridge(sock_path: &Path, max_retries: u32) -> Result<std::f
 
             match handle {
                 Ok(h) if h != INVALID_HANDLE_VALUE => {
+                    eprintln!("[epkg-debug] libkrun_bridge: successfully connected to named pipe");
                     let file = std::fs::File::from_raw_handle(h.0);
                     return Ok(file);
                 }
-                _ => {
+                Ok(_) => {
+                    eprintln!("[epkg-debug] libkrun_bridge: CreateFileW returned INVALID_HANDLE_VALUE");
+                    last_error = Some(std::io::Error::last_os_error());
+                }
+                Err(e) => {
+                    eprintln!("[epkg-debug] libkrun_bridge: CreateFileW failed: {}", e);
                     last_error = Some(std::io::Error::last_os_error());
                 }
             }
@@ -321,6 +332,7 @@ pub fn connect_vsock_bridge(sock_path: &Path, max_retries: u32) -> Result<std::f
             std::thread::sleep(Duration::from_millis(5));
         }
     }
+    eprintln!("[epkg-debug] libkrun_bridge: failed to connect after {} retries: {:?}", max_retries, last_error);
 
     Err(eyre::eyre!(
         "Failed to connect to named pipe for {} after {} retries: {}",

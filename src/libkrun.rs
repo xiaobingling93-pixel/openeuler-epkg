@@ -1104,10 +1104,14 @@ pub fn run_command_in_krun(
     run_options: &RunOptions,
     guest_cmd_path: &Path,
 ) -> Result<()> {
+    eprintln!("[epkg-debug] libkrun: run_command_in_krun starting");
     crate::run::ensure_linux_kvm_ready_for_vm()?;
+    eprintln!("[epkg-debug] libkrun: building config...");
     let config = build_libkrun_config(env_root, run_options, guest_cmd_path)?;
+    eprintln!("[epkg-debug] libkrun: config built, use_vsock={}", config.use_vsock);
 
     if config.use_vsock {
+        eprintln!("[epkg-debug] libkrun: entering vsock mode...");
         if run_options.reuse_vm {
             if let Some(code) = try_reuse_existing_krun_session(env_root, &config, run_options)? {
                 log::info!("libkrun: reused VM session, exit code {}", code);
@@ -1115,9 +1119,9 @@ pub fn run_command_in_krun(
             }
         }
 
-        log::info!("libkrun: creating and configuring VM...");
+        eprintln!("[epkg-debug] libkrun: creating and configuring VM...");
         let vm_ctx = create_and_configure_vm(env_root, run_options, &config)?;
-        log::info!("libkrun: VM configured (ctx_id={})", vm_ctx.ctx.ctx_id);
+        eprintln!("[epkg-debug] libkrun: VM configured (ctx_id={})", vm_ctx.ctx.ctx_id);
 
         #[cfg(unix)]
         let ready_listener = libkrun_bridge::setup_vsock_ready_listener()?
@@ -1126,7 +1130,7 @@ pub fn run_command_in_krun(
         let ready_pipe = libkrun_bridge::setup_vsock_ready_listener()?
             .ok_or_else(|| eyre::eyre!("libkrun: missing ready listener"))?;
 
-        log::info!("libkrun: vsock ready listener set up");
+        eprintln!("[epkg-debug] libkrun: vsock ready listener set up");
 
         let ctx_id = vm_ctx.ctx.ctx_id;
         let shutdown_fd = vm_ctx.shutdown_fd;
@@ -1137,15 +1141,21 @@ pub fn run_command_in_krun(
 
         // Channel to signal VM start failure to avoid waiting 30s on error
         let (start_failed_tx, start_failed_rx) = std::sync::mpsc::channel();
+        eprintln!("[epkg-debug] libkrun: starting VM thread...");
         let vm_thread = start_libkrun_vm(vm_ctx.ctx, start_failed_tx);
 
-        log::info!("libkrun: waiting for guest to be ready (with timeout)...");
+        eprintln!("[epkg-debug] libkrun: waiting for guest to be ready (with timeout)...");
         #[cfg(unix)]
         libkrun_bridge::wait_guest_ready_unix(&ready_listener, Some(&start_failed_rx))?;
         #[cfg(windows)]
         libkrun_bridge::wait_guest_ready_windows(&ready_pipe, Some(&start_failed_rx))?;
-        log::info!("libkrun: guest is ready, sending command via vsock...");
+        eprintln!("[epkg-debug] libkrun: guest is ready, pausing to let vsock bridge setup complete...");
 
+        // Give libkrun time to set up the vsock-to-named-pipe bridge
+        // This avoids a race condition where we connect before libkrun is ready
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        eprintln!("[epkg-debug] libkrun: sending command via vsock...");
         let exit_code = libkrun_stream::send_command_via_vsock(
             &config.cmd_parts,
             run_options.io_mode,

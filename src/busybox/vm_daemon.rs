@@ -1124,6 +1124,15 @@ fn accept_vsock_with_timeout(raw_fd: RawFd, timeout_ms: u32) -> Result<Option<Ra
 #[cfg(target_os = "linux")]
 fn run_vsock_server() -> Result<()> {
     use std::os::fd::FromRawFd;
+    use std::io::Write;
+
+    let kmsg_write = |msg: &str| {
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            let _ = write!(kmsg, "{}", msg);
+        }
+    };
+
+    kmsg_write("<6>run_vsock_server: start\n");
     log_process_identity("vm-daemon run_vsock_server start");
 
     // Fixed vsock ports matching host/client side.
@@ -1133,29 +1142,36 @@ fn run_vsock_server() -> Result<()> {
     // Step 1: Create and bind command port FIRST, before signaling readiness.
     // This prevents race condition where host connects before we're listening.
     log::debug!("vm-daemon: creating vsock socket for command port...");
+    kmsg_write("<6>run_vsock_server: creating socket\n");
     let fd = socket::socket(
         AddressFamily::Vsock,
         SockType::Stream,
         SockFlag::SOCK_CLOEXEC,
         None,
     ).map_err(|e| { log::debug!("vm-daemon: socket() failed: {}", e); e })?;
+    kmsg_write("<6>run_vsock_server: socket created\n");
     log::debug!("vm-daemon: socket created, fd={}", fd.as_raw_fd());
 
     let addr = VsockAddr::new(libc::VMADDR_CID_ANY, VSOCK_PORT);
     let raw_fd = fd.as_raw_fd();
 
     log::debug!("vm-daemon: binding to cid=ANY port={}...", VSOCK_PORT);
+    kmsg_write("<6>run_vsock_server: binding\n");
     socket::bind(raw_fd, &addr).map_err(|e| { log::debug!("vm-daemon: bind() failed: {}", e); e })?;
+    kmsg_write("<6>run_vsock_server: bind ok\n");
     log::debug!("vm-daemon: bind succeeded");
 
     log::debug!("vm-daemon: calling listen()...");
+    kmsg_write("<6>run_vsock_server: listening\n");
     socket::listen(&fd, Backlog::new(8)?).map_err(|e| { log::debug!("vm-daemon: listen() failed: {}", e); e })?;
+    kmsg_write("<6>run_vsock_server: listen ok\n");
     log::debug!("vm-daemon: listen succeeded");
 
     // Step 2: Notify host that we're ready to accept commands.
     // Now that command port is bound and listening, signal readiness.
     // Connect to ready port on host (CID=VMADDR_CID_HOST=2).
     log::debug!("vm-daemon: notifying host that we're ready...");
+    kmsg_write("<6>run_vsock_server: creating ready socket\n");
     let ready_fd = socket::socket(
         AddressFamily::Vsock,
         SockType::Stream,
@@ -1163,11 +1179,14 @@ fn run_vsock_server() -> Result<()> {
         None,
     ).map_err(|e| { log::debug!("vm-daemon: ready socket() failed: {}", e); e })?;
     let ready_addr = VsockAddr::new(libc::VMADDR_CID_HOST, READY_PORT);
+    kmsg_write("<6>run_vsock_server: connecting to ready port\n");
     match socket::connect(ready_fd.as_raw_fd(), &ready_addr) {
         Ok(_) => {
+            kmsg_write("<6>run_vsock_server: ready connect ok\n");
             log::debug!("vm-daemon: connected to ready port {}, host knows we're ready", READY_PORT);
         }
         Err(e) => {
+            kmsg_write(&format!("<6>run_vsock_server: ready connect failed: {}\n", e));
             // Ready port connection is best-effort (may not be configured for QEMU mode)
             log::debug!("vm-daemon: ready port connection failed (non-fatal): {}", e);
         }
@@ -1176,12 +1195,15 @@ fn run_vsock_server() -> Result<()> {
     drop(ready_fd);
 
     log::debug!("vm-daemon starting (vsock), listening on port {}", VSOCK_PORT);
+    kmsg_write("<6>run_vsock_server: entering accept loop\n");
 
     let mut next_idle_timeout_ms = VM_REUSE_IDLE_TIMEOUT_MS;
     let mut first_accept = true;
     loop {
         let client_fd = if first_accept {
             first_accept = false;
+            log::debug!("vm-daemon: calling accept()...");
+            kmsg_write("<6>run_vsock_server: calling accept\n");
             log::debug!("vm-daemon: calling accept()...");
             socket::accept(raw_fd).map_err(|e| eyre!("vsock accept failed: {}", e))?
         } else {

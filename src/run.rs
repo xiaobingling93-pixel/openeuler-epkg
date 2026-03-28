@@ -642,9 +642,11 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
 
 #[cfg(not(target_os = "linux"))]
 pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Option<i32>> {
+    eprintln!("[epkg-debug] fork_and_execute: starting for non-Linux platform");
     // Prepare options (merge sandbox settings)
     let mut prepared_opts = run_options.clone();
     prepare_run_options_for_command(env_root, &mut prepared_opts);
+    eprintln!("[epkg-debug] fork_and_execute: options prepared, isolate_mode={:?}", prepared_opts.effective_sandbox.isolate_mode);
 
     // Non-Linux platforms only support VM sandbox mode
     let isolate_mode = prepared_opts.effective_sandbox.isolate_mode
@@ -652,10 +654,13 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
 
     match isolate_mode {
         IsolateMode::Vm => {
+            eprintln!("[epkg-debug] fork_and_execute: VM mode selected");
             // VM sandbox mode - supported via libkrun
             #[cfg(feature = "libkrun")]
             {
+                eprintln!("[epkg-debug] fork_and_execute: libkrun feature enabled, resolving command path");
                 let cmd_path = resolve_command_path(env_root, &prepared_opts)?;
+                eprintln!("[epkg-debug] fork_and_execute: command path resolved: {:?}", cmd_path);
 
                 // Convert host path to guest path (strip env_root prefix if inside)
                 let guest_cmd_path = if let Ok(stripped) = cmd_path.strip_prefix(env_root) {
@@ -675,10 +680,10 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
                     cmd_path.clone()
                 };
 
-                debug!("Running in VM sandbox with libkrun");
-                debug!("Guest command path: {}", guest_cmd_path.display());
+                eprintln!("[epkg-debug] Guest command path: {}", guest_cmd_path.display());
 
                 // Note: run_command_in_krun never returns on success
+                eprintln!("[epkg-debug] fork_and_execute: calling run_command_in_krun...");
                 crate::libkrun::run_command_in_krun(env_root, &prepared_opts, &guest_cmd_path)?;
                 Ok(None) // unreachable, but needed for type consistency
             }

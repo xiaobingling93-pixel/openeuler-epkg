@@ -50,9 +50,22 @@ enum StreamMessage {
 }
 
 pub(crate) fn build_command_request(cmd_parts: &[String], io_mode: IoMode, reuse_vm: bool) -> serde_json::Value {
+    eprintln!("[epkg-debug] build_command_request: starting");
+    // On Windows, is_terminal() can hang - avoid calling it
     let use_pty = matches!(io_mode, IoMode::Tty) ||
-        (matches!(io_mode, IoMode::Auto) && std::io::stdin().is_terminal());
-    let is_batch = matches!(io_mode, IoMode::Batch);
+        (matches!(io_mode, IoMode::Auto) && {
+            #[cfg(windows)]
+            { false }  // Default to non-PTY on Windows to avoid is_terminal hang
+            #[cfg(not(windows))]
+            { std::io::stdin().is_terminal() }
+        });
+    let is_batch = matches!(io_mode, IoMode::Batch) ||
+        (matches!(io_mode, IoMode::Auto) && {
+            #[cfg(windows)]
+            { true }  // Default to batch on Windows
+            #[cfg(not(windows))]
+            { false }
+        });
 
     let mut m = serde_json::Map::new();
     m.insert("type".to_string(), serde_json::json!("command"));
@@ -76,10 +89,24 @@ pub(crate) fn build_command_request(cmd_parts: &[String], io_mode: IoMode, reuse
 }
 
 fn resolve_io_mode(io_mode: IoMode) -> (bool, bool) {
+    eprintln!("[epkg-debug] resolve_io_mode: io_mode={:?}", io_mode);
     match io_mode {
         IoMode::Auto => {
-            let is_tty = std::io::stdin().is_terminal();
-            (is_tty, false)
+            eprintln!("[epkg-debug] resolve_io_mode: checking is_terminal...");
+            // On Windows, is_terminal() can hang in some contexts.
+            // Use a timeout to avoid blocking indefinitely.
+            #[cfg(windows)]
+            {
+                // On Windows, default to batch mode to avoid is_terminal hang
+                eprintln!("[epkg-debug] resolve_io_mode: Windows - defaulting to batch mode");
+                (false, true)
+            }
+            #[cfg(not(windows))]
+            {
+                let is_tty = std::io::stdin().is_terminal();
+                eprintln!("[epkg-debug] resolve_io_mode: is_terminal={}", is_tty);
+                (is_tty, false)
+            }
         }
         IoMode::Tty => (true, false),
         IoMode::Stream => (false, false),
@@ -344,23 +371,34 @@ pub fn send_command_via_vsock(
     reuse_vm: bool,
     sock_path: &Path,
 ) -> Result<i32> {
+    eprintln!("[epkg-debug] libkrun_stream: send_command_via_vsock starting");
+    eprintln!("[epkg-debug] libkrun_stream: about to resolve io_mode...");
     let (use_pty, is_batch) = resolve_io_mode(io_mode);
-    log::debug!(
-        "libkrun: io_mode={:?}, use_pty={}, is_batch={}, reuse_vm={}",
+    eprintln!("[epkg-debug] libkrun_stream: io_mode resolved");
+    eprintln!(
+        "[epkg-debug] libkrun_stream: io_mode={:?}, use_pty={}, is_batch={}, reuse_vm={}",
         io_mode,
         use_pty,
         is_batch,
         reuse_vm
     );
+    eprintln!("[epkg-debug] libkrun_stream: connecting to vsock bridge at {:?}", sock_path);
 
+    eprintln!("[epkg-debug] libkrun_stream: about to call connect_vsock_bridge");
     let mut stream = super::libkrun_bridge::connect_vsock_bridge(sock_path, 30)?;
-    log::debug!("libkrun: named pipe connected, sending command {:?}", cmd_parts);
+    eprintln!("[epkg-debug] libkrun_stream: connected to vsock bridge");
 
+    eprintln!("[epkg-debug] libkrun_stream: building command request");
     let request = build_command_request(cmd_parts, io_mode, reuse_vm);
+    eprintln!("[epkg-debug] libkrun_stream: serializing to json");
     let request_json = serde_json::to_vec(&request)?;
+    eprintln!("[epkg-debug] libkrun_stream: writing {} bytes to stream", request_json.len());
     stream.write_all(&request_json)?;
+    eprintln!("[epkg-debug] libkrun_stream: writing newline");
     stream.write_all(b"\n")?;
-    log::debug!("libkrun: request sent ({} bytes)", request_json.len());
+    eprintln!("[epkg-debug] libkrun_stream: flushing stream");
+    stream.flush()?;
+    eprintln!("[epkg-debug] libkrun_stream: request sent");
 
     if use_pty {
         handle_streaming_windows(&mut stream)
