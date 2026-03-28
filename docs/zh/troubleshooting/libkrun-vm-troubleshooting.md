@@ -1,5 +1,41 @@
 # libkrun/VM 故障排查指南
 
+## 最新状态 (2026-03-28)
+
+### 当前 VM 启动状态
+
+✅ **已修复/正常工作：**
+1. init.krun 自动部署（937KB 嵌入二进制）
+2. 内核文件加载（vmlinux 25.7MB ELF 格式）
+3. VM 配置（2 vCPUs, 2048 MiB RAM）
+4. virtiofs 挂载（/dev/root 和 .epkg_4831）
+5. vCPU 配置（RIP=0x2162bc0, 页表映射）
+
+🔄 **待解决问题：**
+- VM 在 `krun_start_enter` 后崩溃（Exit code: -1073741819 = 0xC0000005 Access Violation）
+- Console 日志为空（内核未及输出即崩溃）
+- 需要进一步分析 WHPX 层问题
+
+### 已知崩溃点
+
+从日志观察，崩溃发生在：
+```
+[vmm/src/windows/vstate.rs:958] start_threaded called for vCPU 0
+[vmm/src/windows/vstate.rs:644] Configuring vCPU 0 for x86_64 boot: RIP=0x2162bc0
+[vmm/src/windows/vstate.rs:180] === HIGHER-HALF KERNEL MAPPING FIX ACTIVE ===
+[vmm/src/windows/vstate.rs:231] Page tables configured: PML4=0x9000, PDPTE=0xa000, PDE=0xb000
+...
+[vmm/src/windows/vstate.rs:958] start_threaded called for vCPU 1
+...  # <-- 崩溃发生在这里
+```
+
+**可能原因：**
+1. vCPU 线程启动时的竞态条件
+2. WHPX API 调用参数问题
+3. 内存映射权限问题
+
+---
+
 ## 环境变量
 
 调试 VM 问题时，以下环境变量非常有用：
