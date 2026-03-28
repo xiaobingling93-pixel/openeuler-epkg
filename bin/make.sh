@@ -1357,8 +1357,12 @@ build_release() {
 
 # Cross-compilation to macOS
 # Note: Lua is only needed for Linux RPM scriptlets (disabled for macOS)
+# Usage: cross-macos <arch> [mode]
+#   arch: aarch64 (default) or x86_64
+#   mode: debug (default) or release
 cross-macos() {
     local arch="${1:-aarch64}"
+    local mode="${2:-debug}"
     local target=""
     case "$arch" in
         x86_64) target="$RUST_TARGET_X86_64_DARWIN" ;;
@@ -1366,7 +1370,7 @@ cross-macos() {
         *) echo "Unsupported architecture for macOS: $arch"; exit 1 ;;
     esac
 
-    echo "Building for macOS ($arch)..."
+    echo "Building for macOS ($arch, $mode)..."
     # Install Rust target if needed
     if has_cmd rustup; then
         rustup target add "$target"
@@ -1392,18 +1396,33 @@ cross-macos() {
         cargo_feature_args=(--features "$cargo_features")
     fi
 
-    cargo build --release --target "$target" --ignore-rust-version "${cargo_feature_args[@]}"
+    local build_dir
+    local cargo_args=()
+    if [[ "$mode" == "release" ]]; then
+        build_dir="release"
+        cargo_args=(--release)
+    else
+        build_dir="debug"
+    fi
 
-    echo "Cross-compilation to macOS completed. Binary is in target/$target/release/$BINARY_NAME"
+    cargo build --target "$target" --ignore-rust-version "${cargo_args[@]}" "${cargo_feature_args[@]}"
+
+    echo "Cross-compilation to macOS completed. Binary is in target/$target/$build_dir/$BINARY_NAME"
 
     # Deploy for release uploads (asset names: epkg-macos-<arch>)
-    deploy_release_binary "target/$target/release/$BINARY_NAME" "epkg-macos-${arch}"
+    if [[ "$mode" == "release" ]]; then
+        deploy_release_binary "target/$target/$build_dir/$BINARY_NAME" "epkg-macos-${arch}"
+    fi
 }
 
 # Cross-compilation to Windows (x86_64 only)
 # Note: Lua is only needed for Linux RPM scriptlets (disabled for Windows)
+# Usage: cross-windows [arch] [mode]
+#   arch: x86_64 (default)
+#   mode: debug (default) or release
 cross-windows() {
     local arch="${1:-x86_64}"
+    local mode="${2:-debug}"
 
     if [[ "$arch" != "x86_64" ]]; then
         echo "Error: Windows cross-compilation only supports x86_64 architecture"
@@ -1413,7 +1432,7 @@ cross-windows() {
 
     local target="$RUST_TARGET_X86_64_WINDOWS"
 
-    echo "Building for Windows ($arch)..."
+    echo "Building for Windows ($arch, $mode)..."
     if has_cmd rustup; then
         rustup target add "$target"
     fi
@@ -1451,24 +1470,35 @@ cross-windows() {
         cargo_feature_args=(--features "$cargo_features")
     fi
 
-    cargo build --release --target "$target" --ignore-rust-version "${cargo_feature_args[@]}"
+    local build_dir
+    local cargo_args=()
+    if [[ "$mode" == "release" ]]; then
+        build_dir="release"
+        cargo_args=(--release)
+    else
+        build_dir="debug"
+    fi
 
-    echo "Cross-compilation to Windows completed. Binary is in target/$target/release/$BINARY_NAME"
+    cargo build --target "$target" --ignore-rust-version "${cargo_args[@]}" "${cargo_feature_args[@]}"
+
+    echo "Cross-compilation to Windows completed. Binary is in target/$target/$build_dir/$BINARY_NAME"
 
     # Deploy for release uploads (asset names: epkg-windows-<arch>.exe)
-    deploy_release_binary "target/$target/release/${BINARY_NAME}.exe" "epkg-windows-${arch}.exe"
+    if [[ "$mode" == "release" ]]; then
+        deploy_release_binary "target/$target/$build_dir/${BINARY_NAME}.exe" "epkg-windows-${arch}.exe"
 
-    # Also deploy the locally built Linux ELF (epkg-linux-$arch) into the
-    # native Windows install so `epkg.exe` can run VM mode without relying
-    # on the gitee `epkg-x86_64` download.
-    #
-    # Note: this is best-effort; if you haven't run `make` (Linux build)
-    # beforehand, we skip with a warning.
-    local linux_epkg="${PROJECT_ROOT}/target/${RUST_TARGET_X86_64}/debug/${BINARY_NAME}"
-    if [[ -f "$linux_epkg" ]]; then
-        deploy_release_binary "$linux_epkg" "epkg-linux-${arch}"
-    else
-        echo "Warning: local Linux epkg not found at $linux_epkg (run 'make' to build it)" >&2
+        # Also deploy the locally built Linux ELF (epkg-linux-$arch) into the
+        # native Windows install so `epkg.exe` can run VM mode without relying
+        # on the gitee `epkg-x86_64` download.
+        #
+        # Note: this is best-effort; if you haven't run `make` (Linux build)
+        # beforehand, we skip with a warning.
+        local linux_epkg="${PROJECT_ROOT}/target/${RUST_TARGET_X86_64}/debug/${BINARY_NAME}"
+        if [[ -f "$linux_epkg" ]]; then
+            deploy_release_binary "$linux_epkg" "epkg-linux-${arch}"
+        else
+            echo "Warning: local Linux epkg not found at $linux_epkg (run 'make' to build it)" >&2
+        fi
     fi
 }
 
@@ -1794,10 +1824,10 @@ case $cmd in
         clone_repos
         ;;
     cross-macos)
-        cross-macos "$2"
+        cross-macos "$2" "$3"
         ;;
     cross-windows)
-        cross-windows "$2"
+        cross-windows "$2" "$3"
         ;;
     test)
         run_tests
@@ -1820,8 +1850,8 @@ case $cmd in
         echo "  static-libkrun [<arch>]              Build static debug with libkrun (auto-enabled anyway in some platform/archs)"
         echo ""
         echo "Commands (cross-platform builds - Linux x86_64 host only):"
-        echo "  cross-macos [<arch>]                 Cross-compile to macOS (aarch64/x86_64)"
-        echo "  cross-windows                        Cross-compile to Windows (x86_64 only)"
+        echo "  cross-macos [<arch>] [debug|release]   Cross-compile to macOS (aarch64/x86_64)"
+        echo "  cross-windows [debug|release]          Cross-compile to Windows (x86_64 only)"
         echo ""
         echo "Commands (dynamic linking - LEGACY):"
         echo "  dynamic-build                        Build dynamic debug binary (not recommended)"
