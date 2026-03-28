@@ -125,33 +125,41 @@ pub fn init_logging_early() {
     write_msg(&mut console, &mut kmsg, "init: after dup2\n");
     write_kmsg(&mut kmsg, "init: after dup2 (kmsg)\n");
 
+    // Note: Skip existence checks that may block on virtiofs.
+    // Just try to create /proc and mount procfs directly.
     let proc_path = Path::new("/proc");
-    write_msg(&mut console, &mut kmsg, "init: checking /proc exists\n");
+    write_msg(&mut console, &mut kmsg, "init: creating /proc directory\n");
+    write_kmsg(&mut kmsg, "init: creating /proc dir (no existence check)\n");
 
-    if !proc_path.exists() {
-        write_msg(&mut console, &mut kmsg, "init: /proc does not exist, creating\n");
-        if let Err(e) = std::fs::create_dir_all(proc_path) {
-            write_msg(&mut console, &mut kmsg, &format!("init: cannot create /proc: {}\n", e));
+    // Try to create /proc (idempotent if already exists)
+    match std::fs::create_dir(proc_path) {
+        Ok(_) => write_kmsg(&mut kmsg, "init: created /proc\n"),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            write_kmsg(&mut kmsg, "init: /proc already exists\n")
         }
+        Err(e) => write_kmsg(&mut kmsg, &format!("init: create /proc error: {}\n", e)),
     }
-    write_msg(&mut console, &mut kmsg, "init: checking /proc exists again\n");
 
-    if proc_path.exists() {
-        write_msg(&mut console, &mut kmsg, "init: mounting proc on /proc\n");
-        if let Err(e) = nix::mount::mount(
-            Some("proc"),
-            proc_path,
-            Some("proc"),
-            nix::mount::MsFlags::empty(),
-            None::<&str>,
-        ) {
-            write_msg(&mut console, &mut kmsg, &format!("init: mount proc failed: {}\n", e));
-        } else {
+    write_msg(&mut console, &mut kmsg, "init: mounting proc on /proc\n");
+    write_kmsg(&mut kmsg, "init: mounting procfs\n");
+
+    match nix::mount::mount(
+        Some("proc"),
+        proc_path,
+        Some("proc"),
+        nix::mount::MsFlags::empty(),
+        None::<&str>,
+    ) {
+        Ok(_) => {
             write_msg(&mut console, &mut kmsg, "init: mounted proc successfully\n");
+            write_kmsg(&mut kmsg, "init: proc mount ok\n");
         }
-    } else {
-        write_msg(&mut console, &mut kmsg, "init: /proc still does not exist\n");
+        Err(e) => {
+            write_msg(&mut console, &mut kmsg, &format!("init: mount proc failed: {}\n", e));
+            write_kmsg(&mut kmsg, &format!("init: proc mount failed: {}\n", e));
+        }
     }
+
     write_msg(&mut console, &mut kmsg, "init: checking epkg.rust_log\n");
 
     if let Some(v) = get_cmdline_param("epkg.rust_log") {
