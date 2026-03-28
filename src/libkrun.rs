@@ -170,34 +170,28 @@ fn detect_kernel_format_for_libkrun(kernel_path: &str) -> Result<u32> {
 /// Set up Windows VM diagnostics environment variables for libkrun WHPX debugging.
 /// These variables are read by libkrun to enable detailed logging.
 fn setup_windows_vm_diagnostics() {
-    // Check if user wants verbose debugging
-    if std::env::var("EPKG_VM_DEBUG").is_ok() {
-        log::info!("libkrun: enabling Windows VM diagnostics (EPKG_VM_DEBUG set)");
-
-        // Set libkrun Windows verbose debug (logs to stderr and files)
-        if std::env::var("LIBKRUN_WINDOWS_VERBOSE_DEBUG").is_err() {
-            log::info!("libkrun: setting LIBKRUN_WINDOWS_VERBOSE_DEBUG=1");
-        }
-
-        // Log all the diagnostic options available
-        log::info!("libkrun: Available Windows VM diagnostic options:");
-        log::info!("  - LIBKRUN_WINDOWS_VERBOSE_DEBUG=1 : Enable verbose WHPX logging");
-        log::info!("  - LIBKRUN_WHPX_PIC_IRQ0_FIXED=1 : Use fixed PIC IRQ0 delivery");
-        log::info!("  - LIBKRUN_WHPX_PIC_FIXED_INJECT=pending-interruption : Use pending interruption register");
-        log::info!("  - LIBKRUN_WHPX_SKIP_CANCEL_ON_HLT_IRQ=1 : Skip cancel on HLT for IRQ delivery");
-        log::info!("  - LIBKRUN_LOG_DIR=<path> : Custom log directory (default: %TEMP%\\libkrun-logs\\)");
-    }
-
-    // Set default log directory to epkg's vmm-logs for consistency
+    // Default libkrun file logs next to epkg's vmm-logs (matches %USERPROFILE%\.epkg\cache\vmm-logs).
     #[cfg(target_os = "windows")]
     if std::env::var("LIBKRUN_LOG_DIR").is_err() {
         let log_dir = crate::models::dirs().epkg_cache.join("vmm-logs");
         if let Some(log_dir_str) = log_dir.to_str() {
-            log::debug!("libkrun: setting default LIBKRUN_LOG_DIR to {}", log_dir_str);
-            // Note: We can't actually set env var for current process safely without unsafe,
-            // so we just log the recommendation
-            log::info!("libkrun: For detailed WHPX logs, set LIBKRUN_LOG_DIR={}", log_dir_str);
+            std::env::set_var("LIBKRUN_LOG_DIR", log_dir_str);
+            log::info!("libkrun: LIBKRUN_LOG_DIR={} (epkg default; same root as session logs)", log_dir_str);
         }
+    }
+
+    if std::env::var("EPKG_VM_DEBUG").is_ok() {
+        log::info!("libkrun: enabling Windows VM diagnostics (EPKG_VM_DEBUG set)");
+
+        if std::env::var("LIBKRUN_WINDOWS_VERBOSE_DEBUG").is_err() {
+            std::env::set_var("LIBKRUN_WINDOWS_VERBOSE_DEBUG", "1");
+            log::info!("libkrun: set LIBKRUN_WINDOWS_VERBOSE_DEBUG=1 for libkrun WHPX tracing");
+        }
+
+        log::info!("libkrun: optional extra knobs (set manually if needed):");
+        log::info!("  - LIBKRUN_WHPX_PIC_IRQ0_FIXED=1");
+        log::info!("  - LIBKRUN_WHPX_PIC_FIXED_INJECT=pending-interruption");
+        log::info!("  - LIBKRUN_WHPX_SKIP_CANCEL_ON_HLT_IRQ=1");
     }
 }
 
