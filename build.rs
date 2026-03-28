@@ -116,6 +116,7 @@ fn main() {
     println!("cargo:rerun-if-changed=.git/index");
 
     println!("cargo::rustc-check-cfg=cfg(epkg_ntfs_ea)");
+    println!("cargo::rustc-check-cfg=cfg(feature, values(\"embedded_init\"))");
     // `ntfs_ea.rs` uses `crate::lfs::sanitize_path_for_windows` when built inside epkg (see cfg above).
     println!("cargo:rustc-cfg=epkg_ntfs_ea");
     println!(

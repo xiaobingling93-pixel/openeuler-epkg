@@ -6,6 +6,8 @@ edition = "2021" # PROJECT HARD REQUIREMENT: keep all crates edition to <=2021, 
 
 [features]
 libkrun = ["dep:libkrun"]
+# Windows VM: libkrun devices serve virtual /init.krun (early kernel/bootstrap debug). Without this, use init=/usr/bin/init (epkg guest, vsock/vm_daemon).
+embedded_init = ["libkrun", "libkrun/embedded_init"]
 
 # https://github.com/johnthagen/min-sized-rust
 [profile.release]
