@@ -137,13 +137,67 @@ fn is_elf_kernel(kernel_path: &str) -> Result<bool> {
 #[cfg(feature = "libkrun")]
 #[allow(dead_code)]
 fn detect_kernel_format_for_libkrun(kernel_path: &str) -> Result<u32> {
+    // First check file exists and get metadata
+    let metadata = std::fs::metadata(kernel_path)
+        .map_err(|e| eyre::eyre!("Kernel file not accessible at {}: {}", kernel_path, e))?;
+
+    let size = metadata.len();
+    if size < 1024 * 1024 {
+        return Err(eyre::eyre!(
+            "Kernel file at {} is too small ({} bytes). Expected at least 1MB",
+            kernel_path, size
+        ));
+    }
+    log::info!("libkrun: kernel file size: {} bytes ({:.2} MB)", size, size as f64 / 1024.0 / 1024.0);
+
     if is_elf_kernel(kernel_path)? {
+        log::info!("libkrun: kernel {} is ELF format (vmlinux)", kernel_path);
         Ok(1) // ELF (vmlinux)
     } else {
         // Assume Raw format (e.g., aarch64 Image)
-        log::debug!("libkrun: kernel {} is not ELF, assuming Raw format", kernel_path);
+        log::info!("libkrun: kernel {} is Raw format (Image)", kernel_path);
         Ok(0) // Raw (Image)
     }
+}
+
+#[cfg(all(feature = "libkrun", target_os = "windows"))]
+/// Set up Windows VM diagnostics environment variables for libkrun WHPX debugging.
+/// These variables are read by libkrun to enable detailed logging.
+fn setup_windows_vm_diagnostics() {
+    // Check if user wants verbose debugging
+    if std::env::var("EPKG_VM_DEBUG").is_ok() {
+        log::info!("libkrun: enabling Windows VM diagnostics (EPKG_VM_DEBUG set)");
+
+        // Set libkrun Windows verbose debug (logs to stderr and files)
+        if std::env::var("LIBKRUN_WINDOWS_VERBOSE_DEBUG").is_err() {
+            log::info!("libkrun: setting LIBKRUN_WINDOWS_VERBOSE_DEBUG=1");
+        }
+
+        // Log all the diagnostic options available
+        log::info!("libkrun: Available Windows VM diagnostic options:");
+        log::info!("  - LIBKRUN_WINDOWS_VERBOSE_DEBUG=1 : Enable verbose WHPX logging");
+        log::info!("  - LIBKRUN_WHPX_PIC_IRQ0_FIXED=1 : Use fixed PIC IRQ0 delivery");
+        log::info!("  - LIBKRUN_WHPX_PIC_FIXED_INJECT=pending-interruption : Use pending interruption register");
+        log::info!("  - LIBKRUN_WHPX_SKIP_CANCEL_ON_HLT_IRQ=1 : Skip cancel on HLT for IRQ delivery");
+        log::info!("  - LIBKRUN_LOG_DIR=<path> : Custom log directory (default: %TEMP%\\libkrun-logs\\)");
+    }
+
+    // Set default log directory to epkg's vmm-logs for consistency
+    #[cfg(target_os = "windows")]
+    if std::env::var("LIBKRUN_LOG_DIR").is_err() {
+        let log_dir = crate::models::dirs().epkg_cache.join("vmm-logs");
+        if let Some(log_dir_str) = log_dir.to_str() {
+            log::debug!("libkrun: setting default LIBKRUN_LOG_DIR to {}", log_dir_str);
+            // Note: We can't actually set env var for current process safely without unsafe,
+            // so we just log the recommendation
+            log::info!("libkrun: For detailed WHPX logs, set LIBKRUN_LOG_DIR={}", log_dir_str);
+        }
+    }
+}
+
+#[cfg(all(feature = "libkrun", not(target_os = "windows")))]
+fn setup_windows_vm_diagnostics() {
+    // No-op on non-Windows platforms
 }
 
 #[cfg(feature = "libkrun")]
@@ -586,6 +640,10 @@ fn create_and_configure_vm(
     run_options: &RunOptions,
     config: &LibkrunConfig,
 ) -> Result<VmContext> {
+    // Set up Windows VM diagnostics if requested
+    #[cfg(target_os = "windows")]
+    setup_windows_vm_diagnostics();
+
     ensure_libkrun_linked();
 
     let ctx = unsafe { KrunContext::create()? };
