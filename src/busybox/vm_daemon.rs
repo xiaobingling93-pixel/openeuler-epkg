@@ -1034,30 +1034,42 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
     log::debug!("handle_connection: new connection");
     let _ = kmsg_write("<6>handle_connection: new connection\n");
     log_process_identity("vm-daemon handle_connection");
-    let mut buf = [0; TCP_LINE_BUF_SIZE];
-    let _ = kmsg_write("<6>handle_connection: about to read from stream\n");
-    match stream.read(&mut buf) {
-        Ok(n) if n > 0 => {
-            let _ = kmsg_write(&format!("<6>handle_connection: read {} bytes\n", n));
-            // Find first newline to separate request from extra messages
-            let mut split_at = n;
-            for i in 0..n {
-                if buf[i] == b'\n' {
-                    split_at = i;
-                    break;
-                }
-            }
-            let request_slice = &buf[..split_at];
-            let leftover = if split_at < n {
-                &buf[split_at + 1..n]
-            } else {
-                &buf[n..n] // empty
-            };
-            let input = String::from_utf8_lossy(request_slice).trim().to_string();
-            let leftover_bytes = leftover.to_vec();
 
-            log::debug!("Request line ({} bytes): {:?}", request_slice.len(), input);
-            log::debug!("Leftover bytes ({} bytes): {:?}", leftover_bytes.len(), String::from_utf8_lossy(&leftover_bytes));
+    // Try to read with retries - host data may arrive with some delay
+    // especially on Windows/WHPX where vsock bridge has higher latency
+    let mut buf = [0; TCP_LINE_BUF_SIZE];
+    let mut total_wait_ms = 0u64;
+    const MAX_WAIT_MS: u64 = 5000; // 5 seconds total timeout
+    const RETRY_INTERVAL_MS: u64 = 50; // 50ms between retries
+
+    let _ = kmsg_write("<6>handle_connection: about to read from stream (with retries)\n");
+
+    loop {
+        match stream.read(&mut buf) {
+            Ok(n) if n > 0 => {
+                let _ = kmsg_write(&format!("<6>handle_connection: read {} bytes after {}ms\n", n, total_wait_ms));
+                // Log first few bytes for debugging
+                let preview = String::from_utf8_lossy(&buf[..n.min(100)]);
+                let _ = kmsg_write(&format!("<6>handle_connection: data preview: {:?}\n", preview));
+                // Find first newline to separate request from extra messages
+                let mut split_at = n;
+                for i in 0..n {
+                    if buf[i] == b'\n' {
+                        split_at = i;
+                        break;
+                    }
+                }
+                let request_slice = &buf[..split_at];
+                let leftover = if split_at < n {
+                    &buf[split_at + 1..n]
+                } else {
+                    &buf[n..n] // empty
+                };
+                let input = String::from_utf8_lossy(request_slice).trim().to_string();
+                let leftover_bytes = leftover.to_vec();
+
+                log::debug!("Request line ({} bytes): {:?}", request_slice.len(), input);
+                log::debug!("Leftover bytes ({} bytes): {:?}", leftover_bytes.len(), String::from_utf8_lossy(&leftover_bytes));
 
             // Parse JSON request (no plain text fallback)
             let request: CommandRequest = serde_json::from_str(&input)
@@ -1106,15 +1118,29 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
                 Ok(ConnectionDisposition::Shutdown)
             }
         }
-        Ok(_) => {
-            let _ = kmsg_write("<6>handle_connection: EOF (read 0 bytes), shutting down\n");
-            // Empty read, but still exit to avoid hanging
-            Ok(ConnectionDisposition::Shutdown)
+        Ok(0) => {
+            // No data yet, check timeout and retry
+            if total_wait_ms >= MAX_WAIT_MS {
+                let _ = kmsg_write(&format!("<6>handle_connection: timeout after {}ms, no data received\n", total_wait_ms));
+                return Ok(ConnectionDisposition::Shutdown);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(RETRY_INTERVAL_MS));
+            total_wait_ms += RETRY_INTERVAL_MS;
+            continue;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            // No data available yet, check timeout and retry
+            if total_wait_ms >= MAX_WAIT_MS {
+                let _ = kmsg_write(&format!("<6>handle_connection: timeout after {}ms (WouldBlock)\n", total_wait_ms));
+                return Ok(ConnectionDisposition::Shutdown);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(RETRY_INTERVAL_MS));
+            total_wait_ms += RETRY_INTERVAL_MS;
+            continue;
         }
         Err(e) => {
-            let _ = kmsg_write(&format!("<6>handle_connection: read error: {}\n", e));
-            eprintln!("Failed to read from socket: {}", e);
-            Ok(ConnectionDisposition::Shutdown)
+            let _ = kmsg_write(&format!("<3>handle_connection: read error: {}\n", e));
+            return Ok(ConnectionDisposition::Shutdown);
         }
     }
 }
@@ -1248,11 +1274,6 @@ fn run_vsock_server() -> Result<()> {
         kmsg_write("<6>run_vsock_server: creating TcpStream from fd\n");
         let stream = unsafe { TcpStream::from_raw_fd(client_fd) };
         log::debug!("vm-daemon vsock: accepted connection");
-
-        // Give host time to send data before we start reading
-        // This avoids race condition where we read before host writes
-        kmsg_write("<6>run_vsock_server: waiting for host data...\n");
-        std::thread::sleep(std::time::Duration::from_millis(200));
 
         kmsg_write("<6>run_vsock_server: about to call handle_connection\n");
         let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
