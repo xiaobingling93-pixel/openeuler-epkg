@@ -1276,12 +1276,14 @@ fn run_vsock_server() -> Result<()> {
                 continue;
             }
             Err(e) => {
+                let _ = kmsg_write(&format!("<3>run_vsock_server: handle_connection ERROR: {}\n", e));
                 log::debug!("Error handling vsock connection: {}", e);
                 return Err(e);
             }
         }
     }
 
+    let _ = kmsg_write("<6>run_vsock_server: loop exited normally\n");
     Ok(())
 }
 
@@ -1289,7 +1291,13 @@ pub fn run(_options: VmDaemonOptions) -> Result<()> {
     // vm-daemon always uses vsock for control plane
     #[cfg(target_os = "linux")]
     {
-        return run_vsock_server();
+        let _ = kmsg_write("<6>vm_daemon::run: calling run_vsock_server\n");
+        let result = run_vsock_server();
+        match &result {
+            Ok(_) => { let _ = kmsg_write("<6>vm_daemon::run: run_vsock_server returned Ok\n"); }
+            Err(e) => { let _ = kmsg_write(&format!("<3>vm_daemon::run: run_vsock_server returned Err: {}\n", e)); }
+        }
+        return result;
     }
     #[cfg(not(target_os = "linux"))]
     {

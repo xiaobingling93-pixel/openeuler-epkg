@@ -19,7 +19,7 @@ use nix::unistd::{setgid, setuid, Gid, Uid};
 static CMDLINE: OnceLock<HashMap<String, String>> = OnceLock::new();
 
 /// Helper to write to kernel message buffer for early debugging
-fn kmsg_write(msg: &str) -> std::io::Result<()> {
+pub fn kmsg_write(msg: &str) -> std::io::Result<()> {
     use std::io::Write;
     let mut kmsg = std::fs::OpenOptions::new().write(true).open("/dev/kmsg")?;
     write!(kmsg, "{}", msg)?;
@@ -255,25 +255,36 @@ fn run_init() -> Result<()> {
 
 fn pid1_idle_loop() -> Result<()> {
     let mut child_exited = false;
+    let mut first_echild = true;
     loop {
         match nix::sys::wait::waitpid(None, Some(nix::sys::wait::WaitPidFlag::WNOHANG)) {
             Ok(nix::sys::wait::WaitStatus::Exited(pid, status)) => {
+                let _ = kmsg_write(&format!("<6>init: child exited pid={} status={}\n", pid, status));
                 log::debug!("init: reaped child pid={} status={}", pid, status);
                 child_exited = true;
             }
             Ok(nix::sys::wait::WaitStatus::Signaled(pid, sig, _)) => {
+                let _ = kmsg_write(&format!("<6>init: child signaled pid={} sig={:?}\n", pid, sig));
                 log::debug!("init: reaped child pid={} signal={:?}", pid, sig);
                 child_exited = true;
             }
             Ok(nix::sys::wait::WaitStatus::StillAlive) => {}
-            Ok(_) => {}
+            Ok(other) => {
+                let _ = kmsg_write(&format!("<6>init: waitpid other: {:?}\n", other));
+            }
             Err(nix::errno::Errno::ECHILD) => {
+                if first_echild {
+                    let _ = kmsg_write(&format!("<6>init: first ECHILD, child_exited={}\n", child_exited));
+                    first_echild = false;
+                }
                 if child_exited {
+                    let _ = kmsg_write("<6>init: ECHILD with child_exited=true, powering off\n");
                     log::debug!("init: ECHILD received (child_exited=true), powering off guest");
                     poweroff_guest();
                 }
             }
             Err(e) => {
+                let _ = kmsg_write(&format!("<3>init: waitpid error: {}\n", e));
                 log::debug!("init: waitpid error: {}", e);
             }
         }
