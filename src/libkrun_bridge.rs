@@ -190,7 +190,7 @@ pub fn setup_vsock_ready_listener() -> Result<Option<WindowsReadyPipe>> {
     unsafe {
         let h = CreateNamedPipeW(
             PCWSTR(wide.as_ptr()),
-            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+            PIPE_ACCESS_DUPLEX,  // Removed FILE_FLAG_OVERLAPPED for synchronous operation
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
             PIPE_UNLIMITED_INSTANCES,
             4096,
@@ -301,7 +301,8 @@ pub fn connect_vsock_bridge(sock_path: &Path, max_retries: u32) -> Result<std::f
             }
             eprintln!("[epkg-debug] libkrun_bridge: named pipe is available, connecting...");
 
-            // Use FILE_FLAG_OVERLAPPED to match the pipe's async mode
+            // Use synchronous mode for reliable operation with std::fs::File
+            // FILE_FLAG_OVERLAPPED causes issues with synchronous I/O
             // GENERIC_READ = 0x80000000, GENERIC_WRITE = 0x40000000
             let access: u32 = 0x80000000u32 | 0x40000000u32;
             let handle = CreateFileW(
@@ -310,7 +311,7 @@ pub fn connect_vsock_bridge(sock_path: &Path, max_retries: u32) -> Result<std::f
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 None,
                 OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
+                FILE_ATTRIBUTE_NORMAL,  // Removed FILE_FLAG_OVERLAPPED
                 None,
             );
 

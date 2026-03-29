@@ -1248,6 +1248,12 @@ fn run_vsock_server() -> Result<()> {
         kmsg_write("<6>run_vsock_server: creating TcpStream from fd\n");
         let stream = unsafe { TcpStream::from_raw_fd(client_fd) };
         log::debug!("vm-daemon vsock: accepted connection");
+
+        // Give host time to send data before we start reading
+        // This avoids race condition where we read before host writes
+        kmsg_write("<6>run_vsock_server: waiting for host data...\n");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
         kmsg_write("<6>run_vsock_server: about to call handle_connection\n");
         let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             handle_connection(stream)

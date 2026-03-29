@@ -388,13 +388,8 @@ pub fn send_command_via_vsock(
     let mut stream = super::libkrun_bridge::connect_vsock_bridge(sock_path, 30)?;
     eprintln!("[epkg-debug] libkrun_stream: connected to vsock bridge");
 
-    // CRITICAL FIX: Wait for vsock handshake to complete before sending data
-    // The vsock handshake involves: host REQUEST -> guest RESPONSE -> ESTABLISHED
-    // Without this delay, the host sends data before the guest is ready, causing errors
-    eprintln!("[epkg-debug] libkrun_stream: waiting for vsock handshake to complete...");
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    eprintln!("[epkg-debug] libkrun_stream: vsock handshake wait complete");
-
+    // Connection is established, send data immediately
+    // The guest is in accept()/read(), waiting for data
     eprintln!("[epkg-debug] libkrun_stream: building command request");
     let request = build_command_request(cmd_parts, io_mode, reuse_vm);
     eprintln!("[epkg-debug] libkrun_stream: serializing to json");
