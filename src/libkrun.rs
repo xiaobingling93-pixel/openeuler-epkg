@@ -1156,8 +1156,8 @@ pub fn run_command_in_krun(
 
         // Give libkrun time to set up the vsock-to-named-pipe bridge
         // This avoids a race condition where we connect before libkrun is ready
-        eprintln!("[epkg-debug] libkrun: sleeping 500ms to let guest accept() setup complete...");
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        eprintln!("[epkg-debug] libkrun: sleeping 100ms to let guest accept() setup complete...");
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
         eprintln!("[epkg-debug] libkrun: sending command via vsock...");
         let exit_code = libkrun_stream::send_command_via_vsock(

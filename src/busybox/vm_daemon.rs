@@ -1051,7 +1051,22 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
 
     loop {
         match stream.read(&mut buf) {
-            Ok(n) if n > 0 => {
+            Ok(0) => {
+                // Ok(0) can mean either:
+                // 1. EOF (peer closed connection) - for a properly closed connection
+                // 2. No data available yet (vsock handshake still in progress)
+                // On Windows/WHPX, we often see case 2 due to timing differences
+                // between named pipe connection and vsock handshake completion.
+                if total_wait_ms >= MAX_WAIT_MS {
+                    let _ = kmsg_write(&format!("<6>handle_connection: timeout after {}ms, no data received (peer may have closed connection)\n", total_wait_ms));
+                    return Ok(ConnectionDisposition::Shutdown);
+                }
+                let _ = kmsg_write(&format!("<6>handle_connection: read 0 bytes, waiting for data... ({}ms elapsed)\n", total_wait_ms));
+                std::thread::sleep(std::time::Duration::from_millis(RETRY_INTERVAL_MS));
+                total_wait_ms += RETRY_INTERVAL_MS;
+                continue;
+            }
+            Ok(n) => {
                 let _ = kmsg_write(&format!("<6>handle_connection: read {} bytes after {}ms\n", n, total_wait_ms));
                 // Log first few bytes for debugging
                 let preview = String::from_utf8_lossy(&buf[..n.min(100)]);
@@ -1076,76 +1091,67 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
                 log::debug!("Request line ({} bytes): {:?}", request_slice.len(), input);
                 log::debug!("Leftover bytes ({} bytes): {:?}", leftover_bytes.len(), String::from_utf8_lossy(&leftover_bytes));
 
-            // Parse JSON request (no plain text fallback)
-            let request: CommandRequest = serde_json::from_str(&input)
-                .map_err(|e| eyre!("JSON parse failed: {} (input: {:?})", e, input))?;
+                // Parse JSON request (no plain text fallback)
+                let request: CommandRequest = serde_json::from_str(&input)
+                    .map_err(|e| eyre!("JSON parse failed: {} (input: {:?})", e, input))?;
 
-            if request.command.len() == 1 && request.command[0] == VM_SESSION_DONE_CMD {
-                log::debug!(
-                    "vm session done command ({VM_SESSION_DONE_CMD}): host finished install/upgrade"
-                );
+                if request.command.len() == 1 && request.command[0] == VM_SESSION_DONE_CMD {
+                    log::debug!(
+                        "vm session done command ({VM_SESSION_DONE_CMD}): host finished install/upgrade"
+                    );
+                    return Ok(ConnectionDisposition::Shutdown);
+                }
+
+                if request.command.is_empty() {
+                    return Err(eyre!(
+                        "empty command (send command [\"{0}\"] to end reuse session)",
+                        VM_SESSION_DONE_CMD
+                    ));
+                }
+
+                log::debug!("Received command: {:?}", request.command);
+                log_process_identity("vm-daemon before command dispatch");
+
+                // Execute command
+                if request.batch {
+                    log::debug!("Using batch mode");
+                    let _exit_code = execute_batch(&request, &mut stream)?;
+                } else if request.pty {
+                    log::debug!("Using PTY mode");
+                    let _exit_code = execute_with_pty(&request, &mut stream, Some(leftover_bytes))?;
+                } else {
+                    log::debug!("Using non-PTY mode");
+                    let _exit_code = execute_without_pty(&request, &mut stream, Some(leftover_bytes))?;
+                }
+
+                if request.reuse_vm {
+                    let idle_ms = request
+                        .vm_keep_timeout_secs
+                        .map(|s| s.saturating_mul(1000))
+                        .unwrap_or(VM_REUSE_IDLE_TIMEOUT_MS);
+                    let _ = kmsg_write("<6>handle_connection: reuse_vm=true, returning ReuseWait\n");
+                    return Ok(ConnectionDisposition::ReuseWait {
+                        idle_timeout_ms: idle_ms,
+                    });
+                } else {
+                    let _ = kmsg_write("<6>handle_connection: reuse_vm=false, returning Shutdown\n");
+                    return Ok(ConnectionDisposition::Shutdown);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // No data available yet, check timeout and retry
+                if total_wait_ms >= MAX_WAIT_MS {
+                    let _ = kmsg_write(&format!("<6>handle_connection: timeout after {}ms (WouldBlock)\n", total_wait_ms));
+                    return Ok(ConnectionDisposition::Shutdown);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(RETRY_INTERVAL_MS));
+                total_wait_ms += RETRY_INTERVAL_MS;
+                continue;
+            }
+            Err(e) => {
+                let _ = kmsg_write(&format!("<3>handle_connection: read error: {}\n", e));
                 return Ok(ConnectionDisposition::Shutdown);
             }
-
-            if request.command.is_empty() {
-                return Err(eyre!(
-                    "empty command (send command [\"{0}\"] to end reuse session)",
-                    VM_SESSION_DONE_CMD
-                ));
-            }
-
-            log::debug!("Received command: {:?}", request.command);
-            log_process_identity("vm-daemon before command dispatch");
-
-            // Execute command
-            if request.batch {
-                log::debug!("Using batch mode");
-                let _exit_code = execute_batch(&request, &mut stream)?;
-            } else if request.pty {
-                log::debug!("Using PTY mode");
-                let _exit_code = execute_with_pty(&request, &mut stream, Some(leftover_bytes))?;
-            } else {
-                log::debug!("Using non-PTY mode");
-                let _exit_code = execute_without_pty(&request, &mut stream, Some(leftover_bytes))?;
-            }
-
-            if request.reuse_vm {
-                let idle_ms = request
-                    .vm_keep_timeout_secs
-                    .map(|s| s.saturating_mul(1000))
-                    .unwrap_or(VM_REUSE_IDLE_TIMEOUT_MS);
-                let _ = kmsg_write("<6>handle_connection: reuse_vm=true, returning ReuseWait\n");
-                Ok(ConnectionDisposition::ReuseWait {
-                    idle_timeout_ms: idle_ms,
-                })
-            } else {
-                let _ = kmsg_write("<6>handle_connection: reuse_vm=false, returning Shutdown\n");
-                Ok(ConnectionDisposition::Shutdown)
-            }
-        }
-        Ok(0) => {
-            // No data yet, check timeout and retry
-            if total_wait_ms >= MAX_WAIT_MS {
-                let _ = kmsg_write(&format!("<6>handle_connection: timeout after {}ms, no data received\n", total_wait_ms));
-                return Ok(ConnectionDisposition::Shutdown);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(RETRY_INTERVAL_MS));
-            total_wait_ms += RETRY_INTERVAL_MS;
-            continue;
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-            // No data available yet, check timeout and retry
-            if total_wait_ms >= MAX_WAIT_MS {
-                let _ = kmsg_write(&format!("<6>handle_connection: timeout after {}ms (WouldBlock)\n", total_wait_ms));
-                return Ok(ConnectionDisposition::Shutdown);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(RETRY_INTERVAL_MS));
-            total_wait_ms += RETRY_INTERVAL_MS;
-            continue;
-        }
-        Err(e) => {
-            let _ = kmsg_write(&format!("<3>handle_connection: read error: {}\n", e));
-            return Ok(ConnectionDisposition::Shutdown);
         }
     }
 }

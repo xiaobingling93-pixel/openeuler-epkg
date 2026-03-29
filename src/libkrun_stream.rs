@@ -396,9 +396,16 @@ pub fn send_command_via_vsock(
 
     // CRITICAL FIX: Wait for vsock handshake to complete before sending data
     // The vsock handshake involves: host REQUEST -> guest RESPONSE -> ESTABLISHED
-    // Without this delay, the host sends data before the guest is ready, causing errors
+    // This process takes time, especially on Windows/WHPX where the virtio device
+    // processes requests asynchronously. The guest's vm_daemon must:
+    // 1. Receive the VSOCK_OP_REQUEST from libkrun
+    // 2. Call accept() on the vsock socket
+    // 3. Send VSOCK_OP_RESPONSE back to libkrun
+    // 4. Only THEN can data flow reliably
+    // Without sufficient delay, the host sends data before the handshake completes,
+    // causing the data to be lost and the guest to read EOF.
     eprintln!("[epkg-debug] libkrun_stream: waiting for vsock handshake to complete...");
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    std::thread::sleep(std::time::Duration::from_millis(1000));
     eprintln!("[epkg-debug] libkrun_stream: vsock handshake wait complete");
     eprintln!("[epkg-debug] libkrun_stream: building command request");
     let request = build_command_request(cmd_parts, io_mode, reuse_vm);
