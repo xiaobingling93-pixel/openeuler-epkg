@@ -4,6 +4,8 @@
 
 epkg 在 Windows/WHPX 环境下遇到 vsock 握手时序问题：VM 在启动后约 4.4 秒时关闭。根本原因是 Windows/WHPX 的 vsock 握手是异步的，Host 在 Guest 还未完成初始化时就尝试连接。
 
+**解决方案**：统一在所有平台使用混合 vsock 架构（首次运行使用反向模式，复用使用正向模式），确保行为一致并避免潜在的时序问题。
+
 ## 当前实现的差异
 
 ### libkrun 模式
@@ -41,10 +43,12 @@ QEMU 使用原生 AF_VSOCK，没有 Unix socket 文件：
 
 ### 设计思想
 
-采用**反向模式 (Reverse Mode)** 解决时序问题：
+采用**反向模式 (Reverse Mode)** 解决时序问题，统一在所有平台（Windows 和 Unix）使用相同的架构：
 
 - **首次启动** (`epkg run`): Guest 初始化完成后主动连接 Host
 - **复用模式** (`epkg run --reuse`): 使用传统的正向模式，Host 连接 Guest
+
+这种统一的设计确保了跨平台行为一致性，并避免了潜在的时序问题。
 
 ### 为什么反向模式能解决时序问题
 
@@ -64,19 +68,20 @@ QEMU 使用原生 AF_VSOCK，没有 Unix socket 文件：
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                         Host (Windows)                       │
+│                              Host                            │
 │  ┌─────────────────┐      ┌─────────────────────────────┐  │
-│  │   epkg (main)   │      │        libkrun (WHPX)        │  │
+│  │   epkg (main)   │      │        libkrun/QEMU          │  │
 │  │                 │      │                             │  │
-│  │  setup_reverse  │◄────►│  1. CreateNamedPipeW        │  │
-│  │  _listener()    │      │     (\\.\pipe\vsock-N)      │  │
+│  │  setup_reverse  │◄────►│  1. Create listen socket    │  │
+│  │  _listener()    │      │     (Unix socket /          │  │
+│  │                 │      │      Named Pipe)            │  │
 │  │                 │      │                             │  │
 │  │  accept_reverse │◄────►│  2. Wait for Guest connect   │  │
-│  │  _connection()  │      │     (blocking in thread)    │  │
+│  │  _connection()  │      │                             │  │
 │  │                 │      │                             │  │
 │  └─────────────────┘      └─────────────────────────────┘  │
 │           │                                               │
-│           │ Named Pipe                                    │
+│           │ vsock 桥接 (Unix socket / Named Pipe)         │
 │           ▼                                               │
 │  ┌─────────────────────────────────────────────────────┐  │
 │  │              Guest (Linux VM)                        │  │
@@ -96,8 +101,8 @@ QEMU 使用原生 AF_VSOCK，没有 Unix socket 文件：
 │  │         │                                          │  │
 │  │         ▼                                          │  │
 │  │  ┌─────────────┐    ┌─────────────────────────────┐ │  │
-│  │  │  ready notif│───►│  5. ConnectNamedPipe        │ │  │
-│  │  │  (port 10001)    │     to Host's named pipe    │ │  │
+│  │  │  ready notif│───►│  5. Connect to ready socket │ │  │
+│  │  │  (port 10001)    │     (Unix socket / pipe)    │ │  │
 │  │  └─────────────┘    └─────────────────────────────┘ │  │
 │  └─────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
@@ -136,11 +141,9 @@ pub fn accept_reverse_connection(pipe: &WindowsReadyPipe, ...) -> Result<File>
 ### Host 端 (epkg)
 
 ```rust
-// Windows 且首次运行 (非复用) 时启用反向模式
-#[cfg(windows)]
+// 首次运行 (非复用) 时启用反向模式
+// 复用模式使用正向模式保持兼容性
 let use_reverse_vsock = use_vsock && !run_options.reuse_vm;
-#[cfg(not(windows))]
-let use_reverse_vsock = false;  // Unix 没有时序问题
 ```
 
 ### Guest 端 (init/vm-daemon)
@@ -167,8 +170,9 @@ let reverse_mode = get_cmdline_param("epkg.vsock_reverse")
        ▼                                        ▼
 ┌─────────────┐                         ┌─────────────────┐
 │ Forward Mode │                        │ Host: Create    │
-│ (Host→Guest) │                        │ named pipe      │
-└─────────────┘                         └────────┬────────┘
+│ (Host→Guest) │                        │ listen socket   │
+└─────────────┘                        │ (socket/pipe)   │
+                                       └────────┬────────┘
                                                  │
                                                  ▼
                                         ┌─────────────────┐
@@ -238,7 +242,6 @@ log::debug!("libkrun: Guest connected to reverse pipe");
 
 ## 未来改进
 
-1. **Unix 反向模式**: 当前 Unix 平台始终使用正向模式，未来可以统一代码路径
-2. **超时调整**: 30 秒超时可以根据不同场景调整
-3. **重试策略**: 连接失败时可以增加指数退避重试
-4. **优雅降级**: 反向模式失败时自动回退到正向模式
+1. **超时调整**: 30 秒超时可以根据不同场景调整
+2. **重试策略**: 连接失败时可以增加指数退避重试
+3. **优雅降级**: 反向模式失败时自动回退到正向模式
