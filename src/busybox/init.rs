@@ -550,7 +550,7 @@ fn exec_vm_daemon() -> Result<()> {
 
     // Check if we should use reverse vsock mode (Guest connects to Host)
     // This is set by Host when starting VM in reverse mode (Windows/WHPX first run)
-    let reverse_mode = get_cmdline_param("epkg.vsock_reverse").map_or(false, |v| v == "1" || v.is_empty());
+    let reverse_mode = get_cmdline_param("epkg.vsock_reverse").map_or(false, |v| v == "1");
     let _ = kmsg_write(&format!("<6>exec_vm_daemon: reverse_mode={}\n", reverse_mode));
 
     // Call vm_daemon::run() directly instead of exec-ing the binary.
