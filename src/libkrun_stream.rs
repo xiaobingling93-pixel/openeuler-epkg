@@ -2,7 +2,9 @@
 
 use color_eyre::eyre;
 use color_eyre::Result;
-use std::io::{BufRead, IsTerminal, Read, Write};
+use std::io::{BufRead, Read, Write};
+#[cfg(not(windows))]
+use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
