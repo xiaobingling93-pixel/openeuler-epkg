@@ -127,7 +127,7 @@ use nix::pty::{openpty, Winsize, OpenptyResult};
 use nix::sys::wait::{waitpid, WaitPidFlag};
 use nix::unistd::{fork, ForkResult, dup2, setsid, close, Pid, getuid, geteuid, getgid, getegid};
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
-use std::os::fd::{OwnedFd, AsRawFd, BorrowedFd, FromRawFd, RawFd};
+use std::os::fd::{OwnedFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd};
 use nix::sys::socket::{self, AddressFamily, SockType, SockFlag, VsockAddr, Backlog};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -1399,7 +1399,7 @@ fn run_reverse_vsock_client() -> Result<()> {
             Ok(_) => {
                 kmsg_write("<6>run_reverse_vsock_client: connected to host\n");
                 log::debug!("vm-daemon: connected to Host");
-                break unsafe { std::net::TcpStream::from_raw_fd(fd.as_raw_fd()) };
+                break unsafe { std::net::TcpStream::from_raw_fd(fd.into_raw_fd()) };
             }
             Err(e) => {
                 retry_count += 1;
