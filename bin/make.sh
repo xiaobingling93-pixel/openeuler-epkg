@@ -434,6 +434,7 @@ cd "$PROJECT_ROOT"
 # Helper function for quick develop-debug loop
 install_to_dev_env() {
     local binary_path="$1"
+    local arch="${2:-$HOST_ARCH}"
 
     [[ -d "$DEV_ENV_BIN_DIR" ]] || return 0
 
@@ -451,6 +452,16 @@ install_to_dev_env() {
     fi
 
     safe_cp "$binary_path" "$DEV_ENV_BIN_DIR/$BINARY_NAME"
+
+    # Also install as epkg-linux-$arch for VM usage on Windows/macOS hosts.
+    # This allows Windows/macOS to use the Linux ELF binary for VM mode.
+    local host_os=$(uname -s)
+    if [[ "$host_os" == "Linux" ]]; then
+        local epkg_linux_name="epkg-linux-${arch}"
+        if [[ "$(basename "$binary_path")" != "$epkg_linux_name" ]]; then
+            safe_cp "$binary_path" "$DEV_ENV_BIN_DIR/$epkg_linux_name"
+        fi
+    fi
 }
 
 # Build Lua library for a specific architecture
@@ -1249,7 +1260,7 @@ build_static() {
         # Also copy to target/$mode/ dir for easy access.
         mkdir -p "target/$mode"
         cp -vfs "$PROJECT_ROOT/target/$rust_target/$build_dir/$BINARY_NAME" target/$mode/epkg
-        install_to_dev_env "$PROJECT_ROOT/target/$rust_target/$build_dir/$BINARY_NAME"
+        install_to_dev_env "$PROJECT_ROOT/target/$rust_target/$build_dir/$BINARY_NAME" "$arch"
     fi
 }
 
