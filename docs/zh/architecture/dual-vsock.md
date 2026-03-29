@@ -1,298 +1,244 @@
-# epkg dual vsock 架构设计
+# Dual Vsock 架构设计
 
 ## 背景
 
-在 Windows/WHPX 环境下，epkg 使用 vsock 进行 Host-Guest 通信时遇到了时序问题：
+epkg 在 Windows/WHPX 环境下遇到 vsock 握手时序问题：VM 在启动后约 4.4 秒时关闭。根本原因是 Windows/WHPX 的 vsock 握手是异步的，Host 在 Guest 还未完成初始化时就尝试连接。
 
-- Host 在 Named Pipe 连接成功后立即发送数据
-- 但此时 vsock 握手（VSOCK_OP_REQUEST → VSOCK_OP_RESPONSE）尚未完成
-- Guest 的 `accept()` 还没返回，数据丢失
+## 当前实现的差异
 
-## 解决方案：混合反向/正向架构
+### libkrun 模式
 
-### 核心思想
+libkrun 使用 Unix socket 作为 vsock 桥接：
 
-| 场景 | 连接方向 | 原因 |
+```
+krun_add_vsock_port2(port, unix_socket_path, listen)
+→ 创建 Unix socket 文件作为 vsock 桥接
+```
+
+**Ready notification:**
+- Host: `UnixListener::bind(ready_socket_path)`
+- Guest: connect to vsock port 10001 → 桥接到 ready_socket_path
+
+### QEMU 模式
+
+QEMU 使用原生 AF_VSOCK，没有 Unix socket 文件：
+
+**Ready notification:**
+- Host: `socket(AF_VSOCK)` + `bind(port 10001)`
+- Guest: connect to vsock port 10001
+
+### 对比表
+
+| 方面 | libkrun | QEMU |
 |------|---------|------|
-| 首次 `epkg run` | Guest → Host (反向) | Guest 完全初始化后才连接，无 vsock 时序问题 |
-| `epkg run --reuse` | Host → Guest (正向) | VM 已运行，vsock 稳定，保持现有架构 |
+| vsock 实现 | Unix socket 桥接 | 原生 AF_VSOCK |
+| socket 文件 | 有 | 无 |
+| ready socket | Unix socket 文件路径 | AF_VSOCK port |
+
+**根本原因**: libkrun 的 vsock 是通过 Unix socket 模拟的，而 QEMU 使用真正的 AF_VSOCK。
+
+## 混合 Vsock 架构
+
+### 设计思想
+
+采用**反向模式 (Reverse Mode)** 解决时序问题：
+
+- **首次启动** (`epkg run`): Guest 初始化完成后主动连接 Host
+- **复用模式** (`epkg run --reuse`): 使用传统的正向模式，Host 连接 Guest
+
+### 为什么反向模式能解决时序问题
+
+```
+正向模式 (Forward) - 有问题:
+1. Host 创建 vsock port
+2. Host 立即尝试连接 Guest
+3. Guest 可能还未初始化完成 → 连接失败
+
+反向模式 (Reverse) - 解决方案:
+1. Host 创建监听 socket/pipe
+2. Guest 完全初始化后连接 Host
+3. Host accept 连接，通信建立
+```
 
 ### 架构图
 
-#### 首次启动（反向连接）
-
 ```
-┌─────────────────┐                         ┌─────────────────┐
-│   Host (epkg)   │                         │   Guest (init)  │
-│                 │                         │                 │
-│  listen(10000)  │◄─────────────────────── │  connect(10000) │
-│      ↓          │    Guest 启动完成       │      ↓          │
-│  accept()       │◄─────────────────────── │  send("READY")  │
-│      ↓          │                         │      ↓          │
-│  send(command)  │────────────────────────►│  recv command   │
-│      ↓          │                         │      ↓          │
-│  recv(result)   │◄─────────────────────── │  execute()      │
-│      ↓          │                         │      ↓          │
-│  VM shutdown    │                         │  poweroff()     │
-└─────────────────┘                         └─────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                         Host (Windows)                       │
+│  ┌─────────────────┐      ┌─────────────────────────────┐  │
+│  │   epkg (main)   │      │        libkrun (WHPX)        │  │
+│  │                 │      │                             │  │
+│  │  setup_reverse  │◄────►│  1. CreateNamedPipeW        │  │
+│  │  _listener()    │      │     (\\.\pipe\vsock-N)      │  │
+│  │                 │      │                             │  │
+│  │  accept_reverse │◄────►│  2. Wait for Guest connect   │  │
+│  │  _connection()  │      │     (blocking in thread)    │  │
+│  │                 │      │                             │  │
+│  └─────────────────┘      └─────────────────────────────┘  │
+│           │                                               │
+│           │ Named Pipe                                    │
+│           ▼                                               │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │              Guest (Linux VM)                        │  │
+│  │  ┌─────────────┐    ┌─────────────────────────────┐ │  │
+│  │  │    init     │───►│  3. Read kernel cmdline      │ │  │
+│  │  │             │    │     epkg.vsock_reverse=1     │ │  │
+│  │  └─────────────┘    └─────────────────────────────┘ │  │
+│  │         │                                           │  │
+│  │         ▼                                           │  │
+│  │  ┌─────────────┐    ┌─────────────────────────────┐ │  │
+│  │  │  vm-daemon  │    │  4. Connect to vsock port    │ │  │
+│  │  │             │───►│     (triggers vsock          │ │  │
+│  │  │ run_reverse │    │      handshake)              │ │  │
+│  │  │ _vsock_cli  │◄───┘                             │ │  │
+│  │  │ ent()       │                                  │ │  │
+│  │  └─────────────┘                                  │  │
+│  │         │                                          │  │
+│  │         ▼                                          │  │
+│  │  ┌─────────────┐    ┌─────────────────────────────┐ │  │
+│  │  │  ready notif│───►│  5. ConnectNamedPipe        │ │  │
+│  │  │  (port 10001)    │     to Host's named pipe    │ │  │
+│  │  └─────────────┘    └─────────────────────────────┘ │  │
+│  └─────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-#### Reuse 模式（正向连接）
+## 平台差异处理
 
-```
-┌─────────────────┐                         ┌─────────────────┐
-│   Host (epkg)   │                         │   Guest (init)  │
-│                 │                         │                 │
-│                 │                         │  listen(10000)  │◄──保持监听
-│                 │                         │      ↑          │
-│  connect(10000) │────────────────────────►│  accept()       │
-│      ↓          │                         │      ↓          │
-│  send(command)  │────────────────────────►│  recv command   │
-│      ↓          │                         │      ↓          │
-│  recv(result)   │◄─────────────────────── │  execute()      │
-│      ↓          │                         │      ↓          │
-│  keepalive/idle │                         │  wait next cmd  │
-└─────────────────┘                         └─────────────────┘
-```
-
-## 实现细节
-
-### 1. libkrun 端口配置
+### Unix (macOS/Linux)
 
 ```rust
-// 首次启动：Host 监听，Guest 连接
+// Unix: 使用 Unix domain socket
+pub fn setup_reverse_listener(sock_path: &Path) -> Result<UnixListener>
+pub fn accept_reverse_connection(listener: &UnixListener, ...) -> Result<TcpStream>
+```
+
+### Windows
+
+```rust
+// Windows: 使用 Named Pipe
+pub fn setup_reverse_listener(sock_path: &Path) -> Result<WindowsReadyPipe>
+pub fn accept_reverse_connection(pipe: &WindowsReadyPipe, ...) -> Result<File>
+```
+
+### 差异总结
+
+| 特性 | Unix | Windows |
+|------|------|---------|
+| Socket 类型 | Unix domain socket | Named Pipe (\\.\pipe\*) |
+| 监听 API | `UnixListener::bind()` | `CreateNamedPipeW()` |
+| 接受连接 | `listener.accept()` | `ConnectNamedPipe()` |
+| 非阻塞支持 | `set_nonblocking(true)` | 需要独立线程 |
+| 超时处理 | `poll()` + `POLLIN` | `mpsc::channel` + 轮询 |
+
+## 配置参数
+
+### Host 端 (epkg)
+
+```rust
+// Windows 且首次运行 (非复用) 时启用反向模式
 #[cfg(windows)]
-unsafe {
-    // listen=false: Host 创建 Named Pipe 服务器
-    krun_add_vsock_port2_windows(ctx_id, 10000, stem_c.as_ptr(), false)?;
-}
-
-// Reuse 模式：Guest 监听，Host 连接
-#[cfg(windows)]
-unsafe {
-    // listen=true: Guest 创建 vsock 监听
-    krun_add_vsock_port2_windows(ctx_id, 10000, stem_c.as_ptr(), true)?;
-}
+let use_reverse_vsock = use_vsock && !run_options.reuse_vm;
+#[cfg(not(windows))]
+let use_reverse_vsock = false;  // Unix 没有时序问题
 ```
 
-### 2. vm_daemon 逻辑
+### Guest 端 (init/vm-daemon)
 
 ```rust
-pub fn run(options: VmDaemonOptions) -> Result<()> {
-    if options.reverse_mode {
-        // 反向模式：Guest 主动连接 Host
-        run_reverse_mode()
-    } else {
-        // 正向模式：Guest 监听，等待 Host 连接
-        run_forward_mode()
-    }
-}
-
-fn run_reverse_mode() -> Result<()> {
-    // 等待 vsock 完全初始化
-    setup_vsock()?;
-
-    // 主动连接 Host
-    let mut stream = connect_to_host(10000)?;
-
-    // 发送 ready 信号
-    stream.write_all(b"READY\n")?;
-
-    // 直接在这个连接上处理命令
-    handle_connection(stream)?;
-
-    // 执行完后关机或进入 reuse 模式
-    if reuse_enabled {
-        // 切换到正向模式监听
-        switch_to_forward_mode()?;
-    } else {
-        poweroff();
-    }
-}
+// 从 kernel cmdline 读取配置
+let reverse_mode = get_cmdline_param("epkg.vsock_reverse")
+    .map_or(false, |v| v == "1");
 ```
 
-### 3. Host 逻辑
+## 状态机
+
+```
+┌─────────────┐
+│   Start     │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐     reuse_vm=false      ┌─────────────────┐
+│  Check reuse │ ───────────────────────►│  Reverse Mode   │
+│   option    │                         │ (Guest→Host)    │
+└──────┬──────┘                         └────────┬────────┘
+       │ reuse_vm=true                         │
+       ▼                                        ▼
+┌─────────────┐                         ┌─────────────────┐
+│ Forward Mode │                        │ Host: Create    │
+│ (Host→Guest) │                        │ named pipe      │
+└─────────────┘                         └────────┬────────┘
+                                                 │
+                                                 ▼
+                                        ┌─────────────────┐
+                                        │ Host: Accept    │
+                                        │ connection      │
+                                        └────────┬────────┘
+                                                 │
+                                                 ▼
+                                        ┌─────────────────┐
+                                        │ Guest: Connect  │
+                                        │ to vsock port   │
+                                        └────────┬────────┘
+                                                 │
+                                                 ▼
+                                        ┌─────────────────┐
+                                        │ Guest: Send     │
+                                        │ READY signal    │
+                                        └────────┬────────┘
+                                                 │
+                                                 ▼
+                                        ┌─────────────────┐
+                                        │ Bidirectional   │
+                                        │ communication   │
+                                        │ established     │
+                                        └─────────────────┘
+                                                 │
+                              Shutdown or reuse requested
+                                                 │
+                                                 ▼
+                                        ┌─────────────────┐
+                              ┌────────►│ Forward Mode    │
+                              │         │ (for reuse)     │
+                              │         └─────────────────┘
+                              │
+                              └───────── Shutdown VM
+```
+
+## 关键代码路径
+
+### Host 端
+
+1. `build_libkrun_config()`: 决定是否使用反向模式
+2. `setup_libkrun_vsock_host_sockets()`: 创建监听 socket/pipe
+3. `run_reverse_vsock_mode()`: 等待 Guest 连接
+4. `send_command_over_stream()`: 通过已建立的连接发送命令
+
+### Guest 端
+
+1. `init.rs`: 读取 kernel cmdline，决定启动模式
+2. `vm_daemon.rs:run_reverse_vsock_client()`: Guest 主动连接 Host
+3. `vm_daemon.rs:run_vsock_server()`: 复用时切换回正向模式
+
+## 调试信息
+
+在 Host 和 Guest 都添加了详细的内核日志 (kmsg) 记录：
 
 ```rust
-pub fn run_command_in_krun(...) -> Result<i32> {
-    if is_first_run() {
-        // 首次：反向模式
-        run_reverse_mode(cmd_parts, io_mode)
-    } else {
-        // Reuse：正向模式（现有代码）
-        run_forward_mode(cmd_parts, io_mode)
-    }
-}
+// Guest
+kmsg_write("<6>run_reverse_vsock_client: connecting to 127.0.0.1:10000\n");
+kmsg_write("<6>run_reverse_vsock_client: connected to Host\n");
+kmsg_write("<6>run_reverse_vsock_client: sent READY signal\n");
 
-fn run_reverse_mode(cmd_parts: &[String], io_mode: IoMode) -> Result<i32> {
-    // 1. 创建 VM
-    let vm_ctx = create_and_configure_vm(...)?;
-
-    // 2. 设置 vsock port 10000 为 listen=false (Host 监听)
-    let ready_listener = setup_reverse_listener()?;
-
-    // 3. 启动 VM
-    let vm_thread = start_libkrun_vm(vm_ctx.ctx)?;
-
-    // 4. 等待 Guest 连接（带超时）
-    let (stream, addr) = ready_listener.accept()?;
-
-    // 5. 读取 ready 信号
-    let mut buf = [0u8; 6];
-    stream.read_exact(&mut buf)?;
-    assert_eq!(&buf, b"READY\n");
-
-    // 6. 直接在这个连接上发送命令（无需额外延迟！）
-    send_command(stream, cmd_parts, io_mode)?;
-
-    // 7. 等待结果
-    let exit_code = recv_result(stream)?;
-
-    // 8. 如果 reuse，切换到正向模式
-    if reuse_vm {
-        // 通知 Guest 切换到监听模式
-        stream.write_all(b"SWITCH_TO_FORWARD\n")?;
-        // Host 关闭当前连接，下次使用正向连接
-    }
-
-    Ok(exit_code)
-}
+// Host
+log::debug!("libkrun: reverse listener created on pipe {}", full);
+log::debug!("libkrun: Guest connected to reverse pipe");
 ```
 
-## 优势分析
+## 未来改进
 
-### 1. 首次启动无 vsock 时序问题
-
-```
-Guest 视角：
-1. vsock 初始化完成
-2. connect() 到 Host
-3. 自己的 vsock 状态是 ESTABLISHED
-4. 收到数据时，连接已经准备好
-
-Host 视角：
-1. accept() 返回
-2. Guest 已经准备好
-3. 立即发送数据，不会丢失
-```
-
-### 2. Reuse 模式保持现有架构
-
-- 不需要改变 reuse VM 的工作方式
-- 向后兼容
-- 正向连接在 VM 稳定后工作正常
-
-### 3. 无需要修复 libkrun
-
-- 完全在 epkg 层面解决
-- 利用现有的 vsock 功能
-- 不依赖 libkrun 的同步修复
-
-## 挑战与解决方案
-
-### 挑战 1：Guest 如何知道 Host 地址？
-
-**方案 A：固定 CID + 端口**
-```rust
-// Guest 硬编码 Host CID = 2 (VMADDR_CID_HOST)
-let host_addr = VsockAddr::new(VMADDR_CID_HOST, 10000);
-```
-
-**方案 B：通过内核参数传递**
-```
-kernel cmdline: epkg.host_port=10000
-```
-
-### 挑战 2：连接超时/重试
-
-```rust
-// Guest 侧指数退避重试
-fn connect_to_host_with_retry(port: u32) -> Result<TcpStream> {
-    let mut backoff = Duration::from_millis(100);
-    for attempt in 0..30 {
-        match VsockStream::connect(VMADDR_CID_HOST, port) {
-            Ok(stream) => return Ok(stream),
-            Err(e) => {
-                sleep(backoff);
-                backoff = (backoff * 2).min(Duration::from_secs(1));
-            }
-        }
-    }
-    Err(...)
-}
-```
-
-### 挑战 3：双向切换复杂度
-
-```rust
-// 使用状态机管理
-enum VsockMode {
-    ReverseConnecting,  // 首次启动，Guest 连接 Host
-    ReverseConnected,   // 已连接，处理命令中
-    ForwardSwitching,   // 切换到正向模式
-    ForwardListening,   // Guest 监听中
-}
-
-// 简化方案：VM 生命周期内只切换一次
-// 首次反向 → 之后一直正向
-```
-
-### 挑战 4：Windows Named Pipe 实现
-
-```rust
-// Windows 反向模式：Guest 连接 Host 的 Named Pipe
-#[cfg(windows)]
-fn connect_to_host_pipe(pipe_name: &str) -> Result<File> {
-    let full = format!("\\\\.\\pipe\\{}", pipe_name);
-
-    // 等待 Host 创建 pipe
-    unsafe {
-        WaitNamedPipeA(...)?;
-        CreateFileW(...)?;
-    }
-}
-```
-
-## 代码修改范围
-
-### 需要修改的文件
-
-1. **src/libkrun.rs**
-   - 支持 `listen=false` 模式（Host 监听）
-   - 反向模式连接逻辑
-
-2. **src/libkrun_bridge.rs**
-   - `setup_reverse_listener()` - Host 创建监听
-   - `accept_reverse_connection()` - 等待 Guest 连接
-
-3. **src/busybox/vm_daemon.rs**
-   - `run_reverse_mode()` - Guest 主动连接
-   - 模式切换逻辑
-
-4. **src/libkrun_stream.rs**
-   - 支持通过已有 stream 发送命令（而非重新连接）
-
-## 与纯反向方案的对比
-
-| 特性 | 纯反向 | 混合方案 (本设计) |
-|------|-------------|------------------|
-| 首次启动 | ✅ Guest → Host | ✅ Guest → Host |
-| Reuse 模式 | ✅ Guest → Host | ✅ Host → Guest（现有）|
-| 架构改变 | 大，全部反向 | 中等，首次反向 |
-| 代码复杂度 | 低，统一方向 | 中等，两种模式 |
-| Host 主动能力 | 弱（需 Guest 先连）| 强（reuse 模式）|
-| 适用场景 | 服务端/长期运行 | CLI 工具/epkg |
-
-## 结论
-
-**混合方案非常适合 epkg**：
-
-1. **首次启动**：反向连接从根本上解决 vsock 时序问题
-2. **Reuse 模式**：保持现有正向架构，无需大规模重构
-3. **渐进式迁移**：可以逐步实现，不影响现有功能
-
-**实现优先级**：
-
-1. P0：实现反向首次启动（解决当前问题）
-2. P1：实现模式切换（reuse 支持）
-3. P2：优化重试和错误处理
+1. **Unix 反向模式**: 当前 Unix 平台始终使用正向模式，未来可以统一代码路径
+2. **超时调整**: 30 秒超时可以根据不同场景调整
+3. **重试策略**: 连接失败时可以增加指数退避重试
+4. **优雅降级**: 反向模式失败时自动回退到正向模式
