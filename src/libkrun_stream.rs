@@ -121,7 +121,9 @@ fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32
     if is_batch {
         // Batch mode: read entire response as single JSON object
         let mut response = String::new();
+        eprintln!("[epkg-debug] handle_streaming_simple: batch mode - reading response...");
         stream.read_to_string(&mut response)?;
+        eprintln!("[epkg-debug] handle_streaming_simple: read {} bytes response", response.len());
 
         #[derive(Deserialize)]
         struct BatchResult {
@@ -132,6 +134,9 @@ fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32
         let result: BatchResult = serde_json::from_str(&response)
             .map_err(|e| eyre::eyre!("Failed to parse batch response: {} ({:?})", e, response))?;
 
+        eprintln!("[epkg-debug] handle_streaming_simple: stdout={} bytes, stderr={} bytes",
+            result.stdout.len(), result.stderr.len());
+
         if !result.stdout.is_empty() {
             let stdout_bytes = STANDARD.decode(&result.stdout)?;
             std::io::stdout().write_all(&stdout_bytes)?;
@@ -140,6 +145,7 @@ fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32
             let stderr_bytes = STANDARD.decode(&result.stderr)?;
             std::io::stderr().write_all(&stderr_bytes)?;
         }
+        eprintln!("[epkg-debug] handle_streaming_simple: returning exit_code={}", result.exit_code);
         Ok(result.exit_code)
     } else {
         // Stream mode: read line by line, each line is a JSON message

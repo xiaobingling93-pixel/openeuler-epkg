@@ -1027,7 +1027,7 @@ fn krun_vsock_shutdown_join_free_exit(
     ctx_id: u32,
     exit_code: i32,
 ) -> ! {
-    log::debug!("libkrun: triggering VM shutdown via eventfd...");
+    eprintln!("[epkg-debug] libkrun: triggering VM shutdown via eventfd...");
     let buf = 1u64.to_le_bytes();
     #[cfg(unix)]
     let write_len = buf.len();
@@ -1035,27 +1035,30 @@ fn krun_vsock_shutdown_join_free_exit(
     let write_len = buf.len() as u32;
     let write_result = unsafe { libc::write(shutdown_fd, buf.as_ptr() as *const _, write_len) };
     if write_result < 0 {
-        log::warn!(
-            "libkrun: failed to write shutdown eventfd: {}",
+        eprintln!(
+            "[epkg-debug] libkrun: failed to write shutdown eventfd: {}",
             std::io::Error::last_os_error()
         );
+    } else {
+        eprintln!("[epkg-debug] libkrun: shutdown eventfd written successfully");
     }
 
+    eprintln!("[epkg-debug] libkrun: waiting for VM thread to join...");
     match vm_thread.join() {
         Ok(vm_status) => {
-            log::debug!("libkrun: VM thread finished with status {}", vm_status);
+            eprintln!("[epkg-debug] libkrun: VM thread finished with status {}", vm_status);
         }
         Err(e) => {
-            log::error!("libkrun: VM thread join failed: {:?}", e);
+            eprintln!("[epkg-debug] libkrun: VM thread join failed: {:?}", e);
         }
     }
 
-    log::debug!("libkrun: freeing context before exit...");
+    eprintln!("[epkg-debug] libkrun: freeing context before exit...");
     unsafe {
         let _ = krun_free_ctx(ctx_id);
     }
 
-    log::debug!("libkrun: exiting with code {}", exit_code);
+    eprintln!("[epkg-debug] libkrun: exiting with code {}", exit_code);
     std::process::exit(exit_code);
 }
 

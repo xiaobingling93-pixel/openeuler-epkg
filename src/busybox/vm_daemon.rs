@@ -1025,6 +1025,11 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
     stream.write_all(b"\n")?;
     stream.flush()?;
 
+    // CRITICAL: Shutdown the write side to signal EOF to host
+    // This ensures the host's read_to_string() returns
+    let _ = kmsg_write("<6>execute_batch: shutting down stream write side\n");
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+
     let _ = kmsg_write("<6>execute_batch: response sent, returning\n");
     Ok(exit_code)
 }
