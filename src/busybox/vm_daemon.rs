@@ -112,6 +112,7 @@
 //!
 #![cfg(target_os = "linux")]
 
+use crate::busybox::init::kmsg_write;
 use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
@@ -1029,6 +1030,7 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
 }
 
 fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
+    let _ = kmsg_write("<6>handle_connection: handle_connection started\n");
     log::debug!("handle_connection: new connection");
     let _ = kmsg_write("<6>handle_connection: new connection\n");
     log_process_identity("vm-daemon handle_connection");
@@ -1215,9 +1217,19 @@ fn run_vsock_server() -> Result<()> {
         let client_fd = if first_accept {
             first_accept = false;
             log::debug!("vm-daemon: calling accept()...");
-            kmsg_write("<6>run_vsock_server: calling accept\n");
+            kmsg_write("<6>run_vsock_server: about to call accept (blocking)\n");
             log::debug!("vm-daemon: calling accept()...");
-            socket::accept(raw_fd).map_err(|e| eyre!("vsock accept failed: {}", e))?
+            let fd = match socket::accept(raw_fd) {
+                Ok(fd) => {
+                    kmsg_write(&format!("<6>run_vsock_server: accept returned fd={}\n", fd));
+                    fd
+                }
+                Err(e) => {
+                    kmsg_write(&format!("<3>run_vsock_server: accept FAILED: {} (errno={})\n", e, e as i32));
+                    return Err(eyre!("vsock accept failed: {}", e));
+                }
+            };
+            fd
         } else {
             log::debug!(
                 "vm-daemon: waiting for next connection (reuse, {} ms)...",
@@ -1233,11 +1245,23 @@ fn run_vsock_server() -> Result<()> {
         };
 
         log::debug!("vm-daemon: accept() succeeded, fd={}", client_fd);
-        kmsg_write("<6>run_vsock_server: accept returned successfully\n");
+        kmsg_write("<6>run_vsock_server: creating TcpStream from fd\n");
         let stream = unsafe { TcpStream::from_raw_fd(client_fd) };
         log::debug!("vm-daemon vsock: accepted connection");
-        kmsg_write("<6>run_vsock_server: created TcpStream, calling handle_connection\n");
-        match handle_connection(stream) {
+        kmsg_write("<6>run_vsock_server: about to call handle_connection\n");
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handle_connection(stream)
+        })) {
+            Ok(r) => {
+                kmsg_write("<6>run_vsock_server: handle_connection returned\n");
+                r
+            }
+            Err(_) => {
+                kmsg_write("<3>run_vsock_server: handle_connection PANICKED!\n");
+                Err(eyre!("handle_connection panicked"))
+            }
+        };
+        match result {
             Ok(ConnectionDisposition::Shutdown) => {
                 kmsg_write("<6>run_vsock_server: handle_connection returned Shutdown, breaking loop\n");
                 log::debug!("vm-daemon: connection closed, powering off guest (vsock)");
