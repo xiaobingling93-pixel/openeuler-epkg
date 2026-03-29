@@ -301,9 +301,12 @@ pub fn connect_vsock_bridge(sock_path: &Path, max_retries: u32) -> Result<std::f
             }
             eprintln!("[epkg-debug] libkrun_bridge: named pipe is available, connecting...");
 
+            // Use FILE_FLAG_OVERLAPPED to match the pipe's async mode
+            // GENERIC_READ = 0x80000000, GENERIC_WRITE = 0x40000000
+            let access: u32 = 0x80000000u32 | 0x40000000u32;
             let handle = CreateFileW(
                 PCWSTR(to_wide_null(&full).as_ptr()),
-                0x80000000u32 | 0x40000000u32,
+                access,
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 None,
                 OPEN_EXISTING,
