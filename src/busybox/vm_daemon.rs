@@ -1366,8 +1366,9 @@ fn run_reverse_vsock_client() -> Result<()> {
 
     const HOST_CID: u32 = libc::VMADDR_CID_HOST;  // CID 2 = Host
     const HOST_PORT: u32 = 10000;  // Command port (Host is listening)
-    const CONNECT_RETRY_MAX: u32 = 30;
-    const CONNECT_RETRY_DELAY_MS: u64 = 100;
+    const CONNECT_RETRY_MAX: u32 = 60;  // Increased from 30 for slower systems
+    const CONNECT_RETRY_DELAY_MS: u64 = 50;  // Initial delay
+    const CONNECT_RETRY_DELAY_MAX_MS: u64 = 500;  // Max delay with exponential backoff
 
     let kmsg_write = |msg: &str| {
         if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
@@ -1394,6 +1395,7 @@ fn run_reverse_vsock_client() -> Result<()> {
     kmsg_write("<6>run_reverse_vsock_client: connecting to host\n");
 
     let mut retry_count = 0;
+    let mut retry_delay_ms = CONNECT_RETRY_DELAY_MS;
     let stream = loop {
         match connect(fd.as_raw_fd(), &host_addr) {
             Ok(_) => {
@@ -1407,8 +1409,10 @@ fn run_reverse_vsock_client() -> Result<()> {
                     kmsg_write(&format!("<3>run_reverse_vsock_client: connect failed after {} retries: {}\n", retry_count, e));
                     return Err(eyre!("Failed to connect to Host after {} retries: {}", retry_count, e));
                 }
-                log::debug!("vm-daemon: connect retry {}/{}: {}", retry_count, CONNECT_RETRY_MAX, e);
-                std::thread::sleep(Duration::from_millis(CONNECT_RETRY_DELAY_MS));
+                log::debug!("vm-daemon: connect retry {}/{} (delay {}ms): {}", retry_count, CONNECT_RETRY_MAX, retry_delay_ms, e);
+                std::thread::sleep(Duration::from_millis(retry_delay_ms));
+                // Exponential backoff with jitter
+                retry_delay_ms = (retry_delay_ms * 2).min(CONNECT_RETRY_DELAY_MAX_MS);
             }
         }
     };
