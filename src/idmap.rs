@@ -35,6 +35,7 @@ impl IdMapSync {
         &self.read_fd
     }
 
+    #[allow(dead_code)]
     pub fn wait_for_mapping(&self) -> Result<()> {
         let mut buffer = [0u8; 1];
         read(&self.read_fd, &mut buffer)?;
@@ -59,6 +60,7 @@ impl IdMapSync {
         Ok(())
     }
 
+    #[allow(dead_code)]
     /// Signal completion without doing ID mapping.
     /// Used by helper after it has already called execute_idmap_for_parent.
     pub fn signal_only(&self) -> Result<()> {

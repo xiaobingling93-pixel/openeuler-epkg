@@ -128,6 +128,12 @@ fn unshare_namespaces_with_idmap(
 
 /// Unshare namespaces with user namespace and ID mapping via fork helper.
 /// Uses fork helper to call newuidmap/newgidmap for subuid/subgid support.
+///
+/// For WSL2 compatibility, we use proper pipe synchronization:
+/// 1. Fork helper before unshare (helper stays in original namespace)
+/// 2. Parent unshares, then signals helper via pipe
+/// 3. Helper writes parent's ID maps after parent is in new namespace
+/// 4. Helper signals completion, parent continues
 fn unshare_with_user_ns_and_idmap(
     clone_flags: CloneFlags,
     uid: Uid,
@@ -135,23 +141,44 @@ fn unshare_with_user_ns_and_idmap(
     opt_user: &Option<String>,
     allow_setgroups: bool,
 ) -> Result<()> {
-    // Fork a helper child to call newuidmap/newgidmap on parent.
-    // The helper must be forked BEFORE unshare, so it remains in the original
-    // user namespace and can call newuidmap (which runs as setuid root).
-    let sync = IdMapSync::new(nix::unistd::getpid())?;
+    use nix::unistd::{pipe, read, write};
+
+    // Create two pipes for bidirectional synchronization:
+    // - unshare_pipe: parent writes to signal "unshare complete", helper reads
+    // - idmap_pipe: helper writes to signal "ID mapping complete", parent reads
+    let (unshare_read, unshare_write) = pipe()?;
+    let (idmap_read, idmap_write) = pipe()?;
+
+    const SYNC_BYTE: u8 = 0x69;
 
     match unsafe { fork() } {
         Ok(ForkResult::Parent { child }) => {
-            // Parent: unshare namespaces, then wait for helper to map IDs
+            // Parent: close helper's pipe ends
+            drop(unshare_read);
+            drop(idmap_write);
+
+            // Unshare namespaces first
             unshare_with_error_handling(clone_flags)?;
             trace!("Parent: successfully created namespaces");
 
             // Immediately set mount propagation to private
             set_mount_propagation_private_if_needed(clone_flags)?;
 
-            // Wait for helper to complete mapping
-            sync.wait_for_mapping()?;
+            // Signal helper that we've unshared and are ready for ID mapping
+            write(&unshare_write, &[SYNC_BYTE])?;
+            trace!("Parent: signaled helper to write ID maps");
+
+            // Wait for helper to complete ID mapping
+            let mut buf = [0u8; 1];
+            read(&idmap_read, &mut buf)?;
+            if buf[0] != SYNC_BYTE {
+                return Err(eyre::eyre!("Invalid sync byte from helper"));
+            }
             trace!("Parent: ID mapping completed");
+
+            // Close remaining pipe ends
+            drop(unshare_write);
+            drop(idmap_read);
 
             // Wait for helper to exit
             match nix::sys::wait::waitpid(child, None) {
@@ -161,15 +188,27 @@ fn unshare_with_user_ns_and_idmap(
             }
         }
         Ok(ForkResult::Child) => {
-            // Helper: wait for parent to unshare, then map parent's IDs
-            // Small delay to ensure parent has called unshare
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            // Helper: close parent's pipe ends
+            drop(unshare_write);
+            drop(idmap_read);
 
-            trace!("Helper: calling newuidmap/newgidmap on parent");
+            // Wait for parent to signal that unshare is complete
+            let mut buf = [0u8; 1];
+            read(&unshare_read, &mut buf)?;
+            if buf[0] != SYNC_BYTE {
+                std::process::exit(1);
+            }
+            trace!("Helper: parent signaled unshare complete, writing ID maps");
+
+            // Now write parent's ID maps
+            // Parent is in new user namespace, we're in original namespace
+            // This works because we have same UID as parent in original namespace
             match execute_idmap_for_parent(uid, gid, opt_user, allow_setgroups) {
                 Ok(()) => {
-                    // Signal parent that mapping is done
-                    let _ = sync.signal_only();
+                    // Signal parent that ID mapping is done
+                    let _ = write(&idmap_write, &[SYNC_BYTE]);
+                    drop(unshare_read);
+                    drop(idmap_write);
                     std::process::exit(0);
                 }
                 Err(e) => {
