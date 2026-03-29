@@ -546,6 +546,24 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     }
 
     // Copy epkg-linux binary for VM usage on Windows/macOS hosts
+    // On Linux, epkg-linux is a hardlink to epkg (same inode, saves disk space)
+    #[cfg(target_os = "linux")]
+    {
+        let arch = &config().common.arch;
+        let epkg_linux_target = usr_bin.join(format!("epkg-linux-{}", arch));
+        // Create hardlink to epkg (same inode, atomic with epkg installation)
+        if target_epkg.exists() {
+            // Remove existing file first (hardlink requires target to not exist)
+            if epkg_linux_target.exists() {
+                lfs::remove_file(&epkg_linux_target)?;
+            }
+            std::fs::hard_link(&target_epkg, &epkg_linux_target)
+                .context(format!("Failed to create hardlink {} -> {}",
+                    epkg_linux_target.display(), target_epkg.display()))?;
+            log::info!("Installed epkg-linux for VM (hardlink): {}", epkg_linux_target.display());
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
     if let Some(ref epkg_linux_plan) = init_plan.epkg_linux {
         if epkg_linux_plan.path.exists() {
             let arch = &config().common.arch;

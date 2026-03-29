@@ -139,6 +139,37 @@ safe_cp() {
     }
 }
 
+# Install file preserving hardlinks when possible.
+# This is important for epkg and epkg-linux-$arch which should share the same inode
+# to save disk space and ensure consistency.
+install_hardlink() {
+    local src="$1"
+    local dst="$2"
+    local tmp="${dst}.tmp.$$"
+
+    # Create parent directory if it doesn't exist
+    mkdir -p "$(dirname "$dst")" || return $?
+
+    # Check if src and dst are already the same file (same inode)
+    if [[ -f "$dst" ]] && [[ "$src" -ef "$dst" ]]; then
+        return 0  # Already hardlinked, nothing to do
+    fi
+
+    # Try to create hardlink first (atomic operation)
+    if ln -f "$src" "$tmp" 2>/dev/null; then
+        # Hardlink succeeded, rename to final destination
+        mv -f "$tmp" "$dst" || {
+            rm -f "$tmp" 2>/dev/null
+            # Fall back to copy if rename fails (cross-filesystem)
+            safe_cp "$src" "$dst"
+        }
+    else
+        # Hardlink failed (cross-filesystem or other error), fall back to copy
+        rm -f "$tmp" 2>/dev/null
+        safe_cp "$src" "$dst"
+    fi
+}
+
 # Deploy a release binary into $OUTPUT_DIR with a stable platform-aware name.
 # Also generates sha256sum files in OUTPUT_DIR so the sha file line embeds only
 # the filename (not a leading dist/... path).
@@ -451,15 +482,18 @@ install_to_dev_env() {
         fi
     fi
 
-    safe_cp "$binary_path" "$DEV_ENV_BIN_DIR/$BINARY_NAME"
+    # Use install_hardlink to preserve hardlinks between epkg and epkg-linux-$arch
+    install_hardlink "$binary_path" "$DEV_ENV_BIN_DIR/$BINARY_NAME"
 
     # Also install as epkg-linux-$arch for VM usage on Windows/macOS hosts.
     # This allows Windows/macOS to use the Linux ELF binary for VM mode.
+    # Use hardlink to share the same inode with epkg binary.
     local host_os=$(uname -s)
     if [[ "$host_os" == "Linux" ]]; then
         local epkg_linux_name="epkg-linux-${arch}"
         if [[ "$(basename "$binary_path")" != "$epkg_linux_name" ]]; then
-            safe_cp "$binary_path" "$DEV_ENV_BIN_DIR/$epkg_linux_name"
+            # Hardlink to the just-installed epkg (same inode)
+            install_hardlink "$DEV_ENV_BIN_DIR/$BINARY_NAME" "$DEV_ENV_BIN_DIR/$epkg_linux_name"
         fi
     fi
 }
