@@ -2,12 +2,10 @@
 
 use color_eyre::eyre;
 use color_eyre::Result;
-#[cfg(not(all(unix, target_os = "linux")))]
 use std::path::Path;
-#[cfg(not(all(unix, target_os = "linux")))]
 use std::time::Duration;
 
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(unix)]
 use std::os::fd::FromRawFd;
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
@@ -344,4 +342,165 @@ pub fn connect_vsock_bridge(sock_path: &Path, max_retries: u32) -> Result<std::f
         max_retries,
         last_error.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "connection failed"))
     ))
+}
+
+// =============================================================================
+// Reverse vsock mode: Guest connects to Host
+// =============================================================================
+// In reverse mode, the Host listens on a socket/pipe and waits for the Guest
+// to connect. This avoids the vsock handshake timing issues on Windows/WHPX.
+
+/// Set up a reverse listener for Guest to connect to.
+/// In reverse mode, Host listens and Guest initiates the connection.
+#[cfg(unix)]
+pub fn setup_reverse_listener(sock_path: &Path) -> Result<std::os::unix::net::UnixListener> {
+    // Clean up any stale socket
+    let _ = std::fs::remove_file(sock_path);
+
+    log::debug!("libkrun: creating reverse listener on {}", sock_path.display());
+    let listener = std::os::unix::net::UnixListener::bind(sock_path)
+        .map_err(|e| eyre::eyre!("Failed to bind reverse socket {}: {}", sock_path.display(), e))?;
+
+    // Set non-blocking for timeout support
+    listener.set_nonblocking(true)
+        .map_err(|e| eyre::eyre!("Failed to set non-blocking on reverse socket: {}", e))?;
+
+    Ok(listener)
+}
+
+/// Accept a connection from Guest in reverse mode.
+#[cfg(unix)]
+pub fn accept_reverse_connection(
+    listener: &std::os::unix::net::UnixListener,
+    vm_start_failed_rx: Option<&std::sync::mpsc::Receiver<()>>,
+) -> Result<std::net::TcpStream> {
+    use std::os::unix::io::IntoRawFd;
+    use std::time::Instant;
+
+    let start = Instant::now();
+    let timeout = Duration::from_secs(30);
+    let check_interval = Duration::from_millis(100);
+
+    loop {
+        // Check if VM start failed
+        if let Some(ref failed_rx) = vm_start_failed_rx {
+            if failed_rx.try_recv().is_ok() {
+                return Err(eyre::eyre!("VM failed to start (krun_start_enter error)"));
+            }
+        }
+
+        // Try to accept connection
+        match listener.accept() {
+            Ok((stream, _addr)) => {
+                log::debug!("libkrun: Guest connected to reverse listener");
+                // Convert Unix stream to TcpStream for compatibility
+                let raw_fd = stream.into_raw_fd();
+                return Ok(unsafe { std::net::TcpStream::from_raw_fd(raw_fd) });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // No connection yet, continue waiting
+            }
+            Err(e) => {
+                return Err(eyre::eyre!("Failed to accept reverse connection: {}", e));
+            }
+        }
+
+        if start.elapsed() >= timeout {
+            return Err(eyre::eyre!("Timeout waiting for Guest to connect (reverse mode)"));
+        }
+
+        std::thread::sleep(check_interval);
+    }
+}
+
+/// Windows reverse listener setup.
+#[cfg(windows)]
+pub fn setup_reverse_listener(sock_path: &Path) -> Result<WindowsReadyPipe> {
+    let pipe_name = pipe_name_from_sock_path(sock_path)?;
+    let full = format!("\\\\.\\pipe\\{}", pipe_name);
+    let wide = to_wide_null(&full);
+
+    unsafe {
+        // CreateNamedPipeW with PIPE_ACCESS_DUPLEX for bidirectional communication
+        let h = CreateNamedPipeW(
+            PCWSTR(wide.as_ptr()),
+            PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+            PIPE_UNLIMITED_INSTANCES,
+            4096,
+            4096,
+            0,
+            None,
+        );
+        if h == INVALID_HANDLE_VALUE {
+            return Err(eyre::eyre!(
+                "CreateNamedPipeW failed for reverse listener: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        log::debug!("libkrun: reverse listener created on pipe {}", full);
+        Ok(WindowsReadyPipe { handle: h })
+    }
+}
+
+/// Accept a connection from Guest in reverse mode (Windows).
+#[cfg(windows)]
+pub fn accept_reverse_connection(
+    pipe: &WindowsReadyPipe,
+    vm_start_failed_rx: Option<&std::sync::mpsc::Receiver<()>>,
+) -> Result<std::fs::File> {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Instant;
+
+    let handle_raw = pipe.handle.0 as usize;
+    let (tx, rx) = mpsc::channel();
+
+    // Spawn thread to wait for connection
+    let jh = thread::spawn(move || {
+        let handle = HANDLE(handle_raw as *mut _);
+        let r = unsafe { ConnectNamedPipe(handle, None) };
+        let _ = tx.send(r);
+    });
+
+    let start = Instant::now();
+    let timeout = Duration::from_secs(30);
+    let check_interval = Duration::from_millis(100);
+
+    loop {
+        // Check if VM start failed
+        if let Some(ref failed_rx) = vm_start_failed_rx {
+            if failed_rx.try_recv().is_ok() {
+                return Err(eyre::eyre!("VM failed to start (krun_start_enter error)"));
+            }
+        }
+
+        // Check if pipe connected
+        match rx.try_recv() {
+            Ok(Ok(())) => {
+                log::debug!("libkrun: Guest connected to reverse pipe");
+                let _ = jh.join();
+                // Return the pipe handle as a File
+                let file = std::fs::File::from(unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(pipe.handle.0) });
+                return Ok(file);
+            }
+            Ok(Err(e)) => {
+                let _ = jh.join();
+                return Err(eyre::eyre!("ConnectNamedPipe failed: {:?}", e));
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                // Not ready yet
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                let _ = jh.join();
+                return Err(eyre::eyre!("Pipe thread disconnected unexpectedly"));
+            }
+        }
+
+        if start.elapsed() >= timeout {
+            return Err(eyre::eyre!("Timeout waiting for Guest to connect (reverse mode)"));
+        }
+
+        std::thread::sleep(check_interval);
+    }
 }

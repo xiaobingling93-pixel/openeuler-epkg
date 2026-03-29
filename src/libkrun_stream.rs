@@ -510,3 +510,43 @@ fn handle_streaming_windows(stream: &mut std::fs::File) -> Result<i32> {
     let code = exit_code.lock().unwrap().unwrap_or(0);
     Ok(code)
 }
+
+// =============================================================================
+// Reverse mode support: Send command over an existing stream
+// =============================================================================
+
+/// Send command over an existing stream (for reverse mode).
+/// In reverse mode, the Host accepts a connection from Guest, then uses that
+/// connection to send commands and receive results.
+pub fn send_command_over_stream(
+    cmd_parts: &[String],
+    io_mode: IoMode,
+    reuse_vm: bool,
+    mut stream: impl Read + Write + Send + 'static,
+) -> Result<i32> {
+    eprintln!("[epkg-debug] libkrun_stream: send_command_over_stream starting");
+    let (use_pty, is_batch) = resolve_io_mode(io_mode);
+    eprintln!(
+        "[epkg-debug] libkrun_stream: io_mode={:?}, use_pty={}, is_batch={}, reuse_vm={}",
+        io_mode, use_pty, is_batch, reuse_vm
+    );
+
+    // Build and send command request
+    let request = build_command_request(cmd_parts, io_mode, reuse_vm);
+    let request_json = serde_json::to_vec(&request)?;
+    eprintln!("[epkg-debug] libkrun_stream: writing {} bytes to stream", request_json.len());
+    stream.write_all(&request_json)?;
+    stream.write_all(b"\n")?;
+    stream.flush()?;
+    eprintln!("[epkg-debug] libkrun_stream: request sent");
+
+    // Handle response based on mode
+    if use_pty {
+        // PTY mode: Use the generic handler since stream type may vary
+        handle_streaming_simple(&mut stream, false)
+    } else if is_batch {
+        handle_streaming_simple(&mut stream, true)
+    } else {
+        handle_streaming_simple(&mut stream, false)
+    }
+}

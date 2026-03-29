@@ -305,15 +305,18 @@ struct TerminalConfig {
 #[derive(Debug, Default)]
 #[allow(dead_code)]
 pub struct VmDaemonOptions {
-    pub port: u16,
-    pub host: String,
+    pub port:        u16,
+    pub host:        String,
+    /// Reverse mode: Guest connects to Host instead of listening.
+    /// This avoids vsock handshake timing issues on Windows/WHPX.
+    pub reverse_mode: bool,
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<VmDaemonOptions> {
     let port = matches.get_one::<u16>("port").copied().unwrap_or(10000);
     let host = matches.get_one::<String>("host").cloned().unwrap_or_else(|| "0.0.0.0".to_string());
 
-    Ok(VmDaemonOptions { port, host })
+    Ok(VmDaemonOptions { port, host, reverse_mode: false })
 }
 
 pub fn command() -> Command {
@@ -1325,20 +1328,123 @@ fn run_vsock_server() -> Result<()> {
     Ok(())
 }
 
-pub fn run(_options: VmDaemonOptions) -> Result<()> {
+pub fn run(options: VmDaemonOptions) -> Result<()> {
     // vm-daemon always uses vsock for control plane
     #[cfg(target_os = "linux")]
     {
-        let _ = kmsg_write("<6>vm_daemon::run: calling run_vsock_server\n");
-        let result = run_vsock_server();
-        match &result {
-            Ok(_) => { let _ = kmsg_write("<6>vm_daemon::run: run_vsock_server returned Ok\n"); }
-            Err(e) => { let _ = kmsg_write(&format!("<3>vm_daemon::run: run_vsock_server returned Err: {}\n", e)); }
+        if options.reverse_mode {
+            let _ = kmsg_write("<6>vm_daemon::run: calling run_reverse_vsock_client\n");
+            let result = run_reverse_vsock_client();
+            match &result {
+                Ok(_) => { let _ = kmsg_write("<6>vm_daemon::run: run_reverse_vsock_client returned Ok\n"); }
+                Err(e) => { let _ = kmsg_write(&format!("<3>vm_daemon::run: run_reverse_vsock_client returned Err: {}\n", e)); }
+            }
+            return result;
+        } else {
+            let _ = kmsg_write("<6>vm_daemon::run: calling run_vsock_server\n");
+            let result = run_vsock_server();
+            match &result {
+                Ok(_) => { let _ = kmsg_write("<6>vm_daemon::run: run_vsock_server returned Ok\n"); }
+                Err(e) => { let _ = kmsg_write(&format!("<3>vm_daemon::run: run_vsock_server returned Err: {}\n", e)); }
+            }
+            return result;
         }
-        return result;
     }
     #[cfg(not(target_os = "linux"))]
     {
         return Err(eyre!("vm-daemon vsock mode not supported on this platform"));
+    }
+}
+
+/// Run in reverse vsock mode: Guest connects to Host.
+/// This avoids vsock handshake timing issues on Windows/WHPX.
+#[cfg(target_os = "linux")]
+fn run_reverse_vsock_client() -> Result<()> {
+    use nix::sys::socket::{connect, socket, AddressFamily, SockFlag, SockType, VsockAddr};
+    use std::io::Write;
+    use std::time::Duration;
+
+    const HOST_CID: u32 = libc::VMADDR_CID_HOST;  // CID 2 = Host
+    const HOST_PORT: u32 = 10000;  // Command port (Host is listening)
+    const CONNECT_RETRY_MAX: u32 = 30;
+    const CONNECT_RETRY_DELAY_MS: u64 = 100;
+
+    let kmsg_write = |msg: &str| {
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            let _ = write!(kmsg, "{}", msg);
+        }
+    };
+
+    kmsg_write("<6>run_reverse_vsock_client: starting\n");
+    log::debug!("vm-daemon: reverse mode - connecting to Host...");
+
+    // Create vsock socket
+    let fd = socket(
+        AddressFamily::Vsock,
+        SockType::Stream,
+        SockFlag::SOCK_CLOEXEC,
+        None,
+    ).map_err(|e| { log::debug!("vm-daemon: reverse socket() failed: {}", e); e })?;
+    kmsg_write("<6>run_reverse_vsock_client: socket created\n");
+
+    let host_addr = VsockAddr::new(HOST_CID, HOST_PORT);
+
+    // Connect to Host with retry
+    log::debug!("vm-daemon: connecting to Host CID={} PORT={}...", HOST_CID, HOST_PORT);
+    kmsg_write("<6>run_reverse_vsock_client: connecting to host\n");
+
+    let mut retry_count = 0;
+    let stream = loop {
+        match connect(fd.as_raw_fd(), &host_addr) {
+            Ok(_) => {
+                kmsg_write("<6>run_reverse_vsock_client: connected to host\n");
+                log::debug!("vm-daemon: connected to Host");
+                break unsafe { std::net::TcpStream::from_raw_fd(fd.as_raw_fd()) };
+            }
+            Err(e) => {
+                retry_count += 1;
+                if retry_count >= CONNECT_RETRY_MAX {
+                    kmsg_write(&format!("<3>run_reverse_vsock_client: connect failed after {} retries: {}\n", retry_count, e));
+                    return Err(eyre!("Failed to connect to Host after {} retries: {}", retry_count, e));
+                }
+                log::debug!("vm-daemon: connect retry {}/{}: {}", retry_count, CONNECT_RETRY_MAX, e);
+                std::thread::sleep(Duration::from_millis(CONNECT_RETRY_DELAY_MS));
+            }
+        }
+    };
+
+    // Send ready signal to Host
+    kmsg_write("<6>run_reverse_vsock_client: sending READY\n");
+    log::debug!("vm-daemon: sending READY signal to Host");
+    let mut stream = stream;
+    stream.write_all(b"READY\n")?;
+    stream.flush()?;
+
+    kmsg_write("<6>run_reverse_vsock_client: entering handle_connection\n");
+    log::debug!("vm-daemon: handling connection in reverse mode");
+
+    // Handle the connection (same as forward mode)
+    match handle_connection(stream) {
+        Ok(disposition) => {
+            kmsg_write(&format!("<6>run_reverse_vsock_client: handle_connection returned {:?}\n", disposition));
+            log::debug!("vm-daemon: handle_connection returned {:?}", disposition);
+            match disposition {
+                ConnectionDisposition::Shutdown => {
+                    kmsg_write("<6>run_reverse_vsock_client: shutdown requested, exiting\n");
+                    log::debug!("vm-daemon: shutdown requested in reverse mode");
+                    return Ok(());
+                }
+                ConnectionDisposition::ReuseWait { idle_timeout_ms: _ } => {
+                    kmsg_write("<6>run_reverse_vsock_client: switching to forward mode for reuse\n");
+                    // For reuse after reverse mode, switch to forward mode (Guest listens)
+                    log::debug!("vm-daemon: switching from reverse to forward mode for reuse");
+                    run_vsock_server()
+                }
+            }
+        }
+        Err(e) => {
+            kmsg_write(&format!("<3>run_reverse_vsock_client: handle_connection error: {}\n", e));
+            Err(e)
+        }
     }
 }

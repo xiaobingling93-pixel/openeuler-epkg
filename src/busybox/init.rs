@@ -182,7 +182,6 @@ pub fn init_logging_early() {
 }
 
 fn run_init() -> Result<()> {
-    use std::io::Write;
     let _ = kmsg_write("<6>run_init: started\n");
 
     let (pwd, cmd_str, run_user) = (
@@ -549,12 +548,18 @@ fn mount_virtiofs_volumes() -> Result<()> {
 fn exec_vm_daemon() -> Result<()> {
     let _ = kmsg_write("<6>exec_vm_daemon: starting\n");
 
+    // Check if we should use reverse vsock mode (Guest connects to Host)
+    // This is set by Host when starting VM in reverse mode (Windows/WHPX first run)
+    let reverse_mode = get_cmdline_param("epkg.vsock_reverse").map_or(false, |v| v == "1" || v.is_empty());
+    let _ = kmsg_write(&format!("<6>exec_vm_daemon: reverse_mode={}\n", reverse_mode));
+
     // Call vm_daemon::run() directly instead of exec-ing the binary.
-    // This avoids issues with symlink resolution when vm-daemon -> epkg -> /home/wfg/.epkg/envs/self/...
-    // and the epkg binary is accessed via virtiofs bind mounts.
-    log::debug!("init: starting vm-daemon directly (no exec)");
+    log::debug!("init: starting vm-daemon directly (no exec), reverse_mode={}", reverse_mode);
     let _ = kmsg_write("<6>exec_vm_daemon: creating options\n");
-    let options = crate::busybox::vm_daemon::VmDaemonOptions::default();
+    let options = crate::busybox::vm_daemon::VmDaemonOptions {
+        reverse_mode,
+        ..Default::default()
+    };
     let _ = kmsg_write("<6>exec_vm_daemon: about to call vm_daemon::run\n");
     let result = crate::busybox::vm_daemon::run(options);
     log::debug!("init: vm_daemon::run() returned: {:?}", result);

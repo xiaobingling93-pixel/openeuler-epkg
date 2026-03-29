@@ -207,6 +207,7 @@ fn check_status(op: &str, status: i32) -> Result<()> {
 #[cfg(feature = "libkrun")]
 struct LibkrunConfig {
     use_vsock:           bool,
+    use_reverse_vsock:   bool,  // true: Guest connects to Host (first run)
     cmd_parts:           Vec<String>,
     kernel_args:         String,
     kernel_path:         Option<String>,
@@ -234,6 +235,14 @@ fn build_libkrun_config(
     let use_vsock = !use_cmdline_mode;
     log::debug!("libkrun: mode: cmdline={}, vsock={}", use_cmdline_mode, use_vsock);
     log::debug!("libkrun: EPKG_VM_NO_DAEMON={}", std::env::var("EPKG_VM_NO_DAEMON").unwrap_or_else(|_| "not set".to_string()));
+
+    // Use reverse vsock mode for first run to avoid vsock handshake timing issues
+    // on Windows/WHPX. In reverse mode, Guest connects to Host after full initialization.
+    // Reuse mode uses forward mode (Host connects to Guest) for compatibility.
+    #[cfg(windows)]
+    let use_reverse_vsock = use_vsock && !run_options.reuse_vm;
+    #[cfg(not(windows))]
+    let use_reverse_vsock = false;  // Unix doesn't have this timing issue
 
     let guest_exec_path = guest_cmd_path
         .strip_prefix(env_root)
@@ -287,6 +296,13 @@ fn build_libkrun_config(
         log::debug!("libkrun: TSI disabled via EPKG_TSI_DISABLE env var");
     }
 
+    // Enable reverse vsock mode for first run on Windows/WHPX.
+    // In reverse mode, Guest connects to Host, avoiding vsock handshake timing issues.
+    if use_reverse_vsock {
+        kernel_args.push_str(" epkg.vsock_reverse=1");
+        log::debug!("libkrun: reverse vsock mode enabled (epkg.vsock_reverse=1)");
+    }
+
     // Set init_pwd to current working directory.
     // On Windows, skip this since PWD is a Windows path which is invalid in the Linux guest.
     #[cfg(not(windows))]
@@ -328,6 +344,7 @@ fn build_libkrun_config(
 
     Ok(LibkrunConfig {
         use_vsock,
+        use_reverse_vsock,
         cmd_parts,
         kernel_args,
         kernel_path,
@@ -535,9 +552,14 @@ struct VmContext {
     vsock_sock_path: Option<std::path::PathBuf>,
 }
 
-/// Configure vsock ports 10000 (command) and 10001 (ready); returns host path for the command socket.
+/// Configure vsock ports 10000 (command) and optionally 10001 (ready).
+///
+/// In forward mode (reverse=false): Port 10000 listen=true (Guest listens), 10001 listen=false (Host listens for ready)
+/// In reverse mode (reverse=true): Port 10000 listen=false (Host listens), no ready port needed
+///
+/// Returns host path for the command socket/pipe.
 #[cfg(feature = "libkrun")]
-fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext) -> Result<std::path::PathBuf> {
+fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext, reverse: bool) -> Result<std::path::PathBuf> {
     let sock_path = crate::models::dirs().epkg_cache
         .join("vmm-logs")
         .join(format!("vsock-{}.sock", std::process::id()));
@@ -552,12 +574,15 @@ fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext) -> Result<std::path::Path
     unsafe {
         check_status("krun_disable_implicit_vsock", krun_disable_implicit_vsock(ctx.ctx_id))?;
         // Enable TSI (Transparent Socket Impersonation) for network access.
-        // KRUN_TSI_HIJACK_INET (1 << 0) allows the guest to use host network via socket hijacking.
-        // KRUN_TSI_HIJACK_UNIX (1 << 1) enables Unix socket hijacking (required for full TSI support).
         const KRUN_TSI_HIJACK_INET: u32 = 1 << 0;
         const KRUN_TSI_HIJACK_UNIX: u32 = 1 << 1;
         let tsi_features = KRUN_TSI_HIJACK_INET | KRUN_TSI_HIJACK_UNIX;
         check_status("krun_add_vsock", krun_add_vsock(ctx.ctx_id, tsi_features))?;
+
+        // Port 10000: Command port
+        // In reverse mode: listen=false, Host creates listener, Guest connects
+        // In forward mode: listen=true, Guest creates listener, Host connects
+        let listen_10000 = !reverse;
 
         #[cfg(unix)]
         {
@@ -565,7 +590,7 @@ fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext) -> Result<std::path::Path
                 .map_err(|e| eyre::eyre!("invalid socket path: {}", e))?;
             check_status(
                 "krun_add_vsock_port2",
-                krun_add_vsock_port2(ctx.ctx_id, 10000, sock_path_c.as_ptr(), true),
+                krun_add_vsock_port2(ctx.ctx_id, 10000, sock_path_c.as_ptr(), listen_10000),
             )?;
         }
         #[cfg(windows)]
@@ -574,31 +599,37 @@ fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext) -> Result<std::path::Path
             let stem_c = CString::new(stem).map_err(|e| eyre::eyre!("invalid vsock pipe name: {}", e))?;
             check_status(
                 "krun_add_vsock_port2_windows",
-                krun_add_vsock_port2_windows(ctx.ctx_id, 10000, stem_c.as_ptr(), true),
+                krun_add_vsock_port2_windows(ctx.ctx_id, 10000, stem_c.as_ptr(), listen_10000),
             )?;
         }
-        #[cfg(unix)]
-        {
-            let ready_path_c = CString::new(ready_path.to_string_lossy().as_bytes())
-                .map_err(|e| eyre::eyre!("invalid ready socket path: {}", e))?;
-            check_status(
-                "krun_add_vsock_port2",
-                krun_add_vsock_port2(ctx.ctx_id, 10001, ready_path_c.as_ptr(), false),
-            )?;
-        }
-        #[cfg(windows)]
-        {
-            let stem = libkrun_bridge::pipe_name_from_sock_path(&ready_path)?;
-            let stem_c = CString::new(stem).map_err(|e| eyre::eyre!("invalid ready pipe name: {}", e))?;
-            check_status(
-                "krun_add_vsock_port2_windows",
-                krun_add_vsock_port2_windows(ctx.ctx_id, 10001, stem_c.as_ptr(), false),
-            )?;
+
+        // Port 10001: Ready notification (only needed in forward mode)
+        // In reverse mode, Guest connects directly to port 10000, no separate ready port needed
+        if !reverse {
+            #[cfg(unix)]
+            {
+                let ready_path_c = CString::new(ready_path.to_string_lossy().as_bytes())
+                    .map_err(|e| eyre::eyre!("invalid ready socket path: {}", e))?;
+                check_status(
+                    "krun_add_vsock_port2",
+                    krun_add_vsock_port2(ctx.ctx_id, 10001, ready_path_c.as_ptr(), false),
+                )?;
+            }
+            #[cfg(windows)]
+            {
+                let stem = libkrun_bridge::pipe_name_from_sock_path(&ready_path)?;
+                let stem_c = CString::new(stem).map_err(|e| eyre::eyre!("invalid ready pipe name: {}", e))?;
+                check_status(
+                    "krun_add_vsock_port2_windows",
+                    krun_add_vsock_port2_windows(ctx.ctx_id, 10001, stem_c.as_ptr(), false),
+                )?;
+            }
+            log::debug!("libkrun: ready port 10001 mapped to {}", ready_path.display());
         }
     }
 
-    log::debug!("libkrun: vsock port 10000 mapped to {}", sock_path.display());
-    log::debug!("libkrun: ready port 10001 mapped to {}", ready_path.display());
+    log::debug!("libkrun: vsock port 10000 mapped to {} (listen={}, reverse={})",
+               sock_path.display(), !reverse, reverse);
 
     Ok(sock_path)
 }
@@ -705,7 +736,7 @@ fn create_and_configure_vm(
         }
 
         if config.use_vsock {
-            let sock_path = setup_libkrun_vsock_host_sockets(&ctx)?;
+            let sock_path = setup_libkrun_vsock_host_sockets(&ctx, config.use_reverse_vsock)?;
             let vsock_sock_path = Some(sock_path);
             let shutdown_fd = ctx.get_shutdown_eventfd()
                 .map_err(|e| eyre::eyre!("Failed to get shutdown eventfd: {}", e))?;
@@ -1090,6 +1121,82 @@ fn krun_no_vsock_join_vm_thread_exit(vm_thread: std::thread::JoinHandle<i32>, ct
     }
 }
 
+/// Run command in reverse vsock mode: Guest connects to Host.
+/// This avoids vsock handshake timing issues on Windows/WHPX.
+#[cfg(feature = "libkrun")]
+fn run_reverse_vsock_mode(
+    env_root: &Path,
+    run_options: &RunOptions,
+    config: &LibkrunConfig,
+) -> Result<()> {
+    eprintln!("[epkg-debug] libkrun: entering reverse vsock mode (Guest -> Host)");
+
+    // Create VM with reverse mode (port 10000 listen=false, Host listens)
+    let vm_ctx = create_and_configure_vm(env_root, run_options, config)?;
+    eprintln!("[epkg-debug] libkrun: VM configured (ctx_id={})", vm_ctx.ctx.ctx_id);
+
+    let vsock_sock_path = vm_ctx
+        .vsock_sock_path
+        .clone()
+        .ok_or_else(|| eyre::eyre!("libkrun: missing vsock socket path"))?;
+
+    // Set up reverse listener on Host (port 10000)
+    // In reverse mode, Host listens and Guest connects
+    #[cfg(unix)]
+    let reverse_listener = libkrun_bridge::setup_reverse_listener(&vsock_sock_path)?;
+    #[cfg(windows)]
+    let reverse_pipe = libkrun_bridge::setup_reverse_listener(&vsock_sock_path)?;
+
+    eprintln!("[epkg-debug] libkrun: reverse listener set up on {}", vsock_sock_path.display());
+
+    let ctx_id = vm_ctx.ctx.ctx_id;
+    let shutdown_fd = vm_ctx.shutdown_fd;
+
+    // Channel to signal VM start failure
+    let (start_failed_tx, start_failed_rx) = std::sync::mpsc::channel();
+    eprintln!("[epkg-debug] libkrun: starting VM thread...");
+    let vm_thread = start_libkrun_vm(vm_ctx.ctx, start_failed_tx);
+
+    // Wait for Guest to connect (with timeout)
+    eprintln!("[epkg-debug] libkrun: waiting for Guest to connect...");
+    #[cfg(unix)]
+    let stream = libkrun_bridge::accept_reverse_connection(&reverse_listener, Some(&start_failed_rx))?;
+    #[cfg(windows)]
+    let stream = libkrun_bridge::accept_reverse_connection(&reverse_pipe, Some(&start_failed_rx))?;
+
+    eprintln!("[epkg-debug] libkrun: Guest connected, sending command...");
+
+    // Send command over the accepted connection
+    let exit_code = libkrun_stream::send_command_over_stream(
+        &config.cmd_parts,
+        run_options.io_mode,
+        run_options.reuse_vm,
+        stream,
+    )
+    .map_err(|e| eyre::eyre!("Failed to send command via reverse vsock: {}", e))?;
+
+    log::debug!("libkrun: reverse vsock command completed with exit code {}", exit_code);
+
+    if run_options.reuse_vm {
+        // For reuse mode after reverse start, we need to switch to forward mode
+        // This requires notifying Guest to start listening
+        #[cfg(not(target_os = "linux"))]
+        {
+            *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
+                ctx_id,
+                shutdown_fd,
+                vsock_sock_path,
+                vm_thread,
+                env_root: env_root.to_path_buf(),
+            });
+            log::debug!("libkrun: VM session kept alive for reuse (switched to forward mode)");
+            return apply_krun_exit_policy(exit_code, run_options);
+        }
+    }
+
+    krun_vsock_shutdown_join_free_exit(vm_thread, shutdown_fd, ctx_id, exit_code);
+}
+
 /// Run a command inside a libkrun microVM.
 ///
 /// On non-reuse paths this never returns on success; it exits the process with the
@@ -1115,6 +1222,13 @@ pub fn run_command_in_krun(
 
     if config.use_vsock {
         eprintln!("[epkg-debug] libkrun: entering vsock mode...");
+
+        // Handle reverse mode: Guest connects to Host (first run on Windows)
+        if config.use_reverse_vsock {
+            return run_reverse_vsock_mode(env_root, run_options, &config);
+        }
+
+        // Forward mode: Host connects to Guest (reuse or Unix platforms)
         if run_options.reuse_vm {
             if let Some(code) = try_reuse_existing_krun_session(env_root, &config, run_options)? {
                 log::info!("libkrun: reused VM session, exit code {}", code);
