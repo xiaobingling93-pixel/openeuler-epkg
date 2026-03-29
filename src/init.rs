@@ -578,10 +578,88 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     // Short paths under ~/.epkg/: bin -> self usr/bin, assets -> self usr/src/epkg/assets
     ensure_home_epkg_symlinks(env_root, &usr_bin)?;
 
+    // Update hardlinks in all envs to point to the new epkg-linux binary.
+    // This ensures that all environments share the same inode for epkg/init,
+    // saving disk space and ensuring consistency.
+    #[cfg(target_os = "linux")]
+    {
+        let arch = &config().common.arch;
+        let self_epkg_linux = usr_bin.join(format!("epkg-linux-{}", arch));
+        if self_epkg_linux.exists() {
+            update_all_env_hardlinks(&self_epkg_linux, arch)?;
+        }
+    }
+
     // Create symlink to epkg binary in the first valid PATH component (Unix only)
     #[cfg(unix)]
     create_epkg_symlink(&target_epkg)
         .context("Failed to create epkg symlink in PATH")?;
+
+    Ok(())
+}
+
+/// Update hardlinks in all environments to point to the new epkg-linux binary.
+///
+/// This function is called after `epkg self install` to ensure that all environments
+/// have hardlinks pointing to the newly installed binary. This:
+/// 1. Saves disk space (all envs share the same inode)
+/// 2. Ensures consistency (all envs use the same binary version)
+/// 3. Makes updates atomic (single binary replacement updates all envs)
+///
+/// Files updated in each environment:
+/// - `usr/bin/epkg` -> hardlink to self's epkg-linux-$arch
+/// - `usr/bin/init` -> hardlink to self's epkg-linux-$arch
+#[cfg(target_os = "linux")]
+fn update_all_env_hardlinks(self_epkg_linux: &Path, _arch: &str) -> Result<()> {
+    let envs_dir = dirs().user_envs.clone();
+    if !envs_dir.exists() {
+        return Ok(());
+    }
+
+    let entries = match std::fs::read_dir(&envs_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            log::warn!("Failed to read envs directory {}: {}", envs_dir.display(), e);
+            return Ok(());
+        }
+    };
+
+    let mut updated_count = 0;
+    for entry in entries.flatten() {
+        let env_name = entry.file_name().to_string_lossy().to_string();
+        // Skip self environment - it already has the correct binary
+        if env_name == SELF_ENV {
+            continue;
+        }
+
+        let env_usr_bin = envs_dir.join(&env_name).join("usr").join("bin");
+        if !env_usr_bin.exists() {
+            continue;
+        }
+
+        // Update epkg and init hardlinks
+        for filename in ["epkg", "init"] {
+            let target_path = env_usr_bin.join(filename);
+            if target_path.exists() {
+                // Remove existing file (whether hardlink or not) and create new hardlink
+                if let Err(e) = lfs::remove_file(&target_path) {
+                    log::warn!("Failed to remove {}: {}", target_path.display(), e);
+                    continue;
+                }
+            }
+            if let Err(e) = std::fs::hard_link(self_epkg_linux, &target_path) {
+                log::warn!("Failed to create hardlink {} -> {}: {}",
+                    target_path.display(), self_epkg_linux.display(), e);
+                continue;
+            }
+            log::debug!("Updated hardlink: {} -> {}", target_path.display(), self_epkg_linux.display());
+            updated_count += 1;
+        }
+    }
+
+    if updated_count > 0 {
+        log::info!("Updated {} hardlinks across all environments", updated_count);
+    }
 
     Ok(())
 }

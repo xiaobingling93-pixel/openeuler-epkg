@@ -495,6 +495,53 @@ install_to_dev_env() {
             # Hardlink to the just-installed epkg (same inode)
             install_hardlink "$DEV_ENV_BIN_DIR/$BINARY_NAME" "$DEV_ENV_BIN_DIR/$epkg_linux_name"
         fi
+
+        # Update hardlinks in all environments to point to the new binary.
+        # This ensures epkg and init in all envs share the same inode as self's epkg-linux-$arch.
+        update_all_env_hardlinks "$DEV_ENV_BIN_DIR/$epkg_linux_name"
+    fi
+}
+
+# Update hardlinks in all environments to point to the new epkg-linux binary.
+# This ensures that all environments have hardlinks pointing to the newly installed binary.
+# Files updated: envs/*/usr/bin/epkg and envs/*/usr/bin/init
+update_all_env_hardlinks() {
+    local self_epkg_linux="$1"
+    local envs_dir="${DEV_ENV_BIN_DIR%/*/*/*}"  # Go from usr/bin to envs dir
+    local updated_count=0
+
+    [[ -f "$self_epkg_linux" ]] || return 0
+
+    # Iterate through all environments
+    for env_dir in "$envs_dir"/*; do
+        [[ -d "$env_dir" ]] || continue
+        local env_name="${env_dir##*/}"
+        # Skip self environment - it already has the correct binary
+        [[ "$env_name" == "self" ]] && continue
+
+        local env_usr_bin="$env_dir/usr/bin"
+        [[ -d "$env_usr_bin" ]] || continue
+
+        # Update epkg and init hardlinks
+        for filename in epkg init; do
+            local target_path="$env_usr_bin/$filename"
+            if [[ -f "$target_path" ]]; then
+                # Check if already hardlinked to the correct inode
+                if [[ "$target_path" -ef "$self_epkg_linux" ]]; then
+                    continue
+                fi
+
+                # Remove existing file and create new hardlink
+                rm -f "$target_path" || continue
+                if ln "$self_epkg_linux" "$target_path" 2>/dev/null; then
+                    ((updated_count++))
+                fi
+            fi
+        done
+    done
+
+    if [[ $updated_count -gt 0 ]]; then
+        echo "Updated $updated_count hardlinks across all environments"
     fi
 }
 
