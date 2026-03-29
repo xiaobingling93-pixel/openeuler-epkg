@@ -978,6 +978,7 @@ fn execute_without_pty(request: &CommandRequest, stream: &mut TcpStream, initial
 /// Execute command in batch mode: collect all output and return in single JSON response.
 fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32> {
     log::debug!("execute_batch: starting");
+    let _ = kmsg_write("<6>execute_batch: starting\n");
 
     let (child, stdin_pipe, stdout_pipe, stderr_pipe) = match spawn_child_piped(request, stream)? {
         SpawnOutcome::SpawnFailedExitSent(code) => return Ok(code),
@@ -1009,6 +1010,9 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
     log::debug!("execute_batch: exit_code={}, stdout={} bytes, stderr={} bytes",
                 exit_code, stdout_data.len(), stderr_data.len());
 
+    log::debug!("execute_batch: sending response (exit_code={})", exit_code);
+    let _ = kmsg_write(&format!("<6>execute_batch: sending response (exit_code={})\n", exit_code));
+
     // Send batch response
     let response = serde_json::json!({
         "exit_code": exit_code,
@@ -1020,15 +1024,19 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
     stream.write_all(b"\n")?;
     stream.flush()?;
 
+    let _ = kmsg_write("<6>execute_batch: response sent, returning\n");
     Ok(exit_code)
 }
 
 fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
     log::debug!("handle_connection: new connection");
+    let _ = kmsg_write("<6>handle_connection: new connection\n");
     log_process_identity("vm-daemon handle_connection");
     let mut buf = [0; TCP_LINE_BUF_SIZE];
+    let _ = kmsg_write("<6>handle_connection: about to read from stream\n");
     match stream.read(&mut buf) {
         Ok(n) if n > 0 => {
+            let _ = kmsg_write(&format!("<6>handle_connection: read {} bytes\n", n));
             // Find first newline to separate request from extra messages
             let mut split_at = n;
             for i in 0..n {
@@ -1087,18 +1095,22 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
                     .vm_keep_timeout_secs
                     .map(|s| s.saturating_mul(1000))
                     .unwrap_or(VM_REUSE_IDLE_TIMEOUT_MS);
+                let _ = kmsg_write("<6>handle_connection: reuse_vm=true, returning ReuseWait\n");
                 Ok(ConnectionDisposition::ReuseWait {
                     idle_timeout_ms: idle_ms,
                 })
             } else {
+                let _ = kmsg_write("<6>handle_connection: reuse_vm=false, returning Shutdown\n");
                 Ok(ConnectionDisposition::Shutdown)
             }
         }
         Ok(_) => {
+            let _ = kmsg_write("<6>handle_connection: EOF (read 0 bytes), shutting down\n");
             // Empty read, but still exit to avoid hanging
             Ok(ConnectionDisposition::Shutdown)
         }
         Err(e) => {
+            let _ = kmsg_write(&format!("<6>handle_connection: read error: {}\n", e));
             eprintln!("Failed to read from socket: {}", e);
             Ok(ConnectionDisposition::Shutdown)
         }
@@ -1221,10 +1233,13 @@ fn run_vsock_server() -> Result<()> {
         };
 
         log::debug!("vm-daemon: accept() succeeded, fd={}", client_fd);
+        kmsg_write("<6>run_vsock_server: accept returned successfully\n");
         let stream = unsafe { TcpStream::from_raw_fd(client_fd) };
         log::debug!("vm-daemon vsock: accepted connection");
+        kmsg_write("<6>run_vsock_server: created TcpStream, calling handle_connection\n");
         match handle_connection(stream) {
             Ok(ConnectionDisposition::Shutdown) => {
+                kmsg_write("<6>run_vsock_server: handle_connection returned Shutdown, breaking loop\n");
                 log::debug!("vm-daemon: connection closed, powering off guest (vsock)");
                 break;
             }
