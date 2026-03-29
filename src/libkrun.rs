@@ -236,13 +236,10 @@ fn build_libkrun_config(
     log::debug!("libkrun: mode: cmdline={}, vsock={}", use_cmdline_mode, use_vsock);
     log::debug!("libkrun: EPKG_VM_NO_DAEMON={}", std::env::var("EPKG_VM_NO_DAEMON").unwrap_or_else(|_| "not set".to_string()));
 
-    // Use reverse vsock mode for first run to avoid vsock handshake timing issues
-    // on Windows/WHPX. In reverse mode, Guest connects to Host after full initialization.
+    // Use reverse vsock mode for first run to avoid potential vsock handshake timing issues.
+    // In reverse mode, Guest connects to Host after full initialization.
     // Reuse mode uses forward mode (Host connects to Guest) for compatibility.
-    #[cfg(windows)]
     let use_reverse_vsock = use_vsock && !run_options.reuse_vm;
-    #[cfg(not(windows))]
-    let use_reverse_vsock = false;  // Unix doesn't have this timing issue
 
     let guest_exec_path = guest_cmd_path
         .strip_prefix(env_root)
