@@ -921,7 +921,10 @@ impl KrunContext {
     }
 
     unsafe fn start_enter(&self) -> i32 {
-        unsafe { krun_start_enter(self.ctx_id) }
+        eprintln!("[epkg-debug] libkrun: about to call krun_start_enter FFI...");
+        let status = unsafe { krun_start_enter(self.ctx_id) };
+        eprintln!("[epkg-debug] libkrun: krun_start_enter FFI returned {}", status);
+        status
     }
 
     /// Add a legacy serial console device (ttyS0) for Windows VMs.
