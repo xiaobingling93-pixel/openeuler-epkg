@@ -229,17 +229,14 @@ deploy_to_windows_self() {
     echo "=========================================="
     echo "WARNING: Cannot update $win_install_name"
     echo "File is locked by running Windows process(es):"
-    echo ""
-    # Show process details with full command line (remove blank lines from PowerShell output)
-    /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command "Get-CimInstance Win32_Process -Filter \"Name='epkg.exe'\" | Select-Object ProcessId,ProcessName,CommandLine | Format-List" 2>/dev/null | grep -v '^[[:space:]]*$' || /mnt/c/Windows/System32/tasklist.exe /FI "IMAGENAME eq epkg.exe" /FO TABLE 2>/dev/null || echo "  (cannot get process details)"
-    echo ""
+    # Show process details with full command line (remove blank/whitespace lines from PowerShell output)
+    /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command "Get-CimInstance Win32_Process -Filter \"Name='epkg.exe'\" | Select-Object ProcessId,ProcessName,CommandLine | Format-List" 2>/dev/null | sed 's/\r$//' | grep -v '^[[:space:]]*$' || /mnt/c/Windows/System32/tasklist.exe /FI "IMAGENAME eq epkg.exe" /FO TABLE 2>/dev/null || echo "  (cannot get process details)"
     echo "Location: $dst"
     echo ""
-    echo "To kill from PowerShell (run as admin if needed):"
-    echo "  Stop-Process -Id <PID>   # or   taskkill /F /IM epkg.exe"
+    echo "To kill: Stop-Process -Id <PID>   # or   taskkill /F /IM epkg.exe"
     echo ""
     echo "Please close the above epkg.exe process(es), then press Enter to retry"
-    echo "Or press Ctrl+C to cancel deployment"
+    echo "Or press Ctrl+C to cancel"
     echo "=========================================="
     read -r
 
