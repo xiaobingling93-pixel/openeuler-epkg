@@ -576,6 +576,14 @@ pub fn send_command_over_stream(
         io_mode, use_pty, is_batch, reuse_vm
     );
 
+    // CRITICAL FIX: Wait for vsock handshake to complete before sending data.
+    // In reverse mode, the guest sends READY immediately after connect(), but
+    // the vsock virtio device on Windows/WHPX may need time to fully establish
+    // the data channel. Without this delay, the host sends data before the
+    // guest is ready to receive, causing the data to be lost.
+    eprintln!("[epkg-debug] libkrun_stream: waiting for vsock data channel to stabilize...");
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+
     // Build and send command request
     let request = build_command_request(cmd_parts, io_mode, reuse_vm);
     let request_json = serde_json::to_vec(&request)?;
