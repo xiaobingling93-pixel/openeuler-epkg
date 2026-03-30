@@ -99,6 +99,30 @@ epkg -e $os install bash
 epkg -e $os run bash
 ```
 
+## VM Mode and `embedded_init` Configuration
+
+When running packages in VM mode (`--isolate=vm`), epkg uses an embedded init binary to bootstrap the environment. The `embedded_init` option controls this behavior:
+
+| Setting | Purpose | Use Case |
+|---------|---------|----------|
+| `embedded_init=true` | DEBUG ONLY | Use embedded init binary for bootstrap, avoiding virtiofs/NTFS noise during troubleshooting |
+| `embedded_init=false` | PRODUCTION | Use `/usr/bin/init` directly from the rootfs for normal operation |
+
+**When to use each mode:**
+
+- **DEBUG (`embedded_init=true`)**: Use during development or when debugging VM startup issues. The embedded init provides a controlled environment that bypasses potential virtiofs/NTFS filesystem issues.
+
+- **PRODUCTION (`embedded_init=false`)**: Use for normal package execution. This directly executes the init binary from the rootfs, which is the standard production behavior.
+
+**Configuration:**
+```bash
+# Debug mode (embedded init)
+epkg run -e alpine --isolate=vm --embedded-init=true ls /
+
+# Production mode (direct init from rootfs)
+epkg run -e alpine --isolate=vm --embedded-init=false ls /
+```
+
 ## Testing
 
 - **Unit tests** — In-tree `.rs` tests: `cargo test` (or use the project’s test runner).
