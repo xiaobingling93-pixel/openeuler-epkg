@@ -606,6 +606,8 @@ make cross-windows
 # 应显示正确的 git commit hash
 ```
 
+> **注意：** 在 WSL2 上，您可以直接运行 Windows .exe 文件，无需 Wine 或单独的 Windows 机器。
+
 ## 最新调试发现 (2026-03-28)
 
 ### 当前状态

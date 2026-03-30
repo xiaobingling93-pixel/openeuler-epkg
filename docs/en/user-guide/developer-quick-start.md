@@ -73,6 +73,8 @@ make cross-windows
 ```
 The resulting binaries are in `target/<triple>/release/epkg`.
 
+**Note:** On WSL2, you can run the Windows .exe directly without needing Wine or a separate Windows machine.
+
 **Note:** Cross‑compilation uses the same codebase with conditional compilation for platform‑specific features. Linux‑only applets (e.g., mount, umount, modprobe, vm‑daemon) are automatically disabled on non‑Linux targets.
 
 ## 3. Development loop
