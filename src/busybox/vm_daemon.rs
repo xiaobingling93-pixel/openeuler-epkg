@@ -1044,6 +1044,7 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
 }
 
 fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
+    eprintln!("[vm_daemon] Connection accepted, starting handle_connection");
     let _ = kmsg_write("<6>handle_connection: handle_connection started\n");
     log::debug!("handle_connection: new connection");
     let _ = kmsg_write("<6>handle_connection: new connection\n");
@@ -1103,6 +1104,7 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
                 // Parse JSON request (no plain text fallback)
                 let request: CommandRequest = serde_json::from_str(&input)
                     .map_err(|e| eyre!("JSON parse failed: {} (input: {:?})", e, input))?;
+                eprintln!("[vm_daemon] Command received: {:?}", request.command);
 
                 if request.command.len() == 1 && request.command[0] == VM_SESSION_DONE_CMD {
                     log::debug!(
@@ -1119,19 +1121,22 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
                 }
 
                 log::debug!("Received command: {:?}", request.command);
+                eprintln!("[vm_daemon] Executing command: {:?}", request.command);
                 log_process_identity("vm-daemon before command dispatch");
 
                 // Execute command
+                let exit_code;
                 if request.batch {
                     log::debug!("Using batch mode");
-                    let _exit_code = execute_batch(&request, &mut stream)?;
+                    exit_code = execute_batch(&request, &mut stream)?;
                 } else if request.pty {
                     log::debug!("Using PTY mode");
-                    let _exit_code = execute_with_pty(&request, &mut stream, Some(leftover_bytes))?;
+                    exit_code = execute_with_pty(&request, &mut stream, Some(leftover_bytes))?;
                 } else {
                     log::debug!("Using non-PTY mode");
-                    let _exit_code = execute_without_pty(&request, &mut stream, Some(leftover_bytes))?;
+                    exit_code = execute_without_pty(&request, &mut stream, Some(leftover_bytes))?;
                 }
+                eprintln!("[vm_daemon] Command completed with exit code: {}", exit_code);
 
                 if request.reuse_vm {
                     let idle_ms = request
@@ -1399,6 +1404,7 @@ fn run_reverse_vsock_client() -> Result<()> {
     // Connect to Host with retry
     log::debug!("vm-daemon: connecting to Host CID={} PORT={}...", HOST_CID, HOST_PORT);
     kmsg_write("<6>run_reverse_vsock_client: connecting to host\n");
+    eprintln!("vm-daemon: attempting to connect to host CID={} PORT={}", HOST_CID, HOST_PORT);
 
     let mut retry_count = 0;
     let mut retry_delay_ms = CONNECT_RETRY_DELAY_MS;
@@ -1407,6 +1413,7 @@ fn run_reverse_vsock_client() -> Result<()> {
             Ok(_) => {
                 kmsg_write("<6>run_reverse_vsock_client: connected to host\n");
                 log::debug!("vm-daemon: connected to Host");
+                eprintln!("vm-daemon: successfully connected to host");
                 break unsafe { std::net::TcpStream::from_raw_fd(fd.into_raw_fd()) };
             }
             Err(e) => {
@@ -1426,6 +1433,7 @@ fn run_reverse_vsock_client() -> Result<()> {
     // Send ready signal to Host
     kmsg_write("<6>run_reverse_vsock_client: sending READY\n");
     log::debug!("vm-daemon: sending READY signal to Host");
+    eprintln!("vm-daemon: sending READY signal to host");
     let mut stream = stream;
     stream.write_all(b"READY\n")?;
     stream.flush()?;
