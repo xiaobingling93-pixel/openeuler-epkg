@@ -1575,22 +1575,23 @@ cross-windows() {
 
     echo "Cross-compilation to Windows completed. Binary is in target/$target/$build_dir/$BINARY_NAME"
 
-    # Deploy for release uploads (asset names: epkg-windows-<arch>.exe)
-    if [[ "$mode" == "release" ]]; then
-        deploy_release_binary "target/$target/$build_dir/${BINARY_NAME}.exe" "epkg-windows-${arch}.exe"
+    # Path to the locally built Linux ELF (epkg-linux-$arch) for native Windows VM mode
+    local linux_epkg="${PROJECT_ROOT}/target/${RUST_TARGET_X86_64}/debug/${BINARY_NAME}"
 
-        # Also deploy the locally built Linux ELF (epkg-linux-$arch) into the
-        # native Windows install so `epkg.exe` can run VM mode without relying
-        # on the gitee `epkg-x86_64` download.
-        #
-        # Note: this is best-effort; if you haven't run `make` (Linux build)
-        # beforehand, we skip with a warning.
-        local linux_epkg="${PROJECT_ROOT}/target/${RUST_TARGET_X86_64}/debug/${BINARY_NAME}"
-        if [[ -f "$linux_epkg" ]]; then
-            deploy_release_binary "$linux_epkg" "epkg-linux-${arch}"
-        else
-            echo "Warning: local Linux epkg not found at $linux_epkg (run 'make' to build it)" >&2
-        fi
+    # Deploy Windows binary to dist/ (for both debug and release)
+    deploy_release_binary "target/$target/$build_dir/${BINARY_NAME}.exe" "epkg-windows-${arch}.exe"
+
+    # Also deploy the locally built Linux ELF
+    if [[ -f "$linux_epkg" ]]; then
+        deploy_release_binary "$linux_epkg" "epkg-linux-${arch}"
+    else
+        echo "Warning: local Linux epkg not found at $linux_epkg (run 'make' to build it)" >&2
+    fi
+
+    # Only sign for release mode
+    if [[ "$mode" == "release" ]]; then
+        :
+        # Signing code can be added here in the future
     fi
 }
 
