@@ -7,11 +7,6 @@ use std::ptr;
 use std::sync::Mutex;
 use std::thread;
 
-#[cfg(windows)]
-use windows::Win32::Foundation::HANDLE;
-#[cfg(windows)]
-use windows::Win32::System::Threading::SetEvent;
-
 use color_eyre::eyre;
 use color_eyre::Result;
 
@@ -95,6 +90,9 @@ unsafe extern "C" {
     /// Get the eventfd for triggering VM shutdown from host.
     /// Writing 1u64 to this fd will cause the VM to exit gracefully.
     fn krun_get_shutdown_eventfd(ctx_id: u32) -> i32;
+    /// Signal the shutdown eventfd to trigger VM shutdown.
+    /// This properly writes to the EventFd on all platforms.
+    fn krun_signal_shutdown(ctx_id: u32) -> i32;
     /// Set the executable path and arguments for the guest init process.
     /// This is used for embedded_init mode to specify the init program.
     fn krun_set_exec(
@@ -1128,44 +1126,14 @@ fn send_session_done_unix(sock_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Signal the shutdown eventfd to trigger VM shutdown.
-/// On Unix: write to the eventfd file descriptor.
-/// On Windows: use SetEvent() on the HANDLE (returned by krun_get_shutdown_eventfd).
-#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
-fn signal_shutdown_eventfd(shutdown_fd: i32) {
-    #[cfg(unix)]
-    {
-        let buf = 1u64.to_le_bytes();
-        let write_result = unsafe { libc::write(shutdown_fd, buf.as_ptr() as *const _, buf.len()) };
-        if write_result < 0 {
-            log::warn!(
-                "libkrun: failed to write shutdown eventfd: {}",
-                std::io::Error::last_os_error()
-            );
-        }
-    }
-    #[cfg(windows)]
-    {
-        // shutdown_fd is a Windows HANDLE (as i32, returned by krun_get_shutdown_eventfd)
-        // HANDLE values on Windows are typically in lower 32-bit range even on 64-bit systems
-        let handle = HANDLE(shutdown_fd as usize as *mut std::ffi::c_void);
-        let result = unsafe { SetEvent(handle) };
-        if result.is_ok() {
-            log::debug!("libkrun: shutdown event signaled successfully");
-        } else {
-            log::warn!(
-                "libkrun: failed to signal shutdown event: {}",
-                std::io::Error::last_os_error()
-            );
-        }
-    }
-}
-
 #[cfg(all(feature = "libkrun", not(target_os = "linux")))]
 fn shutdown_krun_session_impl(session: VmReuseSession) -> Result<()> {
     log::debug!("libkrun: shutting down reuse VM session");
     send_session_done_unix(&session.vsock_sock_path)?;
-    signal_shutdown_eventfd(session.shutdown_fd);
+    let result = unsafe { krun_signal_shutdown(session.ctx_id) };
+    if result < 0 {
+        log::warn!("libkrun: krun_signal_shutdown failed with status {}", result);
+    }
     match session.vm_thread.join() {
         Ok(vm_status) => {
             log::debug!("libkrun: VM thread finished with status {}", vm_status);
@@ -1201,23 +1169,17 @@ pub fn shutdown_vm_reuse_session_if_active() -> Result<()> {
 #[cfg(feature = "libkrun")]
 fn krun_vsock_shutdown_join_free_exit(
     vm_thread: std::thread::JoinHandle<i32>,
-    shutdown_fd: i32,
+    _shutdown_fd: i32,
     ctx_id: u32,
     exit_code: i32,
 ) -> ! {
-    eprintln!("[epkg-debug] libkrun: triggering VM shutdown via eventfd...");
-    #[cfg(not(target_os = "linux"))]
-    signal_shutdown_eventfd(shutdown_fd);
-    #[cfg(target_os = "linux")]
-    {
-        let buf = 1u64.to_le_bytes();
-        let write_result = unsafe { libc::write(shutdown_fd, buf.as_ptr() as *const _, buf.len()) };
-        if write_result < 0 {
-            eprintln!(
-                "[epkg-debug] libkrun: failed to write shutdown eventfd: {}",
-                std::io::Error::last_os_error()
-            );
-        }
+    eprintln!("[epkg-debug] libkrun: triggering VM shutdown via krun_signal_shutdown...");
+    let result = unsafe { krun_signal_shutdown(ctx_id) };
+    if result < 0 {
+        eprintln!(
+            "[epkg-debug] libkrun: krun_signal_shutdown failed with status {}",
+            result
+        );
     }
 
     eprintln!("[epkg-debug] libkrun: waiting for VM thread to join...");
