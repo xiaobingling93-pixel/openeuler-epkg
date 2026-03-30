@@ -131,7 +131,13 @@ fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32
         eprintln!("[epkg-debug] handle_streaming_simple: batch mode - reading response...");
 
         for line in reader.lines() {
-            let line = line?;
+            let line = match line {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("[epkg-debug] handle_streaming_simple: ERROR reading line: {}", e);
+                    return Err(e.into());
+                }
+            };
             eprintln!("[epkg-debug] handle_streaming_simple: read line: {:?}", line);
             // Skip "READY" signal from reverse vsock handshake
             if line == "READY" {
@@ -144,6 +150,7 @@ fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32
             // Try to parse what we have so far
             break;
         }
+        eprintln!("[epkg-debug] handle_streaming_simple: broke from first loop, response len={}", response.len());
 
         // Continue reading remaining lines and append (for large responses)
         // Note: this is a simplified approach; proper JSON streaming would be better
@@ -155,8 +162,17 @@ fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32
             stdout: String,
             stderr: String,
         }
-        let result: BatchResult = serde_json::from_str(&response)
-            .map_err(|e| eyre::eyre!("Failed to parse batch response: {} ({:?})", e, response))?;
+        eprintln!("[epkg-debug] handle_streaming_simple: parsing JSON response: {}", response);
+        let result: BatchResult = match serde_json::from_str(&response) {
+            Ok(r) => {
+                eprintln!("[epkg-debug] handle_streaming_simple: JSON parsed successfully");
+                r
+            }
+            Err(e) => {
+                eprintln!("[epkg-debug] handle_streaming_simple: JSON parse FAILED: {} (response: {:?})", e, response);
+                return Err(eyre::eyre!("Failed to parse batch response: {} ({:?})", e, response));
+            }
+        };
 
         eprintln!("[epkg-debug] handle_streaming_simple: stdout={} bytes, stderr={} bytes",
             result.stdout.len(), result.stderr.len());
@@ -568,6 +584,11 @@ pub fn send_command_over_stream(
     stream.write_all(b"\n")?;
     stream.flush()?;
     eprintln!("[epkg-debug] libkrun_stream: request sent, waiting for response...");
+    
+    // CRITICAL: In reverse mode, we need to ensure the request is fully sent before reading.
+    // Without this, the guest may not receive the request due to buffering.
+    stream.flush()?;
+    eprintln!("[epkg-debug] libkrun_stream: flushed stream after sending request");
 
     // Handle response based on mode
     let result = if use_pty {
