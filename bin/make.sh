@@ -228,12 +228,17 @@ deploy_to_windows_self() {
     echo ""
     echo "=========================================="
     echo "WARNING: Cannot update $win_install_name"
-    echo "File is locked by running Windows process:"
+    echo "File is locked by running Windows process(es):"
     echo ""
-    /mnt/c/Windows/System32/tasklist.exe | grep -i epkg || echo "  (process list unavailable)"
+    /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command "Get-Process epkg -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,Path | Format-Table -AutoSize" 2>/dev/null || /mnt/c/Windows/System32/tasklist.exe | grep -i epkg || echo "  (cannot get process details)"
     echo ""
-    echo "Please close the running epkg.exe (check Windows taskbar/tray)"
-    echo "Then press Enter to retry, or Ctrl+C to cancel"
+    echo "Location: $dst"
+    echo ""
+    echo "To kill from PowerShell (run as admin if needed):"
+    echo "  Stop-Process -Id <PID>   # or   taskkill /F /IM epkg.exe"
+    echo ""
+    echo "Please close the above epkg.exe process(es), then press Enter to retry"
+    echo "Or press Ctrl+C to cancel deployment"
     echo "=========================================="
     read -r
 
@@ -584,12 +589,15 @@ update_all_env_hardlinks() {
         echo "[SYNC-total] Updated $updated_count hardlinks in WSL environments"
     fi
 
-    # Update Windows-side environments (WSL only) - use copy since hardlinks don't work across filesystems
+    # Update Windows-side environments (WSL only)
+    # Optimization: First file needs XDEV copy (ext4->NTFS), subsequent use hardlink within NTFS
     local win_profile_wsl
     win_profile_wsl="$(get_windows_user_profile_wsl 2>/dev/null)"
     if [[ -n "$win_profile_wsl" ]]; then
         local win_envs_dir="${win_profile_wsl}/.epkg/envs"
         if [[ -d "$win_envs_dir" ]]; then
+            # Track first copied file on Windows side for intra-NTFS hardlinking
+            local win_source_file=""
             for env_dir in "$win_envs_dir"/*; do
                 [[ -d "$env_dir" ]] || continue
                 local env_name="${env_dir##*/}"
@@ -616,19 +624,29 @@ update_all_env_hardlinks() {
                             fi
                         fi
 
-                        # Remove first then create hardlink (ln fails if target exists)
                         rm -f "$target_path"
-                        if ln "$self_epkg_linux" "$target_path" 2>/dev/null; then
-                            updated_count=$((updated_count + 1))
-                            echo "[SYNC-hardlink] $target_path"
-                        else
-                            # Fall back to copy if hardlink fails (cross-filesystem)
-                            if cp "$self_epkg_linux" "$target_path"; then
+
+                        # Try hardlink first if we have a Windows-side source
+                        if [[ -n "$win_source_file" ]]; then
+                            if ln "$win_source_file" "$target_path" 2>/dev/null; then
                                 updated_count=$((updated_count + 1))
-                                echo "[SYNC-copy] $target_path"
-                            else
-                                echo "[WARN-copy] $target_path: failed"
+                                echo "[SYNC-hardlink] $target_path"
+                                continue
                             fi
+                        fi
+
+                        # Fall back to copy (XDEV from ext4 to NTFS, or hardlink failed)
+                        if cp "$self_epkg_linux" "$target_path"; then
+                            updated_count=$((updated_count + 1))
+                            # First Windows copy becomes source for subsequent hardlinks
+                            if [[ -z "$win_source_file" ]]; then
+                                win_source_file="$target_path"
+                                echo "[SYNC-XDEV-copy] $target_path (source for hardlinks)"
+                            else
+                                echo "[SYNC-copy] $target_path"
+                            fi
+                        else
+                            echo "[WARN-copy] $target_path: failed"
                         fi
                     fi
                 done
