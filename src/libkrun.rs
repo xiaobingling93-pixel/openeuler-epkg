@@ -18,8 +18,19 @@ use color_eyre::Result;
 use crate::lfs;
 use crate::run::RunOptions;
 
-// Windows guest init: either virtiofs virtual /init.krun (cargo feature embedded_init -> libkrun devices)
-// or init=/usr/bin/init (epkg Linux ELF in the env root for vsock / vm_daemon).
+// CRITICAL: Windows guest init path is CARVED IN STONE as /usr/bin/init.
+// The alpine environment has the epkg guest init at /usr/bin/init (190MB binary).
+// NEVER change this path - it must remain /usr/bin/init forever.
+// (Alternative: virtiofs virtual /init.krun when using embedded_init feature)
+
+/// CARVED IN STONE: Guest init path for all VM Linux guests (non-embedded_init mode).
+/// The alpine environment has the epkg guest init binary at this path (190MB).
+/// This constant exists to prevent accidental changes - DO NOT MODIFY THIS VALUE.
+/// Applies to: kernel cmdline init= param AND krun_set_exec() path.
+/// Note: In embedded_init mode, the init path is /init.krun (virtiofs virtual path
+/// to the embedded init binary, defined in libkrun git's embedded_init feature).
+#[cfg(feature = "libkrun")]
+const GUEST_INIT_PATH: &str = "/usr/bin/init";
 
 #[cfg(feature = "libkrun")]
 #[path = "libkrun_bridge.rs"]
@@ -298,20 +309,21 @@ fn build_libkrun_config(
         if vm_debug { "earlyprintk=serial" } else { "" },
         loglevel, vm_perf
     );
+    // Uses GUEST_INIT_PATH constant (CARVED IN STONE as /usr/bin/init)
     #[cfg(all(target_os = "windows", not(feature = "embedded_init")))]
     let base_cmdline = format!(
         "reboot=k panic=-1 panic_print=0 nomodule console=ttyS0 {} {} {} \
-         root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/bin/init",
+         root=/dev/root rootfstype=virtiofs rw no-kvmapf init={}",
         if vm_debug { "earlyprintk=serial" } else { "" },
-        loglevel, vm_perf
+        loglevel, vm_perf, GUEST_INIT_PATH
     );
     #[cfg(not(target_os = "windows"))]
     let base_cmdline = {
         let ep = if vm_debug { "earlyprintk=hvc0" } else { "" };
         format!(
             "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 {} {} {} \
-             root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/usr/bin/init",
-            ep, loglevel, vm_perf
+             root=/dev/root rootfstype=virtiofs rw no-kvmapf init={}",
+            ep, loglevel, vm_perf, GUEST_INIT_PATH
         )
     };
     let mut kernel_args = base_cmdline;
@@ -800,12 +812,12 @@ fn create_and_configure_vm(
         }
 
         // For non-embedded_init mode, explicitly set the init path via krun_set_exec.
-        // This ensures the guest uses /bin/init from the virtiofs rootfs.
+        // Uses GUEST_INIT_PATH constant (CARVED IN STONE as /usr/bin/init).
         #[cfg(all(target_os = "windows", not(feature = "embedded_init")))]
         {
-            log::info!("libkrun: setting exec path to /bin/init (production mode)");
-            eprintln!("[epkg-debug] libkrun: calling krun_set_exec for /bin/init (production mode)");
-            if let Err(e) = ctx.set_exec("/bin/init", None, None) {
+            log::info!("libkrun: setting exec path to {} (production mode)", GUEST_INIT_PATH);
+            eprintln!("[epkg-debug] libkrun: calling krun_set_exec for {} (production mode)", GUEST_INIT_PATH);
+            if let Err(e) = ctx.set_exec(GUEST_INIT_PATH, None, None) {
                 log::warn!("libkrun: krun_set_exec failed (non-fatal, kernel cmdline fallback): {}", e);
             }
         }

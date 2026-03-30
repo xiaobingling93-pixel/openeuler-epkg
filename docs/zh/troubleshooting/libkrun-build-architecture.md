@@ -36,3 +36,28 @@ cd git/libkrun/src/vmm && cargo build  # <-- NEVER DO THIS
 ### Related Rules
 
 - See `.cursor/rules/no-build-release.mdc`: Use `make` not `cargo build --release`
+
+## CRITICAL: Init Path is /usr/bin/init (CARVED IN STONE)
+
+**NEVER change the init path from `/usr/bin/init` to `/bin/init` or any other path.**
+
+The alpine environment has the epkg guest init binary at:
+```
+/mnt/c/Users/aa/.epkg/envs/alpine/usr/bin/init  (190MB)
+```
+
+This path is **CARVED IN STONE** and must remain `/usr/bin/init` forever. The init binary is the epkg guest that handles vsock communication with the host.
+
+### Where this is set:
+
+1. **Kernel cmdline**: `init=/usr/bin/init` in `src/libkrun.rs` (base_cmdline format string)
+2. **krun_set_exec**: `/usr/bin/init` passed to libkrun in `src/libkrun.rs`
+
+### Verification:
+```bash
+# Verify init exists at the correct path
+ll /mnt/c/Users/aa/.epkg/envs/alpine/usr/bin/init
+# Should show: -rwxrwxrwx 4 root root 190M ... /usr/bin/init
+```
+
+**DO NOT CHANGE THIS PATH. EVER.**
