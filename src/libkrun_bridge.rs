@@ -145,6 +145,9 @@ use windows::Win32::System::Pipes::{
 };
 
 #[cfg(windows)]
+use windows::Win32::Security::SECURITY_ATTRIBUTES;
+
+#[cfg(windows)]
 use windows::core::PCWSTR;
 
 /// Stem used for `\\.\pipe\<stem>`; must match `krun_add_vsock_port_windows` on the host.
@@ -164,6 +167,42 @@ fn to_wide_null(s: &str) -> Vec<u16> {
 #[cfg(windows)]
 pub struct WindowsReadyPipe {
     handle: Option<HANDLE>,
+}
+
+/// Create SECURITY_ATTRIBUTES with a NULL DACL that grants access to everyone.
+/// This is needed for named pipes to avoid ERROR_ACCESS_DENIED in some environments.
+/// Returns the SECURITY_ATTRIBUTES and the allocated buffer size for cleanup.
+#[cfg(windows)]
+fn create_security_attributes() -> Result<(SECURITY_ATTRIBUTES, usize)> {
+    use windows::Win32::Security::{InitializeSecurityDescriptor, SetSecurityDescriptorDacl, PSECURITY_DESCRIPTOR};
+    use windows::Win32::Foundation::BOOL;
+
+    unsafe {
+        // Allocate security descriptor (use 256 bytes for safety)
+        const SD_SIZE: usize = 256;
+        let sd_ptr = std::alloc::alloc(std::alloc::Layout::from_size_align(SD_SIZE, 8).unwrap());
+        if sd_ptr.is_null() {
+            return Err(eyre::eyre!("Failed to allocate security descriptor"));
+        }
+
+        // Initialize security descriptor (revision 1)
+        if InitializeSecurityDescriptor(PSECURITY_DESCRIPTOR(sd_ptr as *mut core::ffi::c_void), 1).is_err() {
+            std::alloc::dealloc(sd_ptr, std::alloc::Layout::from_size_align(SD_SIZE, 8).unwrap());
+            return Err(eyre::eyre!("InitializeSecurityDescriptor failed"));
+        }
+
+        // Set NULL DACL (allow access to everyone)
+        if SetSecurityDescriptorDacl(PSECURITY_DESCRIPTOR(sd_ptr as *mut core::ffi::c_void), BOOL(1), None, BOOL(0)).is_err() {
+            std::alloc::dealloc(sd_ptr, std::alloc::Layout::from_size_align(SD_SIZE, 8).unwrap());
+            return Err(eyre::eyre!("SetSecurityDescriptorDacl failed"));
+        }
+
+        Ok((SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd_ptr as *mut _,
+            bInheritHandle: BOOL(0),
+        }, SD_SIZE))
+    }
 }
 
 #[cfg(windows)]
@@ -197,6 +236,19 @@ pub fn setup_vsock_ready_listener() -> Result<Option<WindowsReadyPipe>> {
     let wide = to_wide_null(&full);
 
     unsafe {
+        use windows::Win32::Foundation::BOOL;
+
+        // Create security attributes with NULL DACL to allow access from guest VM
+        let (security_attrs, sd_buffer_size) = create_security_attributes()
+            .unwrap_or_else(|e| {
+                eprintln!("[epkg-debug] libkrun_bridge: warning - failed to create security attributes: {}, using default", e);
+                (SECURITY_ATTRIBUTES {
+                    nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                    lpSecurityDescriptor: std::ptr::null_mut(),
+                    bInheritHandle: BOOL(0),
+                }, 0usize)
+            });
+
         let h = CreateNamedPipeW(
             PCWSTR(wide.as_ptr()),
             PIPE_ACCESS_DUPLEX,  // Removed FILE_FLAG_OVERLAPPED for synchronous operation
@@ -205,8 +257,17 @@ pub fn setup_vsock_ready_listener() -> Result<Option<WindowsReadyPipe>> {
             4096,
             4096,
             0,
-            None,
+            Some(&security_attrs),
         );
+
+        // Clean up security descriptor if we allocated one
+        if !security_attrs.lpSecurityDescriptor.is_null() {
+            std::alloc::dealloc(
+                security_attrs.lpSecurityDescriptor as *mut u8,
+                std::alloc::Layout::from_size_align(sd_buffer_size, 8).unwrap()
+            );
+        }
+
         if h == INVALID_HANDLE_VALUE {
             return Err(eyre::eyre!(
                 "CreateNamedPipeW failed: {}",
@@ -432,6 +493,19 @@ pub fn setup_reverse_listener(sock_path: &Path) -> Result<WindowsReadyPipe> {
     let wide = to_wide_null(&full);
 
     unsafe {
+        use windows::Win32::Foundation::BOOL;
+
+        // Create security attributes with NULL DACL to allow access from guest VM
+        let (security_attrs, sd_buffer_size) = create_security_attributes()
+            .unwrap_or_else(|e| {
+                eprintln!("[epkg-debug] libkrun_bridge: warning - failed to create security attributes: {}, using default", e);
+                (SECURITY_ATTRIBUTES {
+                    nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                    lpSecurityDescriptor: std::ptr::null_mut(),
+                    bInheritHandle: BOOL(0),
+                }, 0usize)
+            });
+
         // CreateNamedPipeW with PIPE_ACCESS_DUPLEX for bidirectional communication
         let h = CreateNamedPipeW(
             PCWSTR(wide.as_ptr()),
@@ -441,8 +515,17 @@ pub fn setup_reverse_listener(sock_path: &Path) -> Result<WindowsReadyPipe> {
             4096,
             4096,
             0,
-            None,
+            Some(&security_attrs),
         );
+
+        // Clean up security descriptor if we allocated one
+        if !security_attrs.lpSecurityDescriptor.is_null() {
+            std::alloc::dealloc(
+                security_attrs.lpSecurityDescriptor as *mut u8,
+                std::alloc::Layout::from_size_align(sd_buffer_size, 8).unwrap()
+            );
+        }
+
         if h == INVALID_HANDLE_VALUE {
             return Err(eyre::eyre!(
                 "CreateNamedPipeW failed for reverse listener: {}",
