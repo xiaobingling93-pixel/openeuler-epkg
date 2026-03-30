@@ -117,21 +117,25 @@ detect_native_arch() {
 DEV_ENV_BIN_DIR="$HOME/.epkg/envs/self/usr/bin"
 DEV_ENV_SRC_DIR="$HOME/.epkg/envs/self/usr/src/epkg"
 
-# Safe copy with handling for "Text file busy" error
+# Safe copy with handling for "Text file busy" and "Permission denied" errors
+# Quiet by default - no output on success, only errors on failure
 safe_cp() {
     local src="$1"
     local dst="$2"
     local cp_output cp_status
     # Create parent directory if it doesn't exist
     mkdir -p "$(dirname "$dst")" || return $?
-    cp_output=$(cp -v --update "$src" "$dst" 2>&1) && echo "$cp_output" || {
+    cp_output=$(cp --update "$src" "$dst" 2>&1) && return 0 || {
         cp_status=$?
-        if echo "$cp_output" | grep -q "Text file busy"; then
-            if ! rm -v "$dst"; then
-                echo "Error: failed to remove busy file: $dst" >&2
-                return 1
+        if echo "$cp_output" | grep -q "Text file busy\|Permission denied"; then
+            # Try to remove and re-copy (handles Windows FS permission issues)
+            rm -f "$dst" 2>/dev/null || true
+            if cp "$src" "$dst" 2>&1; then
+                return 0
             fi
-            cp -v --update "$src" "$dst" || return $?
+            # Last resort: try with elevated permissions or skip
+            echo "Warning: failed to copy to $dst (permission issue)" >&2
+            return 1
         else
             echo "$cp_output" >&2
             return $cp_status
@@ -171,43 +175,76 @@ install_hardlink() {
 }
 
 # Deploy a release binary into $OUTPUT_DIR with a stable platform-aware name.
-# Also generates sha256sum files in OUTPUT_DIR so the sha file line embeds only
-# the filename (not a leading dist/... path).
+# Uses hardlink since src (target/) and dst (dist/) are on same WSL filesystem.
+# Also generates sha256sum files in OUTPUT_DIR.
 deploy_release_binary() {
     local src="$1"
     local out_name="$2"
     local out_path="$OUTPUT_DIR/$out_name"
 
     mkdir -p "$OUTPUT_DIR"
-    safe_cp "$src" "$out_path"
 
+    # Try hardlink first (same filesystem, saves space), fall back to copy
+    if [[ -f "$out_path" ]]; then
+        rm -f "$out_path"
+    fi
+    if ln "$src" "$out_path" 2>/dev/null; then
+        : # hardlink succeeded
+    elif ! safe_cp "$src" "$out_path"; then
+        echo "Warning: failed to deploy $out_name to $out_path" >&2
+        return 1
+    fi
     pushd "$OUTPUT_DIR" >/dev/null
     sha256sum "$out_name" > "$out_name.sha256"
     popd >/dev/null
+    printf "[DEPLOY-hardlink]  %s/%s/%s\n" "$PROJECT_ROOT" "$OUTPUT_DIR" "$out_name"
+}
 
-    echo "Deployed: $PROJECT_ROOT/$OUTPUT_DIR/$out_name"
+# Deploy binary to Windows self environment
+# If file is locked (epkg.exe running), show info and wait for user action
+# Returns 0 on success, 1 on failure (but doesn't exit)
+deploy_to_windows_self() {
+    local src="$1"
+    local win_install_name="$2"
 
-    # Best-effort dev deployment to native Windows self environment.
-    # This allows WSL-built epkg artifacts to be immediately usable by
-    # already-installed Windows `epkg.exe` without waiting for downloads.
     local win_self_usr_bin_dir=""
     local win_profile_wsl=""
-    if win_profile_wsl="$(get_windows_user_profile_wsl 2>/dev/null)"; then
-        win_self_usr_bin_dir="${win_profile_wsl}/.epkg/envs/self/usr/bin"
+    if ! win_profile_wsl="$(get_windows_user_profile_wsl 2>/dev/null)"; then
+        return 1
     fi
-    if [[ -n "${win_self_usr_bin_dir}" ]]; then
-        local win_install_name="$out_name"
-        if [[ "$out_name" == epkg-windows-*.exe ]]; then
-            win_install_name="epkg.exe"
-        fi
 
-        # Only deploy known VM/native artifacts
-        if [[ "$win_install_name" == epkg.exe || "$win_install_name" == epkg-linux-* ]]; then
-            mkdir -p "$win_self_usr_bin_dir"
-            safe_cp "$src" "$win_self_usr_bin_dir/$win_install_name"
-            echo "Deployed (native Windows): $win_self_usr_bin_dir/$win_install_name"
-        fi
+    win_self_usr_bin_dir="${win_profile_wsl}/.epkg/envs/self/usr/bin"
+    [[ -d "$win_self_usr_bin_dir" ]] || mkdir -p "$win_self_usr_bin_dir"
+
+    local dst="$win_self_usr_bin_dir/$win_install_name"
+
+    # Try copy first
+    if cp "$src" "$dst" 2>/dev/null; then
+        printf "[DEPLOY-XDEV-copy] %s\n" "$dst"
+        return 0
     fi
+
+    # Copy failed - show running epkg processes and ask user to handle it
+    echo ""
+    echo "=========================================="
+    echo "WARNING: Cannot update $win_install_name"
+    echo "File is locked by running Windows process:"
+    echo ""
+    /mnt/c/Windows/System32/tasklist.exe | grep -i epkg || echo "  (process list unavailable)"
+    echo ""
+    echo "Please close the running epkg.exe (check Windows taskbar/tray)"
+    echo "Then press Enter to retry, or Ctrl+C to cancel"
+    echo "=========================================="
+    read -r
+
+    # Retry after user action
+    if cp "$src" "$dst" 2>/dev/null; then
+        printf "[DEPLOY-XDEV-copy] %s\n" "$dst"
+        return 0
+    fi
+
+    echo "Warning: still failed to deploy to $dst" >&2
+    return 1
 }
 
 # Convert Windows USERPROFILE (e.g. C:\Users\epkg) to a WSL filesystem path.
@@ -534,24 +571,25 @@ update_all_env_hardlinks() {
                 # Remove existing file and create new hardlink
                 rm -f "$target_path" || continue
                 if ln "$self_epkg_linux" "$target_path" 2>/dev/null; then
-                    ((updated_count++))
+                    updated_count=$((updated_count + 1))
+                    echo "[SYNC-hardlink] $target_path"
+                else
+                    echo "[WARN-hardlink] $target_path: failed"
                 fi
             fi
         done
     done
 
     if [[ $updated_count -gt 0 ]]; then
-        echo "Updated $updated_count hardlinks across all environments"
+        echo "[SYNC-total] Updated $updated_count hardlinks in WSL environments"
     fi
 
     # Update Windows-side environments (WSL only) - use copy since hardlinks don't work across filesystems
     local win_profile_wsl
     win_profile_wsl="$(get_windows_user_profile_wsl 2>/dev/null)"
     if [[ -n "$win_profile_wsl" ]]; then
-        echo "[DEBUG] Found Windows profile: $win_profile_wsl"
         local win_envs_dir="${win_profile_wsl}/.epkg/envs"
         if [[ -d "$win_envs_dir" ]]; then
-            echo "[DEBUG] Scanning Windows environments in: $win_envs_dir"
             for env_dir in "$win_envs_dir"/*; do
                 [[ -d "$env_dir" ]] || continue
                 local env_name="${env_dir##*/}"
@@ -560,39 +598,46 @@ update_all_env_hardlinks() {
                 local env_usr_bin="$env_dir/usr/bin"
                 [[ -d "$env_usr_bin" ]] || continue
 
-                echo "[DEBUG] Checking Windows env: $env_name"
-                # Update epkg and init via copy (not hardlink)
                 for filename in epkg init; do
                     local target_path="$env_usr_bin/$filename"
                     if [[ -f "$target_path" ]]; then
-                        # Check if already up to date using cmp
-                        if cmp -s "$self_epkg_linux" "$target_path" 2>/dev/null; then
-                            echo "[DEBUG] $env_name/$filename: already up to date"
-                            continue
+                        # Fast check: compare file sizes first (avoids slow cmp across filesystems)
+                        local src_size target_size
+                        src_size=$(stat -c%s "$self_epkg_linux" 2>/dev/null) || continue
+                        target_size=$(stat -c%s "$target_path" 2>/dev/null) || continue
+                        if [[ "$src_size" == "$target_size" ]]; then
+                            # Sizes match, check mtime as secondary filter
+                            local src_mtime target_mtime
+                            src_mtime=$(stat -c%Y "$self_epkg_linux" 2>/dev/null) || continue
+                            target_mtime=$(stat -c%Y "$target_path" 2>/dev/null) || continue
+                            if [[ "$src_mtime" -le "$target_mtime" ]]; then
+                                # Source is not newer and same size, skip
+                                continue
+                            fi
                         fi
 
-                        echo "[DEBUG] Copying to $env_name/$filename..."
-                        # Copy to update
-                        if cp "$self_epkg_linux" "$target_path" 2>/dev/null; then
-                            ((updated_count++))
-                            echo "[DEBUG] Copied successfully to $env_name/$filename"
+                        # Remove first then create hardlink (ln fails if target exists)
+                        rm -f "$target_path"
+                        if ln "$self_epkg_linux" "$target_path" 2>/dev/null; then
+                            updated_count=$((updated_count + 1))
+                            echo "[SYNC-hardlink] $target_path"
                         else
-                            echo "[DEBUG] Failed to copy to $env_name/$filename"
+                            # Fall back to copy if hardlink fails (cross-filesystem)
+                            if cp "$self_epkg_linux" "$target_path"; then
+                                updated_count=$((updated_count + 1))
+                                echo "[SYNC-copy] $target_path"
+                            else
+                                echo "[WARN-copy] $target_path: failed"
+                            fi
                         fi
-                    else
-                        echo "[DEBUG] $env_name/$filename: not found, skipping"
                     fi
                 done
             done
-        else
-            echo "[DEBUG] Windows envs directory not found: $win_envs_dir"
         fi
-    else
-        echo "[DEBUG] Windows profile not found (not in WSL?)"
     fi
 
     if [[ $updated_count -gt 0 ]]; then
-        echo "Updated $updated_count hardlinks/copies across all environments"
+        echo "[SYNC-total] $updated_count files updated (WSL + Windows environments)"
     fi
 }
 
@@ -1513,7 +1558,11 @@ cross-macos() {
         *) echo "Unsupported architecture for macOS: $arch"; exit 1 ;;
     esac
 
-    echo "Building for macOS ($arch, $mode)..."
+    # Always build Linux binary first - needed for VM mode deployment
+    # Unconditional: code may have changed even if binary exists
+    build_static x86_64 debug
+
+    echo "[BUILD] macOS ($arch, $mode)..."
     # Install Rust target if needed
     if has_cmd rustup; then
         rustup target add "$target"
@@ -1573,9 +1622,13 @@ cross-windows() {
         exit 1
     fi
 
+    # Always build Linux binary first - needed for VM mode deployment
+    # Unconditional: code may have changed even if binary exists
+    build_static x86_64 debug
+
     local target="$RUST_TARGET_X86_64_WINDOWS"
 
-    echo "Building for Windows ($arch, $mode)..."
+    echo "[BUILD] Windows ($arch, $mode)..."
     if has_cmd rustup; then
         rustup target add "$target"
     fi
@@ -1624,31 +1677,34 @@ cross-windows() {
 
     cargo build --target "$target" --ignore-rust-version "${cargo_args[@]}" "${cargo_feature_args[@]}"
 
-    echo "Cross-compilation to Windows completed. Binary is in target/$target/$build_dir/$BINARY_NAME"
+    echo "[BUILD-OK] Windows ($arch, $mode): target/$target/$build_dir/${BINARY_NAME}.exe"
 
     # Path to the locally built Linux ELF (epkg-linux-$arch) for native Windows VM mode
     local linux_epkg="${PROJECT_ROOT}/target/${RUST_TARGET_X86_64}/debug/${BINARY_NAME}"
 
-    # Deploy Windows binary to dist/ (for both debug and release)
+    # Deploy Windows binary to dist/
     deploy_release_binary "target/$target/$build_dir/${BINARY_NAME}.exe" "epkg-windows-${arch}.exe"
 
-    # Also deploy the locally built Linux ELF
+    # Deploy Windows binary to native Windows self environment (best-effort, handles "file in use")
+    deploy_to_windows_self "target/$target/$build_dir/${BINARY_NAME}.exe" "epkg.exe"
+    # Also deploy the locally built Linux ELF to dist/
     if [[ -f "$linux_epkg" ]]; then
         deploy_release_binary "$linux_epkg" "epkg-linux-${arch}"
+        # Deploy Linux ELF to Windows self environment (for VM guest init)
+        deploy_to_windows_self "$linux_epkg" "epkg-linux-${arch}"
     else
-        echo "Warning: local Linux epkg not found at $linux_epkg (run 'make' to build it)" >&2
+        echo "[WARN] Linux epkg not found at $linux_epkg - run 'make' first for full VM support"
     fi
-
     # Update hardlinks in all environments (non-self envs like alpine)
     if [[ -f "$linux_epkg" ]]; then
         update_all_env_hardlinks "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
     fi
-
     # Only sign for release mode
     if [[ "$mode" == "release" ]]; then
         :
         # Signing code can be added here in the future
     fi
+    echo "[DONE] cross-windows completed"
 }
 
 # Run tests (module-level unit tests)
