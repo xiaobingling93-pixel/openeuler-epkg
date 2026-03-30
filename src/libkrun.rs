@@ -260,16 +260,43 @@ fn build_libkrun_config(
     // (krun_set_root sets up a virtiofs device with tag "/dev/root")
     // On Windows, use ttyS0 for serial console since libkrun auto-adds COM1 device.
     // embedded_init: virtiofs synthetic /init.krun. Otherwise: epkg guest at /usr/bin/init.
+    //
+    // Performance note: Serial console output on WHPX is slow (~10x slower than Linux KVM)
+    // because each character requires a VM exit and MMIO write. Reduce loglevel and disable
+    // earlyprintk when not debugging to speed up boot.
+    let vm_debug = std::env::var("EPKG_VM_DEBUG").is_ok();
+    let loglevel = if vm_debug { "loglevel=8 debug" } else { "quiet loglevel=1" };
+
+    // Additional performance optimizations for VMs:
+    // - nowatchdog: Disable watchdog timers (not needed in VMs)
+    // - nmi_watchdog=0: Disable NMI watchdog
+    // These reduce unnecessary timer interrupts and improve boot time.
+    let vm_perf = "nowatchdog nmi_watchdog=0";
+
     #[cfg(all(target_os = "windows", feature = "embedded_init"))]
-    let base_cmdline = "reboot=k panic=-1 panic_print=0 nomodule console=ttyS0 earlyprintk=serial \
-                        loglevel=8 debug root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/init.krun";
+    let base_cmdline = format!(
+        "reboot=k panic=-1 panic_print=0 nomodule console=ttyS0 {} {} {} \
+         root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/init.krun",
+        if vm_debug { "earlyprintk=serial" } else { "" },
+        loglevel, vm_perf
+    );
     #[cfg(all(target_os = "windows", not(feature = "embedded_init")))]
-    let base_cmdline = "reboot=k panic=-1 panic_print=0 nomodule console=ttyS0 earlyprintk=serial \
-                        loglevel=8 debug root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/usr/bin/init";
+    let base_cmdline = format!(
+        "reboot=k panic=-1 panic_print=0 nomodule console=ttyS0 {} {} {} \
+         root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/usr/bin/init",
+        if vm_debug { "earlyprintk=serial" } else { "" },
+        loglevel, vm_perf
+    );
     #[cfg(not(target_os = "windows"))]
-    let base_cmdline = "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 earlyprintk=hvc0 \
-                        loglevel=8 debug root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/usr/bin/init";
-    let mut kernel_args = String::from(base_cmdline);
+    let base_cmdline = {
+        let ep = if vm_debug { "earlyprintk=hvc0" } else { "" };
+        format!(
+            "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 {} {} {} \
+             root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/usr/bin/init",
+            ep, loglevel, vm_perf
+        )
+    };
+    let mut kernel_args = base_cmdline;
     if let Some(ref user_args) = run_options.kernel_args {
         kernel_args.push(' ');
         kernel_args.push_str(user_args);
