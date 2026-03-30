@@ -230,8 +230,8 @@ deploy_to_windows_self() {
     echo "WARNING: Cannot update $win_install_name"
     echo "File is locked by running Windows process(es):"
     echo ""
-    # Show process details with full command line
-    /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command "Get-CimInstance Win32_Process -Filter \"Name='epkg.exe'\" | Select-Object ProcessId,ProcessName,CommandLine | Format-List" 2>/dev/null || /mnt/c/Windows/System32/tasklist.exe /FI "IMAGENAME eq epkg.exe" /FO TABLE 2>/dev/null || echo "  (cannot get process details)"
+    # Show process details with full command line (remove blank lines from PowerShell output)
+    /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command "Get-CimInstance Win32_Process -Filter \"Name='epkg.exe'\" | Select-Object ProcessId,ProcessName,CommandLine | Format-List" 2>/dev/null | grep -v '^[[:space:]]*$' || /mnt/c/Windows/System32/tasklist.exe /FI "IMAGENAME eq epkg.exe" /FO TABLE 2>/dev/null || echo "  (cannot get process details)"
     echo ""
     echo "Location: $dst"
     echo ""
