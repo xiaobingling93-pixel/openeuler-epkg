@@ -129,12 +129,21 @@ cross-macos-release:
 	@$(PROJECT_ROOT)/bin/make.sh cross-macos $(ARCH) release
 
 # Cross-compilation to Windows (x86_64 only; aarch64 not supported, debug mode)
+# Note: Windows cross-compilation requires two build steps:
+#   1. `make` - builds the Linux binary which generates init/init for the guest
+#   2. `make cross-windows` - cross-compiles the Windows binary with embedded init
+# The epkg-linux-x86_64 binary from step 1 is embedded into the Windows binary's
+# libkrun devices, allowing the Windows VM to use the same guest init process.
+#
+# Deployment: The built binary is deployed to:
+#   - target/x86_64-pc-windows-gnu/debug/epkg.exe (on Linux host)
+#   - ~/.epkg/envs/alpine/usr/bin/epkg (hardlinked to init, vm-daemon symlinks)
 cross-windows:
-	@$(PROJECT_ROOT)/bin/make.sh cross-windows $(ARCH) debug
+	@$(PROJECT_ROOT)/bin/make.sh cross-windows x86_64 debug
 
 # Cross-compilation to Windows (x86_64 only, release mode)
 cross-windows-release:
-	@$(PROJECT_ROOT)/bin/make.sh cross-windows $(ARCH) release
+	@$(PROJECT_ROOT)/bin/make.sh cross-windows x86_64 release
 
 # Run tests (module-level unit tests)
 test:

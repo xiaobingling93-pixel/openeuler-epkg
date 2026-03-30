@@ -9,6 +9,21 @@
 //! - Handles PTY allocation for terminal-based applications
 //! - Gracefully shuts down the VM after command completion
 //!
+//! # Invocation
+//! **IMPORTANT:** vm-daemon is NOT invoked as a separate applet binary. Instead, it is called directly
+//! as a function from init.rs (`crate::busybox::vm_daemon::run(options)`) after the guest kernel boots.
+//! The symlink `/usr/bin/vm-daemon -> epkg` exists for build system compatibility, but the init process
+//! never execs the vm-daemon binary - it calls the function directly.
+//!
+//! # Build Process for Windows/WHPX
+//! Windows cross-compilation requires two build steps:
+//! 1. `make` - Builds the Linux binary (epkg-linux-x86_64) which contains the init code
+//! 2. `make cross-windows` - Cross-compiles the Windows binary, embedding the Linux init
+//!
+//! The resulting binary is deployed to:
+//! - `~/.epkg/envs/alpine/usr/bin/epkg` (hardlinked to `init`)
+//! - `~/.epkg/envs/alpine/usr/bin/vm-daemon` (symlink to `epkg`)
+//!
 //! # Protocol Design
 //! ## Connection Model
 //! - Default: one command per connection; after the command the daemon may wait for more
