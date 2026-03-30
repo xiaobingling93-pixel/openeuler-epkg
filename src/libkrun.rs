@@ -84,6 +84,14 @@ unsafe extern "C" {
     /// Get the eventfd for triggering VM shutdown from host.
     /// Writing 1u64 to this fd will cause the VM to exit gracefully.
     fn krun_get_shutdown_eventfd(ctx_id: u32) -> i32;
+    /// Set the executable path and arguments for the guest init process.
+    /// This is used for embedded_init mode to specify the init program.
+    fn krun_set_exec(
+        ctx_id: u32,
+        c_exec_path: *const std::ffi::c_char,
+        c_args: *const *const std::ffi::c_char,
+        c_env: *const *const std::ffi::c_char,
+    ) -> i32;
 }
 
 // Map vsock port to a Unix socket path (host). Not exported on Windows builds of libkrun.
@@ -786,6 +794,17 @@ fn create_and_configure_vm(
             log::info!("libkrun: serial console added (ttyS0)");
         }
 
+        // For non-embedded_init mode, explicitly set the init path via krun_set_exec.
+        // This ensures the guest uses /usr/bin/init from the virtiofs rootfs.
+        #[cfg(all(target_os = "windows", not(feature = "embedded_init")))]
+        {
+            log::info!("libkrun: setting exec path to /usr/bin/init (production mode)");
+            eprintln!("[epkg-debug] libkrun: calling krun_set_exec for /usr/bin/init (production mode)");
+            if let Err(e) = ctx.set_exec("/usr/bin/init", None, None) {
+                log::warn!("libkrun: krun_set_exec failed (non-fatal, kernel cmdline fallback): {}", e);
+            }
+        }
+
         if config.use_vsock {
             let sock_path = setup_libkrun_vsock_host_sockets(&ctx, config.use_reverse_vsock)?;
             let vsock_sock_path = Some(sock_path);
@@ -970,6 +989,21 @@ impl KrunContext {
         } else {
             Ok(fd)
         }
+    }
+
+    /// Set the executable path for the guest init process.
+    /// Used when NOT using embedded_init to explicitly set init path.
+    #[allow(dead_code)]
+    unsafe fn set_exec(&self, exec_path: &str, _args: Option<&[&str]>, _env: Option<&[&str]>) -> Result<()> {
+        let exec_c = CString::new(exec_path)
+            .map_err(|e| eyre::eyre!("invalid exec path: {}", e))?;
+
+        // For now, we don't pass args or env - just set the exec path
+        // The kernel cmdline and virtiofs provide the rest
+        check_status(
+            "krun_set_exec",
+            unsafe { krun_set_exec(self.ctx_id, exec_c.as_ptr(), std::ptr::null(), std::ptr::null()) }
+        )
     }
 }
 
