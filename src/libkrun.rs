@@ -7,6 +7,11 @@ use std::ptr;
 use std::sync::Mutex;
 use std::thread;
 
+#[cfg(windows)]
+use windows::Win32::Foundation::HANDLE;
+#[cfg(windows)]
+use windows::Win32::System::Threading::SetEvent;
+
 use color_eyre::eyre;
 use color_eyre::Result;
 
@@ -1027,22 +1032,44 @@ fn send_session_done_unix(sock_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Signal the shutdown eventfd to trigger VM shutdown.
+/// On Unix: write to the eventfd file descriptor.
+/// On Windows: use SetEvent() on the HANDLE (returned by krun_get_shutdown_eventfd).
+#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+fn signal_shutdown_eventfd(shutdown_fd: i32) {
+    #[cfg(unix)]
+    {
+        let buf = 1u64.to_le_bytes();
+        let write_result = unsafe { libc::write(shutdown_fd, buf.as_ptr() as *const _, buf.len()) };
+        if write_result < 0 {
+            log::warn!(
+                "libkrun: failed to write shutdown eventfd: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+    #[cfg(windows)]
+    {
+        // shutdown_fd is a Windows HANDLE (as i32, returned by krun_get_shutdown_eventfd)
+        // HANDLE values on Windows are typically in lower 32-bit range even on 64-bit systems
+        let handle = HANDLE(shutdown_fd as usize as *mut std::ffi::c_void);
+        let result = unsafe { SetEvent(handle) };
+        if result.is_ok() {
+            log::debug!("libkrun: shutdown event signaled successfully");
+        } else {
+            log::warn!(
+                "libkrun: failed to signal shutdown event: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+}
+
 #[cfg(all(feature = "libkrun", not(target_os = "linux")))]
 fn shutdown_krun_session_impl(session: VmReuseSession) -> Result<()> {
     log::debug!("libkrun: shutting down reuse VM session");
     send_session_done_unix(&session.vsock_sock_path)?;
-    let buf = 1u64.to_le_bytes();
-    #[cfg(unix)]
-    let write_len = buf.len();
-    #[cfg(windows)]
-    let write_len = buf.len() as u32;
-    let write_result = unsafe { libc::write(session.shutdown_fd, buf.as_ptr() as *const _, write_len) };
-    if write_result < 0 {
-        log::warn!(
-            "libkrun: failed to write shutdown eventfd: {}",
-            std::io::Error::last_os_error()
-        );
-    }
+    signal_shutdown_eventfd(session.shutdown_fd);
     match session.vm_thread.join() {
         Ok(vm_status) => {
             log::debug!("libkrun: VM thread finished with status {}", vm_status);
@@ -1083,19 +1110,18 @@ fn krun_vsock_shutdown_join_free_exit(
     exit_code: i32,
 ) -> ! {
     eprintln!("[epkg-debug] libkrun: triggering VM shutdown via eventfd...");
-    let buf = 1u64.to_le_bytes();
-    #[cfg(unix)]
-    let write_len = buf.len();
-    #[cfg(windows)]
-    let write_len = buf.len() as u32;
-    let write_result = unsafe { libc::write(shutdown_fd, buf.as_ptr() as *const _, write_len) };
-    if write_result < 0 {
-        eprintln!(
-            "[epkg-debug] libkrun: failed to write shutdown eventfd: {}",
-            std::io::Error::last_os_error()
-        );
-    } else {
-        eprintln!("[epkg-debug] libkrun: shutdown eventfd written successfully");
+    #[cfg(not(target_os = "linux"))]
+    signal_shutdown_eventfd(shutdown_fd);
+    #[cfg(target_os = "linux")]
+    {
+        let buf = 1u64.to_le_bytes();
+        let write_result = unsafe { libc::write(shutdown_fd, buf.as_ptr() as *const _, buf.len()) };
+        if write_result < 0 {
+            eprintln!(
+                "[epkg-debug] libkrun: failed to write shutdown eventfd: {}",
+                std::io::Error::last_os_error()
+            );
+        }
     }
 
     eprintln!("[epkg-debug] libkrun: waiting for VM thread to join...");
