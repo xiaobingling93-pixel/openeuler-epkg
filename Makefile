@@ -132,12 +132,24 @@ cross-macos-release:
 # Note: Windows cross-compilation requires two build steps:
 #   1. `make` - builds the Linux binary which generates init/init for the guest
 #   2. `make cross-windows` - cross-compiles the Windows binary with embedded init
-# The epkg-linux-x86_64 binary from step 1 is embedded into the Windows binary's
-# libkrun devices, allowing the Windows VM to use the same guest init process.
 #
-# Deployment: The built binary is deployed to:
-#   - target/x86_64-pc-windows-gnu/debug/epkg.exe (on Linux host)
-#   - ~/.epkg/envs/alpine/usr/bin/epkg (hardlinked to init, vm-daemon symlinks)
+# Build and deployment chain:
+#   make:
+#     target/x86_64-unknown-linux-musl/debug/epkg (build output)
+#       -> ~/.epkg/envs/self/usr/bin/epkg-linux-x86_64 (self environment)
+#   make cross-windows:
+#     target/x86_64-pc-windows-gnu/debug/epkg.exe (build output for Windows host)
+#       -> ~/.epkg/envs/alpine/usr/bin/epkg (alpine environment, hardlinked)
+#       -> ~/.epkg/envs/alpine/usr/bin/init (hardlink to epkg)
+#       -> ~/.epkg/envs/alpine/usr/bin/vm-daemon -> epkg (symlink)
+#
+# Hardlink preservation:
+#   - make.sh deploy uses 'cat > file' to overwrite in-place, preserving hardlinks
+#   - 'epkg self install --force' should also preserve hardlinks across all envs
+#   - This ensures all hardlinked copies are updated atomically
+#
+# The init applet in the Windows binary is the Linux guest init process,
+# embedded via libkrun's embedded_init feature to run inside the Windows VM.
 cross-windows:
 	@$(PROJECT_ROOT)/bin/make.sh cross-windows x86_64 debug
 

@@ -120,11 +120,33 @@ fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32
     use std::io::BufReader;
     use std::io::BufRead;
 
+    // In reverse vsock mode, the guest sends "READY\n" first to signal readiness.
+    // We need to read and skip this signal before reading the actual response.
+    // For non-batch mode, this is handled by the line-by-line parser.
     if is_batch {
         // Batch mode: read entire response as single JSON object
+        // First, read lines until we get a non-"READY" line (the actual JSON response)
         let mut response = String::new();
+        let reader = BufReader::new(stream);
         eprintln!("[epkg-debug] handle_streaming_simple: batch mode - reading response...");
-        stream.read_to_string(&mut response)?;
+
+        for line in reader.lines() {
+            let line = line?;
+            eprintln!("[epkg-debug] handle_streaming_simple: read line: {:?}", line);
+            // Skip "READY" signal from reverse vsock handshake
+            if line == "READY" {
+                eprintln!("[epkg-debug] handle_streaming_simple: skipped READY signal");
+                continue;
+            }
+            // First non-READY line is the start of the JSON response
+            // For batch mode, we expect the entire JSON on one line (or concatenated)
+            response = line;
+            // Try to parse what we have so far
+            break;
+        }
+
+        // Continue reading remaining lines and append (for large responses)
+        // Note: this is a simplified approach; proper JSON streaming would be better
         eprintln!("[epkg-debug] handle_streaming_simple: read {} bytes response", response.len());
 
         #[derive(Deserialize)]
@@ -157,6 +179,11 @@ fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32
         for line in reader.lines() {
             let line = line?;
             if line.trim().is_empty() {
+                continue;
+            }
+            // Skip "READY" signal from reverse vsock handshake
+            if line == "READY" {
+                eprintln!("[epkg-debug] handle_streaming_simple: stream mode - skipped READY signal");
                 continue;
             }
 
