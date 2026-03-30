@@ -87,9 +87,6 @@ unsafe extern "C" {
         c_tag: *const std::ffi::c_char,
         c_path: *const std::ffi::c_char,
     ) -> i32;
-    /// Get the eventfd for triggering VM shutdown from host.
-    /// Writing 1u64 to this fd will cause the VM to exit gracefully.
-    fn krun_get_shutdown_eventfd(ctx_id: u32) -> i32;
     /// Signal the shutdown eventfd to trigger VM shutdown.
     /// This properly writes to the EventFd on all platforms.
     fn krun_signal_shutdown(ctx_id: u32) -> i32;
@@ -625,7 +622,6 @@ fn generate_virtiofs_tag(path: &Path) -> String {
 #[cfg(feature = "libkrun")]
 struct VmContext {
     ctx: KrunContext,
-    shutdown_fd: i32,
     vsock_sock_path: Option<std::path::PathBuf>,
 }
 
@@ -826,18 +822,11 @@ fn create_and_configure_vm(
         if config.use_vsock {
             let sock_path = setup_libkrun_vsock_host_sockets(&ctx, config.use_reverse_vsock)?;
             let vsock_sock_path = Some(sock_path);
-            let shutdown_fd = ctx.get_shutdown_eventfd()
-                .map_err(|e| eyre::eyre!("Failed to get shutdown eventfd: {}", e))?;
-            log::debug!("libkrun: shutdown_eventfd = {}", shutdown_fd);
-            return Ok(VmContext { ctx, shutdown_fd, vsock_sock_path });
+            return Ok(VmContext { ctx, vsock_sock_path });
         }
     }
 
-    let shutdown_fd = unsafe { ctx.get_shutdown_eventfd() }
-        .map_err(|e| eyre::eyre!("Failed to get shutdown eventfd: {}", e))?;
-    log::debug!("libkrun: shutdown_eventfd = {}", shutdown_fd);
-
-    Ok(VmContext { ctx, shutdown_fd, vsock_sock_path: None })
+    Ok(VmContext { ctx, vsock_sock_path: None })
 }
 
 #[cfg(feature = "libkrun")]
@@ -998,17 +987,6 @@ impl KrunContext {
         )
     }
 
-    /// Get the shutdown eventfd for triggering VM shutdown from host.
-    /// Writing 1u64 to this fd will cause the VM to exit gracefully.
-    unsafe fn get_shutdown_eventfd(&self) -> Result<i32> {
-        let fd = unsafe { krun_get_shutdown_eventfd(self.ctx_id) };
-        if fd < 0 {
-            Err(eyre::eyre!("krun_get_shutdown_eventfd failed with status {}", fd))
-        } else {
-            Ok(fd)
-        }
-    }
-
     /// Set the executable path for the guest init process.
     /// Used when NOT using embedded_init to explicitly set init path.
     #[allow(dead_code)]
@@ -1038,7 +1016,6 @@ impl Drop for KrunContext {
 #[cfg(all(feature = "libkrun", not(target_os = "linux")))]
 struct VmReuseSession {
     ctx_id:            u32,
-    shutdown_fd:       i32,
     vsock_sock_path:   std::path::PathBuf,
     vm_thread:         thread::JoinHandle<i32>,
     env_root:          std::path::PathBuf,
@@ -1169,7 +1146,6 @@ pub fn shutdown_vm_reuse_session_if_active() -> Result<()> {
 #[cfg(feature = "libkrun")]
 fn krun_vsock_shutdown_join_free_exit(
     vm_thread: std::thread::JoinHandle<i32>,
-    _shutdown_fd: i32,
     ctx_id: u32,
     exit_code: i32,
 ) -> ! {
@@ -1272,7 +1248,6 @@ fn run_reverse_vsock_mode_inner(
     eprintln!("[epkg-debug] libkrun: reverse listener set up on {}", vsock_sock_path.display());
 
     let ctx_id = vm_ctx.ctx.ctx_id;
-    let shutdown_fd = vm_ctx.shutdown_fd;
 
     // Channel to signal VM start failure
     let (start_failed_tx, start_failed_rx) = std::sync::mpsc::channel();
@@ -1326,7 +1301,6 @@ fn run_reverse_vsock_mode_inner(
         {
             *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
                 ctx_id,
-                shutdown_fd,
                 vsock_sock_path,
                 vm_thread,
                 env_root: env_root.to_path_buf(),
@@ -1336,7 +1310,7 @@ fn run_reverse_vsock_mode_inner(
         }
     }
 
-    krun_vsock_shutdown_join_free_exit(vm_thread, shutdown_fd, ctx_id, exit_code);
+    krun_vsock_shutdown_join_free_exit(vm_thread, ctx_id, exit_code);
 }
 
 /// Run a command inside a libkrun microVM.
@@ -1392,7 +1366,6 @@ pub fn run_command_in_krun(
         eprintln!("[epkg-debug] libkrun: vsock ready listener set up");
 
         let ctx_id = vm_ctx.ctx.ctx_id;
-        let shutdown_fd = vm_ctx.shutdown_fd;
         let vsock_sock_path = vm_ctx
             .vsock_sock_path
             .clone()
@@ -1430,7 +1403,6 @@ pub fn run_command_in_krun(
             {
                 *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
                     ctx_id,
-                    shutdown_fd,
                     vsock_sock_path,
                     vm_thread,
                     env_root: env_root.to_path_buf(),
@@ -1440,7 +1412,7 @@ pub fn run_command_in_krun(
             }
         }
 
-        krun_vsock_shutdown_join_free_exit(vm_thread, shutdown_fd, ctx_id, exit_code);
+        krun_vsock_shutdown_join_free_exit(vm_thread, ctx_id, exit_code);
     }
 
     // No-vsock mode (EPKG_VM_NO_DAEMON set)
