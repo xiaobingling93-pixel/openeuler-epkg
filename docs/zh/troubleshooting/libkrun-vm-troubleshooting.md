@@ -679,3 +679,55 @@ Fault offset: 0x0000000000013010
 2. 联系 Microsoft 确认 Windows 11 24H2 的 WHPX 已知问题
 3. 考虑添加 Windows 版本检测和兼容性模式
 4. 可能需要为 24H2+ 版本禁用某些 WHPX 特性
+---
+
+## embedded_init 特性的正确用途
+
+**DEBUG 模式（embedded_init=true）仅用于早期启动调试！**
+
+### 重要：DEBUG vs PRODUCTION 使用区别
+
+`embedded_init` 特性有明确的用途区分：
+
+| 模式 | `embedded_init` 值 | 用途 | init 路径 |
+|------|-------------------|------|----------|
+| **DEBUG** | `true` | 启动调试：避免 virtiofs/NTFS 文件状态噪声 | 使用嵌入的 `/init.krun` |
+| **PRODUCTION** | `false` (默认) | 生产环境：直接使用 epkg init | `/usr/bin/init` |
+
+### DEBUG 模式（embedded_init = true）
+
+**警告：DEBUG 模式仅用于调试，不可用于生产！**
+
+- **用途**：调试 VM 早期启动问题，验证 virtiofs/NTFS 兼容性
+- **限制**：**无法提供完整的 epkg 功能**，仅用于验证 VM 能否启动
+- **场景**：当 virtiofs/NTFS 文件系统有问题时，用嵌入的 init 绕过这些错误
+
+**具体说明：**
+- 用于早期启动调试，规避 virtiofs 文件系统可能的噪声错误
+- NTFS 文件状态检测问题
+- 通过嵌入二进制避免文件系统依赖
+
+### PRODUCTION 模式（embedded_init = false，默认）
+
+**目的：** 正常生产环境使用
+
+**工作流程：**
+1. 内核直接执行 `/usr/bin/init`
+2. `/usr/bin/init` 是 epkg 的 Linux ELF 二进制
+3. 通过 vsock/vm_daemon 机制执行用户命令
+
+**构建命令：**
+```bash
+# 生产环境（默认，不使用 embedded_init）
+make cross-windows
+
+# DEBUG 模式（使用 embedded_init，仅用于启动调试）
+FEATURES="libkrun embedded_init" make cross-windows
+```
+
+### 警告
+
+**不要将 `embedded_init = true` 用于生产环境！**
+- 嵌入的简化 init **无法提供完整的 epkg 功能**
+- 仅用于早期启动阶段调试，验证 VM 能否启动
+- 生产环境必须使用默认的 `/usr/bin/init` 以获得完整功能

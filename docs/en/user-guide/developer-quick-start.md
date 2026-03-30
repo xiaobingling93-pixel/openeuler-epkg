@@ -135,3 +135,60 @@ epkg run -e alpine --isolate=vm --embedded-init=false ls /
 
 - [Getting started](getting-started.md) — User installation and first steps
 - [Command reference](../reference/commands.md) — All commands and options
+
+---
+
+## embedded_init Feature: DEBUG vs PRODUCTION Usage
+
+### Important: Correct Use of embedded_init
+
+The `embedded_init` feature has a clear distinction between DEBUG and PRODUCTION usage:
+
+| Mode | `embedded_init` Value | Purpose | Init Path |
+|------|----------------------|---------|-----------|
+| **DEBUG** | `true` | Bootstrap debugging: avoid virtiofs/NTFS file status noise | Uses embedded `/init.krun` |
+| **PRODUCTION** | `false` (default) | Production: use epkg init directly | `/usr/bin/init` |
+
+### DEBUG Mode (embedded_init = true)
+
+**WARNING: DEBUG ONLY - NOT FOR PRODUCTION!**
+
+- It embeds a simplified init that **cannot provide full epkg functionality**
+- Intended only for early debugging to verify VM can boot
+- Production must use default `/usr/bin/init` to get full functionality
+
+**Purpose:** For early bootstrap debugging, avoiding:
+- Potential virtiofs filesystem noise errors
+- NTFS file status detection issues
+- File system dependencies by embedding a binary
+
+**Use Cases:**
+- Debugging VM startup issues
+- Verifying virtiofs/NTFS compatibility
+- Testing with minimal filesystem dependencies
+- Bypass virtiofs/NTFS errors when filesystem has issues
+
+### PRODUCTION Mode (embedded_init = false, default)
+
+**Purpose:** Normal production environment
+
+**Workflow:**
+1. Kernel executes `/usr/bin/init` directly
+2. `/usr/bin/init` is the epkg Linux ELF binary
+3. User commands executed via vsock/vm_daemon mechanism
+
+**Build Commands:**
+```bash
+# Production (default, without embedded_init)
+make cross-windows
+
+# DEBUG mode (with embedded_init, for bootstrap debugging only)
+FEATURES="libkrun embedded_init" make cross-windows
+```
+
+### Warning
+
+**DO NOT use `embedded_init = true` in production!**
+- It embeds a simplified init that **cannot provide full epkg functionality**
+- Intended only for early bootstrap stage debugging to verify VM can boot
+- Production must use default `/usr/bin/init` to get full functionality
