@@ -68,8 +68,8 @@ You can build epkg for macOS (Apple Silicon) or Windows from a Linux host:
 # macOS (Apple Silicon)
 make cross-macos aarch64
 
-# Windows (x86_64)
-make cross-windows x86_64
+# Windows (x86_64, default arch)
+make cross-windows
 ```
 The resulting binaries are in `target/<triple>/release/epkg`.
 

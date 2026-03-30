@@ -594,11 +594,12 @@ export LIBKRUN_WINDOWS_VERBOSE_DEBUG=1
 
 **构建注意事项**:
 ```bash
-# 构建 Windows 版本（带 libkrun 特性）
-make cross-windows
+# Windows 交叉编译需要两步构建:
+# 1. 先构建 Linux 版本（生成 init/init 供嵌入）
+make
 
-# 或显式启用 libkrun 特性
-FEATURES=libkrun make cross-windows
+# 2. 交叉编译 Windows 版本（x86_64 为默认架构）
+make cross-windows
 
 # 检查构建的版本
 ./dist/epkg-windows-x86_64.exe --version
