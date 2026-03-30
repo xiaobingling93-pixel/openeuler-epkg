@@ -130,23 +130,27 @@ cross-macos-release:
 
 # Cross-compilation to Windows (x86_64 only; aarch64 not supported, debug mode)
 # Note: Windows cross-compilation requires two build steps:
-#   1. `make` - builds the Linux binary which generates init/init for the guest
+#   1. `make` - builds the Linux binary for the guest init process
 #   2. `make cross-windows` - cross-compiles the Windows binary with embedded init
 #
-# Build and deployment chain:
-#   make:
-#     target/x86_64-unknown-linux-musl/debug/epkg (build output)
-#       -> ~/.epkg/envs/self/usr/bin/epkg-linux-x86_64 (self environment)
-#   make cross-windows:
-#     target/x86_64-pc-windows-gnu/debug/epkg.exe (build output for Windows host)
-#       -> ~/.epkg/envs/alpine/usr/bin/epkg (alpine environment, hardlinked)
-#       -> ~/.epkg/envs/alpine/usr/bin/init (hardlink to epkg)
-#       -> ~/.epkg/envs/alpine/usr/bin/vm-daemon -> epkg (symlink)
+# Hardlink deployment chain (atomic updates across all envs):
+#   build:  target/x86_64-unknown-linux-musl/debug/epkg
+#              |
+#              v (make.sh deploy: install_hardlink)
+#   self:   ~/.epkg/envs/self/usr/bin/epkg-linux-x86_64
+#              |
+#              v (make.sh: update_all_env_hardlinks)
+#   envs:   ~/.epkg/envs/<env>/usr/bin/epkg  ----> (hardlink, same inode as self's epkg-linux)
+#           ~/.epkg/envs/<env>/usr/bin/init  ----> (hardlink, same inode as self's epkg-linux)
+#           ~/.epkg/envs/<env>/usr/bin/vm-daemon -> epkg (symlink, not hardlink)
 #
-# Hardlink preservation:
-#   - make.sh deploy uses 'cat > file' to overwrite in-place, preserving hardlinks
-#   - 'epkg self install --force' should also preserve hardlinks across all envs
-#   - This ensures all hardlinked copies are updated atomically
+# Update scenarios (all hardlinks share same inode, update atomically):
+#   - `make`: make.sh update_all_env_hardlinks() after build
+#   - `epkg self install --force`: init.rs update_all_env_hardlinks()
+#
+# Windows cross-compile output:
+#   target/x86_64-pc-windows-gnu/debug/epkg.exe -> dist/epkg-windows-x86_64.exe
+#   (also deploys Linux epkg-linux-x86_64 to dist/ if available)
 #
 # The init applet in the Windows binary is the Linux guest init process,
 # embedded via libkrun's embedded_init feature to run inside the Windows VM.
