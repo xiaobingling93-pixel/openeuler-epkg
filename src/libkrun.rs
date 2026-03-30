@@ -784,16 +784,21 @@ fn create_and_configure_vm(
 #[cfg(feature = "libkrun")]
 fn start_libkrun_vm(ctx: KrunContext, start_failed_tx: std::sync::mpsc::Sender<()>) -> std::thread::JoinHandle<i32> {
     log::info!("libkrun: starting VM thread (ctx_id={})...", ctx.ctx_id);
+    eprintln!("[epkg-debug] libkrun: VM thread starting (ctx_id={})", ctx.ctx_id);
     thread::spawn(move || {
         unsafe {
             log::info!("libkrun: entering krun_start_enter (ctx_id={})...", ctx.ctx_id);
+            eprintln!("[epkg-debug] libkrun: entering krun_start_enter (ctx_id={})...", ctx.ctx_id);
             let status = ctx.start_enter();
+            eprintln!("[epkg-debug] libkrun: krun_start_enter returned status {}", status);
             if status < 0 {
                 log::error!("libkrun: krun_start_enter failed with status {} (ctx_id={})", status, ctx.ctx_id);
+                eprintln!("[epkg-debug] libkrun: krun_start_enter FAILED with status {}", status);
                 // Signal failure to main thread so it doesn't wait for timeout
                 let _ = start_failed_tx.send(());
             } else {
                 log::info!("libkrun: krun_start_enter returned status {} (VM exited normally)", status);
+                eprintln!("[epkg-debug] libkrun: VM exited normally with status {}", status);
             }
             status
         }
@@ -957,6 +962,7 @@ static VM_REUSE_SESSION: Mutex<Option<VmReuseSession>> = Mutex::new(None);
 
 #[cfg(feature = "libkrun")]
 fn apply_krun_exit_policy(exit_code: i32, run_options: &RunOptions) -> Result<()> {
+    eprintln!("[epkg-debug] libkrun: apply_krun_exit_policy called with exit_code={}", exit_code);
     if exit_code != 0 {
         if run_options.no_exit {
             eprintln!(
@@ -964,6 +970,7 @@ fn apply_krun_exit_policy(exit_code: i32, run_options: &RunOptions) -> Result<()
                 exit_code
             );
         } else {
+            eprintln!("[epkg-debug] libkrun: calling std::process::exit({})", exit_code);
             std::process::exit(exit_code);
         }
     }
@@ -1210,20 +1217,40 @@ fn run_reverse_vsock_mode(
     // Wait for Guest to connect (with timeout)
     eprintln!("[epkg-debug] libkrun: waiting for Guest to connect...");
     #[cfg(unix)]
-    let stream = libkrun_bridge::accept_reverse_connection(&reverse_listener, Some(&start_failed_rx))?;
+    let stream = match libkrun_bridge::accept_reverse_connection(&reverse_listener, Some(&start_failed_rx)) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[epkg-debug] libkrun: accept_reverse_connection FAILED: {}", e);
+            return Err(e);
+        }
+    };
     #[cfg(windows)]
-    let stream = libkrun_bridge::accept_reverse_connection(reverse_pipe, Some(&start_failed_rx))?;
+    let stream = match libkrun_bridge::accept_reverse_connection(reverse_pipe, Some(&start_failed_rx)) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[epkg-debug] libkrun: accept_reverse_connection FAILED: {}", e);
+            return Err(e);
+        }
+    };
 
     eprintln!("[epkg-debug] libkrun: Guest connected, sending command...");
 
     // Send command over the accepted connection
-    let exit_code = libkrun_stream::send_command_over_stream(
+    let exit_code = match libkrun_stream::send_command_over_stream(
         &config.cmd_parts,
         run_options.io_mode,
         run_options.reuse_vm,
         stream,
-    )
-    .map_err(|e| eyre::eyre!("Failed to send command via reverse vsock: {}", e))?;
+    ) {
+        Ok(code) => {
+            eprintln!("[epkg-debug] libkrun: send_command_over_stream returned exit_code={}", code);
+            code
+        }
+        Err(e) => {
+            eprintln!("[epkg-debug] libkrun: send_command_over_stream FAILED: {}", e);
+            return Err(eyre::eyre!("Failed to send command via reverse vsock: {}", e));
+        }
+    };
 
     log::debug!("libkrun: reverse vsock command completed with exit code {}", exit_code);
 

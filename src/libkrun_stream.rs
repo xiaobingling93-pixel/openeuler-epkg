@@ -567,15 +567,22 @@ pub fn send_command_over_stream(
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
     stream.flush()?;
-    eprintln!("[epkg-debug] libkrun_stream: request sent");
+    eprintln!("[epkg-debug] libkrun_stream: request sent, waiting for response...");
 
     // Handle response based on mode
-    if use_pty {
+    let result = if use_pty {
         // PTY mode: Use the generic handler since stream type may vary
         handle_streaming_simple(&mut stream, false)
     } else if is_batch {
         handle_streaming_simple(&mut stream, true)
     } else {
         handle_streaming_simple(&mut stream, false)
+    };
+
+    match &result {
+        Ok(code) => eprintln!("[epkg-debug] libkrun_stream: command completed with exit code {}", code),
+        Err(e) => eprintln!("[epkg-debug] libkrun_stream: command failed with error: {}", e),
     }
+
+    result
 }

@@ -480,11 +480,22 @@ pub fn accept_reverse_connection(
     let timeout = Duration::from_secs(30);
     let check_interval = Duration::from_millis(100);
 
+    eprintln!("[epkg-debug] libkrun_bridge: waiting for Guest connection or VM failure...");
+
     loop {
         // Check if VM start failed
         if let Some(ref failed_rx) = vm_start_failed_rx {
-            if failed_rx.try_recv().is_ok() {
-                return Err(eyre::eyre!("VM failed to start (krun_start_enter error)"));
+            match failed_rx.try_recv() {
+                Ok(_) => {
+                    eprintln!("[epkg-debug] libkrun_bridge: VM start failure detected!");
+                    return Err(eyre::eyre!("VM failed to start (krun_start_enter error)"));
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    // No failure yet, continue
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    eprintln!("[epkg-debug] libkrun_bridge: VM failure channel disconnected");
+                }
             }
         }
 
@@ -492,12 +503,14 @@ pub fn accept_reverse_connection(
         match rx.try_recv() {
             Ok(Ok(())) => {
                 log::debug!("libkrun: Guest connected to reverse pipe");
+                eprintln!("[epkg-debug] libkrun_bridge: Guest connected successfully!");
                 let _ = jh.join();
                 // Return the pipe handle as a File (handle_raw is the raw handle we took ownership of)
                 let file = std::fs::File::from(unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(handle_raw as std::os::windows::io::RawHandle) });
                 return Ok(file);
             }
             Ok(Err(e)) => {
+                eprintln!("[epkg-debug] libkrun_bridge: ConnectNamedPipe failed: {:?}", e);
                 let _ = jh.join();
                 return Err(eyre::eyre!("ConnectNamedPipe failed: {:?}", e));
             }
@@ -505,12 +518,14 @@ pub fn accept_reverse_connection(
                 // Not ready yet
             }
             Err(mpsc::TryRecvError::Disconnected) => {
+                eprintln!("[epkg-debug] libkrun_bridge: Pipe thread disconnected unexpectedly");
                 let _ = jh.join();
                 return Err(eyre::eyre!("Pipe thread disconnected unexpectedly"));
             }
         }
 
         if start.elapsed() >= timeout {
+            eprintln!("[epkg-debug] libkrun_bridge: Timeout waiting for Guest connection");
             return Err(eyre::eyre!("Timeout waiting for Guest to connect (reverse mode)"));
         }
 
