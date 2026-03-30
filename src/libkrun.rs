@@ -1186,7 +1186,7 @@ fn run_reverse_vsock_mode(
     #[cfg(unix)]
     let stream = libkrun_bridge::accept_reverse_connection(&reverse_listener, Some(&start_failed_rx))?;
     #[cfg(windows)]
-    let stream = libkrun_bridge::accept_reverse_connection(&reverse_pipe, Some(&start_failed_rx))?;
+    let stream = libkrun_bridge::accept_reverse_connection(reverse_pipe, Some(&start_failed_rx))?;
 
     eprintln!("[epkg-debug] libkrun: Guest connected, sending command...");
 

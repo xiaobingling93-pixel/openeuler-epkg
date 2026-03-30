@@ -163,15 +163,26 @@ fn to_wide_null(s: &str) -> Vec<u16> {
 
 #[cfg(windows)]
 pub struct WindowsReadyPipe {
-    handle: HANDLE,
+    handle: Option<HANDLE>,
 }
 
 #[cfg(windows)]
 impl Drop for WindowsReadyPipe {
     fn drop(&mut self) {
-        unsafe {
-            let _ = CloseHandle(self.handle);
+        if let Some(h) = self.handle.take() {
+            unsafe {
+                let _ = CloseHandle(h);
+            }
         }
+    }
+}
+
+#[cfg(windows)]
+impl WindowsReadyPipe {
+    /// Take ownership of the handle, preventing Drop from closing it.
+    /// Returns the raw handle value.
+    fn take_handle(&mut self) -> Option<std::os::windows::io::RawHandle> {
+        self.handle.take().map(|h| h.0 as std::os::windows::io::RawHandle)
     }
 }
 
@@ -202,7 +213,7 @@ pub fn setup_vsock_ready_listener() -> Result<Option<WindowsReadyPipe>> {
                 std::io::Error::last_os_error()
             ));
         }
-        Ok(Some(WindowsReadyPipe { handle: h }))
+        Ok(Some(WindowsReadyPipe { handle: Some(h) }))
     }
 }
 
@@ -214,7 +225,7 @@ pub fn wait_guest_ready_windows(
     use std::sync::mpsc;
     use std::thread;
 
-    let handle_raw = pipe.handle.0 as usize;
+    let handle_raw = pipe.handle.as_ref().map(|h| h.0 as usize).ok_or_else(|| eyre::eyre!("Pipe handle already taken"))?;
     let (tx, rx) = mpsc::channel();
     let jh = thread::spawn(move || {
         let handle = HANDLE(handle_raw as *mut _);
@@ -439,21 +450,23 @@ pub fn setup_reverse_listener(sock_path: &Path) -> Result<WindowsReadyPipe> {
             ));
         }
         log::debug!("libkrun: reverse listener created on pipe {}", full);
-        Ok(WindowsReadyPipe { handle: h })
+        Ok(WindowsReadyPipe { handle: Some(h) })
     }
 }
 
 /// Accept a connection from Guest in reverse mode (Windows).
+/// Takes ownership of the pipe to prevent double-close of the handle.
 #[cfg(windows)]
 pub fn accept_reverse_connection(
-    pipe: &WindowsReadyPipe,
+    mut pipe: WindowsReadyPipe,
     vm_start_failed_rx: Option<&std::sync::mpsc::Receiver<()>>,
 ) -> Result<std::fs::File> {
     use std::sync::mpsc;
     use std::thread;
     use std::time::Instant;
 
-    let handle_raw = pipe.handle.0 as usize;
+    let handle_raw = pipe.take_handle()
+        .ok_or_else(|| eyre::eyre!("Pipe handle already taken"))? as usize;
     let (tx, rx) = mpsc::channel();
 
     // Spawn thread to wait for connection
@@ -480,8 +493,8 @@ pub fn accept_reverse_connection(
             Ok(Ok(())) => {
                 log::debug!("libkrun: Guest connected to reverse pipe");
                 let _ = jh.join();
-                // Return the pipe handle as a File
-                let file = std::fs::File::from(unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(pipe.handle.0) });
+                // Return the pipe handle as a File (handle_raw is the raw handle we took ownership of)
+                let file = std::fs::File::from(unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(handle_raw as std::os::windows::io::RawHandle) });
                 return Ok(file);
             }
             Ok(Err(e)) => {
