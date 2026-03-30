@@ -786,21 +786,31 @@ fn start_libkrun_vm(ctx: KrunContext, start_failed_tx: std::sync::mpsc::Sender<(
     log::info!("libkrun: starting VM thread (ctx_id={})...", ctx.ctx_id);
     eprintln!("[epkg-debug] libkrun: VM thread starting (ctx_id={})", ctx.ctx_id);
     thread::spawn(move || {
-        unsafe {
-            log::info!("libkrun: entering krun_start_enter (ctx_id={})...", ctx.ctx_id);
-            eprintln!("[epkg-debug] libkrun: entering krun_start_enter (ctx_id={})...", ctx.ctx_id);
-            let status = ctx.start_enter();
-            eprintln!("[epkg-debug] libkrun: krun_start_enter returned status {}", status);
-            if status < 0 {
-                log::error!("libkrun: krun_start_enter failed with status {} (ctx_id={})", status, ctx.ctx_id);
-                eprintln!("[epkg-debug] libkrun: krun_start_enter FAILED with status {}", status);
-                // Signal failure to main thread so it doesn't wait for timeout
-                let _ = start_failed_tx.send(());
-            } else {
-                log::info!("libkrun: krun_start_enter returned status {} (VM exited normally)", status);
-                eprintln!("[epkg-debug] libkrun: VM exited normally with status {}", status);
+        let result = std::panic::catch_unwind(|| {
+            unsafe {
+                log::info!("libkrun: entering krun_start_enter (ctx_id={})...", ctx.ctx_id);
+                eprintln!("[epkg-debug] libkrun: entering krun_start_enter (ctx_id={})...", ctx.ctx_id);
+                let status = ctx.start_enter();
+                eprintln!("[epkg-debug] libkrun: krun_start_enter returned status {}", status);
+                if status < 0 {
+                    log::error!("libkrun: krun_start_enter failed with status {} (ctx_id={})", status, ctx.ctx_id);
+                    eprintln!("[epkg-debug] libkrun: krun_start_enter FAILED with status {}", status);
+                    // Signal failure to main thread so it doesn't wait for timeout
+                    let _ = start_failed_tx.send(());
+                } else {
+                    log::info!("libkrun: krun_start_enter returned status {} (VM exited normally)", status);
+                    eprintln!("[epkg-debug] libkrun: VM exited normally with status {}", status);
+                }
+                status
             }
-            status
+        });
+        match result {
+            Ok(status) => status,
+            Err(e) => {
+                eprintln!("[epkg-debug] libkrun: VM thread panicked: {:?}", e);
+                let _ = start_failed_tx.send(());
+                -1
+            }
         }
     })
 }
@@ -1182,6 +1192,20 @@ fn krun_no_vsock_join_vm_thread_exit(vm_thread: std::thread::JoinHandle<i32>, ct
 /// This avoids vsock handshake timing issues on Windows/WHPX.
 #[cfg(feature = "libkrun")]
 fn run_reverse_vsock_mode(
+    env_root: &Path,
+    run_options: &RunOptions,
+    config: &LibkrunConfig,
+) -> Result<()> {
+    let result = run_reverse_vsock_mode_inner(env_root, run_options, config);
+    if let Err(ref e) = result {
+        eprintln!("[epkg-debug] libkrun: run_reverse_vsock_mode error: {}", e);
+    }
+    eprintln!("[epkg-debug] libkrun: run_reverse_vsock_mode returning");
+    result
+}
+
+#[cfg(feature = "libkrun")]
+fn run_reverse_vsock_mode_inner(
     env_root: &Path,
     run_options: &RunOptions,
     config: &LibkrunConfig,
