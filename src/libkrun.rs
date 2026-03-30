@@ -1429,6 +1429,7 @@ pub fn run_command_in_krun(
 
 /// Setup console output logging to a file for debugging kernel boot.
 ///
+/// Debug logging is off by default, enabled by EPKG_DEBUG_LIBKRUN env var.
 /// Creates a per-PID log file and a symlink at "latest-console.log" for easy access.
 ///
 /// Example paths:
@@ -1437,11 +1438,19 @@ pub fn run_command_in_krun(
 ///
 /// Usage:
 /// ```bash
+/// # Enable debug logging:
+/// export EPKG_DEBUG_LIBKRUN=1
 /// # After running a VM, check the console output:
 /// less ~/.cache/epkg/vmm-logs/latest-console.log
 /// ```
 fn setup_console_output(ctx_id: u32) -> Result<()> {
     use std::ffi::CString;
+
+    // Debug logging is off by default, enabled by EPKG_DEBUG_LIBKRUN env var
+    if std::env::var_os("EPKG_DEBUG_LIBKRUN").is_none() {
+        log::debug!("libkrun: console output disabled (EPKG_DEBUG_LIBKRUN not set)");
+        return Ok(());
+    }
 
     let base_log_dir = crate::models::dirs().epkg_cache.join("vmm-logs");
     lfs::create_dir_all(&base_log_dir)
@@ -1449,6 +1458,10 @@ fn setup_console_output(ctx_id: u32) -> Result<()> {
 
     let pid = std::process::id();
     let console_log_path = base_log_dir.join(format!("libkrun-console-{}.log", pid));
+
+    // Create the file before setting up symlink (avoids dead symlink)
+    std::fs::File::create(&console_log_path)
+        .map_err(|e| eyre::eyre!("Failed to create console log file: {}", e))?;
 
     let console_log = CString::new(console_log_path.to_string_lossy().as_bytes())
         .map_err(|e| eyre::eyre!("invalid console log path: {}", e))?;
