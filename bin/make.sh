@@ -541,15 +541,17 @@ update_all_env_hardlinks() {
     done
 
     if [[ $updated_count -gt 0 ]]; then
-        echo "Updated $updated_count hardlinks across Linux environments"
+        echo "Updated $updated_count hardlinks across all environments"
     fi
 
     # Update Windows-side environments (WSL only) - use copy since hardlinks don't work across filesystems
     local win_profile_wsl
     win_profile_wsl="$(get_windows_user_profile_wsl 2>/dev/null)"
     if [[ -n "$win_profile_wsl" ]]; then
+        echo "[DEBUG] Found Windows profile: $win_profile_wsl"
         local win_envs_dir="${win_profile_wsl}/.epkg/envs"
         if [[ -d "$win_envs_dir" ]]; then
+            echo "[DEBUG] Scanning Windows environments in: $win_envs_dir"
             for env_dir in "$win_envs_dir"/*; do
                 [[ -d "$env_dir" ]] || continue
                 local env_name="${env_dir##*/}"
@@ -558,23 +560,35 @@ update_all_env_hardlinks() {
                 local env_usr_bin="$env_dir/usr/bin"
                 [[ -d "$env_usr_bin" ]] || continue
 
+                echo "[DEBUG] Checking Windows env: $env_name"
                 # Update epkg and init via copy (not hardlink)
                 for filename in epkg init; do
                     local target_path="$env_usr_bin/$filename"
                     if [[ -f "$target_path" ]]; then
                         # Check if already up to date using cmp
                         if cmp -s "$self_epkg_linux" "$target_path" 2>/dev/null; then
+                            echo "[DEBUG] $env_name/$filename: already up to date"
                             continue
                         fi
 
+                        echo "[DEBUG] Copying to $env_name/$filename..."
                         # Copy to update
                         if cp "$self_epkg_linux" "$target_path" 2>/dev/null; then
                             ((updated_count++))
+                            echo "[DEBUG] Copied successfully to $env_name/$filename"
+                        else
+                            echo "[DEBUG] Failed to copy to $env_name/$filename"
                         fi
+                    else
+                        echo "[DEBUG] $env_name/$filename: not found, skipping"
                     fi
                 done
             done
+        else
+            echo "[DEBUG] Windows envs directory not found: $win_envs_dir"
         fi
+    else
+        echo "[DEBUG] Windows profile not found (not in WSL?)"
     fi
 
     if [[ $updated_count -gt 0 ]]; then
