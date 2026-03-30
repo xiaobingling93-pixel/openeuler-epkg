@@ -257,8 +257,18 @@ fn build_libkrun_config(
 
     // Use reverse vsock mode for first run to avoid potential vsock handshake timing issues.
     // In reverse mode, Guest connects to Host after full initialization.
-    // Reuse mode uses forward mode (Host connects to Guest) for compatibility.
-    let use_reverse_vsock = use_vsock && !run_options.reuse_vm;
+    // For reuse mode on non-Linux, check if there's an existing session:
+    // - If existing session: use forward mode (Host connects to Guest)
+    // - If no existing session: use reverse mode for first command, then switch to forward
+    #[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+    let has_existing_session = if run_options.reuse_vm {
+        VM_REUSE_SESSION.lock().unwrap().is_some()
+    } else {
+        false
+    };
+    #[cfg(any(not(feature = "libkrun"), target_os = "linux"))]
+    let has_existing_session = false;
+    let use_reverse_vsock = use_vsock && !has_existing_session;
 
     let guest_exec_path = guest_cmd_path
         .strip_prefix(env_root)
@@ -1144,11 +1154,10 @@ pub fn shutdown_vm_reuse_session_if_active() -> Result<()> {
 }
 
 #[cfg(feature = "libkrun")]
-fn krun_vsock_shutdown_join_free_exit(
+fn krun_vsock_shutdown_join_free(
     vm_thread: std::thread::JoinHandle<i32>,
     ctx_id: u32,
-    exit_code: i32,
-) -> ! {
+) {
     crate::debug_epkg!("libkrun: triggering VM shutdown via krun_signal_shutdown...");
     let result = unsafe { krun_signal_shutdown(ctx_id) };
     if result < 0 {
@@ -1165,11 +1174,19 @@ fn krun_vsock_shutdown_join_free_exit(
         }
     }
 
-    crate::debug_epkg!("libkrun: freeing context before exit...");
+    crate::debug_epkg!("libkrun: freeing context...");
     unsafe {
         let _ = krun_free_ctx(ctx_id);
     }
+}
 
+#[cfg(feature = "libkrun")]
+fn krun_vsock_shutdown_join_free_exit(
+    vm_thread: std::thread::JoinHandle<i32>,
+    ctx_id: u32,
+    exit_code: i32,
+) -> ! {
+    krun_vsock_shutdown_join_free(vm_thread, ctx_id);
     crate::debug_epkg!("libkrun: exiting with code {}", exit_code);
     std::process::exit(exit_code);
 }
@@ -1307,6 +1324,12 @@ fn run_reverse_vsock_mode_inner(
         }
     }
 
+    // For no_exit mode (e.g., scriptlets), shutdown VM and return instead of exiting process
+    if run_options.no_exit {
+        krun_vsock_shutdown_join_free(vm_thread, ctx_id);
+        return apply_krun_exit_policy(exit_code, run_options);
+    }
+
     krun_vsock_shutdown_join_free_exit(vm_thread, ctx_id, exit_code);
 }
 
@@ -1407,6 +1430,12 @@ pub fn run_command_in_krun(
                 log::debug!("libkrun: VM session kept alive for reuse");
                 return apply_krun_exit_policy(exit_code, run_options);
             }
+        }
+
+        // For no_exit mode (e.g., scriptlets), shutdown VM and return instead of exiting process
+        if run_options.no_exit {
+            krun_vsock_shutdown_join_free(vm_thread, ctx_id);
+            return apply_krun_exit_policy(exit_code, run_options);
         }
 
         krun_vsock_shutdown_join_free_exit(vm_thread, ctx_id, exit_code);
