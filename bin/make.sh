@@ -541,7 +541,44 @@ update_all_env_hardlinks() {
     done
 
     if [[ $updated_count -gt 0 ]]; then
-        echo "Updated $updated_count hardlinks across all environments"
+        echo "Updated $updated_count hardlinks across Linux environments"
+    fi
+
+    # Update Windows-side environments (WSL only) - use copy since hardlinks don't work across filesystems
+    local win_profile_wsl
+    win_profile_wsl="$(get_windows_user_profile_wsl 2>/dev/null)"
+    if [[ -n "$win_profile_wsl" ]]; then
+        local win_envs_dir="${win_profile_wsl}/.epkg/envs"
+        if [[ -d "$win_envs_dir" ]]; then
+            for env_dir in "$win_envs_dir"/*; do
+                [[ -d "$env_dir" ]] || continue
+                local env_name="${env_dir##*/}"
+                [[ "$env_name" == "self" ]] && continue
+
+                local env_usr_bin="$env_dir/usr/bin"
+                [[ -d "$env_usr_bin" ]] || continue
+
+                # Update epkg and init via copy (not hardlink)
+                for filename in epkg init; do
+                    local target_path="$env_usr_bin/$filename"
+                    if [[ -f "$target_path" ]]; then
+                        # Check if already up to date using cmp
+                        if cmp -s "$self_epkg_linux" "$target_path" 2>/dev/null; then
+                            continue
+                        fi
+
+                        # Copy to update
+                        if cp "$self_epkg_linux" "$target_path" 2>/dev/null; then
+                            ((updated_count++))
+                        fi
+                    fi
+                done
+            done
+        fi
+    fi
+
+    if [[ $updated_count -gt 0 ]]; then
+        echo "Updated $updated_count hardlinks/copies across all environments"
     fi
 }
 
