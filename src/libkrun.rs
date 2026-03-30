@@ -287,7 +287,7 @@ fn build_libkrun_config(
     // - tsc=reliable: Use TSC as reliable clocksource (avoids PIT calibration hang on WHPX)
     // - disable_kvm_pv: Disable KVM PV extensions that may interfere with WHPX
     #[cfg(target_os = "windows")]
-    let vm_perf = "nowatchdog nmi_watchdog=0 lpj=5994000 tsc=reliable disable_kvm_pv=1";
+    let vm_perf = "nowatchdog nmi_watchdog=0 lpj=5994000 tsc=reliable disable_kvm_pv=1 noapic rootdelay=5 notsc";
     #[cfg(not(target_os = "windows"))]
     let vm_perf = "nowatchdog nmi_watchdog=0";
 
@@ -301,7 +301,7 @@ fn build_libkrun_config(
     #[cfg(all(target_os = "windows", not(feature = "embedded_init")))]
     let base_cmdline = format!(
         "reboot=k panic=-1 panic_print=0 nomodule console=ttyS0 {} {} {} \
-         root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/usr/bin/init",
+         root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/bin/init",
         if vm_debug { "earlyprintk=serial" } else { "" },
         loglevel, vm_perf
     );
@@ -800,12 +800,12 @@ fn create_and_configure_vm(
         }
 
         // For non-embedded_init mode, explicitly set the init path via krun_set_exec.
-        // This ensures the guest uses /usr/bin/init from the virtiofs rootfs.
+        // This ensures the guest uses /bin/init from the virtiofs rootfs.
         #[cfg(all(target_os = "windows", not(feature = "embedded_init")))]
         {
-            log::info!("libkrun: setting exec path to /usr/bin/init (production mode)");
-            eprintln!("[epkg-debug] libkrun: calling krun_set_exec for /usr/bin/init (production mode)");
-            if let Err(e) = ctx.set_exec("/usr/bin/init", None, None) {
+            log::info!("libkrun: setting exec path to /bin/init (production mode)");
+            eprintln!("[epkg-debug] libkrun: calling krun_set_exec for /bin/init (production mode)");
+            if let Err(e) = ctx.set_exec("/bin/init", None, None) {
                 log::warn!("libkrun: krun_set_exec failed (non-fatal, kernel cmdline fallback): {}", e);
             }
         }
