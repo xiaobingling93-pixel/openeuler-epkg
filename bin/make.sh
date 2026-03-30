@@ -1588,6 +1588,11 @@ cross-windows() {
         echo "Warning: local Linux epkg not found at $linux_epkg (run 'make' to build it)" >&2
     fi
 
+    # Update hardlinks in all environments (non-self envs like alpine)
+    if [[ -f "$linux_epkg" ]]; then
+        update_all_env_hardlinks "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
+    fi
+
     # Only sign for release mode
     if [[ "$mode" == "release" ]]; then
         :
