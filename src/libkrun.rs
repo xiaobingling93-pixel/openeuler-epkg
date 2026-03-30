@@ -294,11 +294,14 @@ fn build_libkrun_config(
     // Additional performance optimizations for VMs:
     // - nowatchdog: Disable watchdog timers (not needed in VMs)
     // - nmi_watchdog=0: Disable NMI watchdog
-    // - lpj=5994000: Pre-set loops per jiffy to avoid PIT calibration (calculated for 3GHz)
+    // - lpj=11979608: Pre-set loops per jiffy to avoid PIT calibration
+    //   (calculated from BogoMIPS 5989.80: lpj = BogoMIPS * 2 * HZ/500)
     // - tsc=reliable: Use TSC as reliable clocksource (avoids PIT calibration hang on WHPX)
     // - disable_kvm_pv: Disable KVM PV extensions that may interfere with WHPX
+    // Note: The vmm timer fix (85d5f9b) in libkrun makes noapic/rootdelay/notsc unnecessary.
+    // These parameters caused 100x slowdown in boot time and have been removed.
     #[cfg(target_os = "windows")]
-    let vm_perf = "nowatchdog nmi_watchdog=0 lpj=5994000 tsc=reliable disable_kvm_pv=1 noapic rootdelay=5 notsc";
+    let vm_perf = "nowatchdog nmi_watchdog=0 lpj=11979608 tsc=reliable disable_kvm_pv=1";
     #[cfg(not(target_os = "windows"))]
     let vm_perf = "nowatchdog nmi_watchdog=0";
 
