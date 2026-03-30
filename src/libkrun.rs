@@ -813,7 +813,7 @@ fn create_and_configure_vm(
         #[cfg(all(target_os = "windows", not(feature = "embedded_init")))]
         {
             log::info!("libkrun: setting exec path to {} (production mode)", GUEST_INIT_PATH);
-            eprintln!("[epkg-debug] libkrun: calling krun_set_exec for {} (production mode)", GUEST_INIT_PATH);
+            crate::debug_epkg!("libkrun: calling krun_set_exec for {} (production mode)", GUEST_INIT_PATH);
             if let Err(e) = ctx.set_exec(GUEST_INIT_PATH, None, None) {
                 log::warn!("libkrun: krun_set_exec failed (non-fatal, kernel cmdline fallback): {}", e);
             }
@@ -832,22 +832,22 @@ fn create_and_configure_vm(
 #[cfg(feature = "libkrun")]
 fn start_libkrun_vm(ctx: KrunContext, start_failed_tx: std::sync::mpsc::Sender<()>) -> std::thread::JoinHandle<i32> {
     log::info!("libkrun: starting VM thread (ctx_id={})...", ctx.ctx_id);
-    eprintln!("[epkg-debug] libkrun: VM thread starting (ctx_id={})", ctx.ctx_id);
+    crate::debug_epkg!("libkrun: VM thread starting (ctx_id={})", ctx.ctx_id);
     thread::spawn(move || {
         let result = std::panic::catch_unwind(|| {
             unsafe {
                 log::info!("libkrun: entering krun_start_enter (ctx_id={})...", ctx.ctx_id);
-                eprintln!("[epkg-debug] libkrun: entering krun_start_enter (ctx_id={})...", ctx.ctx_id);
+                crate::debug_epkg!("libkrun: entering krun_start_enter (ctx_id={})...", ctx.ctx_id);
                 let status = ctx.start_enter();
-                eprintln!("[epkg-debug] libkrun: krun_start_enter returned status {}", status);
+                crate::debug_epkg!("libkrun: krun_start_enter returned status {}", status);
                 if status < 0 {
                     log::error!("libkrun: krun_start_enter failed with status {} (ctx_id={})", status, ctx.ctx_id);
-                    eprintln!("[epkg-debug] libkrun: krun_start_enter FAILED with status {}", status);
+                    crate::debug_epkg!("libkrun: krun_start_enter FAILED with status {}", status);
                     // Signal failure to main thread so it doesn't wait for timeout
                     let _ = start_failed_tx.send(());
                 } else {
                     log::info!("libkrun: krun_start_enter returned status {} (VM exited normally)", status);
-                    eprintln!("[epkg-debug] libkrun: VM exited normally with status {}", status);
+                    crate::debug_epkg!("libkrun: VM exited normally with status {}", status);
                 }
                 status
             }
@@ -855,7 +855,7 @@ fn start_libkrun_vm(ctx: KrunContext, start_failed_tx: std::sync::mpsc::Sender<(
         match result {
             Ok(status) => status,
             Err(e) => {
-                eprintln!("[epkg-debug] libkrun: VM thread panicked: {:?}", e);
+                crate::debug_epkg!("libkrun: VM thread panicked: {:?}", e);
                 let _ = start_failed_tx.send(());
                 -1
             }
@@ -969,9 +969,9 @@ impl KrunContext {
     }
 
     unsafe fn start_enter(&self) -> i32 {
-        eprintln!("[epkg-debug] libkrun: about to call krun_start_enter FFI...");
+        crate::debug_epkg!("libkrun: about to call krun_start_enter FFI...");
         let status = unsafe { krun_start_enter(self.ctx_id) };
-        eprintln!("[epkg-debug] libkrun: krun_start_enter FFI returned {}", status);
+        crate::debug_epkg!("libkrun: krun_start_enter FFI returned {}", status);
         status
     }
 
@@ -1026,7 +1026,7 @@ static VM_REUSE_SESSION: Mutex<Option<VmReuseSession>> = Mutex::new(None);
 
 #[cfg(feature = "libkrun")]
 fn apply_krun_exit_policy(exit_code: i32, run_options: &RunOptions) -> Result<()> {
-    eprintln!("[epkg-debug] libkrun: apply_krun_exit_policy called with exit_code={}", exit_code);
+    crate::debug_epkg!("libkrun: apply_krun_exit_policy called with exit_code={}", exit_code);
     if exit_code != 0 {
         if run_options.no_exit {
             eprintln!(
@@ -1034,7 +1034,7 @@ fn apply_krun_exit_policy(exit_code: i32, run_options: &RunOptions) -> Result<()
                 exit_code
             );
         } else {
-            eprintln!("[epkg-debug] libkrun: calling std::process::exit({})", exit_code);
+            crate::debug_epkg!("libkrun: calling std::process::exit({})", exit_code);
             std::process::exit(exit_code);
         }
     }
@@ -1149,31 +1149,28 @@ fn krun_vsock_shutdown_join_free_exit(
     ctx_id: u32,
     exit_code: i32,
 ) -> ! {
-    eprintln!("[epkg-debug] libkrun: triggering VM shutdown via krun_signal_shutdown...");
+    crate::debug_epkg!("libkrun: triggering VM shutdown via krun_signal_shutdown...");
     let result = unsafe { krun_signal_shutdown(ctx_id) };
     if result < 0 {
-        eprintln!(
-            "[epkg-debug] libkrun: krun_signal_shutdown failed with status {}",
-            result
-        );
+        crate::debug_epkg!("libkrun: krun_signal_shutdown failed with status {}", result);
     }
 
-    eprintln!("[epkg-debug] libkrun: waiting for VM thread to join...");
+    crate::debug_epkg!("libkrun: waiting for VM thread to join...");
     match vm_thread.join() {
         Ok(vm_status) => {
-            eprintln!("[epkg-debug] libkrun: VM thread finished with status {}", vm_status);
+            crate::debug_epkg!("libkrun: VM thread finished with status {}", vm_status);
         }
         Err(e) => {
-            eprintln!("[epkg-debug] libkrun: VM thread join failed: {:?}", e);
+            crate::debug_epkg!("libkrun: VM thread join failed: {:?}", e);
         }
     }
 
-    eprintln!("[epkg-debug] libkrun: freeing context before exit...");
+    crate::debug_epkg!("libkrun: freeing context before exit...");
     unsafe {
         let _ = krun_free_ctx(ctx_id);
     }
 
-    eprintln!("[epkg-debug] libkrun: exiting with code {}", exit_code);
+    crate::debug_epkg!("libkrun: exiting with code {}", exit_code);
     std::process::exit(exit_code);
 }
 
@@ -1215,9 +1212,9 @@ fn run_reverse_vsock_mode(
 ) -> Result<()> {
     let result = run_reverse_vsock_mode_inner(env_root, run_options, config);
     if let Err(ref e) = result {
-        eprintln!("[epkg-debug] libkrun: run_reverse_vsock_mode error: {}", e);
+        crate::debug_epkg!("libkrun: run_reverse_vsock_mode error: {}", e);
     }
-    eprintln!("[epkg-debug] libkrun: run_reverse_vsock_mode returning");
+    crate::debug_epkg!("libkrun: run_reverse_vsock_mode returning");
     result
 }
 
@@ -1227,11 +1224,11 @@ fn run_reverse_vsock_mode_inner(
     run_options: &RunOptions,
     config: &LibkrunConfig,
 ) -> Result<()> {
-    eprintln!("[epkg-debug] libkrun: entering reverse vsock mode (Guest -> Host)");
+    crate::debug_epkg!("libkrun: entering reverse vsock mode (Guest -> Host)");
 
     // Create VM with reverse mode (port 10000 listen=false, Host listens)
     let vm_ctx = create_and_configure_vm(env_root, run_options, config)?;
-    eprintln!("[epkg-debug] libkrun: VM configured (ctx_id={})", vm_ctx.ctx.ctx_id);
+    crate::debug_epkg!("libkrun: VM configured (ctx_id={})", vm_ctx.ctx.ctx_id);
 
     let vsock_sock_path = vm_ctx
         .vsock_sock_path
@@ -1245,22 +1242,22 @@ fn run_reverse_vsock_mode_inner(
     #[cfg(windows)]
     let reverse_pipe = libkrun_bridge::setup_reverse_listener(&vsock_sock_path)?;
 
-    eprintln!("[epkg-debug] libkrun: reverse listener set up on {}", vsock_sock_path.display());
+    crate::debug_epkg!("libkrun: reverse listener set up on {}", vsock_sock_path.display());
 
     let ctx_id = vm_ctx.ctx.ctx_id;
 
     // Channel to signal VM start failure
     let (start_failed_tx, start_failed_rx) = std::sync::mpsc::channel();
-    eprintln!("[epkg-debug] libkrun: starting VM thread...");
+    crate::debug_epkg!("libkrun: starting VM thread...");
     let vm_thread = start_libkrun_vm(vm_ctx.ctx, start_failed_tx);
 
     // Wait for Guest to connect (with timeout)
-    eprintln!("[epkg-debug] libkrun: waiting for Guest to connect...");
+    crate::debug_epkg!("libkrun: waiting for Guest to connect...");
     #[cfg(unix)]
     let stream = match libkrun_bridge::accept_reverse_connection(&reverse_listener, Some(&start_failed_rx)) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[epkg-debug] libkrun: accept_reverse_connection FAILED: {}", e);
+            crate::debug_epkg!("libkrun: accept_reverse_connection FAILED: {}", e);
             return Err(e);
         }
     };
@@ -1268,12 +1265,12 @@ fn run_reverse_vsock_mode_inner(
     let stream = match libkrun_bridge::accept_reverse_connection(reverse_pipe, Some(&start_failed_rx)) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[epkg-debug] libkrun: accept_reverse_connection FAILED: {}", e);
+            crate::debug_epkg!("libkrun: accept_reverse_connection FAILED: {}", e);
             return Err(e);
         }
     };
 
-    eprintln!("[epkg-debug] libkrun: Guest connected, sending command...");
+    crate::debug_epkg!("libkrun: Guest connected, sending command...");
 
     // Send command over the accepted connection
     let exit_code = match libkrun_stream::send_command_over_stream(
@@ -1283,11 +1280,11 @@ fn run_reverse_vsock_mode_inner(
         stream,
     ) {
         Ok(code) => {
-            eprintln!("[epkg-debug] libkrun: send_command_over_stream returned exit_code={}", code);
+            crate::debug_epkg!("libkrun: send_command_over_stream returned exit_code={}", code);
             code
         }
         Err(e) => {
-            eprintln!("[epkg-debug] libkrun: send_command_over_stream FAILED: {}", e);
+            crate::debug_epkg!("libkrun: send_command_over_stream FAILED: {}", e);
             return Err(eyre::eyre!("Failed to send command via reverse vsock: {}", e));
         }
     };
@@ -1330,14 +1327,14 @@ pub fn run_command_in_krun(
     run_options: &RunOptions,
     guest_cmd_path: &Path,
 ) -> Result<()> {
-    eprintln!("[epkg-debug] libkrun: run_command_in_krun starting");
+    crate::debug_epkg!("libkrun: run_command_in_krun starting");
     crate::run::ensure_linux_kvm_ready_for_vm()?;
-    eprintln!("[epkg-debug] libkrun: building config...");
+    crate::debug_epkg!("libkrun: building config...");
     let config = build_libkrun_config(env_root, run_options, guest_cmd_path)?;
-    eprintln!("[epkg-debug] libkrun: config built, use_vsock={}", config.use_vsock);
+    crate::debug_epkg!("libkrun: config built, use_vsock={}", config.use_vsock);
 
     if config.use_vsock {
-        eprintln!("[epkg-debug] libkrun: entering vsock mode...");
+        crate::debug_epkg!("libkrun: entering vsock mode...");
 
         // Handle reverse mode: Guest connects to Host (first run on Windows)
         if config.use_reverse_vsock {
@@ -1352,9 +1349,9 @@ pub fn run_command_in_krun(
             }
         }
 
-        eprintln!("[epkg-debug] libkrun: creating and configuring VM...");
+        crate::debug_epkg!("libkrun: creating and configuring VM...");
         let vm_ctx = create_and_configure_vm(env_root, run_options, &config)?;
-        eprintln!("[epkg-debug] libkrun: VM configured (ctx_id={})", vm_ctx.ctx.ctx_id);
+        crate::debug_epkg!("libkrun: VM configured (ctx_id={})", vm_ctx.ctx.ctx_id);
 
         #[cfg(unix)]
         let ready_listener = libkrun_bridge::setup_vsock_ready_listener()?
@@ -1363,7 +1360,7 @@ pub fn run_command_in_krun(
         let ready_pipe = libkrun_bridge::setup_vsock_ready_listener()?
             .ok_or_else(|| eyre::eyre!("libkrun: missing ready listener"))?;
 
-        eprintln!("[epkg-debug] libkrun: vsock ready listener set up");
+        crate::debug_epkg!("libkrun: vsock ready listener set up");
 
         let ctx_id = vm_ctx.ctx.ctx_id;
         let vsock_sock_path = vm_ctx
@@ -1373,22 +1370,22 @@ pub fn run_command_in_krun(
 
         // Channel to signal VM start failure to avoid waiting 30s on error
         let (start_failed_tx, start_failed_rx) = std::sync::mpsc::channel();
-        eprintln!("[epkg-debug] libkrun: starting VM thread...");
+        crate::debug_epkg!("libkrun: starting VM thread...");
         let vm_thread = start_libkrun_vm(vm_ctx.ctx, start_failed_tx);
 
-        eprintln!("[epkg-debug] libkrun: waiting for guest to be ready (with timeout)...");
+        crate::debug_epkg!("libkrun: waiting for guest to be ready (with timeout)...");
         #[cfg(unix)]
         libkrun_bridge::wait_guest_ready_unix(&ready_listener, Some(&start_failed_rx))?;
         #[cfg(windows)]
         libkrun_bridge::wait_guest_ready_windows(&ready_pipe, Some(&start_failed_rx))?;
-        eprintln!("[epkg-debug] libkrun: guest is ready, pausing to let vsock bridge setup complete...");
+        crate::debug_epkg!("libkrun: guest is ready, pausing to let vsock bridge setup complete...");
 
         // Give libkrun time to set up the vsock-to-named-pipe bridge
         // This avoids a race condition where we connect before libkrun is ready
-        eprintln!("[epkg-debug] libkrun: sleeping 100ms to let guest accept() setup complete...");
+        crate::debug_epkg!("libkrun: sleeping 100ms to let guest accept() setup complete...");
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        eprintln!("[epkg-debug] libkrun: sending command via vsock...");
+        crate::debug_epkg!("libkrun: sending command via vsock...");
         let exit_code = libkrun_stream::send_command_via_vsock(
             &config.cmd_parts,
             run_options.io_mode,

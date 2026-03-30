@@ -1,3 +1,16 @@
+/// Debug logging macro for libkrun VM operations.
+/// Controlled by EPKG_DEBUG_LIBKRUN environment variable (set to "1" to enable).
+/// Usage: debug_epkg!("message: {}", arg);
+#[cfg(feature = "libkrun")]
+#[macro_export]
+macro_rules! debug_epkg {
+    ($($arg:tt)*) => {
+        if std::env::var("EPKG_DEBUG_LIBKRUN").is_ok_and(|v| v == "1") {
+            eprintln!("[epkg-debug] {}", format_args!($($arg)*));
+        }
+    };
+}
+
 mod dirs;
 mod models;
 mod io;

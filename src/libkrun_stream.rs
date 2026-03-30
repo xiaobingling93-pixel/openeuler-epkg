@@ -52,7 +52,7 @@ enum StreamMessage {
 }
 
 pub(crate) fn build_command_request(cmd_parts: &[String], io_mode: IoMode, reuse_vm: bool) -> serde_json::Value {
-    eprintln!("[epkg-debug] build_command_request: starting");
+    crate::debug_epkg!("build_command_request: starting");
     // On Windows, is_terminal() can hang - avoid calling it
     let use_pty = matches!(io_mode, IoMode::Tty) ||
         (matches!(io_mode, IoMode::Auto) && {
@@ -91,22 +91,22 @@ pub(crate) fn build_command_request(cmd_parts: &[String], io_mode: IoMode, reuse
 }
 
 fn resolve_io_mode(io_mode: IoMode) -> (bool, bool) {
-    eprintln!("[epkg-debug] resolve_io_mode: io_mode={:?}", io_mode);
+    crate::debug_epkg!("resolve_io_mode: io_mode={:?}", io_mode);
     match io_mode {
         IoMode::Auto => {
-            eprintln!("[epkg-debug] resolve_io_mode: checking is_terminal...");
+            crate::debug_epkg!("resolve_io_mode: checking is_terminal...");
             // On Windows, is_terminal() can hang in some contexts.
             // Use a timeout to avoid blocking indefinitely.
             #[cfg(windows)]
             {
                 // On Windows, default to batch mode to avoid is_terminal hang
-                eprintln!("[epkg-debug] resolve_io_mode: Windows - defaulting to batch mode");
+                crate::debug_epkg!("resolve_io_mode: Windows - defaulting to batch mode");
                 (false, true)
             }
             #[cfg(not(windows))]
             {
                 let is_tty = std::io::stdin().is_terminal();
-                eprintln!("[epkg-debug] resolve_io_mode: is_terminal={}", is_tty);
+                crate::debug_epkg!("resolve_io_mode: is_terminal={}", is_tty);
                 (is_tty, false)
             }
         }
@@ -128,20 +128,20 @@ fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32
         // First, read lines until we get a non-"READY" line (the actual JSON response)
         let mut response = String::new();
         let reader = BufReader::new(stream);
-        eprintln!("[epkg-debug] handle_streaming_simple: batch mode - reading response...");
+        crate::debug_epkg!("handle_streaming_simple: batch mode - reading response...");
 
         for line in reader.lines() {
             let line = match line {
                 Ok(l) => l,
                 Err(e) => {
-                    eprintln!("[epkg-debug] handle_streaming_simple: ERROR reading line: {}", e);
+                    crate::debug_epkg!("handle_streaming_simple: ERROR reading line: {}", e);
                     return Err(e.into());
                 }
             };
-            eprintln!("[epkg-debug] handle_streaming_simple: read line: {:?}", line);
+            crate::debug_epkg!("handle_streaming_simple: read line: {:?}", line);
             // Skip "READY" signal from reverse vsock handshake
             if line == "READY" {
-                eprintln!("[epkg-debug] handle_streaming_simple: skipped READY signal");
+                crate::debug_epkg!("handle_streaming_simple: skipped READY signal");
                 continue;
             }
             // First non-READY line is the start of the JSON response
@@ -150,11 +150,11 @@ fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32
             // Try to parse what we have so far
             break;
         }
-        eprintln!("[epkg-debug] handle_streaming_simple: broke from first loop, response len={}", response.len());
+        crate::debug_epkg!("handle_streaming_simple: broke from first loop, response len={}", response.len());
 
         // Continue reading remaining lines and append (for large responses)
         // Note: this is a simplified approach; proper JSON streaming would be better
-        eprintln!("[epkg-debug] handle_streaming_simple: read {} bytes response", response.len());
+        crate::debug_epkg!("handle_streaming_simple: read {} bytes response", response.len());
 
         #[derive(Deserialize)]
         struct BatchResult {
@@ -162,19 +162,19 @@ fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32
             stdout: String,
             stderr: String,
         }
-        eprintln!("[epkg-debug] handle_streaming_simple: parsing JSON response: {}", response);
+        crate::debug_epkg!("handle_streaming_simple: parsing JSON response: {}", response);
         let result: BatchResult = match serde_json::from_str(&response) {
             Ok(r) => {
-                eprintln!("[epkg-debug] handle_streaming_simple: JSON parsed successfully");
+                crate::debug_epkg!("handle_streaming_simple: JSON parsed successfully");
                 r
             }
             Err(e) => {
-                eprintln!("[epkg-debug] handle_streaming_simple: JSON parse FAILED: {} (response: {:?})", e, response);
+                crate::debug_epkg!("handle_streaming_simple: JSON parse FAILED: {} (response: {:?})", e, response);
                 return Err(eyre::eyre!("Failed to parse batch response: {} ({:?})", e, response));
             }
         };
 
-        eprintln!("[epkg-debug] handle_streaming_simple: stdout={} bytes, stderr={} bytes",
+        crate::debug_epkg!("handle_streaming_simple: stdout={} bytes, stderr={} bytes",
             result.stdout.len(), result.stderr.len());
 
         if !result.stdout.is_empty() {
@@ -185,7 +185,7 @@ fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32
             let stderr_bytes = STANDARD.decode(&result.stderr)?;
             std::io::stderr().write_all(&stderr_bytes)?;
         }
-        eprintln!("[epkg-debug] handle_streaming_simple: returning exit_code={}", result.exit_code);
+        crate::debug_epkg!("handle_streaming_simple: returning exit_code={}", result.exit_code);
         Ok(result.exit_code)
     } else {
         // Stream mode: read line by line, each line is a JSON message
@@ -199,7 +199,7 @@ fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32
             }
             // Skip "READY" signal from reverse vsock handshake
             if line == "READY" {
-                eprintln!("[epkg-debug] handle_streaming_simple: stream mode - skipped READY signal");
+                crate::debug_epkg!("handle_streaming_simple: stream mode - skipped READY signal");
                 continue;
             }
 
@@ -422,22 +422,17 @@ pub fn send_command_via_vsock(
     reuse_vm: bool,
     sock_path: &Path,
 ) -> Result<i32> {
-    eprintln!("[epkg-debug] libkrun_stream: send_command_via_vsock starting");
-    eprintln!("[epkg-debug] libkrun_stream: about to resolve io_mode...");
+    crate::debug_epkg!("libkrun_stream: send_command_via_vsock starting");
+    crate::debug_epkg!("libkrun_stream: about to resolve io_mode...");
     let (use_pty, is_batch) = resolve_io_mode(io_mode);
-    eprintln!("[epkg-debug] libkrun_stream: io_mode resolved");
-    eprintln!(
-        "[epkg-debug] libkrun_stream: io_mode={:?}, use_pty={}, is_batch={}, reuse_vm={}",
-        io_mode,
-        use_pty,
-        is_batch,
-        reuse_vm
-    );
-    eprintln!("[epkg-debug] libkrun_stream: connecting to vsock bridge at {:?}", sock_path);
+    crate::debug_epkg!("libkrun_stream: io_mode resolved");
+    crate::debug_epkg!("libkrun_stream: io_mode={:?}, use_pty={}, is_batch={}, reuse_vm={}",
+        io_mode, use_pty, is_batch, reuse_vm);
+    crate::debug_epkg!("libkrun_stream: connecting to vsock bridge at {:?}", sock_path);
 
-    eprintln!("[epkg-debug] libkrun_stream: about to call connect_vsock_bridge");
+    crate::debug_epkg!("libkrun_stream: about to call connect_vsock_bridge");
     let mut stream = super::libkrun_bridge::connect_vsock_bridge(sock_path, 30)?;
-    eprintln!("[epkg-debug] libkrun_stream: connected to vsock bridge");
+    crate::debug_epkg!("libkrun_stream: connected to vsock bridge");
 
     // CRITICAL FIX: Wait for vsock handshake to complete before sending data
     // The vsock handshake involves: host REQUEST -> guest RESPONSE -> ESTABLISHED
@@ -449,20 +444,20 @@ pub fn send_command_via_vsock(
     // 4. Only THEN can data flow reliably
     // Without sufficient delay, the host sends data before the handshake completes,
     // causing the data to be lost and the guest to read EOF.
-    eprintln!("[epkg-debug] libkrun_stream: waiting for vsock handshake to complete...");
+    crate::debug_epkg!("libkrun_stream: waiting for vsock handshake to complete...");
     std::thread::sleep(std::time::Duration::from_millis(1000));
-    eprintln!("[epkg-debug] libkrun_stream: vsock handshake wait complete");
-    eprintln!("[epkg-debug] libkrun_stream: building command request");
+    crate::debug_epkg!("libkrun_stream: vsock handshake wait complete");
+    crate::debug_epkg!("libkrun_stream: building command request");
     let request = build_command_request(cmd_parts, io_mode, reuse_vm);
-    eprintln!("[epkg-debug] libkrun_stream: serializing to json");
+    crate::debug_epkg!("libkrun_stream: serializing to json");
     let request_json = serde_json::to_vec(&request)?;
-    eprintln!("[epkg-debug] libkrun_stream: writing {} bytes to stream", request_json.len());
+    crate::debug_epkg!("libkrun_stream: writing {} bytes to stream", request_json.len());
     stream.write_all(&request_json)?;
-    eprintln!("[epkg-debug] libkrun_stream: writing newline");
+    crate::debug_epkg!("libkrun_stream: writing newline");
     stream.write_all(b"\n")?;
-    eprintln!("[epkg-debug] libkrun_stream: flushing stream");
+    crate::debug_epkg!("libkrun_stream: flushing stream");
     stream.flush()?;
-    eprintln!("[epkg-debug] libkrun_stream: request sent");
+    crate::debug_epkg!("libkrun_stream: request sent");
 
     if use_pty {
         handle_streaming_windows(&mut stream)
@@ -569,34 +564,32 @@ pub fn send_command_over_stream(
     reuse_vm: bool,
     mut stream: impl Read + Write + Send + 'static,
 ) -> Result<i32> {
-    eprintln!("[epkg-debug] libkrun_stream: send_command_over_stream starting");
+    crate::debug_epkg!("libkrun_stream: send_command_over_stream starting");
     let (use_pty, is_batch) = resolve_io_mode(io_mode);
-    eprintln!(
-        "[epkg-debug] libkrun_stream: io_mode={:?}, use_pty={}, is_batch={}, reuse_vm={}",
-        io_mode, use_pty, is_batch, reuse_vm
-    );
+    crate::debug_epkg!("libkrun_stream: io_mode={:?}, use_pty={}, is_batch={}, reuse_vm={}",
+        io_mode, use_pty, is_batch, reuse_vm);
 
     // CRITICAL FIX: Wait for vsock handshake to complete before sending data.
     // In reverse mode, the guest sends READY immediately after connect(), but
     // the vsock virtio device on Windows/WHPX may need time to fully establish
     // the data channel. Without this delay, the host sends data before the
     // guest is ready to receive, causing the data to be lost.
-    eprintln!("[epkg-debug] libkrun_stream: waiting for vsock data channel to stabilize...");
+    crate::debug_epkg!("libkrun_stream: waiting for vsock data channel to stabilize...");
     std::thread::sleep(std::time::Duration::from_millis(1000));
 
     // Build and send command request
     let request = build_command_request(cmd_parts, io_mode, reuse_vm);
     let request_json = serde_json::to_vec(&request)?;
-    eprintln!("[epkg-debug] libkrun_stream: writing {} bytes to stream", request_json.len());
+    crate::debug_epkg!("libkrun_stream: writing {} bytes to stream", request_json.len());
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
     stream.flush()?;
-    eprintln!("[epkg-debug] libkrun_stream: request sent, waiting for response...");
+    crate::debug_epkg!("libkrun_stream: request sent, waiting for response...");
     
     // CRITICAL: In reverse mode, we need to ensure the request is fully sent before reading.
     // Without this, the guest may not receive the request due to buffering.
     stream.flush()?;
-    eprintln!("[epkg-debug] libkrun_stream: flushed stream after sending request");
+    crate::debug_epkg!("libkrun_stream: flushed stream after sending request");
 
     // Handle response based on mode
     let result = if use_pty {
@@ -609,8 +602,8 @@ pub fn send_command_over_stream(
     };
 
     match &result {
-        Ok(code) => eprintln!("[epkg-debug] libkrun_stream: command completed with exit code {}", code),
-        Err(e) => eprintln!("[epkg-debug] libkrun_stream: command failed with error: {}", e),
+        Ok(code) => crate::debug_epkg!("libkrun_stream: command completed with exit code {}", code),
+        Err(e) => crate::debug_epkg!("libkrun_stream: command failed with error: {}", e),
     }
 
     result

@@ -241,7 +241,7 @@ pub fn setup_vsock_ready_listener() -> Result<Option<WindowsReadyPipe>> {
         // Create security attributes with NULL DACL to allow access from guest VM
         let (security_attrs, sd_buffer_size) = create_security_attributes()
             .unwrap_or_else(|e| {
-                eprintln!("[epkg-debug] libkrun_bridge: warning - failed to create security attributes: {}, using default", e);
+                crate::debug_epkg!("libkrun_bridge: warning - failed to create security attributes: {}, using default", e);
                 (SECURITY_ATTRIBUTES {
                     nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
                     lpSecurityDescriptor: std::ptr::null_mut(),
@@ -344,16 +344,16 @@ pub fn wait_guest_ready_windows(
 pub fn connect_vsock_bridge(sock_path: &Path, max_retries: u32) -> Result<std::fs::File> {
     let pipe_name = pipe_name_from_sock_path(sock_path)?;
     let full = format!("\\\\.\\pipe\\{}", pipe_name);
-    eprintln!("[epkg-debug] libkrun_bridge: connecting to named pipe: {}", full);
+    crate::debug_epkg!("libkrun_bridge: connecting to named pipe: {}", full);
     let c_path = std::ffi::CString::new(full.as_bytes())
         .map_err(|_| eyre::eyre!("invalid pipe path"))?;
 
     let mut retry_count = 0;
     let mut last_error = None;
-    eprintln!("[epkg-debug] libkrun_bridge: starting connection retry loop (max={})", max_retries);
+    crate::debug_epkg!("libkrun_bridge: starting connection retry loop (max={})", max_retries);
     while retry_count < max_retries {
         unsafe {
-            eprintln!("[epkg-debug] libkrun_bridge: attempt {} - waiting for named pipe...", retry_count);
+            crate::debug_epkg!("libkrun_bridge: attempt {} - waiting for named pipe...", retry_count);
             if WaitNamedPipeA(
                 windows::core::PCSTR(c_path.as_ptr() as *const u8),
                 30_000,
@@ -361,7 +361,7 @@ pub fn connect_vsock_bridge(sock_path: &Path, max_retries: u32) -> Result<std::f
             .is_err()
             {
                 last_error = Some(std::io::Error::last_os_error());
-                eprintln!("[epkg-debug] libkrun_bridge: WaitNamedPipeA failed: {:?}", last_error);
+                crate::debug_epkg!("libkrun_bridge: WaitNamedPipeA failed: {:?}", last_error);
                 retry_count += 1;
                 if retry_count >= max_retries {
                     break;
@@ -369,7 +369,7 @@ pub fn connect_vsock_bridge(sock_path: &Path, max_retries: u32) -> Result<std::f
                 std::thread::sleep(Duration::from_millis(5));
                 continue;
             }
-            eprintln!("[epkg-debug] libkrun_bridge: named pipe is available, connecting...");
+            crate::debug_epkg!("libkrun_bridge: named pipe is available, connecting...");
 
             // Use synchronous mode for reliable operation with std::fs::File
             // FILE_FLAG_OVERLAPPED causes issues with synchronous I/O
@@ -387,16 +387,16 @@ pub fn connect_vsock_bridge(sock_path: &Path, max_retries: u32) -> Result<std::f
 
             match handle {
                 Ok(h) if h != INVALID_HANDLE_VALUE => {
-                    eprintln!("[epkg-debug] libkrun_bridge: successfully connected to named pipe");
+                    crate::debug_epkg!("libkrun_bridge: successfully connected to named pipe");
                     let file = std::fs::File::from_raw_handle(h.0);
                     return Ok(file);
                 }
                 Ok(_) => {
-                    eprintln!("[epkg-debug] libkrun_bridge: CreateFileW returned INVALID_HANDLE_VALUE");
+                    crate::debug_epkg!("libkrun_bridge: CreateFileW returned INVALID_HANDLE_VALUE");
                     last_error = Some(std::io::Error::last_os_error());
                 }
                 Err(e) => {
-                    eprintln!("[epkg-debug] libkrun_bridge: CreateFileW failed: {}", e);
+                    crate::debug_epkg!("libkrun_bridge: CreateFileW failed: {}", e);
                     last_error = Some(std::io::Error::last_os_error());
                 }
             }
@@ -406,7 +406,7 @@ pub fn connect_vsock_bridge(sock_path: &Path, max_retries: u32) -> Result<std::f
             std::thread::sleep(Duration::from_millis(5));
         }
     }
-    eprintln!("[epkg-debug] libkrun_bridge: failed to connect after {} retries: {:?}", max_retries, last_error);
+    crate::debug_epkg!("libkrun_bridge: failed to connect after {} retries: {:?}", max_retries, last_error);
 
     Err(eyre::eyre!(
         "Failed to connect to named pipe for {} after {} retries: {}",
@@ -498,7 +498,7 @@ pub fn setup_reverse_listener(sock_path: &Path) -> Result<WindowsReadyPipe> {
         // Create security attributes with NULL DACL to allow access from guest VM
         let (security_attrs, sd_buffer_size) = create_security_attributes()
             .unwrap_or_else(|e| {
-                eprintln!("[epkg-debug] libkrun_bridge: warning - failed to create security attributes: {}, using default", e);
+                crate::debug_epkg!("libkrun_bridge: warning - failed to create security attributes: {}, using default", e);
                 (SECURITY_ATTRIBUTES {
                     nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
                     lpSecurityDescriptor: std::ptr::null_mut(),
@@ -563,21 +563,21 @@ pub fn accept_reverse_connection(
     let timeout = Duration::from_secs(30);
     let check_interval = Duration::from_millis(100);
 
-    eprintln!("[epkg-debug] libkrun_bridge: waiting for Guest connection or VM failure...");
+    crate::debug_epkg!("libkrun_bridge: waiting for Guest connection or VM failure...");
 
     loop {
         // Check if VM start failed
         if let Some(ref failed_rx) = vm_start_failed_rx {
             match failed_rx.try_recv() {
                 Ok(_) => {
-                    eprintln!("[epkg-debug] libkrun_bridge: VM start failure detected!");
+                    crate::debug_epkg!("libkrun_bridge: VM start failure detected!");
                     return Err(eyre::eyre!("VM failed to start (krun_start_enter error)"));
                 }
                 Err(mpsc::TryRecvError::Empty) => {
                     // No failure yet, continue
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    eprintln!("[epkg-debug] libkrun_bridge: VM failure channel disconnected");
+                    crate::debug_epkg!("libkrun_bridge: VM failure channel disconnected");
                 }
             }
         }
@@ -586,14 +586,14 @@ pub fn accept_reverse_connection(
         match rx.try_recv() {
             Ok(Ok(())) => {
                 log::debug!("libkrun: Guest connected to reverse pipe");
-                eprintln!("[epkg-debug] libkrun_bridge: Guest connected successfully!");
+                crate::debug_epkg!("libkrun_bridge: Guest connected successfully!");
                 let _ = jh.join();
                 // Return the pipe handle as a File (handle_raw is the raw handle we took ownership of)
                 let file = std::fs::File::from(unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(handle_raw as std::os::windows::io::RawHandle) });
                 return Ok(file);
             }
             Ok(Err(e)) => {
-                eprintln!("[epkg-debug] libkrun_bridge: ConnectNamedPipe failed: {:?}", e);
+                crate::debug_epkg!("libkrun_bridge: ConnectNamedPipe failed: {:?}", e);
                 let _ = jh.join();
                 return Err(eyre::eyre!("ConnectNamedPipe failed: {:?}", e));
             }
@@ -601,14 +601,14 @@ pub fn accept_reverse_connection(
                 // Not ready yet
             }
             Err(mpsc::TryRecvError::Disconnected) => {
-                eprintln!("[epkg-debug] libkrun_bridge: Pipe thread disconnected unexpectedly");
+                crate::debug_epkg!("libkrun_bridge: Pipe thread disconnected unexpectedly");
                 let _ = jh.join();
                 return Err(eyre::eyre!("Pipe thread disconnected unexpectedly"));
             }
         }
 
         if start.elapsed() >= timeout {
-            eprintln!("[epkg-debug] libkrun_bridge: Timeout waiting for Guest connection");
+            crate::debug_epkg!("libkrun_bridge: Timeout waiting for Guest connection");
             return Err(eyre::eyre!("Timeout waiting for Guest to connect (reverse mode)"));
         }
 
