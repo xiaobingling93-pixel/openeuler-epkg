@@ -314,34 +314,34 @@ fn build_libkrun_config(
     // - idle=poll: Avoid slow idle states that interfere with timer delivery
     // Note: The vmm timer fix (85d5f9b) in libkrun makes noapic/rootdelay/notsc unnecessary.
     // These parameters caused 100x slowdown in boot time and have been removed.
-    #[cfg(target_os = "windows")]
-    let vm_perf = "nowatchdog nmi_watchdog=0 lpj=11979608 tsc=reliable no_timer_check disable_kvm_pv=1 clocksource=hyperv_clocksource_tsc_page idle=poll";
     #[cfg(not(target_os = "windows"))]
     let vm_perf = "nowatchdog nmi_watchdog=0";
 
-    #[cfg(all(target_os = "windows", feature = "embedded_init"))]
-    let base_cmdline = format!(
-        "reboot=k panic=-1 panic_print=0 nomodule console=ttyS0 {} {} {} \
-         root=/dev/root rootfstype=virtiofs rw no-kvmapf init=/init.krun",
-        if vm_debug { "earlyprintk=serial" } else { "" },
-        loglevel, vm_perf
-    );
-    // Uses GUEST_INIT_PATH constant (CARVED IN STONE as /usr/bin/init)
-    // Note: epkg.vsock_reverse=1 is default for Windows (Guest connects to Host)
-    #[cfg(all(target_os = "windows", not(feature = "embedded_init")))]
-    let base_cmdline = format!(
-        "reboot=k panic=-1 panic_print=0 nomodule console=ttyS0 {} {} {} \
-         root=/dev/root rootfstype=virtiofs rw no-kvmapf epkg.vsock_reverse=1 init={}",
-        if vm_debug { "earlyprintk=serial" } else { "" },
-        loglevel, vm_perf, GUEST_INIT_PATH
-    );
+    // Build base cmdline - epkg controls all parameters for maximum flexibility
+    // libkrun's DEFAULT_KERNEL_CMDLINE is minimal and may be replaced entirely
+    #[cfg(target_os = "windows")]
+    let base_cmdline = {
+        let init_path = if cfg!(feature = "embedded_init") { "/init.krun" } else { GUEST_INIT_PATH };
+        let reverse = if cfg!(feature = "embedded_init") { "" } else { " epkg.vsock_reverse=1" };
+        // All Windows-specific params in one place, no duplication
+        format!(
+            "reboot=k panic=-1 panic_print=0 nomodule console=ttyS0,115200 {} \
+             rootfstype=virtiofs rw no-kvmapf \
+             lpj=11979608 tsc=reliable no_timer_check \
+             i8042.noaux i8042.nomux i8042.nopnp \
+             {} nowatchdog nmi_watchdog=0 \
+             disable_kvm_pv=1 clocksource=hyperv_clocksource_tsc_page idle=poll{} init={}",
+            if vm_debug { "earlyprintk=serial,ttyS0,115200" } else { "" },
+            loglevel, reverse, init_path
+        )
+    };
     #[cfg(not(target_os = "windows"))]
     let base_cmdline = {
         let ep = if vm_debug { "earlyprintk=hvc0" } else { "" };
         format!(
-            "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 {} {} {} \
-             root=/dev/root rootfstype=virtiofs rw no-kvmapf init={}",
-            ep, loglevel, vm_perf, GUEST_INIT_PATH
+            "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 {} \
+             rootfstype=virtiofs rw no-kvmapf {} {} init={}",
+            ep, vm_perf, loglevel, GUEST_INIT_PATH
         )
     };
     let mut kernel_args = base_cmdline;
