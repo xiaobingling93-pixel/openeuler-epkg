@@ -270,7 +270,8 @@ fn build_libkrun_config(
     let has_existing_session = false;
     // Note: epkg.vsock_reverse=1 is now default in libkrun's DEFAULT_KERNEL_CMDLINE for Windows.
     // Only explicitly set epkg.vsock_reverse=0 when disabling reverse mode.
-    let use_reverse_vsock = use_vsock;
+    // For reuse: first command uses reverse mode, then Guest switches to forward mode.
+    let use_reverse_vsock = use_vsock && !has_existing_session;
     crate::debug_epkg!("libkrun: use_vsock={} has_existing_session={} use_reverse_vsock={}",
                use_vsock, has_existing_session, use_reverse_vsock);
     log::info!("libkrun: use_vsock={} has_existing_session={} use_reverse_vsock={}",
@@ -338,10 +339,11 @@ fn build_libkrun_config(
     #[cfg(not(target_os = "windows"))]
     let base_cmdline = {
         let ep = if vm_debug { "earlyprintk=hvc0" } else { "" };
+        let reverse = if use_reverse_vsock { " epkg.vsock_reverse=1" } else { "" };
         format!(
             "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 {} \
-             rootfstype=virtiofs rw no-kvmapf {} {} init={}",
-            ep, vm_perf, loglevel, GUEST_INIT_PATH
+             rootfstype=virtiofs rw no-kvmapf {} {}{} init={}",
+            ep, vm_perf, loglevel, reverse, GUEST_INIT_PATH
         )
     };
     let mut kernel_args = base_cmdline;
