@@ -558,7 +558,7 @@ pub fn accept_reverse_connection(
         .ok_or_else(|| eyre::eyre!("Pipe handle already taken"))? as usize;
     let (tx, rx) = mpsc::channel();
 
-    eprintln!("[epkg] libkrun_bridge: spawning ConnectNamedPipe thread...");
+    crate::debug_epkg!("libkrun_bridge: spawning ConnectNamedPipe thread...");
     // Spawn thread to wait for connection
     let jh = thread::spawn(move || {
         let handle = HANDLE(handle_raw as *mut _);
@@ -570,7 +570,6 @@ pub fn accept_reverse_connection(
     let timeout = Duration::from_secs(30);
     let check_interval = Duration::from_millis(100);
 
-    eprintln!("[epkg] libkrun_bridge: waiting for Guest connection or VM failure...");
     crate::debug_epkg!("libkrun_bridge: waiting for Guest connection or VM failure...");
 
     loop {
