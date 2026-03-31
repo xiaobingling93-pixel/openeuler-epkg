@@ -6,6 +6,28 @@ use crate::rpm_triggers::setup_rpm_env_vars;
 use crate::lfs;
 use color_eyre::eyre::{eyre, Result};
 
+/// Convert a host path to a guest path for VM execution.
+/// On Windows, home_epkg is mounted at /opt/epkg in the guest.
+/// On Linux, paths are the same (namespace isolation).
+#[cfg(windows)]
+fn host_path_to_guest_path(host_path: &std::path::Path) -> std::path::PathBuf {
+    let home_epkg = crate::models::dirs().home_epkg.clone();
+    if let Ok(relative) = host_path.strip_prefix(&home_epkg) {
+        // Convert to Unix-style path and prepend /opt/epkg
+        let relative_str = relative.to_string_lossy().replace('\\', "/");
+        std::path::PathBuf::from(format!("/opt/epkg/{}", relative_str.trim_start_matches('/')))
+    } else {
+        // Path not under home_epkg, try to convert backslashes to forward slashes
+        let path_str = host_path.to_string_lossy().replace('\\', "/");
+        std::path::PathBuf::from(path_str)
+    }
+}
+
+#[cfg(not(windows))]
+fn host_path_to_guest_path(host_path: &std::path::Path) -> std::path::PathBuf {
+    host_path.to_path_buf()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ScriptletType {
     PreInstall,
@@ -513,7 +535,9 @@ fn try_scriptlet_interpreter_loop(
         } else {
             script_path.to_path_buf()
         };
-        let mut script_args = vec![script_path_to_run.to_string_lossy().to_string()];
+        // Convert host path to guest path for VM execution
+        let guest_script_path = host_path_to_guest_path(&script_path_to_run);
+        let mut script_args = vec![guest_script_path.to_string_lossy().to_string()];
         script_args.extend(params.clone());
 
         let mut env_vars = std::collections::HashMap::new();

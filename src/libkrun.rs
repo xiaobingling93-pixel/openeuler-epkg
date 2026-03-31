@@ -1290,6 +1290,24 @@ fn run_reverse_vsock_mode_inner(
     crate::debug_epkg!("libkrun: Guest connected, sending command...");
 
     // Send command over the accepted connection
+    // On Windows, use the named-pipe-specific function that calls FlushFileBuffers
+    #[cfg(windows)]
+    let exit_code = match libkrun_stream::send_command_over_named_pipe(
+        &config.cmd_parts,
+        run_options.io_mode,
+        run_options.reuse_vm,
+        stream,
+    ) {
+        Ok(code) => {
+            crate::debug_epkg!("libkrun: send_command_over_named_pipe returned exit_code={}", code);
+            code
+        }
+        Err(e) => {
+            crate::debug_epkg!("libkrun: send_command_over_named_pipe FAILED: {}", e);
+            return Err(eyre::eyre!("Failed to send command via reverse vsock: {}", e));
+        }
+    };
+    #[cfg(not(windows))]
     let exit_code = match libkrun_stream::send_command_over_stream(
         &config.cmd_parts,
         run_options.io_mode,

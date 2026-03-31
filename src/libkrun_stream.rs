@@ -21,6 +21,13 @@ use lazy_static::lazy_static;
 #[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
+#[cfg(windows)]
+use windows::Win32::Storage::FileSystem::FlushFileBuffers;
+#[cfg(windows)]
+use windows::Win32::Foundation::HANDLE;
+
 #[cfg(unix)]
 lazy_static! {
     static ref RESIZE_PENDING: AtomicBool = AtomicBool::new(false);
@@ -29,6 +36,20 @@ lazy_static! {
 #[cfg(unix)]
 extern "C" fn handle_sigwinch(_: i32) {
     RESIZE_PENDING.store(true, Ordering::SeqCst);
+}
+
+/// Flush Windows named pipe to ensure data is sent to the other end.
+/// Standard File::flush() is a no-op; we need FlushFileBuffers for named pipes.
+#[cfg(windows)]
+fn flush_named_pipe(file: &std::fs::File) -> std::io::Result<()> {
+    let handle = file.as_raw_handle();
+    unsafe {
+        let result = FlushFileBuffers(HANDLE(handle as *mut _));
+        if result.is_err() {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 /// Streaming message types for interactive/TUI modes.
@@ -455,8 +476,8 @@ pub fn send_command_via_vsock(
     stream.write_all(&request_json)?;
     crate::debug_epkg!("libkrun_stream: writing newline");
     stream.write_all(b"\n")?;
-    crate::debug_epkg!("libkrun_stream: flushing stream");
-    stream.flush()?;
+    crate::debug_epkg!("libkrun_stream: flushing named pipe with FlushFileBuffers");
+    flush_named_pipe(&stream)?;
     crate::debug_epkg!("libkrun_stream: request sent");
 
     if use_pty {
@@ -558,6 +579,7 @@ fn handle_streaming_windows(stream: &mut std::fs::File) -> Result<i32> {
 /// Send command over an existing stream (for reverse mode).
 /// In reverse mode, the Host accepts a connection from Guest, then uses that
 /// connection to send commands and receive results.
+#[cfg(not(windows))]
 pub fn send_command_over_stream(
     cmd_parts: &[String],
     io_mode: IoMode,
@@ -569,13 +591,10 @@ pub fn send_command_over_stream(
     crate::debug_epkg!("libkrun_stream: io_mode={:?}, use_pty={}, is_batch={}, reuse_vm={}",
         io_mode, use_pty, is_batch, reuse_vm);
 
-    // CRITICAL FIX: Wait for vsock handshake to complete before sending data.
-    // In reverse mode, the guest sends READY immediately after connect(), but
-    // the vsock virtio device on Windows/WHPX may need time to fully establish
-    // the data channel. Without this delay, the host sends data before the
-    // guest is ready to receive, causing the data to be lost.
-    crate::debug_epkg!("libkrun_stream: waiting for vsock data channel to stabilize...");
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    // In reverse mode, the connection is already fully established when we receive it.
+    // The Guest sent READY immediately after connect, so we can proceed directly.
+    // No delay needed here - the vsock handshake is complete.
+    crate::debug_epkg!("libkrun_stream: sending command request...");
 
     // Build and send command request
     let request = build_command_request(cmd_parts, io_mode, reuse_vm);
@@ -594,6 +613,50 @@ pub fn send_command_over_stream(
     // Handle response based on mode
     let result = if use_pty {
         // PTY mode: Use the generic handler since stream type may vary
+        handle_streaming_simple(&mut stream, false)
+    } else if is_batch {
+        handle_streaming_simple(&mut stream, true)
+    } else {
+        handle_streaming_simple(&mut stream, false)
+    };
+
+    match &result {
+        Ok(code) => crate::debug_epkg!("libkrun_stream: command completed with exit code {}", code),
+        Err(e) => crate::debug_epkg!("libkrun_stream: command failed with error: {}", e),
+    }
+
+    result
+}
+
+/// Windows-specific function to send command over a named pipe.
+/// Uses FlushFileBuffers to ensure data is sent immediately.
+#[cfg(windows)]
+pub fn send_command_over_named_pipe(
+    cmd_parts: &[String],
+    io_mode: IoMode,
+    reuse_vm: bool,
+    mut stream: std::fs::File,
+) -> Result<i32> {
+    crate::debug_epkg!("libkrun_stream: send_command_over_named_pipe starting");
+    let (use_pty, is_batch) = resolve_io_mode(io_mode);
+    crate::debug_epkg!("libkrun_stream: io_mode={:?}, use_pty={}, is_batch={}, reuse_vm={}",
+        io_mode, use_pty, is_batch, reuse_vm);
+
+    // Build and send command request
+    let request = build_command_request(cmd_parts, io_mode, reuse_vm);
+    let request_json = serde_json::to_vec(&request)?;
+    crate::debug_epkg!("libkrun_stream: writing {} bytes to named pipe", request_json.len());
+    stream.write_all(&request_json)?;
+    stream.write_all(b"\n")?;
+
+    // CRITICAL: Use FlushFileBuffers to ensure data is sent to the named pipe.
+    // Standard flush() is a no-op for File; named pipes need this Windows API.
+    crate::debug_epkg!("libkrun_stream: calling FlushFileBuffers...");
+    flush_named_pipe(&stream)?;
+    crate::debug_epkg!("libkrun_stream: FlushFileBuffers complete, waiting for response...");
+
+    // Handle response
+    let result = if use_pty {
         handle_streaming_simple(&mut stream, false)
     } else if is_batch {
         handle_streaming_simple(&mut stream, true)
