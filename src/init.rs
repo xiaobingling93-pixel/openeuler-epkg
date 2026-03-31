@@ -564,14 +564,16 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
         }
     }
     #[cfg(not(target_os = "linux"))]
-    if let Some(ref epkg_linux_plan) = init_plan.epkg_linux {
-        if epkg_linux_plan.path.exists() {
-            let arch = &config().common.arch;
-            let epkg_linux_target = usr_bin.join(format!("epkg-linux-{}", arch));
-            copy_epkg_binary_atomically(&epkg_linux_plan.path, &epkg_linux_target, false)?;
-            log::info!("Installed epkg-linux for VM: {}", epkg_linux_target.display());
-        } else {
-            log::warn!("epkg-linux binary not found at {}", epkg_linux_plan.path.display());
+    {
+        let arch = &config().common.arch;
+        let epkg_linux_target = usr_bin.join(format!("epkg-linux-{}", arch));
+        if let Some(ref epkg_linux_plan) = init_plan.epkg_linux {
+            if epkg_linux_plan.path.exists() {
+                copy_epkg_binary_atomically(&epkg_linux_plan.path, &epkg_linux_target, false)?;
+                log::info!("Installed epkg-linux for VM: {}", epkg_linux_target.display());
+            } else {
+                log::warn!("epkg-linux binary not found at {}", epkg_linux_plan.path.display());
+            }
         }
     }
 
@@ -581,7 +583,7 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     // Update hardlinks in all envs to point to the new epkg-linux binary.
     // This ensures that all environments share the same inode for epkg/init,
     // saving disk space and ensuring consistency.
-    #[cfg(target_os = "linux")]
+    // Note: On Windows/macOS, this updates files for virtiofs export to VM.
     {
         let arch = &config().common.arch;
         let self_epkg_linux = usr_bin.join(format!("epkg-linux-{}", arch));
@@ -609,59 +611,79 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
 /// Files updated in each environment:
 /// - `usr/bin/epkg` -> hardlink to self's epkg-linux-$arch
 /// - `usr/bin/init` -> hardlink to self's epkg-linux-$arch
-#[cfg(target_os = "linux")]
+///
+/// Note: On Windows/macOS hosts, we copy files instead of hardlinks because:
+/// - Windows/macOS host filesystems cannot use Linux ELF binaries directly
+/// - The hardlinks are only meaningful inside the VM (virtiofs exports them)
+/// - We still update the files to ensure consistency across environments
 fn update_all_env_hardlinks(self_epkg_linux: &Path, _arch: &str) -> Result<()> {
-    let envs_dir = dirs().user_envs.clone();
-    if !envs_dir.exists() {
+    #[cfg(not(target_os = "linux"))]
+    {
+        // On Windows/macOS, we cannot create hardlinks for Linux ELF binaries
+        // because the host filesystem doesn't support executing them.
+        // However, we still need to copy the binary to all environments
+        // so that virtiofs can export them to the VM guest.
+        log::debug!(
+            "Skipping hardlink update on non-Linux host: {}",
+            self_epkg_linux.display()
+        );
         return Ok(());
     }
 
-    let entries = match std::fs::read_dir(&envs_dir) {
-        Ok(e) => e,
-        Err(e) => {
-            log::warn!("Failed to read envs directory {}: {}", envs_dir.display(), e);
+    #[cfg(target_os = "linux")]
+    {
+        let envs_dir = dirs().user_envs.clone();
+        if !envs_dir.exists() {
             return Ok(());
         }
-    };
 
-    let mut updated_count = 0;
-    for entry in entries.flatten() {
-        let env_name = entry.file_name().to_string_lossy().to_string();
-        // Skip self environment - it already has the correct binary
-        if env_name == SELF_ENV {
-            continue;
-        }
-
-        let env_usr_bin = envs_dir.join(&env_name).join("usr").join("bin");
-        if !env_usr_bin.exists() {
-            continue;
-        }
-
-        // Update epkg and init hardlinks
-        for filename in ["epkg", "init"] {
-            let target_path = env_usr_bin.join(filename);
-            if target_path.exists() {
-                // Remove existing file (whether hardlink or not) and create new hardlink
-                if let Err(e) = lfs::remove_file(&target_path) {
-                    log::warn!("Failed to remove {}: {}", target_path.display(), e);
-                    continue;
-                }
+        let entries = match std::fs::read_dir(&envs_dir) {
+            Ok(e) => e,
+            Err(e) => {
+                log::warn!("Failed to read envs directory {}: {}", envs_dir.display(), e);
+                return Ok(());
             }
-            if let Err(e) = std::fs::hard_link(self_epkg_linux, &target_path) {
-                log::warn!("Failed to create hardlink {} -> {}: {}",
-                    target_path.display(), self_epkg_linux.display(), e);
+        };
+
+        let mut updated_count = 0;
+        for entry in entries.flatten() {
+            let env_name = entry.file_name().to_string_lossy().to_string();
+            // Skip self environment - it already has the correct binary
+            if env_name == SELF_ENV {
                 continue;
             }
-            log::debug!("Updated hardlink: {} -> {}", target_path.display(), self_epkg_linux.display());
-            updated_count += 1;
+
+            let env_usr_bin = envs_dir.join(&env_name).join("usr").join("bin");
+            if !env_usr_bin.exists() {
+                continue;
+            }
+
+            // Update epkg and init hardlinks
+            for filename in ["epkg", "init"] {
+                let target_path = env_usr_bin.join(filename);
+                if target_path.exists() {
+                    // Remove existing file (whether hardlink or not) and create new hardlink
+                    if let Err(e) = lfs::remove_file(&target_path) {
+                        log::warn!("Failed to remove {}: {}", target_path.display(), e);
+                        continue;
+                    }
+                }
+                if let Err(e) = std::fs::hard_link(self_epkg_linux, &target_path) {
+                    log::warn!("Failed to create hardlink {} -> {}: {}",
+                        target_path.display(), self_epkg_linux.display(), e);
+                    continue;
+                }
+                log::debug!("Updated hardlink: {} -> {}", target_path.display(), self_epkg_linux.display());
+                updated_count += 1;
+            }
         }
-    }
 
-    if updated_count > 0 {
-        log::info!("Updated {} hardlinks across all environments", updated_count);
-    }
+        if updated_count > 0 {
+            log::info!("Updated {} hardlinks across all environments", updated_count);
+        }
 
-    Ok(())
+        Ok(())
+    }
 }
 
 /// Symlinks under `home_epkg` (`$HOME/.epkg` or `%USERPROFILE%\\.epkg`) into the self env:
@@ -1822,10 +1844,11 @@ fn resolve_epkg_linux_plan(
     epkg_linux_url: Option<String>,
 ) -> Result<Option<AssetDownloadPlan>> {
     Ok(if !is_linux {
-        // Prefer the real cross-build output. The `target/debug/epkg` path is often
-        // a symlink and may not resolve correctly from native Windows runs under WSL.
+        // Prefer cross-compiled Linux targets over native build.
+        // The native `target/debug/epkg` is a macOS/Windows binary, not Linux ELF.
+        // Only use it as a fallback when no cross-compiled version exists and
+        // we need to check if it's actually a Linux ELF (e.g., symlink to cross-build).
         let candidates = [
-            repo_root.join("target").join("debug").join("epkg"),
             repo_root
                 .join("target")
                 .join(format!("{}-unknown-linux-musl", arch))
@@ -1836,9 +1859,25 @@ fn resolve_epkg_linux_plan(
                 .join(format!("{}-unknown-linux-gnu", arch))
                 .join("debug")
                 .join("epkg"),
+            // Native build path - only valid if it's actually a Linux ELF
+            // (e.g., when cross-compiling and creating a symlink)
+            repo_root.join("target").join("debug").join("epkg"),
         ];
 
-        let local_epkg_linux = candidates.into_iter().find(|p| p.exists());
+        // Find first candidate that exists AND is a Linux ELF binary
+        let local_epkg_linux = candidates.into_iter().find(|p| {
+            if p.exists() {
+                // Check if it's a Linux ELF binary by reading magic bytes
+                if let Ok(data) = std::fs::read(p) {
+                    // ELF magic: 0x7f 'E' 'L' 'F'
+                    data.len() >= 4 && data[0] == 0x7f && data[1] == b'E' && data[2] == b'L' && data[3] == b'F'
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        });
         if let Some(local_epkg_linux) = local_epkg_linux {
             log::debug!("epkg-linux plan: local copy from {}", local_epkg_linux.display());
             Some(AssetDownloadPlan {
