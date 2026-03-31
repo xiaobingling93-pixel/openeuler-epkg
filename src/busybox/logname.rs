@@ -15,13 +15,11 @@ pub fn command() -> Command {
 pub fn run(_options: LognameOptions) -> Result<()> {
     #[cfg(unix)]
     {
-        use users::get_user_by_uid;
         use users::get_current_uid;
+        use crate::busybox::get_uid_name;
 
         let uid = get_current_uid();
-        let user = get_user_by_uid(uid)
-            .ok_or_else(|| color_eyre::eyre::eyre!("logname: cannot determine login name"))?;
-        println!("{}", user.name().to_string_lossy());
+        println!("{}", get_uid_name(uid));
     }
     #[cfg(not(unix))]
     {

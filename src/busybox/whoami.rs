@@ -1,7 +1,5 @@
 use clap::Command;
 use color_eyre::Result;
-#[cfg(unix)]
-use users::get_current_username;
 
 pub struct WhoamiOptions;
 
@@ -18,18 +16,10 @@ pub fn run(_options: WhoamiOptions) -> Result<()> {
     #[cfg(unix)]
     {
         use users::get_current_uid;
+        use crate::busybox::get_uid_name;
 
-        let username = match get_current_username() {
-            Some(name) => name.to_string_lossy().to_string(),
-            None => {
-                if get_current_uid() == 0 {
-                    "root".to_string()
-                } else {
-                    return Err(color_eyre::eyre::eyre!("Cannot determine user"));
-                }
-            }
-        };
-        println!("{}", username);
+        let uid = get_current_uid();
+        println!("{}", get_uid_name(uid));
     }
     #[cfg(not(unix))]
     {

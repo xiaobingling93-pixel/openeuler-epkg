@@ -5,7 +5,7 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use time::{OffsetDateTime, macros::format_description};
-use users::{get_user_by_uid, get_group_by_gid};
+use crate::busybox::{get_uid_name, get_gid_name};
 use crate::posix::{posix_stat, posix_statfs, PosixStat, PosixStatFs};
 
 pub struct StatOptions {
@@ -96,22 +96,8 @@ fn handle_format_specifier(spec: char, path: &Path, stat: &PosixStat, file_type_
     match spec {
         'u' => Ok(stat.uid.to_string()),
         'g' => Ok(stat.gid.to_string()),
-        'U' => {
-            let uid = stat.uid;
-            if let Some(user) = get_user_by_uid(uid) {
-                Ok(user.name().to_string_lossy().to_string())
-            } else {
-                Ok(uid.to_string())
-            }
-        }
-        'G' => {
-            let gid = stat.gid;
-            if let Some(group) = get_group_by_gid(gid) {
-                Ok(group.name().to_string_lossy().to_string())
-            } else {
-                Ok(gid.to_string())
-            }
-        }
+        'U' => Ok(get_uid_name(stat.uid)),
+        'G' => Ok(get_gid_name(stat.gid)),
         'a' => Ok(format!("{:o}", stat.mode & 0o777)),
         'h' => Ok(stat.nlink.to_string()),
         'd' => Ok(stat.dev.to_string()),
@@ -164,13 +150,7 @@ fn compute_device_info(metadata: &fs::Metadata) -> (u64, u64, u32, u32) {
 }
 
 fn compute_user_names(stat: &PosixStat) -> (String, String) {
-    let uid_name = get_user_by_uid(stat.uid)
-        .map(|u| u.name().to_string_lossy().to_string())
-        .unwrap_or_else(|| stat.uid.to_string());
-    let gid_name = get_group_by_gid(stat.gid)
-        .map(|g| g.name().to_string_lossy().to_string())
-        .unwrap_or_else(|| stat.gid.to_string());
-    (uid_name, gid_name)
+    (get_uid_name(stat.uid), get_gid_name(stat.gid))
 }
 
 fn compute_timestamps(metadata: &fs::Metadata) -> (String, String, String, Option<String>) {

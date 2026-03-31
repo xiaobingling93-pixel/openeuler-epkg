@@ -10,7 +10,7 @@ use std::env;
 #[cfg(unix)]
 use crate::posix::{posix_stat, PosixError};
 #[cfg(unix)]
-use users::{get_user_by_uid, get_group_by_gid};
+use crate::busybox::{get_uid_name, get_gid_name};
 #[cfg(unix)]
 use libc;
 #[cfg(unix)]
@@ -640,13 +640,7 @@ fn get_permissions_string_win(meta: &fs::Metadata) -> String {
 
 #[cfg(unix)]
 fn get_owner_group_strings(stat: &crate::posix::PosixStat) -> (String, String) {
-    let owner = get_user_by_uid(stat.uid)
-        .map(|u| u.name().to_string_lossy().to_string())
-        .unwrap_or_else(|| stat.uid.to_string());
-    let group = get_group_by_gid(stat.gid)
-        .map(|g| g.name().to_string_lossy().to_string())
-        .unwrap_or_else(|| stat.gid.to_string());
-    (owner, group)
+    (get_uid_name(stat.uid), get_gid_name(stat.gid))
 }
 
 #[cfg(windows)]
