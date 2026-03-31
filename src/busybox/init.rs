@@ -28,14 +28,20 @@ pub fn kmsg_write(msg: &str) -> std::io::Result<()> {
 
 fn parse_cmdline() -> HashMap<String, String> {
     let mut map = HashMap::new();
-    if let Err(_e) = std::fs::read_to_string("/proc/cmdline").map(|cmdline| {
-        for token in cmdline.split_whitespace() {
-            if let Some((k, v)) = token.split_once('=') {
-                map.insert(k.to_string(), v.to_string());
+    match std::fs::read_to_string("/proc/cmdline") {
+        Ok(cmdline) => {
+            let trimmed = cmdline.trim();
+            log::debug!("init: /proc/cmdline={}", trimmed);
+            map.insert("_raw_proc_cmdline".to_string(), trimmed.to_string());
+            for token in trimmed.split_whitespace() {
+                if let Some((k, v)) = token.split_once('=') {
+                    map.insert(k.to_string(), v.to_string());
+                }
             }
         }
-    }) {
-        // Silently ignore error - /proc may not be mounted yet
+        Err(e) => {
+            log::debug!("init: FAILED to read /proc/cmdline: {}", e);
+        }
     }
     map
 }
@@ -550,15 +556,6 @@ fn mount_virtiofs_volumes() -> Result<()> {
 fn exec_vm_daemon() -> Result<()> {
     log::debug!("init: exec_vm_daemon() started");
     let _ = kmsg_write("<6>exec_vm_daemon: starting\n");
-
-    // Debug: log the actual kernel command line
-    if let Ok(cmdline) = std::fs::read_to_string("/proc/cmdline") {
-        let _ = kmsg_write(&format!("<6>exec_vm_daemon: /proc/cmdline={}\n", cmdline.trim()));
-        log::debug!("init: /proc/cmdline={}", cmdline.trim());
-    } else {
-        let _ = kmsg_write("<6>exec_vm_daemon: FAILED to read /proc/cmdline\n");
-        log::debug!("init: FAILED to read /proc/cmdline");
-    }
 
     // Check if we should use reverse vsock mode (Guest connects to Host)
     // This is set by Host when starting VM in reverse mode (Windows/WHPX first run)
