@@ -441,10 +441,10 @@ fn try_open_session_log_in_dir(log_dir: &Path) {
             let _ = std::io::Write::flush(&mut file);
 
             let _ = LOG_FILE_WRITER.set(Mutex::new(file));
-            eprintln!("[epkg] Logging to: {}", path.display());
+            log::debug!("Logging to: {}", path.display());
         }
         Err(e) => {
-            eprintln!("[epkg] Failed to open log file {}: {}", path.display(), e);
+            log::warn!("Failed to open log file {}: {}", path.display(), e);
         }
     }
 }

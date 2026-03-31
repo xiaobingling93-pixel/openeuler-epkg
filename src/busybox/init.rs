@@ -90,7 +90,22 @@ pub fn init_logging_early() {
         .open("/dev/console")
         .ok();
 
+    // Check if debug output is enabled via epkg.debug=1 in kernel cmdline
+    // Note: We need to parse cmdline early to check this
+    let debug = std::fs::read_to_string("/proc/cmdline")
+        .ok()
+        .and_then(|cmdline| {
+            cmdline.split_whitespace()
+                .find(|p| p.starts_with("epkg.debug="))
+                .and_then(|p| p.strip_prefix("epkg.debug="))
+                .map(|v| v == "1")
+        })
+        .unwrap_or(false);
+
     let write_msg = |console: &mut Option<std::fs::File>, kmsg: &mut Option<std::fs::File>, msg: &str| {
+        if !debug {
+            return;
+        }
         if let Some(ref mut c) = console {
             match c.write_all(msg.as_bytes()) {
                 Ok(_) => {}
