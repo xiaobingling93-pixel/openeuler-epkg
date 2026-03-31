@@ -374,7 +374,7 @@ fn exec_init_command(cmd_str: Option<String>, run_user: Option<String>) -> Resul
 
         let _ = kmsg_write("<6>exec_init_command: about to exec_vm_daemon\n");
         log::debug!("init: exec vm-daemon");
-        eprintln!("init: about to call exec_vm_daemon()");
+        log::debug!("init: about to call exec_vm_daemon()");
         exec_vm_daemon()
     }
 }
@@ -548,22 +548,22 @@ fn mount_virtiofs_volumes() -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn exec_vm_daemon() -> Result<()> {
-    eprintln!("init: exec_vm_daemon() started");
+    log::debug!("init: exec_vm_daemon() started");
     let _ = kmsg_write("<6>exec_vm_daemon: starting\n");
 
     // Debug: log the actual kernel command line
     if let Ok(cmdline) = std::fs::read_to_string("/proc/cmdline") {
         let _ = kmsg_write(&format!("<6>exec_vm_daemon: /proc/cmdline={}\n", cmdline.trim()));
-        eprintln!("init: /proc/cmdline={}", cmdline.trim());
+        log::debug!("init: /proc/cmdline={}", cmdline.trim());
     } else {
         let _ = kmsg_write("<6>exec_vm_daemon: FAILED to read /proc/cmdline\n");
-        eprintln!("init: FAILED to read /proc/cmdline");
+        log::debug!("init: FAILED to read /proc/cmdline");
     }
 
     // Check if we should use reverse vsock mode (Guest connects to Host)
     // This is set by Host when starting VM in reverse mode (Windows/WHPX first run)
     let reverse_mode = get_cmdline_param("epkg.vsock_reverse").map_or(false, |v| v == "1");
-    eprintln!("init: exec_vm_daemon() mode={}", if reverse_mode { "reverse" } else { "forward" });
+    log::debug!("init: exec_vm_daemon() mode={}", if reverse_mode { "reverse" } else { "forward" });
     let _ = kmsg_write(&format!("<6>exec_vm_daemon: reverse_mode={}\n", reverse_mode));
 
     // Call vm_daemon::run() directly instead of exec-ing the binary.
