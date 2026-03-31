@@ -148,7 +148,7 @@ pub fn resolve_vm_cpus(run_options: &RunOptions) -> u8 {
     std::env::var("EPKG_VM_CPUS")
         .ok()
         .and_then(|s| s.parse::<u8>().ok())
-        .unwrap_or(2)
+        .unwrap_or(1)  // Default 1 vCPU for faster boot
 }
 
 /// Resolve VM memory size in MiB for VM backends.
