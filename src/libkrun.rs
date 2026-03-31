@@ -810,12 +810,19 @@ fn create_and_configure_vm(
         setup_console_output(ctx.ctx_id)?;
         log::info!("libkrun: console output configured");
 
-        // Add serial console device for Windows VMs
-        // This is required for the kernel to have a working console on WHPX
+        // Add serial console device for Windows VMs.
+        // This is required for the kernel to have a working console on WHPX.
+        // Only connect to stdout when debugging; otherwise kernel messages would
+        // pollute the command output.
         #[cfg(target_os = "windows")]
         {
-            ctx.add_serial_console(0, 1)?;
-            log::info!("libkrun: serial console added (ttyS0)");
+            if std::env::var("EPKG_DEBUG_LIBKRUN").is_ok() {
+                ctx.add_serial_console(0, 1)?;
+                log::info!("libkrun: serial console added (ttyS0 -> stdout)");
+            } else {
+                // Disable serial console output - kernel messages go to file via krun_set_console_output
+                log::debug!("libkrun: serial console disabled (EPKG_DEBUG_LIBKRUN not set)");
+            }
         }
 
         // For non-embedded_init mode, explicitly set the init path via krun_set_exec.
