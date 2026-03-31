@@ -467,7 +467,13 @@ pub fn accept_reverse_connection(
                 log::debug!("libkrun: Guest connected to reverse listener");
                 // Convert Unix stream to TcpStream for compatibility
                 let raw_fd = stream.into_raw_fd();
-                return Ok(unsafe { std::net::TcpStream::from_raw_fd(raw_fd) });
+                let tcp_stream = unsafe { std::net::TcpStream::from_raw_fd(raw_fd) };
+                // CRITICAL: Set blocking mode - the listener is non-blocking and
+                // the accepted stream inherits this. Without blocking mode, write
+                // operations can fail with EAGAIN (os error 35 on macOS).
+                tcp_stream.set_nonblocking(false)
+                    .map_err(|e| eyre::eyre!("Failed to set blocking mode on reverse stream: {}", e))?;
+                return Ok(tcp_stream);
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 // No connection yet, continue waiting
