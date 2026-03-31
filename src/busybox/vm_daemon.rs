@@ -926,7 +926,7 @@ fn nonpty_poll_loop(
                     drain_pipes(stdout_file, stderr_file, stream, &mut buf, &mut seq_out, &mut seq_err)?;
                     break;
                 } else {
-                    log::debug!("execute_without_pty: child still alive");
+                    log::trace!("execute_without_pty: child still alive");
                 }
             }
             Ok(_) => {
@@ -1572,7 +1572,7 @@ fn run_reverse_vsock_client() -> Result<()> {
 
 /// Inner function for reverse mode: connect to Host and handle one command.
 /// Called recursively for VM reuse sessions.
-fn connect_and_handle_reverse(idle_timeout_ms: u32) -> Result<()> {
+fn connect_and_handle_reverse(_idle_timeout_ms: u32) -> Result<()> {
     use nix::sys::socket::{connect, socket, AddressFamily, SockType, SockFlag, VsockAddr};
     use std::os::fd::IntoRawFd;
     use std::io::Write;
