@@ -553,9 +553,9 @@ fn is_sbin_command(cmd_name: &str) -> bool {
 
 /// Return true when this epkg binary is built for a musl environment.
 ///
-/// All current static builds use musl, so for APK environments we only create
-/// applet symlinks when this returns true.
-#[cfg(unix)]
+/// All current static builds use musl, so for APK environments on Linux host
+/// we only create applet symlinks when this returns true.
+#[cfg(target_os = "linux")]
 fn is_musl_build() -> bool {
     #[cfg(target_env = "musl")]
     {
@@ -664,10 +664,12 @@ pub fn create_all_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -
         }
     };
 
-    // On Alpine (APK format) with a glibc-linked epkg binary, the binary will
+    // On Linux host with Alpine (APK format), a glibc-linked epkg binary will
     // not run at all. All static builds currently use musl, so only create
     // applet symlinks when building for musl; otherwise return early.
-    #[cfg(unix)]
+    // Note: This check only applies to Linux hosts. On macOS/Windows, APK envs
+    // run in libkrun VM using epkg-linux-$arch binary, so applets are needed.
+    #[cfg(target_os = "linux")]
     if *pkg_format == PackageFormat::Apk && !is_musl_build() {
         return Ok(());
     }
