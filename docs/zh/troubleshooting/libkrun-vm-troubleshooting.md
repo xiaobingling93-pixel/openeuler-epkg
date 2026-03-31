@@ -4,32 +4,29 @@
 
 ### 环境变量传递机制（重要理解）
 
-**关键发现：VM 内部环境变量不直接继承主机环境变量！**
-
 **架构说明：**
-- WSL2 中运行的 `epkg` 是 Linux 二进制，不会直接在 Windows 中运行
-- VM 内部运行的是 `env_root/usr/bin/init->epkg` (Linux ELF 二进制)
-- 环境变量需要通过以下机制传递：
 
-**1. WSL → Windows 进程传递（WSLENV）：**
-```bash
-# 传递环境变量到 Windows 进程
-export WSLENV=EPKG_DEBUG_LIBKRUN/p:RUST_LOG/p:LIBKRUN_WINDOWS_VERBOSE_DEBUG/p
-export EPKG_DEBUG_LIBKRUN=1
-export RUST_LOG=debug
-export LIBKRUN_WINDOWS_VERBOSE_DEBUG=1
-```
+WSL2 只是启动媒介，负责安排 `epkg.exe` 到 native Windows 执行：
+- WSL2 可以通过 `WSLENV` 在启动时传递环境变量给 Windows 进程
+- `epkg.exe` 开始执行后，WSL2 就完全不相关了
+- Windows 进程独立运行，使用 WHPX 启动 libkrun VM
 
-**2. VM daemon 协议传递：**
-- VM 内部的 epkg 通过 vsock/daemon 协议获取环境变量
-- 主机发送 JSON request，包含 `env` 字段
-- Guest daemon 接收并设置环境变量
+**执行路径对比：**
 
-**当前代码中 env 传递：**
-```rust
-request.insert("env".to_string(), serde_json::Value::Object(serde_json::Map::new()));
-```
-这需要修改为传递实际环境变量。
+| 场景 | 二进制 | 执行位置 | idmap.rs |
+|------|--------|----------|----------|
+| WSL2 中 Linux 命令 | epkg (Linux ELF) | WSL2 namespace sandbox | ✅ 使用 |
+| WSL2 启动 Windows VM | epkg.exe (Windows PE) | native Windows + WHPX | ❌ 不使用 |
+| PowerShell 直接运行 | epkg.exe (Windows PE) | native Windows + WHPX | ❌ 不使用 |
+
+**重要：`src/idmap.rs` 只在 native Linux 上运行！**
+- 它用于 namespace sandbox (Linux 上的 `unshare`/`clone`)
+- Windows 上 VM 模式完全不使用它
+- libkrun VM 内部也不使用它（VM 内部是 guest Linux kernel）
+
+**VM daemon 协议传递环境变量到 guest：**
+- 主机 epkg.exe 通过 vsock 发送 JSON request，包含 `env` 字段
+- Guest 内的 init (epkg Linux ELF) 接收并设置环境变量
 
 ### 内核控制台日志问题分析
 
@@ -71,44 +68,27 @@ let output: Option<Box<dyn io::Write + Send>> = if let Some(path) = &vm_resource
 serial_devices.push(setup_serial_device(event_manager, None, output)?);
 ```
 
-### 调试命令（正确方式）
+### 调试命令
 
-**从 WSL 测试 Windows VM（使用 WSLENV）：**
-```bash
-# 清除旧日志
-rm -rf /mnt/c/Users/aa/.epkg/cache/vmm-logs/*.log
-
-# 设置环境变量传递
-export WSLENV=EPKG_DEBUG_LIBKRUN/p:RUST_LOG/p:LIBKRUN_WINDOWS_VERBOSE_DEBUG/p
-export EPKG_DEBUG_LIBKRUN=1
-export RUST_LOG=debug
-
-# Windows 上运行 VM（需要 Windows epkg.exe）
-# 注意：从 WSL 运行时，需要正确的 Windows 二进制路径
-```
-
-**从 PowerShell 测试：**
+**从 PowerShell 测试（推荐）：**
 ```powershell
 $env:EPKG_DEBUG_LIBKRUN = "1"
 $env:RUST_LOG = "debug"
 C:\Users\aa\.epkg\envs\alpine\usr\bin\epkg.exe run --isolate=vm ls /
 ```
 
-### Linux 包执行路径（理解）
-
-**WSL 中运行 Linux 包命令不一定触发 VM：**
-
-| 命令类型 | 执行方式 | 是否需要 VM |
-|---------|---------|------------|
-| 内置命令 (echo, cat 等) | namespace sandbox | ❌ 不需要 |
-| Linux ELF 二进制 (busybox) | namespace sandbox (WSL) | ❌ 不需要 |
-| Linux ELF 二进制 (Windows) | libkrun VM | ✅ 需要 |
-
-**在 WSL 中强制使用 VM：**
+**从 WSL 启动 Windows epkg.exe（使用 WSLENV）：**
 ```bash
-# 这会失败，因为 WSL 没有权限创建 VM namespace
-./epkg run --isolate=vm echo "hello"
-# Error: Failed to write /proc/xxx/gid_map: Operation not permitted
+# 清除旧日志
+rm -rf /mnt/c/Users/aa/.epkg/cache/vmm-logs/*.log
+
+# 设置环境变量传递（仅在启动时有效）
+export WSLENV=EPKG_DEBUG_LIBKRUN/p:RUST_LOG/p
+export EPKG_DEBUG_LIBKRUN=1
+export RUST_LOG=debug
+
+# 启动 Windows epkg.exe（启动后 WSL2 不再相关）
+/mnt/c/Users/aa/.epkg/envs/alpine/usr/bin/epkg.exe run --isolate=vm ls /
 ```
 
 ---
