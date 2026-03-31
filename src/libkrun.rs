@@ -396,22 +396,22 @@ fn build_libkrun_config(
     // Debug: trace kernel path resolution on Windows
     #[cfg(target_os = "windows")]
     if let Some(ref kernel) = kernel_path {
-        eprintln!("[libkrun] resolved kernel path: {}", kernel);
+        crate::debug_epkg!("libkrun: resolved kernel path: {}", kernel);
         let exists = std::fs::metadata(kernel).is_ok();
-        eprintln!("[libkrun] kernel file exists: {}", exists);
+        crate::debug_epkg!("libkrun: kernel file exists: {}", exists);
         if exists {
             match detect_kernel_format_for_libkrun(kernel) {
                 Ok(format) => {
                     let format_name = if format == 1 { "ELF (vmlinux)" } else { "Raw (Image)" };
-                    eprintln!("[libkrun] kernel format detected: {} ({})", format, format_name);
+                    crate::debug_epkg!("libkrun: kernel format detected: {} ({})", format, format_name);
                 }
                 Err(e) => {
-                    eprintln!("[libkrun] kernel format detection failed: {}", e);
+                    crate::debug_epkg!("libkrun: kernel format detection failed: {}", e);
                 }
             }
         }
     } else {
-        eprintln!("[libkrun] no kernel available (no --kernel specified and no default kernel found)");
+        crate::debug_epkg!("libkrun: no kernel available (no --kernel specified and no default kernel found)");
     }
 
     let kernel_format = if let Some(ref kernel) = kernel_path {

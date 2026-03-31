@@ -1409,14 +1409,14 @@ pub fn default_kernel_path_if_exists() -> Option<String> {
     let default = default_kernel_path();
     // Debug: trace kernel path checking on Windows
     #[cfg(target_os = "windows")]
-    eprintln!("[init] checking default kernel path: {}", default.display());
+    crate::debug_epkg!("init: checking default kernel path: {}", default.display());
     if default.exists() {
         #[cfg(target_os = "windows")]
-        eprintln!("[init] default kernel path exists: yes");
+        crate::debug_epkg!("init: default kernel path exists: yes");
         default.into_os_string().into_string().ok()
     } else {
         #[cfg(target_os = "windows")]
-        eprintln!("[init] default kernel path exists: no");
+        crate::debug_epkg!("init: default kernel path exists: no");
         None
     }
 }
