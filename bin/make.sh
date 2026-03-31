@@ -1573,11 +1573,9 @@ build_static() {
     if [[ "$is_macos" == "true" ]]; then
         echo "[BUILD-OK] macOS ($arch, $mode): target/$rust_target/$build_dir/$BINARY_NAME"
         # Sign with hypervisor entitlements for libkrun VM support
-        local entitlements="$PROJECT_ROOT/epkg.entitlements"
-        if [[ -f "$entitlements" ]]; then
-            codesign --force --sign - --entitlements "$entitlements" "$PROJECT_ROOT/target/$rust_target/$build_dir/$BINARY_NAME" 2>/dev/null && \
-                echo "[CODESIGN] Signed with hypervisor entitlements"
-        fi
+        local entitlements="$PROJECT_ROOT/target/aarch64-apple-darwin/epkg.entitlements"
+        codesign --force --sign - --entitlements "$entitlements" "$PROJECT_ROOT/target/$rust_target/$build_dir/$BINARY_NAME" && \
+            echo "[CODESIGN] Signed with hypervisor entitlements"
         # Deploy macOS binary to dist/ (only for release mode, deploy_release_binary handles this)
         if [[ "$mode" == "release" ]]; then
             deploy_release_binary "target/$rust_target/$build_dir/$BINARY_NAME" "epkg-macos-${arch}"
