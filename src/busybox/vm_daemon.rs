@@ -990,10 +990,24 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
     log::debug!("execute_batch: starting");
     let _ = kmsg_write("<6>execute_batch: starting\n");
 
+    // Debug file write for visibility from host
+    let debug_file_write = |msg: &str| {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/opt/epkg/guest-debug.log") {
+            let _ = write!(f, "{}", msg);
+        }
+    };
+
+    debug_file_write(&format!("execute_batch: starting, command={:?}\n", request.command));
+
     let (child, stdin_pipe, stdout_pipe, stderr_pipe) = match spawn_child_piped(request, stream)? {
-        SpawnOutcome::SpawnFailedExitSent(code) => return Ok(code),
+        SpawnOutcome::SpawnFailedExitSent(code) => {
+            debug_file_write(&format!("execute_batch: spawn FAILED, code={}\n", code));
+            return Ok(code);
+        }
         SpawnOutcome::Spawned(c, si, so, se)    => (c, si, so, se),
     };
+
+    debug_file_write(&format!("execute_batch: child spawned, pid={}\n", child.id()));
 
     // Write stdin if provided, then close it
     if !request.stdin.is_empty() {
@@ -1005,8 +1019,11 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
 
     // Wait for child to complete
     let child_pid = Pid::from_raw(child.id() as i32);
+    debug_file_write("execute_batch: waiting for child to complete\n");
     let status = waitpid(child_pid, None)?;
     let exit_code = exit_code_from_wait_status(status);
+
+    debug_file_write(&format!("execute_batch: child exited with code={}, collecting output\n", exit_code));
 
     // Collect all output
     use std::io::Read;
@@ -1019,9 +1036,11 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
 
     log::debug!("execute_batch: exit_code={}, stdout={} bytes, stderr={} bytes",
                 exit_code, stdout_data.len(), stderr_data.len());
+    debug_file_write(&format!("execute_batch: stdout={} bytes, stderr={} bytes\n", stdout_data.len(), stderr_data.len()));
 
     log::debug!("execute_batch: sending response (exit_code={})", exit_code);
     let _ = kmsg_write(&format!("<6>execute_batch: sending response (exit_code={})\n", exit_code));
+    debug_file_write("execute_batch: sending response JSON\n");
 
     // Send batch response
     let response = serde_json::json!({
@@ -1030,22 +1049,35 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
         "stderr": STANDARD.encode(&stderr_data),
     });
     let json = serde_json::to_string(&response)?;
+    debug_file_write(&format!("execute_batch: response JSON size={} bytes\n", json.len()));
     stream.write_all(json.as_bytes())?;
     stream.write_all(b"\n")?;
     stream.flush()?;
+    debug_file_write("execute_batch: response written and flushed\n");
 
     // CRITICAL: Shutdown the write side to signal EOF to host
     // This ensures the host's read_to_string() returns
     let _ = kmsg_write("<6>execute_batch: shutting down stream write side\n");
+    debug_file_write("execute_batch: shutting down stream write side\n");
     let _ = stream.shutdown(std::net::Shutdown::Write);
 
     let _ = kmsg_write("<6>execute_batch: response sent, returning\n");
+    debug_file_write("execute_batch: done\n");
     Ok(exit_code)
 }
 
 fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
     eprintln!("[vm_daemon] Connection accepted, starting handle_connection");
     let _ = kmsg_write("<6>handle_connection: handle_connection started\n");
+
+    // Debug file write for visibility from host
+    let debug_file_write = |msg: &str| {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/opt/epkg/guest-debug.log") {
+            let _ = write!(f, "{}", msg);
+        }
+    };
+
+    debug_file_write("handle_connection: started\n");
     log::debug!("handle_connection: new connection");
     let _ = kmsg_write("<6>handle_connection: new connection\n");
     log_process_identity("vm-daemon handle_connection");
@@ -1058,6 +1090,7 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
     const RETRY_INTERVAL_MS: u64 = 50; // 50ms between retries
 
     let _ = kmsg_write("<6>handle_connection: about to read from stream (with retries)\n");
+    debug_file_write("handle_connection: waiting to read from stream...\n");
 
     loop {
         match stream.read(&mut buf) {
@@ -1069,9 +1102,13 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
                 // between named pipe connection and vsock handshake completion.
                 if total_wait_ms >= MAX_WAIT_MS {
                     let _ = kmsg_write(&format!("<6>handle_connection: timeout after {}ms, no data received (peer may have closed connection)\n", total_wait_ms));
+                    debug_file_write(&format!("handle_connection: TIMEOUT after {}ms\n", total_wait_ms));
                     return Ok(ConnectionDisposition::Shutdown);
                 }
-                let _ = kmsg_write(&format!("<6>handle_connection: read 0 bytes, waiting for data... ({}ms elapsed)\n", total_wait_ms));
+                if total_wait_ms % 500 == 0 {  // Log every 500ms
+                    let _ = kmsg_write(&format!("<6>handle_connection: read 0 bytes, waiting for data... ({}ms elapsed)\n", total_wait_ms));
+                    debug_file_write(&format!("handle_connection: read 0, waiting... ({}ms)\n", total_wait_ms));
+                }
                 std::thread::sleep(std::time::Duration::from_millis(RETRY_INTERVAL_MS));
                 total_wait_ms += RETRY_INTERVAL_MS;
                 continue;
@@ -1081,6 +1118,7 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
                 // Log first few bytes for debugging
                 let preview = String::from_utf8_lossy(&buf[..n.min(100)]);
                 let _ = kmsg_write(&format!("<6>handle_connection: data preview: {:?}\n", preview));
+                debug_file_write(&format!("handle_connection: read {} bytes: {:?}\n", n, preview));
                 // Find first newline to separate request from extra messages
                 let mut split_at = n;
                 for i in 0..n {
@@ -1101,10 +1139,16 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
                 log::debug!("Request line ({} bytes): {:?}", request_slice.len(), input);
                 log::debug!("Leftover bytes ({} bytes): {:?}", leftover_bytes.len(), String::from_utf8_lossy(&leftover_bytes));
 
+                debug_file_write(&format!("handle_connection: parsing JSON: {:?}\n", input));
+
                 // Parse JSON request (no plain text fallback)
                 let request: CommandRequest = serde_json::from_str(&input)
-                    .map_err(|e| eyre!("JSON parse failed: {} (input: {:?})", e, input))?;
+                    .map_err(|e| {
+                        debug_file_write(&format!("handle_connection: JSON parse FAILED: {}\n", e));
+                        eyre!("JSON parse failed: {} (input: {:?})", e, input)
+                    })?;
                 eprintln!("[vm_daemon] Command received: {:?}", request.command);
+                debug_file_write(&format!("handle_connection: parsed command: {:?}, batch={}\n", request.command, request.batch));
 
                 if request.command.len() == 1 && request.command[0] == VM_SESSION_DONE_CMD {
                     log::debug!(
@@ -1123,20 +1167,25 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
                 log::debug!("Received command: {:?}", request.command);
                 eprintln!("[vm_daemon] Executing command: {:?}", request.command);
                 log_process_identity("vm-daemon before command dispatch");
+                debug_file_write(&format!("handle_connection: executing command: {:?}\n", request.command));
 
                 // Execute command
                 let exit_code;
                 if request.batch {
                     log::debug!("Using batch mode");
+                    debug_file_write("handle_connection: using batch mode\n");
                     exit_code = execute_batch(&request, &mut stream)?;
                 } else if request.pty {
                     log::debug!("Using PTY mode");
+                    debug_file_write("handle_connection: using PTY mode\n");
                     exit_code = execute_with_pty(&request, &mut stream, Some(leftover_bytes))?;
                 } else {
                     log::debug!("Using non-PTY mode");
+                    debug_file_write("handle_connection: using non-PTY mode\n");
                     exit_code = execute_without_pty(&request, &mut stream, Some(leftover_bytes))?;
                 }
                 eprintln!("[vm_daemon] Command completed with exit code: {}", exit_code);
+                debug_file_write(&format!("handle_connection: command completed with exit_code={}\n", exit_code));
 
                 if request.reuse_vm {
                     let idle_ms = request
@@ -1387,7 +1436,15 @@ fn run_reverse_vsock_client() -> Result<()> {
         }
     };
 
+    // Also write to virtiofs-mounted file for visibility from host
+    let debug_file_write = |msg: &str| {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/opt/epkg/guest-debug.log") {
+            let _ = write!(f, "{}", msg);
+        }
+    };
+
     kmsg_write("<6>run_reverse_vsock_client: starting\n");
+    debug_file_write("run_reverse_vsock_client: starting\n");
     log::debug!("vm-daemon: reverse mode - connecting to Host...");
 
     // Create vsock socket
@@ -1398,12 +1455,14 @@ fn run_reverse_vsock_client() -> Result<()> {
         None,
     ).map_err(|e| { log::debug!("vm-daemon: reverse socket() failed: {}", e); e })?;
     kmsg_write("<6>run_reverse_vsock_client: socket created\n");
+    debug_file_write("run_reverse_vsock_client: socket created\n");
 
     let host_addr = VsockAddr::new(HOST_CID, HOST_PORT);
 
     // Connect to Host with retry
     log::debug!("vm-daemon: connecting to Host CID={} PORT={}...", HOST_CID, HOST_PORT);
     kmsg_write("<6>run_reverse_vsock_client: connecting to host\n");
+    debug_file_write(&format!("run_reverse_vsock_client: connecting to CID={} PORT={}\n", HOST_CID, HOST_PORT));
     eprintln!("vm-daemon: attempting to connect to host CID={} PORT={}", HOST_CID, HOST_PORT);
 
     let mut retry_count = 0;
@@ -1412,6 +1471,7 @@ fn run_reverse_vsock_client() -> Result<()> {
         match connect(fd.as_raw_fd(), &host_addr) {
             Ok(_) => {
                 kmsg_write("<6>run_reverse_vsock_client: connected to host\n");
+                debug_file_write("run_reverse_vsock_client: connected to host\n");
                 log::debug!("vm-daemon: connected to Host");
                 eprintln!("vm-daemon: successfully connected to host");
                 break unsafe { std::net::TcpStream::from_raw_fd(fd.into_raw_fd()) };
@@ -1420,6 +1480,7 @@ fn run_reverse_vsock_client() -> Result<()> {
                 retry_count += 1;
                 if retry_count >= CONNECT_RETRY_MAX {
                     kmsg_write(&format!("<3>run_reverse_vsock_client: connect failed after {} retries: {}\n", retry_count, e));
+                    debug_file_write(&format!("run_reverse_vsock_client: connect FAILED after {} retries: {}\n", retry_count, e));
                     return Err(eyre!("Failed to connect to Host after {} retries: {}", retry_count, e));
                 }
                 log::debug!("vm-daemon: connect retry {}/{} (delay {}ms): {}", retry_count, CONNECT_RETRY_MAX, retry_delay_ms, e);
@@ -1432,13 +1493,16 @@ fn run_reverse_vsock_client() -> Result<()> {
 
     // Send ready signal to Host
     kmsg_write("<6>run_reverse_vsock_client: sending READY\n");
+    debug_file_write("run_reverse_vsock_client: sending READY\n");
     log::debug!("vm-daemon: sending READY signal to Host");
     eprintln!("vm-daemon: sending READY signal to host");
     let mut stream = stream;
     stream.write_all(b"READY\n")?;
     stream.flush()?;
+    debug_file_write("run_reverse_vsock_client: READY sent and flushed\n");
 
     kmsg_write("<6>run_reverse_vsock_client: entering handle_connection\n");
+    debug_file_write("run_reverse_vsock_client: entering handle_connection\n");
     log::debug!("vm-daemon: handling connection in reverse mode");
 
     // Handle the connection (same as forward mode)

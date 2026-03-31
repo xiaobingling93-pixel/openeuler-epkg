@@ -141,6 +141,7 @@ fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32
     use std::io::BufReader;
     use std::io::BufRead;
 
+    eprintln!("[epkg] handle_streaming_simple: starting, is_batch={}", is_batch);
     // In reverse vsock mode, the guest sends "READY\n" first to signal readiness.
     // We need to read and skip this signal before reading the actual response.
     // For non-batch mode, this is handled by the line-by-line parser.
@@ -149,16 +150,20 @@ fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32
         // First, read lines until we get a non-"READY" line (the actual JSON response)
         let mut response = String::new();
         let reader = BufReader::new(stream);
+        eprintln!("[epkg] handle_streaming_simple: batch mode - reading response...");
         crate::debug_epkg!("handle_streaming_simple: batch mode - reading response...");
 
         for line in reader.lines() {
+            eprintln!("[epkg] handle_streaming_simple: waiting for line...");
             let line = match line {
                 Ok(l) => l,
                 Err(e) => {
+                    eprintln!("[epkg] handle_streaming_simple: ERROR reading line: {}", e);
                     crate::debug_epkg!("handle_streaming_simple: ERROR reading line: {}", e);
                     return Err(e.into());
                 }
             };
+            eprintln!("[epkg] handle_streaming_simple: read line: {:?}", line);
             crate::debug_epkg!("handle_streaming_simple: read line: {:?}", line);
             // Skip "READY" signal from reverse vsock handshake
             if line == "READY" {
@@ -637,22 +642,28 @@ pub fn send_command_over_named_pipe(
     reuse_vm: bool,
     mut stream: std::fs::File,
 ) -> Result<i32> {
+    eprintln!("[epkg] libkrun_stream: send_command_over_named_pipe starting");
     crate::debug_epkg!("libkrun_stream: send_command_over_named_pipe starting");
     let (use_pty, is_batch) = resolve_io_mode(io_mode);
+    eprintln!("[epkg] libkrun_stream: io_mode={:?}, use_pty={}, is_batch={}, reuse_vm={}",
+        io_mode, use_pty, is_batch, reuse_vm);
     crate::debug_epkg!("libkrun_stream: io_mode={:?}, use_pty={}, is_batch={}, reuse_vm={}",
         io_mode, use_pty, is_batch, reuse_vm);
 
     // Build and send command request
     let request = build_command_request(cmd_parts, io_mode, reuse_vm);
     let request_json = serde_json::to_vec(&request)?;
+    eprintln!("[epkg] libkrun_stream: writing {} bytes to named pipe: {}", request_json.len(), String::from_utf8_lossy(&request_json));
     crate::debug_epkg!("libkrun_stream: writing {} bytes to named pipe", request_json.len());
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
 
     // CRITICAL: Use FlushFileBuffers to ensure data is sent to the named pipe.
     // Standard flush() is a no-op for File; named pipes need this Windows API.
+    eprintln!("[epkg] libkrun_stream: calling FlushFileBuffers...");
     crate::debug_epkg!("libkrun_stream: calling FlushFileBuffers...");
     flush_named_pipe(&stream)?;
+    eprintln!("[epkg] libkrun_stream: FlushFileBuffers complete, waiting for response...");
     crate::debug_epkg!("libkrun_stream: FlushFileBuffers complete, waiting for response...");
 
     // Handle response

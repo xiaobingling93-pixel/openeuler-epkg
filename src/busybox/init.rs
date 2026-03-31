@@ -551,6 +551,15 @@ fn exec_vm_daemon() -> Result<()> {
     eprintln!("init: exec_vm_daemon() started");
     let _ = kmsg_write("<6>exec_vm_daemon: starting\n");
 
+    // Debug: log the actual kernel command line
+    if let Ok(cmdline) = std::fs::read_to_string("/proc/cmdline") {
+        let _ = kmsg_write(&format!("<6>exec_vm_daemon: /proc/cmdline={}\n", cmdline.trim()));
+        eprintln!("init: /proc/cmdline={}", cmdline.trim());
+    } else {
+        let _ = kmsg_write("<6>exec_vm_daemon: FAILED to read /proc/cmdline\n");
+        eprintln!("init: FAILED to read /proc/cmdline");
+    }
+
     // Check if we should use reverse vsock mode (Guest connects to Host)
     // This is set by Host when starting VM in reverse mode (Windows/WHPX first run)
     let reverse_mode = get_cmdline_param("epkg.vsock_reverse").map_or(false, |v| v == "1");

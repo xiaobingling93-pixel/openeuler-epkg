@@ -268,7 +268,18 @@ fn build_libkrun_config(
     };
     #[cfg(any(not(feature = "libkrun"), target_os = "linux"))]
     let has_existing_session = false;
-    let use_reverse_vsock = use_vsock && !has_existing_session;
+    // TEMPORARY DEBUG: Always use reverse mode to test the fix
+    let use_reverse_vsock = use_vsock;
+    // Debug: write to file since stderr might not work on Windows
+    let _ = std::fs::write(
+        crate::models::dirs().epkg_cache.join("vmm-logs").join("host-debug.log"),
+        format!("build_libkrun_config: use_vsock={} has_existing_session={} use_reverse_vsock={} reuse_vm={}\n",
+                   use_vsock, has_existing_session, use_reverse_vsock, run_options.reuse_vm)
+    );
+    eprintln!("[epkg] libkrun: use_vsock={} has_existing_session={} use_reverse_vsock={}",
+               use_vsock, has_existing_session, use_reverse_vsock);
+    log::info!("libkrun: use_vsock={} has_existing_session={} use_reverse_vsock={}",
+               use_vsock, has_existing_session, use_reverse_vsock);
 
     let guest_exec_path = guest_cmd_path
         .strip_prefix(env_root)
@@ -362,8 +373,12 @@ fn build_libkrun_config(
     // In reverse mode, Guest connects to Host, avoiding vsock handshake timing issues.
     if use_reverse_vsock {
         kernel_args.push_str(" epkg.vsock_reverse=1");
-        log::debug!("libkrun: reverse vsock mode enabled (epkg.vsock_reverse=1)");
+        eprintln!("[epkg] libkrun: reverse vsock mode enabled (epkg.vsock_reverse=1)");
+        eprintln!("[epkg] libkrun: kernel_args after adding vsock_reverse: {}", kernel_args);
+    } else {
+        eprintln!("[epkg] libkrun: reverse vsock mode NOT enabled (use_reverse_vsock=false)");
     }
+    eprintln!("[epkg] libkrun: kernel_args before virtiofs: {}", kernel_args);
 
     // Set init_pwd to current working directory.
     // On Windows, skip this since PWD is a Windows path which is invalid in the Linux guest.
@@ -385,6 +400,7 @@ fn build_libkrun_config(
         };
         kernel_args.push_str(&format!(" epkg.vol_{}={}", i, percent_encode(&spec)));
     }
+    eprintln!("[epkg] libkrun: FINAL kernel_args passed to VM: {}", kernel_args);
 
     let kernel_path = if run_options.kernel.is_some() {
         run_options.kernel.clone()
@@ -770,6 +786,7 @@ fn create_and_configure_vm(
                 }
                 ctx.set_kernel(kernel, format, Some(&config.kernel_args), run_options.initrd.as_deref())?;
                 log::info!("libkrun: kernel configured (format={} ({}))", format, format_str);
+                log::info!("libkrun: kernel_args passed to VM: {}", config.kernel_args);
             }
         } else {
             log::error!("libkrun: no kernel path configured!");
@@ -1291,10 +1308,12 @@ fn run_reverse_vsock_mode_inner(
     run_options: &RunOptions,
     config: &LibkrunConfig,
 ) -> Result<()> {
+    eprintln!("[epkg] libkrun: entering reverse vsock mode (Guest -> Host)");
     crate::debug_epkg!("libkrun: entering reverse vsock mode (Guest -> Host)");
 
     // Create VM with reverse mode (port 10000 listen=false, Host listens)
     let vm_ctx = create_and_configure_vm(env_root, run_options, config)?;
+    eprintln!("[epkg] libkrun: VM configured (ctx_id={})", vm_ctx.ctx.ctx_id);
     crate::debug_epkg!("libkrun: VM configured (ctx_id={})", vm_ctx.ctx.ctx_id);
 
     let vsock_sock_path = vm_ctx
@@ -1418,10 +1437,19 @@ pub fn run_command_in_krun(
     run_options: &RunOptions,
     guest_cmd_path: &Path,
 ) -> Result<()> {
+    // Debug: write to file to trace execution - try multiple locations
+    let _ = std::fs::write("C:\\Users\\aa\\epkg-debug.txt", "run_command_in_krun called\n");
+    let _ = std::fs::write(
+        crate::models::dirs().epkg_cache.join("vmm-logs").join("host-debug.log"),
+        format!("run_command_in_krun called\n")
+    );
+    eprintln!("[epkg] libkrun: run_command_in_krun starting");
     crate::debug_epkg!("libkrun: run_command_in_krun starting");
     crate::run::ensure_linux_kvm_ready_for_vm()?;
+    eprintln!("[epkg] libkrun: building config...");
     crate::debug_epkg!("libkrun: building config...");
     let config = build_libkrun_config(env_root, run_options, guest_cmd_path)?;
+    eprintln!("[epkg] libkrun: config built, use_vsock={}", config.use_vsock);
     crate::debug_epkg!("libkrun: config built, use_vsock={}", config.use_vsock);
 
     if config.use_vsock {
@@ -1429,8 +1457,10 @@ pub fn run_command_in_krun(
 
         // Handle reverse mode: Guest connects to Host (first run on Windows)
         if config.use_reverse_vsock {
+            log::info!("libkrun: calling run_reverse_vsock_mode");
             return run_reverse_vsock_mode(env_root, run_options, &config);
         }
+        log::info!("libkrun: NOT using reverse mode, use_reverse_vsock={}", config.use_reverse_vsock);
 
         // Forward mode: Host connects to Guest (reuse or Unix platforms)
         if run_options.reuse_vm {
