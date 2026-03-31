@@ -7,23 +7,33 @@ use crate::lfs;
 use color_eyre::eyre::{eyre, Result};
 
 /// Convert a host path to a guest path for VM execution.
-/// On Windows, home_epkg is mounted at /opt/epkg in the guest.
+/// On macOS/Windows with libkrun VM, home_epkg is mounted at /opt/epkg in the guest.
 /// On Linux, paths are the same (namespace isolation).
-#[cfg(windows)]
+#[cfg(not(target_os = "linux"))]
 fn host_path_to_guest_path(host_path: &std::path::Path) -> std::path::PathBuf {
     let home_epkg = crate::models::dirs().home_epkg.clone();
     if let Ok(relative) = host_path.strip_prefix(&home_epkg) {
         // Convert to Unix-style path and prepend /opt/epkg
+        #[cfg(windows)]
         let relative_str = relative.to_string_lossy().replace('\\', "/");
+        #[cfg(not(windows))]
+        let relative_str = relative.to_string_lossy();
         std::path::PathBuf::from(format!("/opt/epkg/{}", relative_str.trim_start_matches('/')))
     } else {
-        // Path not under home_epkg, try to convert backslashes to forward slashes
-        let path_str = host_path.to_string_lossy().replace('\\', "/");
-        std::path::PathBuf::from(path_str)
+        // Path not under home_epkg, try to convert backslashes to forward slashes on Windows
+        #[cfg(windows)]
+        {
+            let path_str = host_path.to_string_lossy().replace('\\', "/");
+            std::path::PathBuf::from(path_str)
+        }
+        #[cfg(not(windows))]
+        {
+            host_path.to_path_buf()
+        }
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn host_path_to_guest_path(host_path: &std::path::Path) -> std::path::PathBuf {
     host_path.to_path_buf()
 }
