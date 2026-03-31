@@ -4,6 +4,16 @@
 //! (typically forwarded via QEMU's user networking). It supports both simple
 //! command execution and interactive PTY streaming for terminal applications.
 //!
+//! # Purpose
+//! This module is **Linux-only** and is the **QEMU client** for VM communication.
+//! It connects to QEMU VMs via:
+//! - TCP: QEMU's user networking with port forwarding (e.g., hostfwd=tcp::10000-:10000)
+//! - AF_VSOCK: Native vsock for QEMU/KVM (direct VM communication without port forwarding)
+//!
+//! For **macOS/Windows libkrun** VM communication, see:
+//! - [`libkrun_stream.rs`]: Unix socket streaming for libkrun
+//! - [`libkrun_bridge.rs`]: Reverse vsock mode for libkrun
+//!
 //! # Protocol
 //! - Commands are sent as JSON requests to localhost:10000
 //! - Responses can be JSON or plain text (fallback)
@@ -110,7 +120,10 @@ fn connect_vsock_with_retry(port: u32, max_retries: u32) -> Result<TcpStream> {
     ))
 }
 
-/// Connect to Unix socket with retry logic (for libkrun vsock).
+/// Connect to Unix socket with retry logic (for libkrun vsock bridge on WSL).
+///
+/// This is used when running epkg on WSL (Linux) to connect to libkrun's Unix socket
+/// bridge on the Windows host. For native macOS/Windows libkrun, see libkrun_stream.rs.
 fn connect_unix_socket_with_retry(sock_path: &std::path::Path, max_retries: u32) -> Result<TcpStream> {
     let mut retry_count = 0;
     let mut last_error = None;
