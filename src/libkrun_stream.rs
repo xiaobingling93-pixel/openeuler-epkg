@@ -15,8 +15,6 @@ use serde::{Deserialize, Serialize};
 use crate::models::IoMode;
 
 #[cfg(unix)]
-use std::os::fd::FromRawFd;
-#[cfg(unix)]
 use lazy_static::lazy_static;
 #[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -270,7 +268,6 @@ pub fn send_command_via_vsock(
     reuse_vm: bool,
     sock_path: &Path,
 ) -> Result<i32> {
-    use std::os::unix::io::IntoRawFd;
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
 
@@ -290,8 +287,7 @@ pub fn send_command_via_vsock(
         while retry_count < 30 {
             match UnixStream::connect(sock_path) {
                 Ok(unix_stream) => {
-                    let raw_fd = unix_stream.into_raw_fd();
-                    s = Some(unsafe { std::net::TcpStream::from_raw_fd(raw_fd) });
+                    s = Some(unix_stream);
                     break;
                 }
                 Err(e) => {
@@ -329,7 +325,7 @@ pub fn send_command_via_vsock(
 }
 
 #[cfg(unix)]
-fn handle_streaming_unix(stream: &mut std::net::TcpStream) -> Result<i32> {
+fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<i32> {
     use std::os::unix::io::AsRawFd;
 
     use console::Term;

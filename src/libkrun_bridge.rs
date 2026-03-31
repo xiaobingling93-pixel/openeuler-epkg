@@ -6,8 +6,6 @@ use std::path::Path;
 use std::time::Duration;
 
 #[cfg(unix)]
-use std::os::fd::FromRawFd;
-#[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 
 #[cfg(unix)]
@@ -95,17 +93,14 @@ pub fn wait_guest_ready_unix(
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
-pub fn connect_vsock_bridge(sock_path: &Path, max_retries: u32) -> Result<std::net::TcpStream> {
-    use std::os::unix::io::IntoRawFd;
+pub fn connect_vsock_bridge(sock_path: &Path, max_retries: u32) -> Result<std::os::unix::net::UnixStream> {
     use std::os::unix::net::UnixStream;
 
     let mut retry_count = 0;
     let mut last_error = None;
     while retry_count < max_retries {
         match UnixStream::connect(sock_path) {
-            Ok(unix_stream) => {
-                let raw_fd = unix_stream.into_raw_fd();
-                let stream = unsafe { std::net::TcpStream::from_raw_fd(raw_fd) };
+            Ok(stream) => {
                 return Ok(stream);
             }
             Err(e) => {
@@ -445,8 +440,7 @@ pub fn setup_reverse_listener(sock_path: &Path) -> Result<std::os::unix::net::Un
 pub fn accept_reverse_connection(
     listener: &std::os::unix::net::UnixListener,
     vm_start_failed_rx: Option<&std::sync::mpsc::Receiver<()>>,
-) -> Result<std::net::TcpStream> {
-    use std::os::unix::io::IntoRawFd;
+) -> Result<std::os::unix::net::UnixStream> {
     use std::time::Instant;
 
     let start = Instant::now();
@@ -465,15 +459,12 @@ pub fn accept_reverse_connection(
         match listener.accept() {
             Ok((stream, _addr)) => {
                 log::debug!("libkrun: Guest connected to reverse listener");
-                // Convert Unix stream to TcpStream for compatibility
-                let raw_fd = stream.into_raw_fd();
-                let tcp_stream = unsafe { std::net::TcpStream::from_raw_fd(raw_fd) };
-                // CRITICAL: Set blocking mode - the listener is non-blocking and
+                // Set blocking mode - the listener is non-blocking and
                 // the accepted stream inherits this. Without blocking mode, write
                 // operations can fail with EAGAIN (os error 35 on macOS).
-                tcp_stream.set_nonblocking(false)
+                stream.set_nonblocking(false)
                     .map_err(|e| eyre::eyre!("Failed to set blocking mode on reverse stream: {}", e))?;
-                return Ok(tcp_stream);
+                return Ok(stream);
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 // No connection yet, continue waiting
