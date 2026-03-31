@@ -812,16 +812,47 @@ fn create_and_configure_vm(
 
         // Add serial console device for Windows VMs.
         // This is required for the kernel to have a working console on WHPX.
-        // Only connect to stdout when debugging; otherwise kernel messages would
-        // pollute the command output.
+        // When debugging, connect to stdout so kernel messages appear in terminal.
+        // When not debugging, connect to null device so kernel messages don't pollute output.
         #[cfg(target_os = "windows")]
         {
             if std::env::var("EPKG_DEBUG_LIBKRUN").is_ok() {
                 ctx.add_serial_console(0, 1)?;
                 log::info!("libkrun: serial console added (ttyS0 -> stdout)");
             } else {
-                // Disable serial console output - kernel messages go to file via krun_set_console_output
-                log::debug!("libkrun: serial console disabled (EPKG_DEBUG_LIBKRUN not set)");
+                // Use Windows API to open NUL device
+                use windows::Win32::Storage::FileSystem::{
+                    CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
+                    OPEN_EXISTING,
+                };
+                use windows::Win32::Foundation::INVALID_HANDLE_VALUE;
+                use windows::core::PCWSTR;
+
+                let nul_path: Vec<u16> = "NUL".encode_utf16().chain(std::iter::once(0)).collect();
+                // GENERIC_READ = 0x80000000, GENERIC_WRITE = 0x40000000
+                let access: u32 = 0x80000000u32 | 0x40000000u32;
+                let null_handle = CreateFileW(
+                    PCWSTR(nul_path.as_ptr()),
+                    access,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    None,
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    None,
+                );
+
+                match null_handle {
+                    Ok(h) if h != INVALID_HANDLE_VALUE => {
+                        let null_fd = h.0 as i32;
+                        ctx.add_serial_console(null_fd, null_fd)?;
+                        log::info!("libkrun: serial console added (ttyS0 -> NUL)");
+                    }
+                    _ => {
+                        // Fallback: still add serial console but output may appear
+                        ctx.add_serial_console(0, 1)?;
+                        log::warn!("libkrun: failed to open NUL, serial console -> stdout");
+                    }
+                }
             }
         }
 

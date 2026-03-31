@@ -28,14 +28,14 @@ pub fn kmsg_write(msg: &str) -> std::io::Result<()> {
 
 fn parse_cmdline() -> HashMap<String, String> {
     let mut map = HashMap::new();
-    if let Err(e) = std::fs::read_to_string("/proc/cmdline").map(|cmdline| {
+    if let Err(_e) = std::fs::read_to_string("/proc/cmdline").map(|cmdline| {
         for token in cmdline.split_whitespace() {
             if let Some((k, v)) = token.split_once('=') {
                 map.insert(k.to_string(), v.to_string());
             }
         }
     }) {
-        eprintln!("init: read /proc/cmdline failed: {} (cmdline params unavailable)", e);
+        // Silently ignore error - /proc may not be mounted yet
     }
     map
 }
@@ -51,7 +51,7 @@ pub fn command() -> ClapCommand {
 }
 
 pub fn run(_options: ()) -> Result<()> {
-    eprintln!("init: run() started - entering init");
+    let _ = kmsg_write("<6>init: run() started\n");
     run_init()
 }
 
@@ -90,11 +90,9 @@ pub fn init_logging_early() {
         .open("/dev/console")
         .ok();
 
-    // Check if debug output is enabled via epkg.debug=1 in kernel cmdline
-    let debug = get_cmdline_param("epkg.debug").as_deref() == Some("1");
-
-    let write_msg = |console: &mut Option<std::fs::File>, kmsg: &mut Option<std::fs::File>, msg: &str| {
-        if !debug {
+    // write_msg will check debug flag after /proc is mounted
+    let write_msg = |console: &mut Option<std::fs::File>, kmsg: &mut Option<std::fs::File>, msg: &str, dbg: bool| {
+        if !dbg {
             return;
         }
         if let Some(ref mut c) = console {
@@ -115,7 +113,6 @@ pub fn init_logging_early() {
         }
     };
 
-    write_msg(&mut console, &mut kmsg, "init: init_logging_early() started\n");
     write_kmsg(&mut kmsg, "init: after first console write\n");
 
     // Redirect stderr/stdout to /dev/console so all subsequent logging (via env_logger)
@@ -137,13 +134,11 @@ pub fn init_logging_early() {
         }
     }
 
-    write_msg(&mut console, &mut kmsg, "init: after dup2\n");
     write_kmsg(&mut kmsg, "init: after dup2 (kmsg)\n");
 
     // Note: Skip existence checks that may block on virtiofs.
     // Just try to create /proc and mount procfs directly.
     let proc_path = Path::new("/proc");
-    write_msg(&mut console, &mut kmsg, "init: creating /proc directory\n");
     write_kmsg(&mut kmsg, "init: creating /proc dir (no existence check)\n");
 
     // Try to create /proc (idempotent if already exists)
@@ -155,7 +150,6 @@ pub fn init_logging_early() {
         Err(e) => write_kmsg(&mut kmsg, &format!("init: create /proc error: {}\n", e)),
     }
 
-    write_msg(&mut console, &mut kmsg, "init: mounting proc on /proc\n");
     write_kmsg(&mut kmsg, "init: mounting procfs\n");
 
     match nix::mount::mount(
@@ -166,26 +160,26 @@ pub fn init_logging_early() {
         None::<&str>,
     ) {
         Ok(_) => {
-            write_msg(&mut console, &mut kmsg, "init: mounted proc successfully\n");
             write_kmsg(&mut kmsg, "init: proc mount ok\n");
         }
         Err(e) => {
-            write_msg(&mut console, &mut kmsg, &format!("init: mount proc failed: {}\n", e));
             write_kmsg(&mut kmsg, &format!("init: proc mount failed: {}\n", e));
         }
     }
 
-    write_msg(&mut console, &mut kmsg, "init: checking epkg.rust_log\n");
+    // NOW we can check debug flag since /proc is mounted
+    let debug = get_cmdline_param("epkg.debug").as_deref() == Some("1");
+    write_msg(&mut console, &mut kmsg, "init: checking epkg.rust_log\n", debug);
 
     if let Some(v) = get_cmdline_param("epkg.rust_log") {
-        write_msg(&mut console, &mut kmsg, "init: rust_log found\n");
+        write_msg(&mut console, &mut kmsg, "init: rust_log found\n", debug);
         let decoded = percent_decode(&v);
         if !decoded.is_empty() {
             std::env::set_var("RUST_LOG", &decoded);
             std::env::set_var("RUST_BACKTRACE", "1");
         }
     }
-    write_msg(&mut console, &mut kmsg, "init: init_logging_early() complete\n");
+    write_msg(&mut console, &mut kmsg, "init: init_logging_early() complete\n", debug);
 }
 
 fn run_init() -> Result<()> {
