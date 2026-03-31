@@ -309,10 +309,12 @@ fn build_libkrun_config(
     // - tsc=reliable: Use TSC as reliable clocksource (avoids PIT calibration hang on WHPX)
     // - no_timer_check: Skip timer interrupt verification (slow in VMs, saves ~4s boot time)
     // - disable_kvm_pv: Disable KVM PV extensions that may interfere with WHPX
+    // - clocksource=hyperv_clocksource_tsc_page: Prefer Hyper-V clocksource
+    // - idle=poll: Avoid slow idle states that interfere with timer delivery
     // Note: The vmm timer fix (85d5f9b) in libkrun makes noapic/rootdelay/notsc unnecessary.
     // These parameters caused 100x slowdown in boot time and have been removed.
     #[cfg(target_os = "windows")]
-    let vm_perf = "nowatchdog nmi_watchdog=0 lpj=11979608 tsc=reliable no_timer_check disable_kvm_pv=1";
+    let vm_perf = "nowatchdog nmi_watchdog=0 lpj=11979608 tsc=reliable no_timer_check disable_kvm_pv=1 clocksource=hyperv_clocksource_tsc_page idle=poll";
     #[cfg(not(target_os = "windows"))]
     let vm_perf = "nowatchdog nmi_watchdog=0";
 
