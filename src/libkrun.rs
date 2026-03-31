@@ -270,12 +270,6 @@ fn build_libkrun_config(
     let has_existing_session = false;
     // TEMPORARY DEBUG: Always use reverse mode to test the fix
     let use_reverse_vsock = use_vsock;
-    // Debug: write to file since stderr might not work on Windows
-    let _ = std::fs::write(
-        crate::models::dirs().epkg_cache.join("vmm-logs").join("host-debug.log"),
-        format!("build_libkrun_config: use_vsock={} has_existing_session={} use_reverse_vsock={} reuse_vm={}\n",
-                   use_vsock, has_existing_session, use_reverse_vsock, run_options.reuse_vm)
-    );
     crate::debug_epkg!("libkrun: use_vsock={} has_existing_session={} use_reverse_vsock={}",
                use_vsock, has_existing_session, use_reverse_vsock);
     log::info!("libkrun: use_vsock={} has_existing_session={} use_reverse_vsock={}",
@@ -1435,11 +1429,6 @@ pub fn run_command_in_krun(
     run_options: &RunOptions,
     guest_cmd_path: &Path,
 ) -> Result<()> {
-    // Debug: write to file to trace execution
-    let _ = std::fs::write(
-        crate::models::dirs().epkg_cache.join("vmm-logs").join("host-debug.log"),
-        format!("run_command_in_krun called\n")
-    );
     crate::debug_epkg!("START run_command_in_krun");
     crate::run::ensure_linux_kvm_ready_for_vm()?;
     crate::debug_epkg!("building config...");
@@ -1588,6 +1577,28 @@ fn setup_console_output(ctx_id: u32) -> Result<()> {
         unsafe { krun_set_console_output(ctx_id, console_log.as_ptr()) }
     )?;
     log::debug!("libkrun: console output -> {}", console_log_path.display());
+
+    // Set the kernel console device to redirect serial console output to the log file.
+    // On Windows, use "ttyS0" since kernel cmdline has console=ttyS0.
+    #[cfg(target_os = "windows")]
+    {
+        let console_id = CString::new("ttyS0")
+            .map_err(|e| eyre::eyre!("invalid console id: {}", e))?;
+        check_status("krun_set_kernel_console",
+            unsafe { krun_set_kernel_console(ctx_id, console_id.as_ptr()) }
+        )?;
+        log::debug!("libkrun: kernel console set to ttyS0");
+    }
+    // On Unix, use "hvc0" since kernel cmdline has console=hvc0.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let console_id = CString::new("hvc0")
+            .map_err(|e| eyre::eyre!("invalid console id: {}", e))?;
+        check_status("krun_set_kernel_console",
+            unsafe { krun_set_kernel_console(ctx_id, console_id.as_ptr()) }
+        )?;
+        log::debug!("libkrun: kernel console set to hvc0");
+    }
 
     let latest_log_symlink = base_log_dir.join("latest-console.log");
     let _ = std::fs::remove_file(&latest_log_symlink);
