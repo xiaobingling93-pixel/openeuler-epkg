@@ -389,6 +389,14 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     // Create "current" symlink in generations directory pointing to generation 1
     force_symlink_dir_for_virtiofs("1", generations_root.join("current"))?;
 
+    // Create essential mount points for VM isolation (dev, proc, sys, run, tmp)
+    // These are needed for kernel to mount devtmpfs, procfs, sysfs, etc.
+    lfs::create_dir_all(env_root.join("dev"))?;
+    lfs::create_dir_all(env_root.join("proc"))?;
+    lfs::create_dir_all(env_root.join("sys"))?;
+    lfs::create_dir_all(env_root.join("run"))?;
+    lfs::create_dir_all(env_root.join("tmp"))?;
+
     setup_resolv_conf(env_root)?;
     setup_hosts(env_root)?;
 
