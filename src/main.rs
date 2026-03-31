@@ -1,12 +1,23 @@
 /// Debug logging macro for libkrun VM operations.
 /// Controlled by EPKG_DEBUG_LIBKRUN environment variable (set to "1" to enable).
-/// Usage: debug_epkg!("message: {}", arg);
+/// Shows elapsed time since first call for profiling.
+///
+/// Why not use log::debug!:
+/// 1. log::debug! requires logging system initialization (env_logger), which may not
+///    be ready during early VM startup phases.
+/// 2. eprintln! writes directly to stderr, always available and unbuffered.
+/// 3. We can easily add custom formatting like elapsed time since first call.
+/// 4. log::debug! output format depends on logger configuration; we have full control here.
 #[cfg(feature = "libkrun")]
 #[macro_export]
 macro_rules! debug_epkg {
     ($($arg:tt)*) => {
         if std::env::var("EPKG_DEBUG_LIBKRUN").is_ok_and(|v| v == "1") {
-            eprintln!("[epkg-debug] {}", format_args!($($arg)*));
+            use std::time::Instant;
+            static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+            let start = START.get_or_init(Instant::now);
+            let elapsed = start.elapsed();
+            eprintln!("[epkg {:5}.{:03}s] {}", elapsed.as_secs(), elapsed.subsec_millis(), format_args!($($arg)*));
         }
     };
 }

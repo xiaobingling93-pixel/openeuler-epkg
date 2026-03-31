@@ -1308,11 +1308,11 @@ fn run_reverse_vsock_mode_inner(
     run_options: &RunOptions,
     config: &LibkrunConfig,
 ) -> Result<()> {
-    crate::debug_epkg!("libkrun: entering reverse vsock mode (Guest -> Host)");
+    crate::debug_epkg!("entering reverse vsock mode (Guest -> Host)");
 
     // Create VM with reverse mode (port 10000 listen=false, Host listens)
     let vm_ctx = create_and_configure_vm(env_root, run_options, config)?;
-    crate::debug_epkg!("libkrun: VM configured (ctx_id={})", vm_ctx.ctx.ctx_id);
+    crate::debug_epkg!("VM configured (ctx_id={})", vm_ctx.ctx.ctx_id);
 
     let vsock_sock_path = vm_ctx
         .vsock_sock_path
@@ -1326,22 +1326,22 @@ fn run_reverse_vsock_mode_inner(
     #[cfg(windows)]
     let reverse_pipe = libkrun_bridge::setup_reverse_listener(&vsock_sock_path)?;
 
-    crate::debug_epkg!("libkrun: reverse listener set up on {}", vsock_sock_path.display());
+    crate::debug_epkg!("reverse listener set up on {}", vsock_sock_path.display());
 
     let ctx_id = vm_ctx.ctx.ctx_id;
 
     // Channel to signal VM start failure
     let (start_failed_tx, start_failed_rx) = std::sync::mpsc::channel();
-    crate::debug_epkg!("libkrun: starting VM thread...");
+    crate::debug_epkg!("starting VM thread...");
     let vm_thread = start_libkrun_vm(vm_ctx.ctx, start_failed_tx);
 
     // Wait for Guest to connect (with timeout)
-    crate::debug_epkg!("libkrun: waiting for Guest to connect...");
+    crate::debug_epkg!("waiting for Guest to connect...");
     #[cfg(unix)]
     let stream = match libkrun_bridge::accept_reverse_connection(&reverse_listener, Some(&start_failed_rx)) {
         Ok(s) => s,
         Err(e) => {
-            crate::debug_epkg!("libkrun: accept_reverse_connection FAILED: {}", e);
+            crate::debug_epkg!("accept_reverse_connection FAILED: {}", e);
             return Err(e);
         }
     };
@@ -1349,12 +1349,12 @@ fn run_reverse_vsock_mode_inner(
     let stream = match libkrun_bridge::accept_reverse_connection(reverse_pipe, Some(&start_failed_rx)) {
         Ok(s) => s,
         Err(e) => {
-            crate::debug_epkg!("libkrun: accept_reverse_connection FAILED: {}", e);
+            crate::debug_epkg!("accept_reverse_connection FAILED: {}", e);
             return Err(e);
         }
     };
 
-    crate::debug_epkg!("libkrun: Guest connected, sending command...");
+    crate::debug_epkg!("Guest connected, sending command...");
 
     // Send command over the accepted connection
     // On Windows, use the named-pipe-specific function that calls FlushFileBuffers
@@ -1366,11 +1366,11 @@ fn run_reverse_vsock_mode_inner(
         stream,
     ) {
         Ok(code) => {
-            crate::debug_epkg!("libkrun: send_command_over_named_pipe returned exit_code={}", code);
+            crate::debug_epkg!("command completed, exit_code={}", code);
             code
         }
         Err(e) => {
-            crate::debug_epkg!("libkrun: send_command_over_named_pipe FAILED: {}", e);
+            crate::debug_epkg!("send_command_over_named_pipe FAILED: {}", e);
             return Err(eyre::eyre!("Failed to send command via reverse vsock: {}", e));
         }
     };
@@ -1382,11 +1382,11 @@ fn run_reverse_vsock_mode_inner(
         stream,
     ) {
         Ok(code) => {
-            crate::debug_epkg!("libkrun: send_command_over_stream returned exit_code={}", code);
+            crate::debug_epkg!("command completed, exit_code={}", code);
             code
         }
         Err(e) => {
-            crate::debug_epkg!("libkrun: send_command_over_stream FAILED: {}", e);
+            crate::debug_epkg!("send_command_over_stream FAILED: {}", e);
             return Err(eyre::eyre!("Failed to send command via reverse vsock: {}", e));
         }
     };
@@ -1441,14 +1441,14 @@ pub fn run_command_in_krun(
         crate::models::dirs().epkg_cache.join("vmm-logs").join("host-debug.log"),
         format!("run_command_in_krun called\n")
     );
-    crate::debug_epkg!("libkrun: run_command_in_krun starting");
+    crate::debug_epkg!("START run_command_in_krun");
     crate::run::ensure_linux_kvm_ready_for_vm()?;
-    crate::debug_epkg!("libkrun: building config...");
+    crate::debug_epkg!("building config...");
     let config = build_libkrun_config(env_root, run_options, guest_cmd_path)?;
-    crate::debug_epkg!("libkrun: config built, use_vsock={}", config.use_vsock);
+    crate::debug_epkg!("config built, use_vsock={}", config.use_vsock);
 
     if config.use_vsock {
-        crate::debug_epkg!("libkrun: entering vsock mode...");
+        crate::debug_epkg!("entering vsock mode...");
 
         // Handle reverse mode: Guest connects to Host (first run on Windows)
         if config.use_reverse_vsock {
@@ -1465,9 +1465,9 @@ pub fn run_command_in_krun(
             }
         }
 
-        crate::debug_epkg!("libkrun: creating and configuring VM...");
+        crate::debug_epkg!("creating and configuring VM...");
         let vm_ctx = create_and_configure_vm(env_root, run_options, &config)?;
-        crate::debug_epkg!("libkrun: VM configured (ctx_id={})", vm_ctx.ctx.ctx_id);
+        crate::debug_epkg!("VM configured (ctx_id={})", vm_ctx.ctx.ctx_id);
 
         #[cfg(unix)]
         let ready_listener = libkrun_bridge::setup_vsock_ready_listener()?
@@ -1476,7 +1476,7 @@ pub fn run_command_in_krun(
         let ready_pipe = libkrun_bridge::setup_vsock_ready_listener()?
             .ok_or_else(|| eyre::eyre!("libkrun: missing ready listener"))?;
 
-        crate::debug_epkg!("libkrun: vsock ready listener set up");
+        crate::debug_epkg!("vsock ready listener set up");
 
         let ctx_id = vm_ctx.ctx.ctx_id;
         let vsock_sock_path = vm_ctx
@@ -1486,7 +1486,7 @@ pub fn run_command_in_krun(
 
         // Channel to signal VM start failure to avoid waiting 30s on error
         let (start_failed_tx, start_failed_rx) = std::sync::mpsc::channel();
-        crate::debug_epkg!("libkrun: starting VM thread...");
+        crate::debug_epkg!("starting VM thread...");
         let vm_thread = start_libkrun_vm(vm_ctx.ctx, start_failed_tx);
 
         crate::debug_epkg!("libkrun: waiting for guest to be ready (with timeout)...");
