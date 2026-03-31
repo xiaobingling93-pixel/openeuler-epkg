@@ -1279,28 +1279,24 @@ build_static_linux() {
     local arch=$(get_arch "$1")
     local mode="$2"
     local linux_target=$(get_rust_target "$arch")
-
-    # Check if Linux ELF binary already exists
     local build_dir="debug"
     [[ "$mode" == "release" ]] && build_dir="release"
-    local existing_linux_epkg="target/$linux_target/$build_dir/$BINARY_NAME"
-
-    if [[ -f "$existing_linux_epkg" ]]; then
-        echo "[SKIP] Linux ELF ($arch) already exists: $existing_linux_epkg"
-        # Still deploy and update hardlinks
-        deploy_release_binary "$existing_linux_epkg" "epkg-linux-${arch}"
-        install_hardlink "$existing_linux_epkg" "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
-        echo "[DEPLOY-hardlink] $DEV_ENV_BIN_DIR/epkg-linux-${arch}"
-        update_all_env_hardlinks "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
-        return 0
-    fi
 
     echo "[BUILD] Linux ELF ($arch, $mode) for VM mode..."
 
     # Check for musl cross-compiler
-    local cross_compiler=$(get_cross_compiler "$arch")
+    # Try multiple compiler names in order of preference:
+    # 1. aarch64-linux-musl-gcc (messense/macos-cross-toolchains tap)
+    # 2. aarch64-unknown-linux-musl-gcc (official naming)
+    # 3. $arch-linux-gnu-gcc (glibc cross-compiler, fallback)
+    # 4. musl-gcc (native musl on x86_64)
     local cc_for_linux=""
-    if [[ -n "$cross_compiler" ]] && has_cmd "$cross_compiler"; then
+    local cross_compiler=$(get_cross_compiler "$arch")
+    if [[ "$arch" == "aarch64" ]] && has_cmd aarch64-linux-musl-gcc; then
+        cc_for_linux="aarch64-linux-musl-gcc"
+    elif [[ "$arch" == "aarch64" ]] && has_cmd aarch64-unknown-linux-musl-gcc; then
+        cc_for_linux="aarch64-unknown-linux-musl-gcc"
+    elif [[ -n "$cross_compiler" ]] && has_cmd "$cross_compiler"; then
         cc_for_linux="$cross_compiler"
     elif has_cmd musl-gcc; then
         cc_for_linux="musl-gcc"
@@ -1334,12 +1330,11 @@ build_static_linux() {
     # Force static CRT linkage for musl
     export RUSTFLAGS="-C target-feature=+crt-static -C linker=$cc_for_linux"
 
-    # Build Linux binary with libkrun feature for VM support
+    # Build Linux binary WITHOUT libkrun feature
+    # The Linux ELF binary runs as VM guest, so it doesn't need libkrun
+    # libkrun is only needed on the host side (macOS/Windows native binary)
     local cargo_feature_args=()
-    if should_enable_libkrun "$arch" "linux"; then
-        cargo_feature_args=(--features "libkrun")
-        echo "Building Linux ELF with libkrun feature for VM mode"
-    fi
+    echo "Building Linux ELF for VM guest mode"
 
     local cargo_args=()
     if [[ "$mode" == "release" ]]; then
@@ -1572,6 +1567,19 @@ build_static() {
         mkdir -p "target/$mode"
         ln -sf "$PROJECT_ROOT/target/$rust_target/$build_dir/$BINARY_NAME" target/$mode/epkg
         install_to_dev_env "$PROJECT_ROOT/target/$rust_target/$build_dir/$BINARY_NAME" "$arch"
+    fi
+
+    # On macOS, show build completion and deploy status
+    if [[ "$is_macos" == "true" ]]; then
+        echo "[BUILD-OK] macOS ($arch, $mode): target/$rust_target/$build_dir/$BINARY_NAME"
+        # Deploy macOS binary to dist/ (only for release mode, deploy_release_binary handles this)
+        if [[ "$mode" == "release" ]]; then
+            deploy_release_binary "target/$rust_target/$build_dir/$BINARY_NAME" "epkg-macos-${arch}"
+        fi
+        # Deploy to self environment
+        install_hardlink "target/$rust_target/$build_dir/$BINARY_NAME" "$DEV_ENV_BIN_DIR/$BINARY_NAME"
+        echo "[DEPLOY-hardlink] $DEV_ENV_BIN_DIR/$BINARY_NAME"
+        echo "[DONE] native macOS build completed"
     fi
 }
 
