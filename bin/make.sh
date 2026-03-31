@@ -594,7 +594,7 @@ update_all_env_hardlinks() {
     # Update Windows-side environments (WSL only)
     # Optimization: First file needs XDEV copy (ext4->NTFS), subsequent use hardlink within NTFS
     local win_profile_wsl
-    win_profile_wsl="$(get_windows_user_profile_wsl 2>/dev/null)"
+    win_profile_wsl="$(get_windows_user_profile_wsl 2>/dev/null)" || true
     if [[ -n "$win_profile_wsl" ]]; then
         local win_envs_dir="${win_profile_wsl}/.epkg/envs"
         if [[ -d "$win_envs_dir" ]]; then
@@ -886,6 +886,10 @@ get_package_manager_config() {
             case "$mode" in
                 dev|crossdev)
                     packages="rustup lua openssl pkg-config"
+                    # Add musl cross-compiler for aarch64 Linux cross-compilation
+                    # This enables building Linux ELF binaries for VM mode
+                    # Tap: messense/macos-cross-toolchains
+                    packages="$packages messense/macos-cross-toolchains/aarch64-unknown-linux-musl"
                     ;;
                 sandbox)
                     # No sandbox packages needed on macOS
@@ -1267,10 +1271,115 @@ detect_os_from_target() {
     fi
 }
 
+# Build Linux ELF binary (cross-compile for macOS/Windows hosts)
+# This is called automatically on macOS when running 'make' to ensure
+# the Linux binary for VM mode is available.
+# Usage: build_static_linux <arch> <mode>
+build_static_linux() {
+    local arch=$(get_arch "$1")
+    local mode="$2"
+    local linux_target=$(get_rust_target "$arch")
+
+    # Check if Linux ELF binary already exists
+    local build_dir="debug"
+    [[ "$mode" == "release" ]] && build_dir="release"
+    local existing_linux_epkg="target/$linux_target/$build_dir/$BINARY_NAME"
+
+    if [[ -f "$existing_linux_epkg" ]]; then
+        echo "[SKIP] Linux ELF ($arch) already exists: $existing_linux_epkg"
+        # Still deploy and update hardlinks
+        deploy_release_binary "$existing_linux_epkg" "epkg-linux-${arch}"
+        install_hardlink "$existing_linux_epkg" "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
+        echo "[DEPLOY-hardlink] $DEV_ENV_BIN_DIR/epkg-linux-${arch}"
+        update_all_env_hardlinks "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
+        return 0
+    fi
+
+    echo "[BUILD] Linux ELF ($arch, $mode) for VM mode..."
+
+    # Check for musl cross-compiler
+    local cross_compiler=$(get_cross_compiler "$arch")
+    local cc_for_linux=""
+    if [[ -n "$cross_compiler" ]] && has_cmd "$cross_compiler"; then
+        cc_for_linux="$cross_compiler"
+    elif has_cmd musl-gcc; then
+        cc_for_linux="musl-gcc"
+    else
+        echo "[WARN] No musl cross-compiler found for $arch"
+        echo "       Linux ELF binary not available. VM mode will download it on first use."
+        echo "       To enable cross-compilation, install: brew install messense/macos-cross-toolchains/aarch64-unknown-linux-musl"
+        return 0
+    fi
+
+    # Install Rust target if needed
+    if has_cmd rustup; then
+        rustup target add "$linux_target"
+    fi
+
+    # Set up environment for Linux target build
+    local saved_CC="$CC"
+    local saved_CFLAGS="$CFLAGS"
+    local saved_RUSTFLAGS="${RUSTFLAGS:-}"
+
+    export CC="$cc_for_linux"
+    export CFLAGS="-D_FILE_OFFSET_BITS=64 -U_LARGEFILE64_SOURCE"
+    local target_var="${linux_target//-/_}"
+    export "CFLAGS_${target_var}"="$CFLAGS"
+    export "CC_${target_var}"="$CC"
+
+    # Set linker for cross-compilation
+    local target_upper=$(echo "${linux_target//-/_}" | tr '[:lower:]' '[:upper:]')
+    export "CARGO_TARGET_${target_upper}_LINKER=$cc_for_linux"
+
+    # Force static CRT linkage for musl
+    export RUSTFLAGS="-C target-feature=+crt-static -C linker=$cc_for_linux"
+
+    # Build Linux binary with libkrun feature for VM support
+    local cargo_feature_args=()
+    if should_enable_libkrun "$arch" "linux"; then
+        cargo_feature_args=(--features "libkrun")
+        echo "Building Linux ELF with libkrun feature for VM mode"
+    fi
+
+    local cargo_args=()
+    if [[ "$mode" == "release" ]]; then
+        cargo_args=(--release)
+    fi
+
+    cargo build --target "$linux_target" --ignore-rust-version "${cargo_args[@]}" "${cargo_feature_args[@]}"
+
+    echo "[BUILD-OK] Linux ELF ($arch, $mode): target/$linux_target/$build_dir/$BINARY_NAME"
+
+    # Restore environment
+    export CC="$saved_CC"
+    export CFLAGS="$saved_CFLAGS"
+    export RUSTFLAGS="$saved_RUSTFLAGS"
+    unset "CFLAGS_${target_var}"
+    unset "CC_${target_var}"
+    unset "CARGO_TARGET_${target_upper}_LINKER"
+
+    # Deploy Linux ELF to dist/ and self environment
+    local linux_epkg="target/$linux_target/$build_dir/$BINARY_NAME"
+    if [[ -f "$linux_epkg" ]]; then
+        deploy_release_binary "$linux_epkg" "epkg-linux-${arch}"
+        install_hardlink "$linux_epkg" "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
+        echo "[DEPLOY-hardlink] $DEV_ENV_BIN_DIR/epkg-linux-${arch}"
+
+        # Update hardlinks in all environments
+        update_all_env_hardlinks "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
+    fi
+}
+
 # Build static binary for a specific architecture with mode (debug/release)
 # This is the DEFAULT and RECOMMENDED build method for all platforms
 # - Produces self-contained, portable binaries
 # - libkrun auto-enabled for supported platforms (see matrix above)
+#
+# On macOS, this function also cross-compiles Linux ELF binary for VM mode:
+#   1. First builds Linux target (for VM guest init)
+#   2. Then builds native macOS target
+#   3. Deploys both binaries to dist/ and self environment
+#
 # Usage: build_static <arch> <mode>
 build_static() {
     local arch=$(get_arch "$1")
@@ -1281,6 +1390,18 @@ build_static() {
 
     # Detect host OS and determine target
     local host_os=$(uname -s)
+    local is_macos=false
+    local is_windows=false
+    [[ "$host_os" == "Darwin" ]] && is_macos=true
+    [[ "$host_os" == MINGW* || "$host_os" == MSYS* || "$host_os" == CYGWIN* ]] && is_windows=true
+
+    # On macOS, first cross-compile Linux ELF binary for VM mode
+    # This is needed because macOS runs natively (unlike Windows which uses WSL2)
+    if [[ "$is_macos" == "true" ]]; then
+        # Build Linux target first for VM mode
+        build_static_linux "$arch" "$mode"
+    fi
+
     if [[ "$host_os" == "Darwin" ]]; then
         # On macOS, build for native macOS target
         rust_target=$(get_rust_target_for_platform "$arch" "darwin")
@@ -1322,13 +1443,6 @@ build_static() {
     fi
 
     echo "Building $arch binary ($mode)..."
-
-    # Detect host OS
-    local host_os=$(uname -s)
-    local is_macos=false
-    local is_windows=false
-    [[ "$host_os" == "Darwin" ]] && is_macos=true
-    [[ "$host_os" == MINGW* || "$host_os" == MSYS* || "$host_os" == CYGWIN* ]] && is_windows=true
 
     # On macOS/Windows, we don't need Lua (it's only for Linux RPM scriptlets)
     # On Linux, we need Lua for RPM scriptlet support
