@@ -823,22 +823,21 @@ fn create_and_configure_vm(
 
         // Add serial console device for Windows VMs.
         // This is required for the kernel to have a working console on WHPX.
-        // When debugging, connect to stdout so kernel messages appear in terminal.
-        // When not debugging, connect to null device so kernel messages don't pollute output.
+        //
+        // IMPORTANT: Only call add_serial_console when EPKG_DEBUG_LIBKRUN is NOT set.
+        // When EPKG_DEBUG_LIBKRUN is set, setup_console_output() sets console_output file,
+        // and libkrun will automatically create a serial device using that file.
+        // Calling add_serial_console would override this and break console logging.
         #[cfg(target_os = "windows")]
         {
-            if std::env::var("EPKG_DEBUG_LIBKRUN").is_ok() {
-                ctx.add_serial_console(0, 1)?;
-                log::info!("libkrun: serial console added (ttyS0 -> stdout)");
-            } else {
-                // Use Windows API to open NUL device and convert to CRT fd.
-                // libkrun's CrtFdWriter uses libc::write() which expects a CRT fd,
-                // NOT a raw Windows HANDLE. We must use open_osfhandle to convert.
+            if std::env::var("EPKG_DEBUG_LIBKRUN").is_err() {
+                // Not debugging: add serial console to NUL to discard kernel messages
                 use windows::Win32::Storage::FileSystem::{
                     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
                     OPEN_EXISTING,
                 };
                 use windows::Win32::Foundation::INVALID_HANDLE_VALUE;
+                use windows::Win32::Foundation::CloseHandle;
                 use windows::core::PCWSTR;
 
                 let nul_path: Vec<u16> = "NUL".encode_utf16().chain(std::iter::once(0)).collect();
@@ -865,7 +864,7 @@ fn create_and_configure_vm(
                             log::info!("libkrun: serial console added (ttyS0 -> NUL, fd={})", null_fd);
                         } else {
                             // open_osfhandle failed, close the handle and fallback
-                            let _ = windows::Win32::Foundation::CloseHandle(h);
+                            let _ = CloseHandle(h);
                             ctx.add_serial_console(0, 1)?;
                             log::warn!("libkrun: open_osfhandle failed, serial console -> stdout");
                         }
@@ -877,6 +876,8 @@ fn create_and_configure_vm(
                     }
                 }
             }
+            // When EPKG_DEBUG_LIBKRUN is set, setup_console_output() already configured
+            // console output to a file. libkrun will create a serial device automatically.
         }
 
         // For non-embedded_init mode, explicitly set the init path via krun_set_exec.
@@ -1588,13 +1589,26 @@ fn setup_console_output(ctx_id: u32) -> Result<()> {
     std::fs::File::create(&console_log_path)
         .map_err(|e| eyre::eyre!("Failed to create console log file: {}", e))?;
 
-    let console_log = CString::new(console_log_path.to_string_lossy().as_bytes())
+    // On Windows, convert path to Windows format (backslashes)
+    #[cfg(target_os = "windows")]
+    let console_log_path_str = {
+        // Convert Unix path to Windows path
+        let path_str = console_log_path.to_string_lossy().to_string();
+        // The path might already be in Windows format from dirs(), but ensure it
+        log::debug!("libkrun: console log path (raw): {}", path_str);
+        path_str
+    };
+    #[cfg(not(target_os = "windows"))]
+    let console_log_path_str = console_log_path.to_string_lossy().to_string();
+
+    let console_log = CString::new(console_log_path_str.as_bytes())
         .map_err(|e| eyre::eyre!("invalid console log path: {}", e))?;
 
+    log::info!("libkrun: krun_set_console_output path={}", console_log_path_str);
     check_status("krun_set_console_output",
         unsafe { krun_set_console_output(ctx_id, console_log.as_ptr()) }
     )?;
-    log::debug!("libkrun: console output -> {}", console_log_path.display());
+    log::info!("libkrun: console output -> {}", console_log_path.display());
 
     // Set the kernel console device to redirect serial console output to the log file.
     // On Windows, use "ttyS0" since kernel cmdline has console=ttyS0.
