@@ -423,11 +423,22 @@ fn setup_logging() {
 
 #[cfg(not(test))]
 fn session_log_basename() -> String {
+    // Try local time first, fall back to UTC if local time fails
     let timestamp = match OffsetDateTime::now_local() {
         Ok(dt) => dt.format(&format_description!(
             "[year][month][day]_[hour][minute][second]"
-        )).unwrap_or_else(|_| "unknown".to_string()),
-        Err(_) => "unknown".to_string(),
+        )).unwrap_or_else(|_| {
+            // Fall back to UTC
+            OffsetDateTime::now_utc().format(&format_description!(
+                "[year][month][day]_[hour][minute][second]"
+            )).unwrap_or_else(|_| "unknown".to_string())
+        }),
+        Err(_) => {
+            // Fall back to UTC
+            OffsetDateTime::now_utc().format(&format_description!(
+                "[year][month][day]_[hour][minute][second]"
+            )).unwrap_or_else(|_| "unknown".to_string())
+        },
     };
     let pid = std::process::id();
     format!("epkg_{}_{}.log", timestamp, pid)
@@ -461,8 +472,13 @@ fn try_open_session_log_in_dir(log_dir: &Path) {
 }
 
 /// After `init_config`, session logs go under `epkg_cache/logs` (same root as downloads/channels on every OS).
+/// Only creates log file when RUST_LOG or EPKG_DEBUG_LIBKRUN is set.
 #[cfg(not(test))]
 fn attach_session_log_under_epkg_cache() {
+    // Only create session log when debugging is enabled
+    if std::env::var_os("RUST_LOG").is_none() && std::env::var_os("EPKG_DEBUG_LIBKRUN").is_none() {
+        return;
+    }
     let dir = crate::models::dirs().epkg_cache.join("logs");
     try_open_session_log_in_dir(&dir);
 }
