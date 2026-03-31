@@ -3,7 +3,7 @@ use std::ffi::CString;
 use std::io::Write;
 use std::path::Path;
 use std::ptr;
-#[cfg(not(target_os = "linux"))]
+#[cfg(feature = "libkrun")]
 use std::sync::Mutex;
 use std::thread;
 
@@ -1089,7 +1089,8 @@ impl Drop for KrunContext {
 }
 
 /// Active libkrun VM for install/upgrade reuse on non-Linux hosts (one session per epkg process).
-#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+#[cfg(feature = "libkrun")]
+#[allow(dead_code)]
 struct VmReuseSession {
     ctx_id:            u32,
     vsock_sock_path:   std::path::PathBuf,
@@ -1102,7 +1103,7 @@ struct VmReuseSession {
     reverse_listener:  Option<std::os::unix::net::UnixListener>,
 }
 
-#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+#[cfg(feature = "libkrun")]
 static VM_REUSE_SESSION: Mutex<Option<VmReuseSession>> = Mutex::new(None);
 
 #[cfg(feature = "libkrun")]
