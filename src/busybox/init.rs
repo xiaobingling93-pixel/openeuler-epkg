@@ -557,6 +557,15 @@ fn exec_vm_daemon() -> Result<()> {
     log::debug!("init: exec_vm_daemon() started");
     let _ = kmsg_write("<6>exec_vm_daemon: starting\n");
 
+    // Set PATH for shells that require it in the environment (e.g., yash).
+    // Some shells (busybox sh, dash) have a built-in default PATH and work without
+    // PATH in the environment, but yash requires PATH to be explicitly set.
+    // This ensures consistent behavior across different shell implementations.
+    // The vm_daemon will pass this PATH to child processes spawned for commands.
+    if std::env::var("PATH").is_err() {
+        std::env::set_var("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
+    }
+
     // Check if we should use reverse vsock mode (Guest connects to Host)
     // This is set by Host when starting VM in reverse mode (Windows/WHPX first run)
     let reverse_mode = get_cmdline_param("epkg.vsock_reverse").map_or(false, |v| v == "1");
@@ -622,6 +631,14 @@ fn exec_command(cmd_str: &str) -> Result<()> {
     };
     if set_ps1 {
         std::env::set_var("PS1", "\\[\\033[01;32m\\]\\w\\[\\033[0m\\] $ ");
+    }
+
+    // Set PATH for shells that require it in the environment (e.g., yash).
+    // Some shells (busybox sh, dash) have a built-in default PATH and work without
+    // PATH in the environment, but yash requires PATH to be explicitly set.
+    // This ensures consistent behavior across different shell implementations.
+    if std::env::var("PATH").is_err() {
+        std::env::set_var("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
     }
 
     log::debug!("init: exec cmd={:?} args={:?}", cmd, args);
