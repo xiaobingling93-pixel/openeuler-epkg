@@ -1302,10 +1302,13 @@ fn run_reverse_vsock_mode_inner(
     run_options: &RunOptions,
     config: &LibkrunConfig,
 ) -> Result<()> {
-    crate::debug_epkg!("entering reverse vsock mode (Guest -> Host)");
+    crate::debug_epkg!("[PERF] === REVERSE_VSOCK_MODE START ===");
+    let total_start = std::time::Instant::now();
 
     // Create VM with reverse mode (port 10000 listen=false, Host listens)
+    let vm_create_start = std::time::Instant::now();
     let vm_ctx = create_and_configure_vm(env_root, run_options, config)?;
+    crate::debug_epkg!("[PERF] VM config took {:.3}ms", vm_create_start.elapsed().as_secs_f64() * 1000.0);
     crate::debug_epkg!("VM configured (ctx_id={})", vm_ctx.ctx.ctx_id);
 
     let vsock_sock_path = vm_ctx
@@ -1326,14 +1329,18 @@ fn run_reverse_vsock_mode_inner(
 
     // Channel to signal VM start failure
     let (start_failed_tx, start_failed_rx) = std::sync::mpsc::channel();
-    crate::debug_epkg!("starting VM thread...");
+    crate::debug_epkg!("[PERF] starting VM thread...");
+    let vm_start = std::time::Instant::now();
     let vm_thread = start_libkrun_vm(vm_ctx.ctx, start_failed_tx);
 
     // Wait for Guest to connect (with timeout)
-    crate::debug_epkg!("waiting for Guest to connect...");
+    crate::debug_epkg!("[PERF] waiting for Guest to connect...");
     #[cfg(unix)]
     let stream = match libkrun_bridge::accept_reverse_connection(&reverse_listener, Some(&start_failed_rx)) {
-        Ok(s) => s,
+        Ok(s) => {
+            crate::debug_epkg!("[PERF] Guest connected after {:.3}ms", vm_start.elapsed().as_secs_f64() * 1000.0);
+            s
+        }
         Err(e) => {
             crate::debug_epkg!("accept_reverse_connection FAILED: {}", e);
             return Err(e);
@@ -1341,14 +1348,18 @@ fn run_reverse_vsock_mode_inner(
     };
     #[cfg(windows)]
     let stream = match libkrun_bridge::accept_reverse_connection(reverse_pipe, Some(&start_failed_rx)) {
-        Ok(s) => s,
+        Ok(s) => {
+            crate::debug_epkg!("[PERF] Guest connected after {:.3}ms", vm_start.elapsed().as_secs_f64() * 1000.0);
+            s
+        }
         Err(e) => {
             crate::debug_epkg!("accept_reverse_connection FAILED: {}", e);
             return Err(e);
         }
     };
 
-    crate::debug_epkg!("Guest connected, sending command...");
+    crate::debug_epkg!("[PERF] Guest connected, sending command...");
+    let cmd_start = std::time::Instant::now();
 
     // Send command over the accepted connection
     // On Windows, use the named-pipe-specific function that calls FlushFileBuffers
@@ -1360,6 +1371,7 @@ fn run_reverse_vsock_mode_inner(
         stream,
     ) {
         Ok(code) => {
+            crate::debug_epkg!("[PERF] command execution took {:.3}ms", cmd_start.elapsed().as_secs_f64() * 1000.0);
             crate::debug_epkg!("command completed, exit_code={}", code);
             code
         }
@@ -1376,6 +1388,7 @@ fn run_reverse_vsock_mode_inner(
         stream,
     ) {
         Ok(code) => {
+            crate::debug_epkg!("[PERF] command execution took {:.3}ms", cmd_start.elapsed().as_secs_f64() * 1000.0);
             crate::debug_epkg!("command completed, exit_code={}", code);
             code
         }
@@ -1405,10 +1418,15 @@ fn run_reverse_vsock_mode_inner(
 
     // For no_exit mode (e.g., scriptlets), shutdown VM and return instead of exiting process
     if run_options.no_exit {
+        crate::debug_epkg!("[PERF] shutting down VM (no_exit mode)...");
+        let shutdown_start = std::time::Instant::now();
         krun_vsock_shutdown_join_free(vm_thread, ctx_id);
+        crate::debug_epkg!("[PERF] VM shutdown took {:.3}ms", shutdown_start.elapsed().as_secs_f64() * 1000.0);
         return apply_krun_exit_policy(exit_code, run_options);
     }
 
+    crate::debug_epkg!("[PERF] TOTAL time {:.3}ms", total_start.elapsed().as_secs_f64() * 1000.0);
+    crate::debug_epkg!("[PERF] shutting down VM and exiting...");
     krun_vsock_shutdown_join_free_exit(vm_thread, ctx_id, exit_code);
 }
 

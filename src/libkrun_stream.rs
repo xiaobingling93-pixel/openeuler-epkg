@@ -141,7 +141,8 @@ fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32
     use std::io::BufReader;
     use std::io::BufRead;
 
-    crate::debug_epkg!("handle_streaming_simple: starting, is_batch={}", is_batch);
+    crate::debug_epkg!("handle_streaming_simple: [PERF] starting, is_batch={}", is_batch);
+    let func_start = std::time::Instant::now();
     // In reverse vsock mode, the guest sends "READY\n" first to signal readiness.
     // We need to read and skip this signal before reading the actual response.
     // For non-batch mode, this is handled by the line-by-line parser.
@@ -209,6 +210,7 @@ fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32
             std::io::stderr().write_all(&stderr_bytes)?;
         }
         crate::debug_epkg!("handle_streaming_simple: returning exit_code={}", result.exit_code);
+        crate::debug_epkg!("handle_streaming_simple: [PERF] total time {:.3}ms", func_start.elapsed().as_secs_f64() * 1000.0);
         Ok(result.exit_code)
     } else {
         // Stream mode: read line by line, each line is a JSON message
@@ -647,17 +649,19 @@ pub fn send_command_over_named_pipe(
     // Build and send command request
     let request = build_command_request(cmd_parts, io_mode, reuse_vm);
     let request_json = serde_json::to_vec(&request)?;
-    crate::debug_epkg!("libkrun_stream: writing {} bytes to named pipe", request_json.len());
+    crate::debug_epkg!("libkrun_stream: [PERF] writing {} bytes to named pipe", request_json.len());
+    let write_start = std::time::Instant::now();
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
 
     // CRITICAL: Use FlushFileBuffers to ensure data is sent to the named pipe.
     // Standard flush() is a no-op for File; named pipes need this Windows API.
-    crate::debug_epkg!("libkrun_stream: calling FlushFileBuffers...");
     flush_named_pipe(&stream)?;
-    crate::debug_epkg!("libkrun_stream: FlushFileBuffers complete, waiting for response...");
+    crate::debug_epkg!("libkrun_stream: [PERF] write+flush took {:.3}ms", write_start.elapsed().as_secs_f64() * 1000.0);
+    crate::debug_epkg!("libkrun_stream: [PERF] waiting for response...");
 
     // Handle response
+    let response_start = std::time::Instant::now();
     let result = if use_pty {
         handle_streaming_simple(&mut stream, false)
     } else if is_batch {
@@ -665,6 +669,7 @@ pub fn send_command_over_named_pipe(
     } else {
         handle_streaming_simple(&mut stream, false)
     };
+    crate::debug_epkg!("libkrun_stream: [PERF] response handling took {:.3}ms", response_start.elapsed().as_secs_f64() * 1000.0);
 
     match &result {
         Ok(code) => crate::debug_epkg!("libkrun_stream: command completed with exit code {}", code),

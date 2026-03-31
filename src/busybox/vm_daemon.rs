@@ -1070,14 +1070,23 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
     log::debug!("[vm_daemon] Connection accepted, starting handle_connection");
     let _ = kmsg_write("<6>handle_connection: handle_connection started\n");
 
-    // Debug file write for visibility from host
+    // Debug file write for visibility from host (with timestamp)
     let debug_file_write = |msg: &str| {
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/opt/epkg/guest-debug.log") {
-            let _ = write!(f, "{}", msg);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            let secs = now.as_secs() % 86400;
+            let hours = secs / 3600;
+            let mins = (secs % 3600) / 60;
+            let secs = secs % 60;
+            let millis = now.subsec_millis();
+            let _ = write!(f, "{:02}:{:02}:{:02}.{:03} {}", hours, mins, secs, millis, msg);
         }
     };
 
-    debug_file_write("handle_connection: started\n");
+    let _func_start = std::time::Instant::now();
+    debug_file_write("[PERF] handle_connection: started\n");
     log::debug!("handle_connection: new connection");
     let _ = kmsg_write("<6>handle_connection: new connection\n");
     log_process_identity("vm-daemon handle_connection");
@@ -1439,12 +1448,22 @@ fn run_reverse_vsock_client() -> Result<()> {
     // Also write to virtiofs-mounted file for visibility from host
     let debug_file_write = |msg: &str| {
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/opt/epkg/guest-debug.log") {
-            let _ = write!(f, "{}", msg);
+            // Add timestamp HH:MM:SS.mmm
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            let secs = now.as_secs() % 86400;
+            let hours = secs / 3600;
+            let mins = (secs % 3600) / 60;
+            let secs = secs % 60;
+            let millis = now.subsec_millis();
+            let _ = write!(f, "{:02}:{:02}:{:02}.{:03} {}", hours, mins, secs, millis, msg);
         }
     };
 
     kmsg_write("<6>run_reverse_vsock_client: starting\n");
-    debug_file_write("run_reverse_vsock_client: starting\n");
+    debug_file_write("[PERF] === REVERSE_VSOCK_CLIENT START ===\n");
+    let total_start = std::time::Instant::now();
     log::debug!("vm-daemon: reverse mode - connecting to Host...");
 
     // Create vsock socket
@@ -1467,13 +1486,13 @@ fn run_reverse_vsock_client() -> Result<()> {
 
     let mut retry_count = 0;
     let mut retry_delay_ms = CONNECT_RETRY_DELAY_MS;
+    let connect_start = std::time::Instant::now();
     let stream = loop {
         match connect(fd.as_raw_fd(), &host_addr) {
             Ok(_) => {
                 kmsg_write("<6>run_reverse_vsock_client: connected to host\n");
-                debug_file_write("run_reverse_vsock_client: connected to host\n");
+                debug_file_write(&format!("[PERF] vsock connect took {:.3}ms\n", connect_start.elapsed().as_secs_f64() * 1000.0));
                 log::debug!("vm-daemon: connected to Host");
-                log::debug!("vm-daemon: successfully connected to host");
                 break unsafe { std::net::TcpStream::from_raw_fd(fd.into_raw_fd()) };
             }
             Err(e) => {
@@ -1493,16 +1512,16 @@ fn run_reverse_vsock_client() -> Result<()> {
 
     // Send ready signal to Host
     kmsg_write("<6>run_reverse_vsock_client: sending READY\n");
-    debug_file_write("run_reverse_vsock_client: sending READY\n");
+    debug_file_write("[PERF] sending READY signal to Host\n");
     log::debug!("vm-daemon: sending READY signal to Host");
-    log::debug!("vm-daemon: sending READY signal to host");
+    let ready_start = std::time::Instant::now();
     let mut stream = stream;
     stream.write_all(b"READY\n")?;
     stream.flush()?;
-    debug_file_write("run_reverse_vsock_client: READY sent and flushed\n");
+    debug_file_write(&format!("[PERF] READY sent and flushed ({:.3}ms)\n", ready_start.elapsed().as_secs_f64() * 1000.0));
 
     kmsg_write("<6>run_reverse_vsock_client: entering handle_connection\n");
-    debug_file_write("run_reverse_vsock_client: entering handle_connection\n");
+    debug_file_write(&format!("[PERF] entering handle_connection (total so far: {:.3}ms)\n", total_start.elapsed().as_secs_f64() * 1000.0));
     log::debug!("vm-daemon: handling connection in reverse mode");
 
     // Handle the connection (same as forward mode)
