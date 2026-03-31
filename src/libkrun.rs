@@ -820,7 +820,9 @@ fn create_and_configure_vm(
                 ctx.add_serial_console(0, 1)?;
                 log::info!("libkrun: serial console added (ttyS0 -> stdout)");
             } else {
-                // Use Windows API to open NUL device
+                // Use Windows API to open NUL device and convert to CRT fd.
+                // libkrun's CrtFdWriter uses libc::write() which expects a CRT fd,
+                // NOT a raw Windows HANDLE. We must use open_osfhandle to convert.
                 use windows::Win32::Storage::FileSystem::{
                     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
                     OPEN_EXISTING,
@@ -843,9 +845,19 @@ fn create_and_configure_vm(
 
                 match null_handle {
                     Ok(h) if h != INVALID_HANDLE_VALUE => {
-                        let null_fd = h.0 as i32;
-                        ctx.add_serial_console(null_fd, null_fd)?;
-                        log::info!("libkrun: serial console added (ttyS0 -> NUL)");
+                        // Convert HANDLE to CRT fd using open_osfhandle.
+                        // CrtFdWriter in libkrun uses libc::write() which requires CRT fd.
+                        let handle_value = h.0 as libc::intptr_t;
+                        let null_fd = libc::open_osfhandle(handle_value, libc::O_RDWR);
+                        if null_fd >= 0 {
+                            ctx.add_serial_console(null_fd, null_fd)?;
+                            log::info!("libkrun: serial console added (ttyS0 -> NUL, fd={})", null_fd);
+                        } else {
+                            // open_osfhandle failed, close the handle and fallback
+                            let _ = windows::Win32::Foundation::CloseHandle(h);
+                            ctx.add_serial_console(0, 1)?;
+                            log::warn!("libkrun: open_osfhandle failed, serial console -> stdout");
+                        }
                     }
                     _ => {
                         // Fallback: still add serial console but output may appear
