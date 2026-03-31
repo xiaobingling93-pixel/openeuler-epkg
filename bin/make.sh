@@ -1450,9 +1450,9 @@ build_static() {
         #         /lib64/ld-linux-x86-64.so.2 (0x00007f0b433ab000)
         #         libdl.so.2 => /lib/x86_64-linux-gnu/libdl.so.2 (0x00007f0b43253000)
         #
-        # Also copy to target/$mode/ dir for easy access.
+        # Also create symlink in target/$mode/ dir for easy access.
         mkdir -p "target/$mode"
-        cp -vfs "$PROJECT_ROOT/target/$rust_target/$build_dir/$BINARY_NAME" target/$mode/epkg
+        ln -sf "$PROJECT_ROOT/target/$rust_target/$build_dir/$BINARY_NAME" target/$mode/epkg
         install_to_dev_env "$PROJECT_ROOT/target/$rust_target/$build_dir/$BINARY_NAME" "$arch"
     fi
 }
