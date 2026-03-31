@@ -18,6 +18,7 @@ create_env() {
 }
 
 # Ensure /bin/sh exists in env so lang scripts can run /bin/sh -c '...'
+# On macOS/Windows (libkrun), also create busybox applet symlinks for VM.
 bootstrap_shell() {
     local name="$1"
     log "Bootstrapping shell in $name"
@@ -26,6 +27,25 @@ bootstrap_shell() {
         "$EPKG_BIN" -e "$name" --assume-yes --ignore-missing install bash
     else
         "$EPKG_BIN" -e "$name" --assume-yes --ignore-missing install busybox bash
+    fi
+
+    # On macOS/Windows (libkrun), create busybox applet symlinks in the environment.
+    # The epkg binary has busybox applets built-in, but needs symlinks.
+    # These symlinks are used when running commands inside the VM.
+    local host_os
+    host_os=$(uname -s)
+    if [ "$host_os" = "Darwin" ] || [ "$host_os" = "MINGW" ] || [ "$host_os" = "MSYS" ] || [ "$host_os" = "CYGWIN" ]; then
+        log "Creating busybox applet symlinks for VM (host=$host_os)"
+        local env_root="${EPKG_ENVS_DIR:-$HOME/.epkg/envs}/$name"
+        local bin_dir="$env_root/usr/bin"
+        if [ -f "$bin_dir/epkg" ]; then
+            # Create symlinks for common busybox applets
+            for applet in mkdir ls cat cp mv rm rmdir echo printf sleep true false test pwd; do
+                if [ ! -e "$bin_dir/$applet" ]; then
+                    ln -sf epkg "$bin_dir/$applet" 2>/dev/null || true
+                fi
+            done
+        fi
     fi
 }
 

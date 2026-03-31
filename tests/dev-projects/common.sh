@@ -95,9 +95,12 @@ check_cmd() {
 # Direct run the exposed binary at env ebin/<name> (exercises ebin wrappers). No-op if ENV_ROOT unset.
 # Note: conda/msys2 environments have different library layouts (bin/ instead of usr/bin/, no /lib64/ld-linux-x86-64.so.2)
 # so run_ebin is skipped for conda/msys2. Use "run" instead for conda/msys2 tests.
+# On macOS (Darwin), Linux binaries can't run directly - they need the libkrun VM.
+# So we skip run_ebin on macOS and use "run" (which goes through the VM) instead.
 run_ebin() {
     [ -z "${ENV_ROOT:-}" ] && return 0
     [ "$OS" = "conda" ] || [ "$OS" = "msys2" ] && return 0
+    [ "$(uname -s)" = "Darwin" ] && return 0
     bin=$1
     shift
     "$ENV_ROOT/ebin/$bin" "$@" || exit
@@ -107,6 +110,7 @@ run_ebin() {
 run_ebin_if() {
     [ -z "${ENV_ROOT:-}" ] && return 0
     [ "$OS" = "conda" ] || [ "$OS" = "msys2" ] && return 0
+    [ "$(uname -s)" = "Darwin" ] && return 0
     bin=$1
     [ ! -x "$ENV_ROOT/ebin/$bin" ] && return 0
     shift
