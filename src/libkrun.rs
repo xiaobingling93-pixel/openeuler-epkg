@@ -668,9 +668,12 @@ fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext, reverse: bool) -> Result<
     unsafe {
         check_status("krun_disable_implicit_vsock", krun_disable_implicit_vsock(ctx.ctx_id))?;
         // Enable TSI (Transparent Socket Impersonation) for network access.
+        // Only hijack AF_INET/AF_INET6 sockets for external network communication.
+        // Do NOT hijack AF_UNIX sockets - they are for VM internal communication
+        // and TSI doesn't support them on macOS (would cause blocking errors).
         const KRUN_TSI_HIJACK_INET: u32 = 1 << 0;
-        const KRUN_TSI_HIJACK_UNIX: u32 = 1 << 1;
-        let tsi_features = KRUN_TSI_HIJACK_INET | KRUN_TSI_HIJACK_UNIX;
+        // const KRUN_TSI_HIJACK_UNIX: u32 = 1 << 1;  // Disabled: VM internal communication
+        let tsi_features = KRUN_TSI_HIJACK_INET;
         check_status("krun_add_vsock", krun_add_vsock(ctx.ctx_id, tsi_features))?;
 
         // Port 10000: Command port
