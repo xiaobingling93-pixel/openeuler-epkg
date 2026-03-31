@@ -268,7 +268,8 @@ fn build_libkrun_config(
     };
     #[cfg(any(not(feature = "libkrun"), target_os = "linux"))]
     let has_existing_session = false;
-    // TEMPORARY DEBUG: Always use reverse mode to test the fix
+    // Note: epkg.vsock_reverse=1 is now default in libkrun's DEFAULT_KERNEL_CMDLINE for Windows.
+    // Only explicitly set epkg.vsock_reverse=0 when disabling reverse mode.
     let use_reverse_vsock = use_vsock;
     crate::debug_epkg!("libkrun: use_vsock={} has_existing_session={} use_reverse_vsock={}",
                use_vsock, has_existing_session, use_reverse_vsock);
@@ -326,10 +327,11 @@ fn build_libkrun_config(
         loglevel, vm_perf
     );
     // Uses GUEST_INIT_PATH constant (CARVED IN STONE as /usr/bin/init)
+    // Note: epkg.vsock_reverse=1 is default for Windows (Guest connects to Host)
     #[cfg(all(target_os = "windows", not(feature = "embedded_init")))]
     let base_cmdline = format!(
         "reboot=k panic=-1 panic_print=0 nomodule console=ttyS0 {} {} {} \
-         root=/dev/root rootfstype=virtiofs rw no-kvmapf init={}",
+         root=/dev/root rootfstype=virtiofs rw no-kvmapf epkg.vsock_reverse=1 init={}",
         if vm_debug { "earlyprintk=serial" } else { "" },
         loglevel, vm_perf, GUEST_INIT_PATH
     );
@@ -366,15 +368,9 @@ fn build_libkrun_config(
         log::debug!("libkrun: TSI disabled via EPKG_TSI_DISABLE env var");
     }
 
-    // Enable reverse vsock mode for first run on Windows/WHPX.
-    // In reverse mode, Guest connects to Host, avoiding vsock handshake timing issues.
-    if use_reverse_vsock {
-        kernel_args.push_str(" epkg.vsock_reverse=1");
-        crate::debug_epkg!("libkrun: reverse vsock mode enabled (epkg.vsock_reverse=1)");
-        crate::debug_epkg!("libkrun: kernel_args after adding vsock_reverse: {}", kernel_args);
-    } else {
-        crate::debug_epkg!("libkrun: reverse vsock mode NOT enabled (use_reverse_vsock=false)");
-    }
+    // Note: epkg.vsock_reverse=1 is now default in libkrun's DEFAULT_KERNEL_CMDLINE for Windows.
+    // Only add epkg.vsock_reverse=0 here when explicitly disabling reverse mode (not currently needed).
+    crate::debug_epkg!("libkrun: reverse vsock mode is DEFAULT in libkrun");
     crate::debug_epkg!("libkrun: kernel_args before virtiofs: {}", kernel_args);
 
     // Set init_pwd to current working directory.

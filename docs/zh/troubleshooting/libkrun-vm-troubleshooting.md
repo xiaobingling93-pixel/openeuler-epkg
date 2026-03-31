@@ -28,33 +28,68 @@ WSL2 只是启动媒介，负责安排 `epkg.exe` 到 native Windows 执行：
 - 主机 epkg.exe 通过 vsock 发送 JSON request，包含 `env` 字段
 - Guest 内的 init (epkg Linux ELF) 接收并设置环境变量
 
-### 内核命令行传递问题（待调查）
+### 内核命令行传递问题（已解决）
 
 **问题：内核报告的命令行与libkrun传递的不同**
 
-**现象：**
-- libkrun日志显示：`load_cmdline: final kernel cmdline: "reboot=k ... quiet loglevel=1 epkg.vsock_reverse=1 ..."`
-- 内核报告：`Command line: reboot=k ... earlyprintk=serial loglevel=8 debug ...`
-- 缺少`epkg.vsock_reverse=1`等自定义参数
+**根本原因：**
+- epkg 创建自己的 base_cmdline 传给 krun_set_kernel()
+- libkrun 使用传入的 cmdline 替代 DEFAULT_KERNEL_CMDLINE
+- epkg 的 base_cmdline 没有包含 `epkg.vsock_reverse=1`
 
-**影响：**
-- guest端`reverse_mode=false`（应该为true）
-- vsock通信模式不匹配，导致连接超时
-- VM启动时间增加约5秒（等待超时）
+**解决方案（2026-03-31）：**
+- 在 epkg 的 Windows base_cmdline 中直接添加 `epkg.vsock_reverse=1`
+- libkrun 的 DEFAULT_KERNEL_CMDLINE 也包含此参数作为备用
 
-**已确认正确的部分：**
-- libkrun正确设置了boot_params.hdr.cmd_line_ptr = CMDLINE_START (0x20000)
-- libkrun正确调用了load_cmdline写入cmdline字符串
-- 内核正确接收到%RSI指向boot_params (ZERO_PAGE_START = 0x7000)
+**验证方法：**
+```bash
+# 运行 VM 并查看 cmdline
+/mnt/c/Users/aa/.epkg/envs/self/usr/bin/epkg.exe run -e alpine --io=batch cat /proc/cmdline
+# 应看到 epkg.vsock_reverse=1
+```
 
-**待调查：**
-1. 内核是否在head64.c或setup.c中使用了默认cmdline
-2. 内存映射是否正确（cmdline区域是否可读）
-3. 是否有EFI stub或其他机制覆盖了cmdline
-4. 内核配置中是否有影响cmdline的设置
+### 内核命令行参数设计
 
-**临时解决方案：**
-- 可以考虑在guest端通过其他方式检测reverse模式（如检查vsock连接方向）
+**参数来源优先级：**
+
+1. **epkg base_cmdline** (src/libkrun.rs) - 主控制点
+   - 包含基础启动参数：console, rootfstype, init, 等
+   - Windows: `epkg.vsock_reverse=1` 默认启用
+   - macOS/Linux: 使用 `console=hvc0`
+
+2. **epkg kernel_args** - 动态参数
+   - 用户参数：`run_options.kernel_args`
+   - cmdline 模式：`epkg.init_cmd=...`
+   - 环境变量：`epkg.rust_log=...`
+   - TSI 控制：`epkg.tsi=0` (可选)
+   - 工作目录：`epkg.init_pwd=...` (Linux only)
+   - virtiofs 卷：`epkg.vol_N=tag:guest_path[:ro]`
+
+3. **libkrun DEFAULT_KERNEL_CMDLINE** - 备用/基础
+   - 仅当 epkg 未传入 cmdline 时使用
+   - Windows 包含：console=ttyS0, earlyprintk, lpj, 等
+   - 以及 `epkg.vsock_reverse=1`
+
+**可用 epkg.cmdline 参数：**
+
+| 参数 | 格式 | 说明 |
+|------|------|------|
+| `epkg.vsock_reverse` | `0`/`1` | vsock 反向模式：Guest 连接 Host (Windows 默认=1) |
+| `epkg.init_cmd` | percent-encoded | cmdline 模式下的 guest 命令 |
+| `epkg.rust_log` | percent-encoded | Guest RUST_LOG 环境变量值 |
+| `epkg.tsi` | `0` | 禁用 TSI (默认启用) |
+| `epkg.init_pwd` | percent-encoded | Guest init 工作目录 (Linux only) |
+| `epkg.vol_N` | `tag:guest_path[:ro]` | virtiofs 卷挂载规格 |
+
+**代码位置：**
+
+| 位置 | 文件 | 作用 |
+|------|------|------|
+| epkg base_cmdline | src/libkrun.rs:331-346 | 基础内核参数 |
+| epkg kernel_args | src/libkrun.rs:346-394 | 动态参数组装 |
+| libkrun DEFAULT | git/libkrun/.../kernel_cmdline.rs | 备用默认参数 |
+| libkrun cmdline组装 | git/libkrun/.../builder.rs:2033-2043 | 最终 cmdline 组合 |
+| guest 参数解析 | src/busybox/init.rs | Guest 端解析 cmdline |
 
 ### 内核控制台日志问题分析
 
