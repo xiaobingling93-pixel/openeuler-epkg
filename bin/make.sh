@@ -37,6 +37,10 @@ LUA_VERSION=5.4.7
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUTPUT_DIR=dist
 
+# Default FEATURES to "auto" (auto-enable libkrun for supported platforms)
+# User can override with: FEATURES="" (disable), FEATURES="libkrun" (explicit enable)
+FEATURES="${FEATURES:-auto}"
+
 # On Windows (MSYS2/MinGW), ensure TMP/TEMP points to a writable directory.
 # MinGW linker may default to C:\WINDOWS\ which requires admin privileges.
 setup_windows_temp() {
@@ -1561,22 +1565,45 @@ build_release() {
 
 # Cross-compilation to macOS
 # Note: Lua is only needed for Linux RPM scriptlets (disabled for macOS)
+#
+# Cross-compilation to macOS (aarch64 only; x86_64 not supported by libkrun)
+# Note: macOS cross-compilation requires two build steps:
+#   1. `make` - builds the Linux binary for the guest init process
+#   2. `make cross-macos` - cross-compiles the macOS binary
+#
+# Hardlink deployment chain (atomic updates across all envs):
+#   build:  target/aarch64-unknown-linux-musl/debug/epkg
+#              |
+#              v (make.sh deploy: install_hardlink)
+#   self:   ~/.epkg/envs/self/usr/bin/epkg-linux-aarch64
+#              |
+#              v (make.sh: update_all_env_hardlinks)
+#   envs:   ~/.epkg/envs/<env>/usr/bin/epkg  ----> (hardlink, same inode as self's epkg-linux)
+#           ~/.epkg/envs/<env>/usr/bin/init  ----> (hardlink, same inode as self's epkg-linux)
+#           ~/.epkg/envs/<env>/usr/bin/vm-daemon -> epkg (symlink, not hardlink)
+#
 # Usage: cross-macos <arch> [mode]
-#   arch: aarch64 (default) or x86_64
+#   arch: aarch64 (default)
 #   mode: debug (default) or release
 cross-macos() {
     local arch="${1:-aarch64}"
     local mode="${2:-debug}"
+
+    if [[ "$arch" != "aarch64" ]]; then
+        echo "Warning: macOS x86_64 is not supported by libkrun (Hypervisor.framework limitation)"
+        echo "         Building without libkrun support..."
+    fi
+
+    # Always build Linux binary first - needed for VM mode deployment
+    # Unconditional: code may have changed even if binary exists
+    build_static "$arch" debug
+
     local target=""
     case "$arch" in
         x86_64) target="$RUST_TARGET_X86_64_DARWIN" ;;
         aarch64) target="$RUST_TARGET_AARCH64_DARWIN" ;;
         *) echo "Unsupported architecture for macOS: $arch"; exit 1 ;;
     esac
-
-    # Always build Linux binary first - needed for VM mode deployment
-    # Unconditional: code may have changed even if binary exists
-    build_static x86_64 debug
 
     echo "[BUILD] macOS ($arch, $mode)..."
     # Install Rust target if needed
@@ -1587,7 +1614,7 @@ cross-macos() {
     # Setup cross-compilation environment
     setup_cross_env "$target"
 
-    # Auto-enable libkrun for macOS if not explicitly set
+    # Auto-enable libkrun for macOS aarch64 if not explicitly set
     # Note: FEATURES="" means user explicitly wants no features
     local cargo_features=""
     if [[ "$FEATURES" == "auto" ]]; then
@@ -1597,6 +1624,10 @@ cross-macos() {
         fi
     else
         cargo_features="${FEATURES:-}"
+    fi
+
+    if [[ "$cargo_features" == *"libkrun"* || "$cargo_features" == *"embedded_init"* ]] && ! should_enable_libkrun "$arch" "darwin"; then
+        echo "Warning: libkrun is not supported on macOS $arch, build may fail"
     fi
 
     local cargo_feature_args=()
@@ -1615,12 +1646,33 @@ cross-macos() {
 
     cargo build --target "$target" --ignore-rust-version "${cargo_args[@]}" "${cargo_feature_args[@]}"
 
-    echo "Cross-compilation to macOS completed. Binary is in target/$target/$build_dir/$BINARY_NAME"
+    echo "[BUILD-OK] macOS ($arch, $mode): target/$target/$build_dir/$BINARY_NAME"
 
-    # Deploy for release uploads (asset names: epkg-macos-<arch>)
+    # Path to the locally built Linux ELF (epkg-linux-$arch) for macOS VM mode
+    local linux_target=$(get_rust_target "$arch")
+    local linux_epkg="${PROJECT_ROOT}/target/${linux_target}/debug/${BINARY_NAME}"
+
+    # Deploy macOS binary to dist/
     if [[ "$mode" == "release" ]]; then
         deploy_release_binary "target/$target/$build_dir/$BINARY_NAME" "epkg-macos-${arch}"
     fi
+
+    # Deploy Linux ELF to dist/ (for VM guest init)
+    if [[ -f "$linux_epkg" ]]; then
+        deploy_release_binary "$linux_epkg" "epkg-linux-${arch}"
+        # Deploy Linux ELF to self environment (for VM guest init)
+        install_hardlink "$linux_epkg" "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
+        echo "[DEPLOY-hardlink] $DEV_ENV_BIN_DIR/epkg-linux-${arch}"
+    else
+        echo "[WARN] Linux epkg not found at $linux_epkg - run 'make' first for full VM support"
+    fi
+
+    # Update hardlinks in all environments (non-self envs like alpine)
+    if [[ -f "$linux_epkg" ]]; then
+        update_all_env_hardlinks "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
+    fi
+
+    echo "[DONE] cross-macos completed"
 }
 
 # Cross-compilation to Windows (x86_64 only)
