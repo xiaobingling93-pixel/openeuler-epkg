@@ -1435,8 +1435,7 @@ pub fn run_command_in_krun(
     run_options: &RunOptions,
     guest_cmd_path: &Path,
 ) -> Result<()> {
-    // Debug: write to file to trace execution - try multiple locations
-    let _ = std::fs::write("C:\\Users\\aa\\epkg-debug.txt", "run_command_in_krun called\n");
+    // Debug: write to file to trace execution
     let _ = std::fs::write(
         crate::models::dirs().epkg_cache.join("vmm-logs").join("host-debug.log"),
         format!("run_command_in_krun called\n")
