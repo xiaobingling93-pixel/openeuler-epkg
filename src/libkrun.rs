@@ -1092,6 +1092,11 @@ struct VmReuseSession {
     vsock_sock_path:   std::path::PathBuf,
     vm_thread:         thread::JoinHandle<i32>,
     env_root:          std::path::PathBuf,
+    /// Unix socket listener for reverse mode reuse.
+    /// Guest connects to this for each subsequent command.
+    /// None for forward mode (Host connects to Guest).
+    #[cfg(unix)]
+    reverse_listener:  Option<std::os::unix::net::UnixListener>,
 }
 
 #[cfg(all(feature = "libkrun", not(target_os = "linux")))]
@@ -1129,7 +1134,35 @@ fn try_reuse_existing_krun_session(
             return Ok(None);
         }
         let sock = session.vsock_sock_path.clone();
+        #[cfg(unix)]
+        let reverse_listener_opt = session.reverse_listener.as_ref().map(|l| l.try_clone());
+        #[cfg(unix)]
+        let has_reverse_listener = reverse_listener_opt.as_ref().map_or(false, |r| r.is_ok());
+        #[cfg(windows)]
+        let has_reverse_listener = false;
         drop(guard);
+
+        log::debug!("libkrun: try_reuse_existing_krun_session: has_reverse_listener={}", has_reverse_listener);
+
+        // For reverse mode reuse: Guest connects to Host, so we accept on the listener
+        #[cfg(unix)]
+        if has_reverse_listener {
+            let listener = reverse_listener_opt.unwrap()?;
+            log::debug!("libkrun: accepting reverse connection for reuse...");
+            let stream = libkrun_bridge::accept_reverse_connection(&listener, None)?;
+            log::debug!("libkrun: Guest reconnected, sending command...");
+            let exit_code = libkrun_stream::send_command_over_stream(
+                &config.cmd_parts,
+                run_options.io_mode,
+                run_options.reuse_vm,
+                stream,
+            )
+            .map_err(|e| eyre::eyre!("Failed to send command via reverse vsock: {}", e))?;
+            log::debug!("libkrun: reverse reuse command completed with exit code {}", exit_code);
+            return Ok(Some(exit_code));
+        }
+
+        // Forward mode: Host connects to Guest
         let code = libkrun_stream::send_command_via_vsock(
             &config.cmd_parts,
             run_options.io_mode,
@@ -1403,9 +1436,20 @@ fn run_reverse_vsock_mode_inner(
     log::debug!("libkrun: reverse vsock command completed with exit code {}", exit_code);
 
     if run_options.reuse_vm {
-        // For reuse mode after reverse start, we need to switch to forward mode
-        // This requires notifying Guest to start listening
-        #[cfg(not(target_os = "linux"))]
+        // Stay in reverse mode for reuse: Guest reconnects to Host for each subsequent command
+        #[cfg(unix)]
+        {
+            *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
+                ctx_id,
+                vsock_sock_path,
+                vm_thread,
+                env_root: env_root.to_path_buf(),
+                reverse_listener: Some(reverse_listener),
+            });
+            log::debug!("libkrun: VM session kept alive for reuse (reverse mode)");
+            return apply_krun_exit_policy(exit_code, run_options);
+        }
+        #[cfg(windows)]
         {
             *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
                 ctx_id,
@@ -1413,7 +1457,7 @@ fn run_reverse_vsock_mode_inner(
                 vm_thread,
                 env_root: env_root.to_path_buf(),
             });
-            log::debug!("libkrun: VM session kept alive for reuse (switched to forward mode)");
+            log::debug!("libkrun: VM session kept alive for reuse (reverse mode)");
             return apply_krun_exit_policy(exit_code, run_options);
         }
     }
@@ -1527,8 +1571,10 @@ pub fn run_command_in_krun(
                     vsock_sock_path,
                     vm_thread,
                     env_root: env_root.to_path_buf(),
+                    #[cfg(unix)]
+                    reverse_listener: None,  // Forward mode: no reverse listener
                 });
-                log::debug!("libkrun: VM session kept alive for reuse");
+                log::debug!("libkrun: VM session kept alive for reuse (forward mode)");
                 return apply_krun_exit_policy(exit_code, run_options);
             }
         }

@@ -1552,16 +1552,102 @@ fn run_reverse_vsock_client() -> Result<()> {
                     log::debug!("vm-daemon: shutdown requested in reverse mode");
                     return Ok(());
                 }
-                ConnectionDisposition::ReuseWait { idle_timeout_ms: _ } => {
-                    kmsg_write("<6>run_reverse_vsock_client: switching to forward mode for reuse\n");
-                    // For reuse after reverse mode, switch to forward mode (Guest listens)
-                    log::debug!("vm-daemon: switching from reverse to forward mode for reuse");
-                    run_vsock_server()
+                ConnectionDisposition::ReuseWait { idle_timeout_ms } => {
+                    kmsg_write("<6>run_reverse_vsock_client: continuing in reverse mode for reuse\n");
+                    // Keep using reverse mode for reuse - reconnect to Host for next command
+                    // This avoids the complexity of switching between reverse/forward modes
+                    log::debug!("vm-daemon: continuing in reverse mode for reuse");
+                    // Wait a moment for Host to set up new listener
+                    std::thread::sleep(Duration::from_millis(100));
+                    connect_and_handle_reverse(idle_timeout_ms)
                 }
             }
         }
         Err(e) => {
             kmsg_write(&format!("<3>run_reverse_vsock_client: handle_connection error: {}\n", e));
+            Err(e)
+        }
+    }
+}
+
+/// Inner function for reverse mode: connect to Host and handle one command.
+/// Called recursively for VM reuse sessions.
+fn connect_and_handle_reverse(idle_timeout_ms: u32) -> Result<()> {
+    use nix::sys::socket::{connect, socket, AddressFamily, SockType, SockFlag, VsockAddr};
+    use std::os::fd::IntoRawFd;
+    use std::io::Write;
+    use std::time::Duration;
+
+    let kmsg_write = |msg: &str| {
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            let _ = write!(kmsg, "{}", msg);
+        }
+    };
+
+    const HOST_CID: u32 = libc::VMADDR_CID_HOST;  // 2
+    const HOST_PORT: u32 = 10000;
+    const CONNECT_RETRY_DELAY_MS: u64 = 10;
+    const CONNECT_RETRY_DELAY_MAX_MS: u64 = 1000;
+    const CONNECT_RETRY_MAX: usize = 100;
+
+    kmsg_write("<6>connect_and_handle_reverse: connecting to host\n");
+    log::debug!("vm-daemon: reconnecting to Host for reuse...");
+
+    // Create new vsock socket
+    let fd = socket(
+        AddressFamily::Vsock,
+        SockType::Stream,
+        SockFlag::SOCK_CLOEXEC,
+        None,
+    ).map_err(|e| { log::debug!("vm-daemon: reverse socket() failed: {}", e); e })?;
+
+    let host_addr = VsockAddr::new(HOST_CID, HOST_PORT);
+
+    // Connect to Host with retry
+    let mut retry_count = 0;
+    let mut retry_delay_ms = CONNECT_RETRY_DELAY_MS;
+    let stream = loop {
+        match connect(fd.as_raw_fd(), &host_addr) {
+            Ok(_) => {
+                kmsg_write("<6>connect_and_handle_reverse: connected to host\n");
+                log::debug!("vm-daemon: reconnected to Host");
+                break unsafe { std::net::TcpStream::from_raw_fd(fd.into_raw_fd()) };
+            }
+            Err(e) => {
+                retry_count += 1;
+                if retry_count >= CONNECT_RETRY_MAX {
+                    kmsg_write(&format!("<3>connect_and_handle_reverse: connect failed after {} retries: {}\n", retry_count, e));
+                    return Err(eyre!("Failed to connect to Host after {} retries: {}", retry_count, e));
+                }
+                std::thread::sleep(Duration::from_millis(retry_delay_ms));
+                retry_delay_ms = (retry_delay_ms * 2).min(CONNECT_RETRY_DELAY_MAX_MS);
+            }
+        }
+    };
+
+    // Send ready signal
+    let mut stream = stream;
+    stream.write_all(b"READY\n")?;
+    stream.flush()?;
+    kmsg_write("<6>connect_and_handle_reverse: READY sent\n");
+
+    // Handle the connection
+    match handle_connection(stream) {
+        Ok(disposition) => {
+            match disposition {
+                ConnectionDisposition::Shutdown => {
+                    kmsg_write("<6>connect_and_handle_reverse: shutdown requested\n");
+                    Ok(())
+                }
+                ConnectionDisposition::ReuseWait { idle_timeout_ms } => {
+                    kmsg_write("<6>connect_and_handle_reverse: reuse wait, looping\n");
+                    std::thread::sleep(Duration::from_millis(100));
+                    connect_and_handle_reverse(idle_timeout_ms)
+                }
+            }
+        }
+        Err(e) => {
+            kmsg_write(&format!("<3>connect_and_handle_reverse: error: {}\n", e));
             Err(e)
         }
     }
