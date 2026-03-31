@@ -28,6 +28,34 @@ WSL2 只是启动媒介，负责安排 `epkg.exe` 到 native Windows 执行：
 - 主机 epkg.exe 通过 vsock 发送 JSON request，包含 `env` 字段
 - Guest 内的 init (epkg Linux ELF) 接收并设置环境变量
 
+### 内核命令行传递问题（待调查）
+
+**问题：内核报告的命令行与libkrun传递的不同**
+
+**现象：**
+- libkrun日志显示：`load_cmdline: final kernel cmdline: "reboot=k ... quiet loglevel=1 epkg.vsock_reverse=1 ..."`
+- 内核报告：`Command line: reboot=k ... earlyprintk=serial loglevel=8 debug ...`
+- 缺少`epkg.vsock_reverse=1`等自定义参数
+
+**影响：**
+- guest端`reverse_mode=false`（应该为true）
+- vsock通信模式不匹配，导致连接超时
+- VM启动时间增加约5秒（等待超时）
+
+**已确认正确的部分：**
+- libkrun正确设置了boot_params.hdr.cmd_line_ptr = CMDLINE_START (0x20000)
+- libkrun正确调用了load_cmdline写入cmdline字符串
+- 内核正确接收到%RSI指向boot_params (ZERO_PAGE_START = 0x7000)
+
+**待调查：**
+1. 内核是否在head64.c或setup.c中使用了默认cmdline
+2. 内存映射是否正确（cmdline区域是否可读）
+3. 是否有EFI stub或其他机制覆盖了cmdline
+4. 内核配置中是否有影响cmdline的设置
+
+**临时解决方案：**
+- 可以考虑在guest端通过其他方式检测reverse模式（如检查vsock连接方向）
+
 ### 内核控制台日志问题分析
 
 **问题：`libkrun-console-*.log` 文件为空**
