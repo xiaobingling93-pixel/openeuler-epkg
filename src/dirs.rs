@@ -90,6 +90,11 @@ impl EPKGDirs {
         let opt_epkg = PathBuf::from("/opt/epkg");
         let home = get_home()?;
         let home_epkg = PathBuf::from(&home).join(".epkg");
+
+        // macOS uses ~/Library/Caches/epkg, Linux uses ~/.cache/epkg
+        #[cfg(target_os = "macos")]
+        let home_cache = path_join(&PathBuf::from(&home), &["Library", "Caches", "epkg"]);
+        #[cfg(not(target_os = "macos"))]
         let home_cache = path_join(&PathBuf::from(&home), &[".cache", "epkg"]);
 
         let (epkg_store, epkg_cache) = if options.init.shared_store {
