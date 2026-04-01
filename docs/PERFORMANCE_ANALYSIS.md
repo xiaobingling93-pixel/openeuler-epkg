@@ -90,20 +90,32 @@ Per-inode EA caching eliminates repeated file I/O for same file:
 ### WHPX Exit Statistics
 
 WHPX (unlike KVM) does not provide built-in statistics API.
-We track exit counts and processing time at application level:
+We track exit counts and processing time at application level using atomic counters.
 
+**Implementation choice:** Using fixed-size array `[ExitStat; 8194]` instead of HashMap:
+- Array lookup is O(1) with no hash overhead (important for hot path)
+- No lock contention (atomic operations vs RwLock<HashMap>)
+- Memory cost is negligible (131KB for VM process)
+
+**Actual statistics (EPKG_DEBUG_LIBKRUN=1):**
 ```
 === WHPX VM Exit Statistics ===
-Exit Reason            Count       Total(ms)      Avg(us)
-------------------------------------------------------------
-MemoryAccess            XXX          XXX.XX       XXX.XX
-X64IoPortAccess         XXX          XXX.XX       XXX.XX
-X64MsrAccess            XXX          XXX.XX       XXX.XX
-X64Cpuid                XXX          XXX.XX       XXX.XX
-X64Halt                 XXX          XXX.XX       XXX.XX
-...
-TOTAL                   XXX          XXX.XX       XXX.XX
+Exit Reason                    Count       Total(ms)      Avg(us)
+-----------------------------------------------------------------
+MemoryAccess                    3630           10.92         3.01
+X64IoPortAccess                  613            5.59         9.12
+X64MsrAccess                      21            0.14         6.67
+X64Cpuid                         227           11.61        51.16
+Canceled                         756           10.61        14.03
+-----------------------------------------------------------------
+TOTAL                           5247           38.87         7.41
 ```
+
+**Analysis:**
+- Total WHPX exit time (~39ms) is NOT the main bottleneck
+- MemoryAccess exits (3630) are most frequent but fastest (3μs avg)
+- X64Cpuid exits (227) take longest per exit (51μs) due to CPUID instruction overhead
+- Canceled exits (756) are vCPU interrupt mechanism for forced interrupt delivery
 
 Enable with `EPKG_DEBUG_LIBKRUN=1` to see exit statistics.
 
@@ -148,12 +160,18 @@ than Windows WHPX. The VM boot time on macOS is essentially instant (~50ms).
    - `get_all_file_eas()` reads all 4 POSIX EAs (UID, GID, MODE, DEV) at once
    - `metadata_to_stat` and `listxattr` now use batch reading
    - Eliminates redundant file open/close for same file
+9. **EA caching**: Per-inode EA caching eliminates repeated file I/O
+   - GETXATTR avg time: 10.46ms → 8.48μs (~1200x faster)
+   - Cache invalidated on `setxattr()`/`removexattr()` operations
+10. **WHPX exit statistics**: Application-level tracking for VM exit analysis
+    - Confirmed WHPX exits (~39ms) are NOT the main bottleneck
+    - MemoryAccess most frequent, X64Cpuid slowest per exit
 
 ## Future Optimization Opportunities
 
 1. **VM reuse mode**: Keep VM running for multiple commands (--reuse_vm)
-2. **GETXATTR batching**: Read all EAs in single NtQueryEaFile call
-3. **EA caching**: Cache EAs per file path to avoid repeated queries
+2. **OPEN optimization**: Investigate why OPEN takes ~11ms avg
+   - Windows CreateFileW overhead, ACL checks, antivirus scan
+3. **READ optimization**: Investigate READ ~1-3ms avg
 4. **Virtiofs cache warming**: Pre-cache frequently used files
 5. **Init binary optimization**: Further reduce size or use compressed init
-6. **WHPX alternatives**: Consider other virtualization backends if available
