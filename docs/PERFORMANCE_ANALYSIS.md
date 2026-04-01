@@ -151,6 +151,58 @@ than Windows WHPX. The VM boot time on macOS is essentially instant (~50ms).
 
 ### End-to-End Timing Analysis (warm run: ~1.4s)
 
+#### Complete Timeline from Logs
+
+```
+Time (ms)    Event                                              Source
+--------     -----                                              ------
+0            Program start (main.rs)                            Rust log
+13           VM config setup                                     Rust log
+17           krun_start_enter (VM start)                        Rust log
+70           Kernel loaded, devices attached                     Rust log
+88           vCPU starting execution (kernel boot)              Rust log
+
+--- Guest kernel boot (no logs, loglevel=1) ---
+
+~370         Guest: vsock client start                          guest-debug.log
+~437         Guest: vsock connect (0.87ms)                      guest-debug.log
+~458         Guest: READY signal sent                           guest-debug.log
+~513         Guest: handle_connection ready                     guest-debug.log
+~587         Guest: read command from host                      guest-debug.log
+~690         Guest: execute_batch response sent                 guest-debug.log
+
+--- Host processing ---
+
+1330         FUSE operations complete                           FUSE stats
+~1400        Program end
+```
+
+#### Phase Duration Breakdown
+
+| Phase | Duration | Description |
+|-------|----------|-------------|
+| Host setup | 17ms | Program start → VM start |
+| VM device init | 71ms | VM start → vCPU exec |
+| **Kernel boot** | **~280ms** | vCPU exec → guest vsock start |
+| **Guest init** | **~143ms** | vsock start → vsock ready |
+| **FUSE operations** | **~1100ms** | Command execution + file I/O |
+| **Total** | **~1400ms** | |
+
+#### Guest-Side Timing (from guest-debug.log)
+
+```
+00:00:00.371 - REVERSE_VSOCK_CLIENT START
+00:00:00.437 - vsock connect (0.87ms)
+00:00:00.458 - READY sent
+00:00:00.513 - handle_connection ready (total: 118ms)
+00:00:00.587 - read command from host
+00:00:00.690 - execute_batch response sent
+```
+
+Guest vsock initialization: ~143ms (from start to ready)
+
+### End-to-End Timing Analysis (warm run: ~1.4s)
+
 ```
 Total Wall Time: ~1.4s
 ├── FUSE Operations: 1330ms (95%)
