@@ -22,6 +22,9 @@ pub struct DeinitPlan {
     pub dirs_to_remove: Vec<PathBuf>,
     pub shell_rc_files: Vec<String>,
     pub symlinks_to_remove: Vec<PathBuf>,
+    /// User-created redirect symlinks (e.g. ~/.epkg -> /Volumes/epkg).
+    /// These are preserved; only contents inside the target are removed.
+    pub redirect_symlinks: Vec<PathBuf>,
 }
 
 impl DeinitPlan {
@@ -30,14 +33,85 @@ impl DeinitPlan {
             dirs_to_remove: Vec::new(),
             shell_rc_files: Vec::new(),
             symlinks_to_remove: Vec::new(),
+            redirect_symlinks: Vec::new(),
         }
     }
 
     pub fn is_empty(&self) -> bool {
         self.dirs_to_remove.is_empty() &&
         self.shell_rc_files.is_empty() &&
-        self.symlinks_to_remove.is_empty()
+        self.symlinks_to_remove.is_empty() &&
+        self.redirect_symlinks.is_empty()
     }
+}
+
+/// Check if a path is a user-created redirect symlink or mountpoint.
+/// A redirect is when user intentionally redirected storage to external volume:
+/// - Symlink pointing outside standard epkg locations (home, /opt/epkg)
+/// - Mountpoint (bind mount or real mount) at epkg standard location
+///
+/// Returns the detected redirect type and target info if applicable.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RedirectType {
+    /// No redirect - standard directory
+    None,
+    /// Symlink to external location (target path stored)
+    Symlink(PathBuf),
+    /// Mountpoint at this location (device ID stored for verification)
+    /// Note: Only constructed on Unix; Windows doesn't have mountpoints in this sense.
+    #[allow(dead_code)]
+    Mountpoint,
+}
+
+/// Check if a symlink target is outside standard epkg locations.
+fn is_external_redirect_target(target: &Path, home: &str) -> bool {
+    let target_str = target.to_string_lossy();
+    // Check if target is outside standard epkg locations:
+    // - Not under home directory
+    // - Not under /opt/epkg (or Windows epkg roots)
+    #[cfg(not(windows))]
+    {
+        !target_str.starts_with(home) && !target_str.starts_with("/opt/epkg")
+    }
+    #[cfg(windows)]
+    {
+        !target_str.starts_with(home) &&
+        !target_str.starts_with("C:\\epkg") &&
+        !target_str.starts_with("D:\\epkg")
+    }
+}
+
+/// Check if a path is a user-created redirect (symlink or mountpoint).
+fn check_redirect(path: &Path, home: &str) -> RedirectType {
+    // First check for symlink
+    if lfs::is_symlink(path) {
+        if let Ok(target) = fs::read_link(path) {
+            if is_external_redirect_target(&target, home) {
+                return RedirectType::Symlink(target);
+            }
+        }
+    }
+
+    // Check for mountpoint (Unix only)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let Ok(meta) = lfs::symlink_metadata(path) {
+            if meta.is_dir() {
+                // Compare device ID with parent directory
+                if let Some(parent) = path.parent() {
+                    if let Ok(parent_meta) = lfs::symlink_metadata(parent) {
+                        if meta.dev() != parent_meta.dev() {
+                            // Different device = mountpoint
+                            return RedirectType::Mountpoint;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    RedirectType::None
 }
 
 pub fn deinit_epkg(scope: &str) -> Result<()> {
@@ -76,6 +150,55 @@ fn execute_deinit_with_plan(plan: DeinitPlan, scope: &str) -> Result<()> {
     Ok(())
 }
 
+/// Helper to add directory contents to removal plan when the parent is a redirect.
+/// Appends subdirectory names to both the redirect path and its target.
+fn add_redirect_contents_to_plan(
+    plan: &mut DeinitPlan,
+    target: &Path,
+    subdirs: &[&str],
+    symlinks: &[&str],
+) {
+    for subdir in subdirs {
+        plan.dirs_to_remove.push(target.join(subdir));
+    }
+    for symlink in symlinks {
+        plan.symlinks_to_remove.push(target.join(symlink));
+    }
+}
+
+/// Helper to handle a path that might be a redirect (symlink or mountpoint).
+/// Returns true if it's a redirect (handled), false if standard directory.
+fn handle_redirect_path(
+    plan: &mut DeinitPlan,
+    path: &Path,
+    home: &str,
+    path_name: &str,
+    subdirs: &[&str],
+    symlinks: &[&str],
+) -> bool {
+    if !lfs::exists_no_follow(path) {
+        return false;
+    }
+
+    match check_redirect(path, home) {
+        RedirectType::Symlink(target) => {
+            plan.redirect_symlinks.push(path.to_path_buf());
+            println!("Note: {} is redirected to {} (symlink), will preserve redirect",
+                     path_name, target.display());
+            add_redirect_contents_to_plan(plan, &target, subdirs, symlinks);
+            true
+        }
+        RedirectType::Mountpoint => {
+            plan.redirect_symlinks.push(path.to_path_buf());
+            println!("Note: {} is a mountpoint, will preserve mountpoint", path_name);
+            // For mountpoint, use the path itself (it IS the directory)
+            add_redirect_contents_to_plan(plan, path, subdirs, symlinks);
+            true
+        }
+        RedirectType::None => false,
+    }
+}
+
 #[cfg(unix)]
 fn collect_global_deinit_plan() -> Result<DeinitPlan> {
     // We'll deinit every user! So check if running by root (effective UID)
@@ -85,6 +208,7 @@ fn collect_global_deinit_plan() -> Result<DeinitPlan> {
     }
 
     let mut plan = DeinitPlan::new();
+    let home_dir = get_home()?;
     let opt_epkg = dirs().opt_epkg.clone();
 
     if !lfs::exists_on_host(&opt_epkg) {
@@ -92,8 +216,12 @@ fn collect_global_deinit_plan() -> Result<DeinitPlan> {
         exit(1);
     }
 
-    // Remove global /opt/epkg/
-    plan.dirs_to_remove.push(opt_epkg);
+    // Check if /opt/epkg is a redirect (symlink or mountpoint)
+    if !handle_redirect_path(&mut plan, &opt_epkg, &home_dir, "/opt/epkg",
+                             &["envs", "store", "cache"], &[]) {
+        // Standard directory, remove it entirely
+        plan.dirs_to_remove.push(opt_epkg);
+    }
 
     // Remove /usr/local/bin/epkg symlink
     let usr_local_bin_epkg = PathBuf::from("/usr/local/bin/epkg");
@@ -110,11 +238,19 @@ fn collect_global_deinit_plan() -> Result<DeinitPlan> {
 
 fn collect_user_personal_plan() -> Result<DeinitPlan> {
     let mut plan = DeinitPlan::new();
+    let home_dir = get_home()?;
 
     if config().init.shared_store {
         // Remove /opt/epkg/envs/$USER/
         let user_public_envs_path = dirs().user_envs.clone();
         if lfs::exists_on_host(&user_public_envs_path) {
+            // Check if user_envs parent (/opt/epkg/envs) is a redirect
+            let opt_epkg_envs = PathBuf::from("/opt/epkg/envs");
+            if handle_redirect_path(&mut plan, &opt_epkg_envs, &home_dir, "/opt/epkg/envs",
+                                    &[], &[]) {
+                // Redirect detected - only remove user's subdirectory inside
+            }
+            // Remove user's envs directory contents
             plan.dirs_to_remove.push(user_public_envs_path);
         }
 
@@ -124,22 +260,30 @@ fn collect_user_personal_plan() -> Result<DeinitPlan> {
             plan.dirs_to_remove.push(user_aur_builds_path);
         }
     } else {
-        // Remove .epkg/
+        // Handle ~/.epkg/ - check for redirect symlink/mountpoint
         let home_epkg = dirs().home_epkg.clone();
-        if lfs::exists_on_host(&home_epkg) {
-            plan.dirs_to_remove.push(home_epkg);
+        if !handle_redirect_path(&mut plan, &home_epkg, &home_dir, "~/.epkg",
+                                 &["envs"], &["bin", "assets"]) {
+            // Standard directory, remove it entirely
+            if lfs::exists_on_host(&home_epkg) {
+                plan.dirs_to_remove.push(home_epkg);
+            }
         }
 
-        // Remove .cache/epkg/channels/
-        let channels_cache_dir = dirs().epkg_channels_cache.clone();
-        if lfs::exists_on_host(&channels_cache_dir) {
-            plan.dirs_to_remove.push(channels_cache_dir);
+        // Handle cache directory - check for redirect symlink/mountpoint
+        let home_cache = dirs().home_cache.clone();
+        if !handle_redirect_path(&mut plan, &home_cache, &home_dir, "cache directory",
+                                 &["channels"], &[]) {
+            // Standard cache directory
+            let channels_cache_dir = dirs().epkg_channels_cache.clone();
+            if lfs::exists_on_host(&channels_cache_dir) {
+                plan.dirs_to_remove.push(channels_cache_dir);
+            }
         }
 
         // Preserve downloads cache, handy for development test cycles
 
         // Remove $HOME/bin/epkg symlink
-        let home_dir = get_home()?;
         let home_bin_epkg =
             crate::dirs::path_join(&PathBuf::from(&home_dir), &["bin", "epkg"]);
         if lfs::exists_on_host(&home_bin_epkg) {
@@ -175,6 +319,20 @@ fn display_deinit_plan(plan: &DeinitPlan, scope: &str) -> Result<()> {
         for symlink in &plan.symlinks_to_remove {
             println!("  {}", symlink.display());
         }
+    }
+
+    if !plan.redirect_symlinks.is_empty() {
+        println!("\nRedirect symlinks/mountpoints to preserve:");
+        for redirect in &plan.redirect_symlinks {
+            if lfs::is_symlink(redirect) {
+                if let Ok(target) = fs::read_link(redirect) {
+                    println!("  {} -> {} (symlink)", redirect.display(), target.display());
+                }
+            } else {
+                println!("  {} (mountpoint)", redirect.display());
+            }
+        }
+        println!("  (User-created redirects will be kept; only contents removed)");
     }
 
     if !plan.shell_rc_files.is_empty() {
