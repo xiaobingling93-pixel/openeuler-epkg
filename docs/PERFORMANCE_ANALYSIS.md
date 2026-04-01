@@ -74,11 +74,12 @@ Per-inode EA caching eliminates repeated file I/O for same file:
 ### Remaining Bottlenecks
 
 1. **OPEN operations (~10ms avg)** - Windows CreateFileW overhead
-   - `symlink_metadata`: 30μs (negligible)
-   - `read_reparse_kind`: 20μs (negligible)
-   - `metadata`: 20μs (negligible)
-   - `File::open`: **12.3ms** - 97% of OPEN time
+   - `symlink_metadata`: 30μs (negligible, optimized to reuse metadata)
+   - `read_reparse_kind`: 0.3μs (negligible, optimized)
+   - `metadata`: 0.1μs (negligible, reused symlink_metadata)
+   - `File::open`: **10-11ms** - 97% of OPEN time
    - Windows ACL security checks, antivirus scan, file system driver
+   - **CreateFileW alternative**: ~6% faster (EPKG_USE_CREATEFILEW=1)
 
 2. **READ operations (~2.3ms avg)** - Multiple sources
    - `get_handle`: 1.7μs (negligible)
@@ -87,7 +88,10 @@ Per-inode EA caching eliminates repeated file I/O for same file:
    - `alloc_buffer`: 34μs (buffer allocation)
    - `read` (file I/O): 29μs
    - `write` (virtio queue): 256μs
-   - **Untracked: ~2ms/operation** - virtio queue transmission overhead
+   - **virtio overhead: ~2ms** (inherent protocol cost)
+     - pop (avail ring): 200-700μs
+     - rw (memory mapping): 400-3500μs
+     - add (used ring): 700-4300μs
 
 3. **VM boot time (1.4s)** - WHPX overhead
    - WHPX VM creation
@@ -176,16 +180,25 @@ than Windows WHPX. The VM boot time on macOS is essentially instant (~50ms).
 11. **FUSE sub-operation statistics**: Detailed timing for OPEN/READ analysis
     - OPEN: `File::open` is 97% of time (Windows CreateFileW overhead)
     - READ: virtio queue write + untracked transmission overhead
+12. **OPEN metadata optimization**: Avoid redundant symlink_metadata calls
+    - Added `read_reparse_kind_from_metadata()` to reuse fetched metadata
+    - Removed separate `fs::metadata()` call for non-symlinks
+    - Negligible improvement vs 10ms File::open bottleneck
+13. **virtio queue timing**: Identified inherent protocol overhead
+    - pop: 200-700μs (avail ring access)
+    - rw: 400-3500μs (Reader/Writer memory mapping)
+    - add: 700-4300μs (used ring update)
+    - Total ~2ms per READ operation (inherent cost)
 
 ## Future Optimization Opportunities
 
 1. **VM reuse mode**: Keep VM running for multiple commands (--reuse_vm)
    - Eliminates 1.4s VM boot overhead per command
-2. **OPEN optimization**: Investigate `File::open` alternatives
-   - Consider file handle pooling
-   - Investigate Windows file API optimizations
-3. **READ optimization**: Investigate virtio queue transmission overhead
-   - ~2ms untracked per READ operation
-   - May be inherent to virtio/FUSE protocol
+2. **OPEN optimization**: Windows CreateFileW alternative
+   - `EPKG_USE_CREATEFILEW=1` provides ~6% improvement
+   - Main bottleneck is Windows kernel, not API choice
+3. **READ optimization**: virtio overhead is inherent
+   - ~2ms per operation from virtio protocol
+   - Difficult to optimize without changing architecture
 4. **Virtiofs cache warming**: Pre-cache frequently used files
 5. **Init binary optimization**: Further reduce size or use compressed init
