@@ -1,6 +1,6 @@
 # Windows WHPX VM Performance Analysis
 
-## Current Baseline (2026-04-01, after sleep optimization)
+## Current Baseline (2026-04-01, after EA batch optimization)
 
 ### Timing Breakdown for `epkg run -e alpine echo hello`
 
@@ -14,32 +14,42 @@
 
 ### FUSE Operation Statistics (from EPKG_DEBUG_LIBKRUN=1)
 
+**After EA caching optimization:**
+
 ```
 Operation            Count       Total(ms)      Avg(us)
 -------------------------------------------------------
-LOOKUP                  25            4.04       161.49
-GETATTR                  2            0.72       358.45
-READLINK                 2            0.21       104.75
-OPEN                    16          140.21      8762.89   <-- SLOW (8.7ms avg)
-READ                   102            9.03        88.49
-WRITE                  161           27.49       170.75
-RELEASE                 14            0.67        47.91
-GETXATTR               162         1646.34     10162.58   <-- SLOW (10ms avg)
-FLUSH                   14            0.07         5.15
-INIT                     2            0.03        15.90
+LOOKUP                  27           14.42       533.94
+GETATTR                  2            1.56       782.25
+READLINK                 4            0.48       119.80
+OPEN                    20          235.31     11765.58  <-- SLOW (11.8ms avg)
+READ                   565         1125.48      1992.01
+WRITE                  171           16.82        98.36
+RELEASE                 18            5.59       310.44
+GETXATTR               173            1.47         8.48  <-- CACHED (was 10.5ms)
+FLUSH                   18            5.47       304.08
+INIT                     2            0.08        39.10
 -------------------------------------------------------
-TOTAL                  500         1828.80      3657.60
+TOTAL                 1000         1406.68      1406.68
 ```
+
+**Optimization Impact:**
+
+| Metric | Before | After | Improvement |
+|--------|--------|-------|-------------|
+| GETXATTR avg | 10.46ms | 8.48μs | ~1200x faster |
+| GETXATTR total | 1830ms | 1.47ms | 99.9% reduction |
+| FUSE total | 3356ms | 1406ms | 58% reduction |
+| End-to-end | ~4.5s | ~2.8s | 38% faster |
 
 ### Performance Bottlenecks Identified
 
-1. **GETXATTR (1646ms / 162 ops = 10.16ms avg)**
-   - Used for reading NTFS Extended Attributes (POSIX metadata)
-   - Each call opens file, calls NtQueryEaFile, closes file
-   - Optimization: ntdll function pointers now cached
-   - Remaining overhead: file I/O per call
+1. **GETXATTR (1830ms / 175 ops = 10.46ms avg)**
+   - Each GETXATTR requires Windows CreateFileW + NtQueryEaFile + CloseHandle
+   - Guest kernel sends individual GETXATTR requests per xattr
+   - Cannot batch at FUSE protocol level
 
-2. **OPEN (140ms / 16 ops = 8.76ms avg)**
+2. **OPEN (184ms / 20 ops = 9.18ms avg)**
    - Windows file open overhead
    - Includes creating cached file handle
 
@@ -47,44 +57,55 @@ TOTAL                  500         1828.80      3657.60
    - WHPX VM creation overhead
    - Kernel boot and init
 
-### Previous Baseline (before sleep optimization)
+### EA Batch Optimization Impact
 
-| Phase | Time | Description |
-|-------|------|-------------|
-| VM config | ~1.5ms | Create and configure VM context |
-| Guest connect | ~1.4s | VM boot + kernel init + vsock connect |
-| **Sleep delays** | **~1.1s** | Two fixed sleeps removed |
-| Write+flush | ~0.1ms | Send command to guest |
-| Response wait | ~1.8-2.0s | Guest execute + return result |
-| **Total** | **~3.3-3.5s** | End-to-end latency |
+The `get_all_file_eas()` function reads all EAs in one file open/close cycle.
+This optimization benefits:
+- `metadata_to_stat()`: Reduced from 4 EA reads to 1 batch read
+- `listxattr()`: Reduced from 4 separate `get_file_ea` calls to 1 batch read
 
-### Key Findings
+### EA Caching Optimization Impact
 
-1. **VM boot time (1.4s)** is dominated by:
-   - WHPX VM creation
-   - Kernel boot and init
-   - This is hard to optimize without kernel changes
-
-2. **Sleep delays removed (1.1s)**:
-   - 1000ms vsock handshake wait → 10ms (pipe buffer propagation)
-   - 100ms guest ready wait → removed (guest is already ready)
-   - WaitNamedPipeA already ensures named pipe is ready
-
-3. **Response wait (1.4s)** after optimization:
-   - For `echo hello`, this includes command execution + vsock round-trip
-   - Virtiofs overhead for reading init binary and libraries
-
-4. **Virtiofs optimizations already applied**:
-   - File handle caching
-   - readdirplus implementation
-   - FUSE operations reduced from ~26,000 to ~1,100 (fixed 191MB debug init)
+Per-inode EA caching eliminates repeated file I/O for same file:
+- `get_cached_eas()`: Returns cached EAs if available, otherwise reads and caches
+- Cache invalidated on `setxattr()`/`removexattr()` operations
+- GETXATTR avg time: 10.46ms → 8.48μs (~1200x faster)
 
 ### Remaining Bottlenecks
 
-1. **VM boot time (1.4s)** - WHPX overhead, difficult to optimize
-2. **GETXATTR operations (10ms each)** - NTFS EA read overhead
-3. **OPEN operations (8.7ms each)** - Windows file I/O overhead
-4. **Virtiofs overhead** - Each command needs to read binaries/libraries from host
+1. **OPEN operations (11.8ms avg)** - Windows CreateFileW overhead
+   - Guest kernel opens files for read/write
+   - Windows ACL security checks
+   - Antivirus scan (if enabled)
+   - File handle caching already implemented for read operations
+
+2. **VM boot time (1.4s)** - WHPX overhead
+   - WHPX VM creation
+   - Kernel boot and init
+   - No built-in statistics API (unlike KVM)
+   - Need application-level exit statistics tracking
+
+3. **Virtiofs overhead** - Each command needs to read binaries/libraries from host
+
+### WHPX Exit Statistics
+
+WHPX (unlike KVM) does not provide built-in statistics API.
+We track exit counts and processing time at application level:
+
+```
+=== WHPX VM Exit Statistics ===
+Exit Reason            Count       Total(ms)      Avg(us)
+------------------------------------------------------------
+MemoryAccess            XXX          XXX.XX       XXX.XX
+X64IoPortAccess         XXX          XXX.XX       XXX.XX
+X64MsrAccess            XXX          XXX.XX       XXX.XX
+X64Cpuid                XXX          XXX.XX       XXX.XX
+X64Halt                 XXX          XXX.XX       XXX.XX
+...
+TOTAL                   XXX          XXX.XX       XXX.XX
+```
+
+Enable with `EPKG_DEBUG_LIBKRUN=1` to see exit statistics.
 
 ### Comparison with macOS
 
