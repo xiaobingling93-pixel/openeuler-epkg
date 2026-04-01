@@ -796,12 +796,27 @@ fn create_and_configure_vm(
         // Add additional virtiofs mounts
         for (tag, host_path, guest_path, read_only) in &config.virtiofs_mounts {
             // Verify mount source exists before adding
-            if !std::path::Path::new(host_path).exists() {
+            let path = std::path::Path::new(host_path);
+            if !path.exists() {
                 log::warn!("libkrun: skipping virtiofs mount for {}: source path does not exist: {}",
                     tag, host_path);
                 continue;
             }
-            ctx.add_virtiofs(tag, host_path)?;
+            // Resolve symlinks because PassthroughFs::new() uses O_NOFOLLOW which fails on symlinks
+            let resolved_path = match std::fs::canonicalize(path) {
+                Ok(p) => {
+                    if p != path {
+                        log::debug!("libkrun: resolved symlink {} -> {}", host_path, p.display());
+                    }
+                    p.to_string_lossy().to_string()
+                }
+                Err(e) => {
+                    log::warn!("libkrun: skipping virtiofs mount for {}: cannot canonicalize path {}: {}",
+                        tag, host_path, e);
+                    continue;
+                }
+            };
+            ctx.add_virtiofs(tag, &resolved_path)?;
             log::info!("libkrun: virtiofs mount: {} -> {} (guest: {}) ({})",
                        host_path, tag, guest_path, if *read_only { "ro" } else { "rw" });
         }
