@@ -6,9 +6,6 @@ use std::path::Path;
 use std::time::Duration;
 
 #[cfg(unix)]
-use std::os::unix::io::AsRawFd;
-
-#[cfg(unix)]
 pub fn setup_vsock_ready_listener() -> Result<Option<std::os::unix::net::UnixListener>> {
     let vmm_logs_dir = crate::models::dirs().epkg_cache.join("vmm-logs");
     if let Ok(entries) = std::fs::read_dir(&vmm_logs_dir) {

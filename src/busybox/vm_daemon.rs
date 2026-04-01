@@ -1108,138 +1108,160 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
     let _ = kmsg_write("<6>handle_connection: new connection\n");
     log_process_identity("vm-daemon handle_connection");
 
-    // Try to read with retries - host data may arrive with some delay
-    // especially on Windows/WHPX where vsock bridge has higher latency
     let mut buf = [0; TCP_LINE_BUF_SIZE];
-    let mut total_wait_ms = 0u64;
-    const MAX_WAIT_MS: u64 = 5000; // 5 seconds total timeout
-    const RETRY_INTERVAL_MS: u64 = 50; // 50ms between retries
+    const MAX_WAIT_MS: i32 = 5000; // 5 seconds total timeout
 
-    let _ = kmsg_write("<6>handle_connection: about to read from stream (with retries)\n");
+    let _ = kmsg_write("<6>handle_connection: about to read from stream (using poll)\n");
     debug_file_write("handle_connection: waiting to read from stream...\n");
 
+    // Use poll() for efficient blocking wait instead of sleep-based retry
+    let stream_fd = stream.as_raw_fd();
+    let start = std::time::Instant::now();
+
     loop {
-        match stream.read(&mut buf) {
-            Ok(0) => {
-                // Ok(0) can mean either:
-                // 1. EOF (peer closed connection) - for a properly closed connection
-                // 2. No data available yet (vsock handshake still in progress)
-                // On Windows/WHPX, we often see case 2 due to timing differences
-                // between named pipe connection and vsock handshake completion.
-                if total_wait_ms >= MAX_WAIT_MS {
-                    let _ = kmsg_write(&format!("<6>handle_connection: timeout after {}ms, no data received (peer may have closed connection)\n", total_wait_ms));
-                    debug_file_write(&format!("handle_connection: TIMEOUT after {}ms\n", total_wait_ms));
-                    return Ok(ConnectionDisposition::Shutdown);
-                }
-                if total_wait_ms % 500 == 0 {  // Log every 500ms
-                    let _ = kmsg_write(&format!("<6>handle_connection: read 0 bytes, waiting for data... ({}ms elapsed)\n", total_wait_ms));
-                    debug_file_write(&format!("handle_connection: read 0, waiting... ({}ms)\n", total_wait_ms));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(RETRY_INTERVAL_MS));
-                total_wait_ms += RETRY_INTERVAL_MS;
-                continue;
+        // Calculate remaining timeout
+        let elapsed_ms = start.elapsed().as_millis() as i32;
+        let remaining_ms = MAX_WAIT_MS.saturating_sub(elapsed_ms);
+        if remaining_ms <= 0 {
+            let _ = kmsg_write(&format!("<6>handle_connection: poll timeout after {}ms\n", elapsed_ms));
+            debug_file_write(&format!("handle_connection: poll TIMEOUT after {}ms\n", elapsed_ms));
+            return Ok(ConnectionDisposition::Shutdown);
+        }
+
+        // Poll for data availability
+        let mut poll_fds = [libc::pollfd {
+            fd: stream_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+
+        let poll_result = unsafe { libc::poll(poll_fds.as_mut_ptr(), 1, remaining_ms) };
+
+        match poll_result {
+            0 => {
+                // Poll timeout
+                let _ = kmsg_write(&format!("<6>handle_connection: poll timeout\n"));
+                debug_file_write("handle_connection: poll timeout\n");
+                return Ok(ConnectionDisposition::Shutdown);
             }
-            Ok(n) => {
-                let _ = kmsg_write(&format!("<6>handle_connection: read {} bytes after {}ms\n", n, total_wait_ms));
-                // Log first few bytes for debugging
-                let preview = String::from_utf8_lossy(&buf[..n.min(100)]);
-                let _ = kmsg_write(&format!("<6>handle_connection: data preview: {:?}\n", preview));
-                debug_file_write(&format!("handle_connection: read {} bytes: {:?}\n", n, preview));
-                // Find first newline to separate request from extra messages
-                let mut split_at = n;
-                for i in 0..n {
-                    if buf[i] == b'\n' {
-                        split_at = i;
-                        break;
+            n if n < 0 => {
+                let errno = std::io::Error::last_os_error();
+                if errno.raw_os_error() == Some(libc::EINTR) {
+                    // Interrupted by signal, retry
+                    continue;
+                }
+                let _ = kmsg_write(&format!("<3>handle_connection: poll error: {}\n", errno));
+                return Err(eyre!("Poll error: {}", errno));
+            }
+            _ => {
+                // Data available, try to read
+                match stream.read(&mut buf) {
+                    Ok(0) => {
+                        // EOF - peer closed connection
+                        let _ = kmsg_write("<6>handle_connection: read EOF (peer closed)\n");
+                        debug_file_write("handle_connection: read EOF\n");
+                        return Ok(ConnectionDisposition::Shutdown);
+                    }
+                    Ok(n) => {
+                        let elapsed_ms = start.elapsed().as_millis();
+                        let _ = kmsg_write(&format!("<6>handle_connection: read {} bytes after {}ms\n", n, elapsed_ms));
+                        // Log first few bytes for debugging
+                        let preview = String::from_utf8_lossy(&buf[..n.min(100)]);
+                        let _ = kmsg_write(&format!("<6>handle_connection: data preview: {:?}\n", preview));
+                        debug_file_write(&format!("handle_connection: read {} bytes: {:?}\n", n, preview));
+                        // Find first newline to separate request from extra messages
+                        let mut split_at = n;
+                        for i in 0..n {
+                            if buf[i] == b'\n' {
+                                split_at = i;
+                                break;
+                            }
+                        }
+                        let request_slice = &buf[..split_at];
+                        let leftover = if split_at < n {
+                            &buf[split_at + 1..n]
+                        } else {
+                            &buf[n..n] // empty
+                        };
+                        let input = String::from_utf8_lossy(request_slice).trim().to_string();
+                        let leftover_bytes = leftover.to_vec();
+
+                        log::debug!("Request line ({} bytes): {:?}", request_slice.len(), input);
+                        log::debug!("Leftover bytes ({} bytes): {:?}", leftover_bytes.len(), String::from_utf8_lossy(&leftover_bytes));
+
+                        debug_file_write(&format!("handle_connection: parsing JSON: {:?}\n", input));
+
+                        // Parse JSON request (no plain text fallback)
+                        let request: CommandRequest = serde_json::from_str(&input)
+                            .map_err(|e| {
+                                debug_file_write(&format!("handle_connection: JSON parse FAILED: {}\n", e));
+                                eyre!("JSON parse failed: {} (input: {:?})", e, input)
+                            })?;
+                        log::debug!("[vm_daemon] Command received: {:?}", request.command);
+                        debug_file_write(&format!("handle_connection: parsed command: {:?}, batch={}\n", request.command, request.batch));
+
+                        if request.command.len() == 1 && request.command[0] == VM_SESSION_DONE_CMD {
+                            log::debug!(
+                                "vm session done command ({VM_SESSION_DONE_CMD}): host finished install/upgrade"
+                            );
+                            return Ok(ConnectionDisposition::Shutdown);
+                        }
+
+                        if request.command.is_empty() {
+                            return Err(eyre!(
+                                "empty command (send command [\"{0}\"] to end reuse session)",
+                                VM_SESSION_DONE_CMD
+                            ));
+                        }
+
+                        log::debug!("Received command: {:?}", request.command);
+                        log::debug!("[vm_daemon] Executing command: {:?}", request.command);
+                        log_process_identity("vm-daemon before command dispatch");
+                        debug_file_write(&format!("handle_connection: executing command: {:?}\n", request.command));
+
+                        // Execute command
+                        let exit_code;
+                        if request.batch {
+                            log::debug!("Using batch mode");
+                            debug_file_write("handle_connection: using batch mode\n");
+                            exit_code = execute_batch(&request, &mut stream)?;
+                        } else if request.pty {
+                            log::debug!("Using PTY mode");
+                            debug_file_write("handle_connection: using PTY mode\n");
+                            exit_code = execute_with_pty(&request, &mut stream, Some(leftover_bytes))?;
+                        } else {
+                            log::debug!("Using non-PTY mode");
+                            debug_file_write("handle_connection: using non-PTY mode\n");
+                            exit_code = execute_without_pty(&request, &mut stream, Some(leftover_bytes))?;
+                        }
+                        log::debug!("[vm_daemon] Command completed with exit code: {}", exit_code);
+                        debug_file_write(&format!("handle_connection: command completed with exit_code={}\n", exit_code));
+
+                        if request.reuse_vm {
+                            let idle_ms = request
+                                .vm_keep_timeout_secs
+                                .map(|s| s.saturating_mul(1000))
+                                .unwrap_or(VM_REUSE_IDLE_TIMEOUT_MS);
+                            let _ = kmsg_write("<6>handle_connection: reuse_vm=true, returning ReuseWait\n");
+                            return Ok(ConnectionDisposition::ReuseWait {
+                                idle_timeout_ms: idle_ms,
+                            });
+                        } else {
+                            let _ = kmsg_write("<6>handle_connection: reuse_vm=false, returning Shutdown\n");
+                            return Ok(ConnectionDisposition::Shutdown);
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        // Poll said data was ready but read returned WouldBlock
+                        // This is rare but possible; retry the poll loop
+                        log::trace!("handle_connection: spurious WouldBlock after poll, retrying");
+                        continue;
+                    }
+                    Err(e) => {
+                        let _ = kmsg_write(&format!("<3>handle_connection: read error: {}\n", e));
+                        return Err(e.into());
                     }
                 }
-                let request_slice = &buf[..split_at];
-                let leftover = if split_at < n {
-                    &buf[split_at + 1..n]
-                } else {
-                    &buf[n..n] // empty
-                };
-                let input = String::from_utf8_lossy(request_slice).trim().to_string();
-                let leftover_bytes = leftover.to_vec();
-
-                log::debug!("Request line ({} bytes): {:?}", request_slice.len(), input);
-                log::debug!("Leftover bytes ({} bytes): {:?}", leftover_bytes.len(), String::from_utf8_lossy(&leftover_bytes));
-
-                debug_file_write(&format!("handle_connection: parsing JSON: {:?}\n", input));
-
-                // Parse JSON request (no plain text fallback)
-                let request: CommandRequest = serde_json::from_str(&input)
-                    .map_err(|e| {
-                        debug_file_write(&format!("handle_connection: JSON parse FAILED: {}\n", e));
-                        eyre!("JSON parse failed: {} (input: {:?})", e, input)
-                    })?;
-                log::debug!("[vm_daemon] Command received: {:?}", request.command);
-                debug_file_write(&format!("handle_connection: parsed command: {:?}, batch={}\n", request.command, request.batch));
-
-                if request.command.len() == 1 && request.command[0] == VM_SESSION_DONE_CMD {
-                    log::debug!(
-                        "vm session done command ({VM_SESSION_DONE_CMD}): host finished install/upgrade"
-                    );
-                    return Ok(ConnectionDisposition::Shutdown);
-                }
-
-                if request.command.is_empty() {
-                    return Err(eyre!(
-                        "empty command (send command [\"{0}\"] to end reuse session)",
-                        VM_SESSION_DONE_CMD
-                    ));
-                }
-
-                log::debug!("Received command: {:?}", request.command);
-                log::debug!("[vm_daemon] Executing command: {:?}", request.command);
-                log_process_identity("vm-daemon before command dispatch");
-                debug_file_write(&format!("handle_connection: executing command: {:?}\n", request.command));
-
-                // Execute command
-                let exit_code;
-                if request.batch {
-                    log::debug!("Using batch mode");
-                    debug_file_write("handle_connection: using batch mode\n");
-                    exit_code = execute_batch(&request, &mut stream)?;
-                } else if request.pty {
-                    log::debug!("Using PTY mode");
-                    debug_file_write("handle_connection: using PTY mode\n");
-                    exit_code = execute_with_pty(&request, &mut stream, Some(leftover_bytes))?;
-                } else {
-                    log::debug!("Using non-PTY mode");
-                    debug_file_write("handle_connection: using non-PTY mode\n");
-                    exit_code = execute_without_pty(&request, &mut stream, Some(leftover_bytes))?;
-                }
-                log::debug!("[vm_daemon] Command completed with exit code: {}", exit_code);
-                debug_file_write(&format!("handle_connection: command completed with exit_code={}\n", exit_code));
-
-                if request.reuse_vm {
-                    let idle_ms = request
-                        .vm_keep_timeout_secs
-                        .map(|s| s.saturating_mul(1000))
-                        .unwrap_or(VM_REUSE_IDLE_TIMEOUT_MS);
-                    let _ = kmsg_write("<6>handle_connection: reuse_vm=true, returning ReuseWait\n");
-                    return Ok(ConnectionDisposition::ReuseWait {
-                        idle_timeout_ms: idle_ms,
-                    });
-                } else {
-                    let _ = kmsg_write("<6>handle_connection: reuse_vm=false, returning Shutdown\n");
-                    return Ok(ConnectionDisposition::Shutdown);
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // No data available yet, check timeout and retry
-                if total_wait_ms >= MAX_WAIT_MS {
-                    let _ = kmsg_write(&format!("<6>handle_connection: timeout after {}ms (WouldBlock)\n", total_wait_ms));
-                    return Ok(ConnectionDisposition::Shutdown);
-                }
-                std::thread::sleep(std::time::Duration::from_millis(RETRY_INTERVAL_MS));
-                total_wait_ms += RETRY_INTERVAL_MS;
-                continue;
-            }
-            Err(e) => {
-                let _ = kmsg_write(&format!("<3>handle_connection: read error: {}\n", e));
-                return Ok(ConnectionDisposition::Shutdown);
             }
         }
     }
