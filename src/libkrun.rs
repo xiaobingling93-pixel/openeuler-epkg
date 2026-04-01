@@ -13,6 +13,36 @@ use color_eyre::Result;
 use crate::lfs;
 use crate::run::RunOptions;
 
+/// Cross-process file lock for VM creation on macOS/Windows.
+/// Prevents concurrent hv_vm_create() calls that cause HV_DENIED errors on macOS HVF.
+/// The lock is held during VM context creation and released immediately after.
+/// Lock file: {epkg_run}/vm-create.lock
+#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+struct VmCreateLock {
+    _lock: nix::fcntl::Flock<std::fs::File>,
+}
+
+#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+impl VmCreateLock {
+    /// Acquire exclusive lock on vm-create.lock file.
+    /// Blocks until lock is available (no non-blocking mode).
+    fn acquire() -> Result<Self> {
+        let run_dir = &crate::models::dirs().epkg_run;
+        lfs::create_dir_all(run_dir)?;
+        let lock_path = run_dir.join("vm-create.lock");
+
+        // Create lock file and acquire exclusive flock (RAII - auto unlock on drop)
+        let file = std::fs::File::create(&lock_path)
+            .map_err(|e| eyre::eyre!("Failed to create VM lock file {}: {}", lock_path.display(), e))?;
+
+        let lock = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive)
+            .map_err(|(_, e)| eyre::eyre!("Failed to acquire VM lock: {}", e))?;
+
+        log::debug!("libkrun: VM create lock acquired");
+        Ok(Self { _lock: lock })
+    }
+}
+
 // CRITICAL: Windows guest init path is CARVED IN STONE as /usr/bin/init.
 // The alpine environment has the epkg guest init at /usr/bin/init (190MB binary).
 // NEVER change this path - it must remain /usr/bin/init forever.
@@ -740,7 +770,20 @@ fn create_and_configure_vm(
 
     ensure_libkrun_linked();
 
+    // On macOS/Windows, acquire cross-process lock before VM creation.
+    // macOS HVF returns HV_DENIED when multiple processes try to create VMs simultaneously.
+    // The lock is released after VM context creation completes (before VM starts).
+    #[cfg(not(target_os = "linux"))]
+    let vm_lock = VmCreateLock::acquire()?;
+
     let ctx = unsafe { KrunContext::create()? };
+
+    // Release lock immediately after VM context creation.
+    // The HV_DENIED only happens during hv_vm_create() call inside KrunContext::create().
+    // Multiple VMs can run concurrently after creation succeeds.
+    #[cfg(not(target_os = "linux"))]
+    drop(vm_lock);
+
     let cpus = crate::run::resolve_vm_cpus(run_options);
     let requested_mib = crate::run::resolve_vm_memory_mib(run_options);
     log::debug!("libkrun: run_options.vm_memory_mib = {:?}", run_options.vm_memory_mib);
