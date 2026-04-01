@@ -44,37 +44,40 @@ pub fn wait_guest_ready_unix(
     listener: &std::os::unix::net::UnixListener,
     vm_start_failed_rx: Option<&std::sync::mpsc::Receiver<()>>,
 ) -> Result<()> {
-    let listener_fd = listener.as_raw_fd();
+    use std::os::unix::io::AsRawFd;
+    use std::time::Instant;
 
-    // Poll with shorter intervals to check for VM start failure
-    const POLL_INTERVAL_MS: i32 = 100;
-    const TOTAL_TIMEOUT_MS: i32 = 30_000;
-    let mut elapsed_ms: i32 = 0;
+    let listener_fd = listener.as_raw_fd();
+    let start = Instant::now();
+    let total_timeout = Duration::from_secs(30);
 
     loop {
-        // Check if VM start failed
+        // Check if VM start failed first
         if let Some(ref failed_rx) = vm_start_failed_rx {
             if failed_rx.try_recv().is_ok() {
                 return Err(eyre::eyre!("VM failed to start (krun_start_enter error)"));
             }
         }
 
+        // Calculate remaining timeout
+        let remaining = total_timeout.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            log::error!("libkrun: timeout waiting for VM to become ready");
+            return Err(eyre::eyre!("Timeout waiting for VM to start"));
+        }
+        let remaining_ms = (remaining.as_millis().min(u32::MAX as u128) as u32) as i32;
+
         let mut poll_fds = [libc::pollfd {
-            fd:      listener_fd,
-            events:  libc::POLLIN,
+            fd: listener_fd,
+            events: libc::POLLIN,
             revents: 0,
         }];
 
-        let poll_result = unsafe { libc::poll(poll_fds.as_mut_ptr(), 1, POLL_INTERVAL_MS) };
+        let poll_result = unsafe { libc::poll(poll_fds.as_mut_ptr(), 1, remaining_ms) };
 
         match poll_result {
             0 => {
-                // Timeout on this poll, continue checking
-                elapsed_ms += POLL_INTERVAL_MS;
-                if elapsed_ms >= TOTAL_TIMEOUT_MS {
-                    log::error!("libkrun: timeout waiting for VM to become ready");
-                    return Err(eyre::eyre!("Timeout waiting for VM to start"));
-                }
+                // Timeout - loop back to check VM failure
             }
             n if n < 0 => {
                 log::error!("libkrun: poll error on ready socket");
@@ -289,10 +292,10 @@ pub fn wait_guest_ready_windows(
         let _ = tx.send(r);
     });
 
-    // Poll for either pipe connection or VM start failure
     let start = std::time::Instant::now();
     let timeout = Duration::from_secs(30);
-    let check_interval = Duration::from_millis(100);
+    // Use smaller poll interval for faster response
+    let poll_interval = Duration::from_millis(10);
 
     loop {
         // Check if VM start failed
@@ -305,8 +308,8 @@ pub fn wait_guest_ready_windows(
             }
         }
 
-        // Check if pipe connected
-        match rx.try_recv() {
+        // Use recv_timeout to wait efficiently
+        match rx.recv_timeout(poll_interval) {
             Ok(Ok(())) => {
                 log::debug!("libkrun: guest connected to ready pipe, guest is ready!");
                 let _ = jh.join();
@@ -316,10 +319,10 @@ pub fn wait_guest_ready_windows(
                 let _ = jh.join();
                 return Err(eyre::eyre!("ConnectNamedPipe failed: {}", e));
             }
-            Err(mpsc::TryRecvError::Empty) => {
-                // Not ready yet, continue waiting
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Not ready yet, check timeout and continue
             }
-            Err(mpsc::TryRecvError::Disconnected) => {
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let _ = jh.join();
                 return Err(eyre::eyre!("Pipe thread disconnected unexpectedly"));
             }
@@ -330,8 +333,6 @@ pub fn wait_guest_ready_windows(
             // Note: Don't join the pipe thread - ConnectNamedPipe is blocking
             return Err(eyre::eyre!("Timeout waiting for VM to start"));
         }
-
-        std::thread::sleep(check_interval);
     }
 }
 
@@ -436,49 +437,74 @@ pub fn setup_reverse_listener(sock_path: &Path) -> Result<std::os::unix::net::Un
 }
 
 /// Accept a connection from Guest in reverse mode.
+/// Uses poll() for efficient waiting without busy-looping.
 #[cfg(unix)]
 pub fn accept_reverse_connection(
     listener: &std::os::unix::net::UnixListener,
     vm_start_failed_rx: Option<&std::sync::mpsc::Receiver<()>>,
 ) -> Result<std::os::unix::net::UnixStream> {
+    use std::os::unix::io::AsRawFd;
     use std::time::Instant;
 
     let start = Instant::now();
     let timeout = Duration::from_secs(30);
-    let check_interval = Duration::from_millis(100);
+    let listener_fd = listener.as_raw_fd();
 
     loop {
-        // Check if VM start failed
+        // Check if VM start failed first
         if let Some(ref failed_rx) = vm_start_failed_rx {
             if failed_rx.try_recv().is_ok() {
                 return Err(eyre::eyre!("VM failed to start (krun_start_enter error)"));
             }
         }
 
-        // Try to accept connection
-        match listener.accept() {
-            Ok((stream, _addr)) => {
-                log::debug!("libkrun: Guest connected to reverse listener");
-                // Set blocking mode - the listener is non-blocking and
-                // the accepted stream inherits this. Without blocking mode, write
-                // operations can fail with EAGAIN (os error 35 on macOS).
-                stream.set_nonblocking(false)
-                    .map_err(|e| eyre::eyre!("Failed to set blocking mode on reverse stream: {}", e))?;
-                return Ok(stream);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // No connection yet, continue waiting
-            }
-            Err(e) => {
-                return Err(eyre::eyre!("Failed to accept reverse connection: {}", e));
-            }
-        }
-
-        if start.elapsed() >= timeout {
+        // Calculate remaining timeout
+        let remaining = timeout.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
             return Err(eyre::eyre!("Timeout waiting for Guest to connect (reverse mode)"));
         }
+        let remaining_ms = (remaining.as_millis().min(u32::MAX as u128) as u32) as i32;
 
-        std::thread::sleep(check_interval);
+        // Use poll() to wait for connection efficiently
+        let mut poll_fds = [libc::pollfd {
+            fd: listener_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+
+        let poll_result = unsafe { libc::poll(poll_fds.as_mut_ptr(), 1, remaining_ms) };
+
+        match poll_result {
+            0 => {
+                // Timeout - check VM failure and loop
+            }
+            n if n < 0 => {
+                let errno = std::io::Error::last_os_error();
+                if errno.raw_os_error() == Some(libc::EINTR) {
+                    // Interrupted by signal, check conditions and retry
+                    continue;
+                }
+                return Err(eyre::eyre!("Poll error on reverse listener: {}", errno));
+            }
+            _ => {
+                // Socket is ready, accept the connection
+                match listener.accept() {
+                    Ok((stream, _addr)) => {
+                        log::debug!("libkrun: Guest connected to reverse listener");
+                        // Set blocking mode
+                        stream.set_nonblocking(false)
+                            .map_err(|e| eyre::eyre!("Failed to set blocking mode on reverse stream: {}", e))?;
+                        return Ok(stream);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        // Spurious wakeup, continue
+                    }
+                    Err(e) => {
+                        return Err(eyre::eyre!("Failed to accept reverse connection: {}", e));
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -536,6 +562,7 @@ pub fn setup_reverse_listener(sock_path: &Path) -> Result<WindowsReadyPipe> {
 
 /// Accept a connection from Guest in reverse mode (Windows).
 /// Takes ownership of the pipe to prevent double-close of the handle.
+/// Uses recv_timeout() for efficient waiting without busy-looping.
 #[cfg(windows)]
 pub fn accept_reverse_connection(
     mut pipe: WindowsReadyPipe,
@@ -559,7 +586,8 @@ pub fn accept_reverse_connection(
 
     let start = Instant::now();
     let timeout = Duration::from_secs(30);
-    let check_interval = Duration::from_millis(100);
+    // Use smaller poll interval for faster response while still checking VM failure
+    let poll_interval = Duration::from_millis(10);
 
     crate::debug_epkg!("libkrun_bridge: waiting for Guest connection or VM failure...");
 
@@ -580,13 +608,13 @@ pub fn accept_reverse_connection(
             }
         }
 
-        // Check if pipe connected
-        match rx.try_recv() {
+        // Use recv_timeout to wait for pipe connection efficiently
+        match rx.recv_timeout(poll_interval) {
             Ok(Ok(())) => {
                 log::debug!("libkrun: Guest connected to reverse pipe");
                 crate::debug_epkg!("libkrun_bridge: Guest connected successfully!");
                 let _ = jh.join();
-                // Return the pipe handle as a File (handle_raw is the raw handle we took ownership of)
+                // Return the pipe handle as a File
                 let file = std::fs::File::from(unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(handle_raw as std::os::windows::io::RawHandle) });
                 return Ok(file);
             }
@@ -595,10 +623,10 @@ pub fn accept_reverse_connection(
                 let _ = jh.join();
                 return Err(eyre::eyre!("ConnectNamedPipe failed: {:?}", e));
             }
-            Err(mpsc::TryRecvError::Empty) => {
-                // Not ready yet
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Not ready yet, check timeout and continue
             }
-            Err(mpsc::TryRecvError::Disconnected) => {
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
                 crate::debug_epkg!("libkrun_bridge: Pipe thread disconnected unexpectedly");
                 let _ = jh.join();
                 return Err(eyre::eyre!("Pipe thread disconnected unexpectedly"));
@@ -609,7 +637,5 @@ pub fn accept_reverse_connection(
             crate::debug_epkg!("libkrun_bridge: Timeout waiting for Guest connection");
             return Err(eyre::eyre!("Timeout waiting for Guest to connect (reverse mode)"));
         }
-
-        std::thread::sleep(check_interval);
     }
 }
