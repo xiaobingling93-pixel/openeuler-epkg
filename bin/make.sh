@@ -1822,7 +1822,7 @@ cross-windows() {
 
     # Always build Linux binary first - needed for VM mode deployment
     # Unconditional: code may have changed even if binary exists
-    build_static x86_64 debug
+    build_static x86_64 "$mode"
 
     local target="$RUST_TARGET_X86_64_WINDOWS"
 
@@ -1878,7 +1878,7 @@ cross-windows() {
     echo "[BUILD-OK] Windows ($arch, $mode): target/$target/$build_dir/${BINARY_NAME}.exe"
 
     # Path to the locally built Linux ELF (epkg-linux-$arch) for native Windows VM mode
-    local linux_epkg="${PROJECT_ROOT}/target/${RUST_TARGET_X86_64}/debug/${BINARY_NAME}"
+    local linux_epkg="${PROJECT_ROOT}/target/${RUST_TARGET_X86_64}/${build_dir}/${BINARY_NAME}"
 
     # Deploy Windows binary to dist/
     deploy_release_binary "target/$target/$build_dir/${BINARY_NAME}.exe" "epkg-windows-${arch}.exe"
