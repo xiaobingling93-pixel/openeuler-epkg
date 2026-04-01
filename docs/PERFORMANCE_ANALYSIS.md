@@ -73,19 +73,26 @@ Per-inode EA caching eliminates repeated file I/O for same file:
 
 ### Remaining Bottlenecks
 
-1. **OPEN operations (11.8ms avg)** - Windows CreateFileW overhead
-   - Guest kernel opens files for read/write
-   - Windows ACL security checks
-   - Antivirus scan (if enabled)
-   - File handle caching already implemented for read operations
+1. **OPEN operations (~10ms avg)** - Windows CreateFileW overhead
+   - `symlink_metadata`: 30μs (negligible)
+   - `read_reparse_kind`: 20μs (negligible)
+   - `metadata`: 20μs (negligible)
+   - `File::open`: **12.3ms** - 97% of OPEN time
+   - Windows ACL security checks, antivirus scan, file system driver
 
-2. **VM boot time (1.4s)** - WHPX overhead
+2. **READ operations (~2.3ms avg)** - Multiple sources
+   - `get_handle`: 1.7μs (negligible)
+   - `lock_file`: 0.5μs (negligible)
+   - `seek`: 0.8μs (negligible)
+   - `alloc_buffer`: 34μs (buffer allocation)
+   - `read` (file I/O): 29μs
+   - `write` (virtio queue): 256μs
+   - **Untracked: ~2ms/operation** - virtio queue transmission overhead
+
+3. **VM boot time (1.4s)** - WHPX overhead
    - WHPX VM creation
    - Kernel boot and init
-   - No built-in statistics API (unlike KVM)
-   - Need application-level exit statistics tracking
-
-3. **Virtiofs overhead** - Each command needs to read binaries/libraries from host
+   - WHPX exit statistics: ~54ms total (not main bottleneck)
 
 ### WHPX Exit Statistics
 
@@ -164,14 +171,21 @@ than Windows WHPX. The VM boot time on macOS is essentially instant (~50ms).
    - GETXATTR avg time: 10.46ms → 8.48μs (~1200x faster)
    - Cache invalidated on `setxattr()`/`removexattr()` operations
 10. **WHPX exit statistics**: Application-level tracking for VM exit analysis
-    - Confirmed WHPX exits (~39ms) are NOT the main bottleneck
+    - Confirmed WHPX exits (~54ms) are NOT the main bottleneck
     - MemoryAccess most frequent, X64Cpuid slowest per exit
+11. **FUSE sub-operation statistics**: Detailed timing for OPEN/READ analysis
+    - OPEN: `File::open` is 97% of time (Windows CreateFileW overhead)
+    - READ: virtio queue write + untracked transmission overhead
 
 ## Future Optimization Opportunities
 
 1. **VM reuse mode**: Keep VM running for multiple commands (--reuse_vm)
-2. **OPEN optimization**: Investigate why OPEN takes ~11ms avg
-   - Windows CreateFileW overhead, ACL checks, antivirus scan
-3. **READ optimization**: Investigate READ ~1-3ms avg
+   - Eliminates 1.4s VM boot overhead per command
+2. **OPEN optimization**: Investigate `File::open` alternatives
+   - Consider file handle pooling
+   - Investigate Windows file API optimizations
+3. **READ optimization**: Investigate virtio queue transmission overhead
+   - ~2ms untracked per READ operation
+   - May be inherent to virtio/FUSE protocol
 4. **Virtiofs cache warming**: Pre-cache frequently used files
 5. **Init binary optimization**: Further reduce size or use compressed init
