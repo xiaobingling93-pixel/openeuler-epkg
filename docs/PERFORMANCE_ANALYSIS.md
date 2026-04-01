@@ -79,7 +79,10 @@ Per-inode EA caching eliminates repeated file I/O for same file:
    - `metadata`: 0.1μs (negligible, reused symlink_metadata)
    - `File::open`: **10-11ms** - 97% of OPEN time
    - Windows ACL security checks, antivirus scan, file system driver
-   - **CreateFileW alternative**: ~6% faster (EPKG_USE_CREATEFILEW=1)
+   - **API alternatives tested (no significant improvement):**
+     - CreateFileW: ~6% faster (within noise margin)
+     - NtCreateFile: similar performance to std::fs::File::open
+     - Conclusion: bottleneck is Windows kernel, not API choice
 
 2. **READ operations (~2.3ms avg)** - Multiple sources
    - `get_handle`: 1.7μs (negligible)
