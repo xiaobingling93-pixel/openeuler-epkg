@@ -391,6 +391,14 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
     let is_unix_absolute = run_options.command.starts_with('/');
 
     if is_unix_absolute {
+        // First, check if the path is already under env_root (e.g., /Users/aa/.epkg/envs/debian/usr/bin/sh)
+        // This happens when scriptlets.rs passes a full host path. In this case, return it directly.
+        let cmd_path = PathBuf::from(&run_options.command);
+        if cmd_path.starts_with(env_root) {
+            debug!("Command {} is already under env_root, using directly", cmd_path.display());
+            return Ok(cmd_path);
+        }
+
         // Unix-style absolute path: convert to environment path
         // /usr/bin/sh -> env_root/usr/bin/sh (or .exe on Windows)
         let relative_path = run_options.command.trim_start_matches('/');

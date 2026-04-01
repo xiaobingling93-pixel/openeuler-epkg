@@ -1418,9 +1418,16 @@ fn get_current_epkg_version_info() -> Result<EpkgVersionInfo> {
 /// Uses uniform "kernel" symlink pointing to the actual kernel file:
 /// - x86_64: vmlinux-{version}-{arch} (ELF format)
 /// - aarch64/riscv64: Image-{version}-{arch} (Raw format)
+///
+/// Note: The kernel is always loaded from the `self` environment (`~/.epkg/envs/self/boot/kernel`),
+/// not from individual target environments. This is because:
+/// 1. The kernel is a shared resource used by all VM instances
+/// 2. Individual environments (e.g., debian, fedora) don't need their own kernel copies
+/// 3. The self environment contains epkg's own binaries and the kernel is part of that
 #[cfg(any(feature = "libkrun", target_os = "linux"))]
 fn default_kernel_path() -> PathBuf {
     // Uniform kernel symlink name
+    // Note: Always use kernel from self env, not from the target environment
     dirs().user_envs.join(SELF_ENV).join("boot").join("kernel")
 }
 
