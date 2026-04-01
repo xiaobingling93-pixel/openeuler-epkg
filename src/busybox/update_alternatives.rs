@@ -390,6 +390,12 @@ pub fn command() -> Command {
                 .action(clap::ArgAction::Append),
         )
         .arg(
+            Arg::new("family")
+                .long("family")
+                .num_args(1)
+                .value_name("family"),
+        )
+        .arg(
             Arg::new("remove")
                 .long("remove")
                 .num_args(2)
