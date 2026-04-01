@@ -657,7 +657,7 @@ pub fn send_command_over_named_pipe(
         io_mode, use_pty, is_batch, reuse_vm);
 
     // Build and send command request
-    let request = build_command_request(cmd_parts, io_mode, reuse_vm);
+    let request = build_command_request(cmd_parts, io_mode, reuse_vm, None);
     let request_json = serde_json::to_vec(&request)?;
     crate::debug_epkg!("libkrun_stream: [PERF] writing {} bytes to named pipe", request_json.len());
     let write_start = std::time::Instant::now();

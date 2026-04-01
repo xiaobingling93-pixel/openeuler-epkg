@@ -13,16 +13,17 @@ use color_eyre::Result;
 use crate::lfs;
 use crate::run::RunOptions;
 
-/// Cross-process file lock for VM creation on macOS/Windows.
+/// Cross-process file lock for VM creation on macOS.
 /// Prevents concurrent hv_vm_create() calls that cause HV_DENIED errors on macOS HVF.
 /// The lock is held during VM context creation and released immediately after.
 /// Lock file: {epkg_run}/vm-create.lock
-#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+/// Note: Windows uses a different synchronization mechanism (not needed for WHPX).
+#[cfg(all(feature = "libkrun", target_os = "macos"))]
 struct VmCreateLock {
     _lock: nix::fcntl::Flock<std::fs::File>,
 }
 
-#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+#[cfg(all(feature = "libkrun", target_os = "macos"))]
 impl VmCreateLock {
     /// Acquire exclusive lock on vm-create.lock file.
     /// Blocks until lock is available (no non-blocking mode).
@@ -778,10 +779,10 @@ fn create_and_configure_vm(
 
     ensure_libkrun_linked();
 
-    // On macOS/Windows, acquire cross-process lock before VM creation.
+    // On macOS, acquire cross-process lock before VM creation.
     // macOS HVF returns HV_DENIED when multiple processes try to create VMs simultaneously.
     // The lock is released after VM context creation completes (before VM starts).
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     let vm_lock = VmCreateLock::acquire()?;
 
     let ctx = unsafe { KrunContext::create()? };
@@ -789,7 +790,7 @@ fn create_and_configure_vm(
     // Release lock immediately after VM context creation.
     // The HV_DENIED only happens during hv_vm_create() call inside KrunContext::create().
     // Multiple VMs can run concurrently after creation succeeds.
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     drop(vm_lock);
 
     let cpus = crate::run::resolve_vm_cpus(run_options);
