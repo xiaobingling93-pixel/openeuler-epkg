@@ -436,18 +436,31 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::mtree::Mt
 
         if fs_file_info.is_dir() {
             // Check if target path exists
-            if let Ok(metadata) = lfs::symlink_metadata(&target_path) {
+            // Strip trailing slash to avoid symlink resolution issues on broken symlinks
+            // (On macOS, symlink_metadata("path/") fails if path is a broken symlink)
+            let path_str = target_path.as_os_str().to_string_lossy();
+            let check_path = if path_str.ends_with('/') {
+                // Use the path without trailing slash, NOT the parent directory
+                Path::new(path_str.trim_end_matches('/'))
+            } else {
+                target_path.as_path()
+            };
+            if let Ok(metadata) = lfs::symlink_metadata(check_path) {
                 // If it's a directory or a symlink to a directory, we're done
                 if metadata.file_type().is_dir() {
+                    log::trace!("mirror_dir: directory exists, skipping: {}", target_path.display());
                     continue;
                 }
                 // If it's a symlink (to a directory), skip - the symlink target directory will be used
                 if metadata.file_type().is_symlink() {
+                    log::debug!("mirror_dir: symlink exists, skipping directory creation: {}", target_path.display());
                     continue;
                 }
                 // It's a file, remove it
+                log::debug!("mirror_dir: removing existing file to create directory: {}", target_path.display());
                 lfs::remove_file(&target_path)?;
             }
+            log::debug!("mirror_dir: creating directory: {}", target_path.display());
             lfs::create_dir_all_with_case_sensitivity(&target_path)?;
             continue;
         }

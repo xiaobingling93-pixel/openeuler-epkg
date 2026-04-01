@@ -12,24 +12,47 @@ use color_eyre::eyre::{eyre, Result};
 #[cfg(not(target_os = "linux"))]
 fn host_path_to_guest_path(host_path: &std::path::Path) -> std::path::PathBuf {
     let home_epkg = crate::models::dirs().home_epkg.clone();
-    if let Ok(relative) = host_path.strip_prefix(&home_epkg) {
+    // Canonicalize both paths to resolve symlinks (e.g., ~/.epkg -> /Volumes/epkg)
+    // This ensures consistent prefix matching regardless of whether paths are resolved
+    let home_epkg_resolved = std::fs::canonicalize(&home_epkg).unwrap_or_else(|_| home_epkg.clone());
+    let host_path_resolved = std::fs::canonicalize(host_path).unwrap_or_else(|_| host_path.to_path_buf());
+
+    log::debug!("host_path_to_guest_path: host_path={:?} resolved={:?} home_epkg={:?} home_epkg_resolved={:?}",
+                host_path, host_path_resolved, home_epkg, home_epkg_resolved);
+
+    // Try with resolved paths first
+    if let Ok(relative) = host_path_resolved.strip_prefix(&home_epkg_resolved) {
         // Convert to Unix-style path and prepend /opt/epkg
         #[cfg(windows)]
         let relative_str = relative.to_string_lossy().replace('\\', "/");
         #[cfg(not(windows))]
         let relative_str = relative.to_string_lossy();
-        std::path::PathBuf::from(format!("/opt/epkg/{}", relative_str.trim_start_matches('/')))
-    } else {
-        // Path not under home_epkg, try to convert backslashes to forward slashes on Windows
+        let result = std::path::PathBuf::from(format!("/opt/epkg/{}", relative_str.trim_start_matches('/')));
+        log::debug!("host_path_to_guest_path: result={:?}", result);
+        return result;
+    }
+
+    // Also try with unresolved paths (in case host_path wasn't canonicalized)
+    if let Ok(relative) = host_path.strip_prefix(&home_epkg) {
         #[cfg(windows)]
-        {
-            let path_str = host_path.to_string_lossy().replace('\\', "/");
-            std::path::PathBuf::from(path_str)
-        }
+        let relative_str = relative.to_string_lossy().replace('\\', "/");
         #[cfg(not(windows))]
-        {
-            host_path.to_path_buf()
-        }
+        let relative_str = relative.to_string_lossy();
+        let result = std::path::PathBuf::from(format!("/opt/epkg/{}", relative_str.trim_start_matches('/')));
+        log::debug!("host_path_to_guest_path: result (unresolved)={:?}", result);
+        return result;
+    }
+
+    // Path not under home_epkg, try to convert backslashes to forward slashes on Windows
+    #[cfg(windows)]
+    {
+        let path_str = host_path.to_string_lossy().replace('\\', "/");
+        std::path::PathBuf::from(path_str)
+    }
+    #[cfg(not(windows))]
+    {
+        log::warn!("host_path_to_guest_path: cannot convert path {:?} (not under home_epkg)", host_path);
+        host_path.to_path_buf()
     }
 }
 
