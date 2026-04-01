@@ -129,7 +129,11 @@ safe_cp() {
     local cp_output cp_status
     # Create parent directory if it doesn't exist
     mkdir -p "$(dirname "$dst")" || return $?
-    cp_output=$(cp --update "$src" "$dst" 2>&1) && return 0 || {
+    # Skip copy if dst exists and is newer or same age as src (manual -u equivalent)
+    if [[ -f "$dst" ]] && [[ ! "$src" -nt "$dst" ]]; then
+        return 0
+    fi
+    cp_output=$(cp "$src" "$dst" 2>&1) && return 0 || {
         cp_status=$?
         if echo "$cp_output" | grep -q "Text file busy\|Permission denied"; then
             # Try to remove and re-copy (handles Windows FS permission issues)
