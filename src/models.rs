@@ -1287,6 +1287,11 @@ pub struct EPKGDirs {
     pub epkg_downloads_cache: PathBuf,
     #[serde(default)]
     pub epkg_channels_cache: PathBuf,
+    /// Runtime directory for VM sockets and other ephemeral files
+    /// - If  shared_store:  /opt/epkg/run
+    /// - If !shared_store:  $HOME/.epkg/run (or $XDG_RUNTIME_DIR/epkg if available)
+    #[serde(default)]
+    pub epkg_run: PathBuf,
 }
 
 /// Type alias for installed packages map

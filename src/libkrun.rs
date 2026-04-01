@@ -654,15 +654,12 @@ struct VmContext {
 /// Returns host path for the command socket/pipe.
 #[cfg(feature = "libkrun")]
 fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext, reverse: bool) -> Result<std::path::PathBuf> {
-    let sock_path = crate::models::dirs().epkg_cache
-        .join("vmm-logs")
-        .join(format!("vsock-{}.sock", std::process::id()));
-    lfs::create_dir_all(sock_path.parent().unwrap())?;
+    let run_dir = &crate::models::dirs().epkg_run;
+    lfs::create_dir_all(run_dir)?;
+    let sock_path = run_dir.join(format!("vsock-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&sock_path);
 
-    let ready_path = crate::models::dirs().epkg_cache
-        .join("vmm-logs")
-        .join(format!("ready-{}.sock", std::process::id()));
+    let ready_path = run_dir.join(format!("ready-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&ready_path);
 
     unsafe {
@@ -1232,6 +1229,9 @@ fn shutdown_krun_session_impl(session: VmReuseSession) -> Result<()> {
     unsafe {
         let _ = krun_free_ctx(session.ctx_id);
     }
+    // Clean up socket files
+    let _ = std::fs::remove_file(&session.vsock_sock_path);
+    log::trace!("libkrun: cleaned up socket {}", session.vsock_sock_path.display());
     Ok(())
 }
 
@@ -1550,12 +1550,10 @@ pub fn run_command_in_krun(
         libkrun_bridge::wait_guest_ready_unix(&ready_listener, Some(&start_failed_rx))?;
         #[cfg(windows)]
         libkrun_bridge::wait_guest_ready_windows(&ready_pipe, Some(&start_failed_rx))?;
-        crate::debug_epkg!("libkrun: guest is ready, pausing to let vsock bridge setup complete...");
+        crate::debug_epkg!("libkrun: guest is ready");
 
-        // Give libkrun time to set up the vsock-to-named-pipe bridge
-        // This avoids a race condition where we connect before libkrun is ready
-        crate::debug_epkg!("libkrun: sleeping 100ms to let guest accept() setup complete...");
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        // Guest is ready - proceed directly to send command.
+        // The ready signal confirms guest vm_daemon is running and waiting.
 
         crate::debug_epkg!("libkrun: sending command via vsock...");
         let exit_code = libkrun_stream::send_command_via_vsock(

@@ -7,8 +7,9 @@ use std::time::Duration;
 
 #[cfg(unix)]
 pub fn setup_vsock_ready_listener() -> Result<Option<std::os::unix::net::UnixListener>> {
-    let vmm_logs_dir = crate::models::dirs().epkg_cache.join("vmm-logs");
-    if let Ok(entries) = std::fs::read_dir(&vmm_logs_dir) {
+    let run_dir = &crate::models::dirs().epkg_run;
+    // Clean up stale sockets from previous runs
+    if let Ok(entries) = std::fs::read_dir(run_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with("vsock-") && name.ends_with(".sock") {
@@ -23,7 +24,7 @@ pub fn setup_vsock_ready_listener() -> Result<Option<std::os::unix::net::UnixLis
     }
 
     let _pid = std::process::id();
-    let ready_path = vmm_logs_dir.join(format!("ready-{}.sock", _pid));
+    let ready_path = run_dir.join(format!("ready-{}.sock", _pid));
     let _ = std::fs::remove_file(&ready_path);
 
     log::debug!("libkrun: creating ready listener on {}", ready_path.display());
@@ -222,10 +223,10 @@ impl WindowsReadyPipe {
 
 #[cfg(windows)]
 pub fn setup_vsock_ready_listener() -> Result<Option<WindowsReadyPipe>> {
-    let vmm_logs_dir = crate::models::dirs().epkg_cache.join("vmm-logs");
-    let _ = std::fs::create_dir_all(&vmm_logs_dir);
+    let run_dir = &crate::models::dirs().epkg_run;
+    let _ = std::fs::create_dir_all(run_dir);
     let pid = std::process::id();
-    let ready_path = vmm_logs_dir.join(format!("ready-{pid}.sock"));
+    let ready_path = run_dir.join(format!("ready-{pid}.sock"));
     let pipe_name = pipe_name_from_sock_path(&ready_path)?;
     let full = format!("\\\\.\\pipe\\{}", pipe_name);
     let wide = to_wide_null(&full);

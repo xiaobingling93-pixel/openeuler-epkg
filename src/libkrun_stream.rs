@@ -455,19 +455,12 @@ pub fn send_command_via_vsock(
     let mut stream = super::libkrun_bridge::connect_vsock_bridge(sock_path, 30)?;
     crate::debug_epkg!("libkrun_stream: connected to vsock bridge");
 
-    // CRITICAL FIX: Wait for vsock handshake to complete before sending data
-    // The vsock handshake involves: host REQUEST -> guest RESPONSE -> ESTABLISHED
-    // This process takes time, especially on Windows/WHPX where the virtio device
-    // processes requests asynchronously. The guest's vm_daemon must:
-    // 1. Receive the VSOCK_OP_REQUEST from libkrun
-    // 2. Call accept() on the vsock socket
-    // 3. Send VSOCK_OP_RESPONSE back to libkrun
-    // 4. Only THEN can data flow reliably
-    // Without sufficient delay, the host sends data before the handshake completes,
-    // causing the data to be lost and the guest to read EOF.
-    crate::debug_epkg!("libkrun_stream: waiting for vsock handshake to complete...");
-    std::thread::sleep(std::time::Duration::from_millis(1000));
-    crate::debug_epkg!("libkrun_stream: vsock handshake wait complete");
+    // WaitNamedPipeA already ensures the named pipe is ready (guest has connected).
+    // The guest sends READY signal immediately after connection.
+    // We can proceed directly - handle_streaming_simple will skip the READY signal.
+    // Only a small safety margin is needed for pipe buffer propagation.
+    crate::debug_epkg!("libkrun_stream: brief wait for pipe buffer propagation...");
+    std::thread::sleep(std::time::Duration::from_millis(10));
     crate::debug_epkg!("libkrun_stream: building command request");
     let request = build_command_request(cmd_parts, io_mode, reuse_vm);
     crate::debug_epkg!("libkrun_stream: serializing to json");

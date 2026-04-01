@@ -124,6 +124,13 @@ impl EPKGDirs {
             home_cache.join("aur_builds")
         };
 
+        // Runtime dir for VM sockets and other ephemeral files
+        // Prefer $XDG_RUNTIME_DIR if available, otherwise fallback to $HOME/.epkg/run
+        let epkg_run = std::env::var("XDG_RUNTIME_DIR")
+            .ok()
+            .map(|p| PathBuf::from(p).join("epkg"))
+            .unwrap_or_else(|| PathBuf::from(&home).join(".epkg").join("run"));
+
         Ok(Self {
             opt_epkg,
             home_epkg,
@@ -134,6 +141,7 @@ impl EPKGDirs {
             epkg_channels_cache: epkg_cache.join("channels"),
             epkg_store,
             epkg_cache,
+            epkg_run,
         })
     }
 }
@@ -196,6 +204,9 @@ impl EPKGDirs {
         // AUR builds not applicable on Windows, but keep for struct completeness
         let user_aur_builds = epkg_cache.join("aur_builds").join(&username);
 
+        // Runtime dir for VM sockets and named pipes on Windows
+        let epkg_run = home_epkg.join("run");
+
         Ok(Self {
             opt_epkg,
             home_epkg,
@@ -206,6 +217,7 @@ impl EPKGDirs {
             epkg_channels_cache: epkg_cache.join("channels"),
             epkg_store,
             epkg_cache,
+            epkg_run,
         })
     }
 }
@@ -261,6 +273,7 @@ impl EPKGDirs {
         m(&mut self.epkg_cache, &computed.epkg_cache);
         m(&mut self.epkg_downloads_cache, &computed.epkg_downloads_cache);
         m(&mut self.epkg_channels_cache, &computed.epkg_channels_cache);
+        m(&mut self.epkg_run, &computed.epkg_run);
     }
 }
 
