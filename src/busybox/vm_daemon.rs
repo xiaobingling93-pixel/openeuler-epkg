@@ -438,6 +438,7 @@ fn spawn_child_piped(
         child.uid(uid);
         child.gid(gid);
     }
+    log::debug!("vm-daemon spawn_child_piped: setting env: {:?}", request.env);
     child.envs(&request.env);
     child.stdin(std::process::Stdio::piped());
     child.stdout(std::process::Stdio::piped());

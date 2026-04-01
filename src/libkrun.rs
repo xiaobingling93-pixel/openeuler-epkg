@@ -1171,6 +1171,7 @@ fn try_reuse_existing_krun_session(
                 &config.cmd_parts,
                 run_options.io_mode,
                 run_options.reuse_vm,
+                Some(&run_options.env_vars),
                 stream,
             )
             .map_err(|e| eyre::eyre!("Failed to send command via reverse vsock: {}", e))?;
@@ -1184,6 +1185,7 @@ fn try_reuse_existing_krun_session(
             run_options.io_mode,
             run_options.reuse_vm,
             &sock,
+            Some(&run_options.env_vars),
         )
         .map_err(|e| eyre::eyre!("Failed to send command via vsock bridge: {}", e))?;
         Ok(Some(code))
@@ -1207,6 +1209,7 @@ fn send_session_done_unix(sock_path: &Path) -> Result<()> {
         &[crate::run::VM_SESSION_DONE_CMD.to_string()],
         crate::models::IoMode::Stream,
         false,
+        None,
     ))?;
     #[cfg(unix)]
     {
@@ -1439,6 +1442,7 @@ fn run_reverse_vsock_mode_inner(
         &config.cmd_parts,
         run_options.io_mode,
         run_options.reuse_vm,
+        Some(&run_options.env_vars),
         stream,
     ) {
         Ok(code) => {
@@ -1576,6 +1580,7 @@ pub fn run_command_in_krun(
             run_options.io_mode,
             run_options.reuse_vm,
             &vsock_sock_path,
+            Some(&run_options.env_vars),
         )
         .map_err(|e| eyre::eyre!("Failed to send command via vsock bridge: {}", e))?;
         log::debug!("libkrun: vsock command completed with exit code {}", exit_code);

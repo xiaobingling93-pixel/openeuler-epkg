@@ -670,6 +670,26 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
                 let cmd_path = resolve_command_path(env_root, &prepared_opts)?;
                 crate::debug_epkg!("fork_and_execute: command path resolved: {:?}", cmd_path);
 
+                // Add EPKG_ACTIVE_ENV and EPKG_ENV_ROOT for VM guest process
+                // This is critical for nested epkg calls to know the current environment
+                // In VM guest, ~/.epkg is mounted at /opt/epkg, so we need to convert paths
+                let env_name = config().common.env_name.clone();
+                if !env_name.is_empty() {
+                    prepared_opts.env_vars.insert("EPKG_ACTIVE_ENV".to_string(), env_name.clone());
+                    // Convert host env_root to guest path: ~/.epkg/envs/NAME -> /opt/epkg/envs/NAME
+                    let home_epkg = crate::models::dirs().home_epkg.clone();
+                    let guest_env_root = if let Ok(stripped) = env_root.strip_prefix(&home_epkg) {
+                        let s = stripped.to_string_lossy();
+                        let prefix = if s.starts_with('/') { "/opt/epkg" } else { "/opt/epkg/" };
+                        format!("{}{}", prefix, s)
+                    } else {
+                        env_root.display().to_string()
+                    };
+                    prepared_opts.env_vars.insert("EPKG_ENV_ROOT".to_string(), guest_env_root.clone());
+                    debug!("Added EPKG_ACTIVE_ENV={} EPKG_ENV_ROOT={} (converted from {}) for VM execution",
+                           env_name, guest_env_root, env_root.display());
+                }
+
                 // Convert host path to guest path (strip env_root prefix if inside)
                 let guest_cmd_path = if let Ok(stripped) = cmd_path.strip_prefix(env_root) {
                     // On Windows, stripped path may have backslashes.

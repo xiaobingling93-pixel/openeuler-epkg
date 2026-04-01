@@ -84,7 +84,10 @@ pub fn deserialize_env_config_for(env_name: String) -> Result<EnvConfig> {
     if env_name.is_empty() {
         return Err(eyre::eyre!("Environment name is empty; cannot load environment config. This may indicate a bug in initialization order."));
     }
+
     let config_path = crate::dirs::get_env_config_path(&env_name);
+
+    log::debug!("deserialize_env_config_for: env_name={}, config_path={}", env_name, config_path.display());
 
     // In tests, we often don't have a real on-disk environment; fall back to a
     // minimal default EnvConfig instead of failing hard when env.yaml is missing.
@@ -103,7 +106,21 @@ pub fn deserialize_env_config_for(env_name: String) -> Result<EnvConfig> {
         return Err(eyre::eyre!("Environment config file not found: '{}'", config_path.display()));
     }
 
-    let env_config = read_yaml_file(&config_path)?;
+    let mut env_config: EnvConfig = read_yaml_file(&config_path)?;
+
+    // Override env_root with EPKG_ENV_ROOT if set (for VM guest execution)
+    // In VM guest, ~/.epkg is mounted at /opt/epkg, so paths need to be converted
+    if let Ok(env_root) = std::env::var("EPKG_ENV_ROOT") {
+        if !env_root.is_empty() {
+            log::debug!("Overriding env_root from '{}' to '{}' (EPKG_ENV_ROOT)", env_config.env_root, env_root);
+            env_config.env_root = env_root.clone();
+            // Also update env_base if it was the same as env_root
+            if env_config.env_base == env_config.env_root {
+                env_config.env_base = env_root;
+            }
+        }
+    }
+
     Ok(env_config)
 }
 
@@ -338,6 +355,7 @@ pub fn interpolate_channel_urls(cc: &mut ChannelConfig) {
 #[allow(dead_code)] // quiet warning in cargo test calls
 pub fn deserialize_channel_config() -> Result<Vec<ChannelConfig>> {
     let env_config = models::env_config();
+    log::debug!("deserialize_channel_config: env_root={}", env_config.env_root);
     let env_root = PathBuf::from(&env_config.env_root);
     deserialize_channel_config_from_root(&env_root)
 }

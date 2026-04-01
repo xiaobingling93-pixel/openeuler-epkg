@@ -70,7 +70,12 @@ enum StreamMessage {
     Error { message: String },
 }
 
-pub(crate) fn build_command_request(cmd_parts: &[String], io_mode: IoMode, reuse_vm: bool) -> serde_json::Value {
+pub(crate) fn build_command_request(
+    cmd_parts: &[String],
+    io_mode: IoMode,
+    reuse_vm: bool,
+    env_vars: Option<&std::collections::HashMap<String, String>>,
+) -> serde_json::Value {
     crate::debug_epkg!("build_command_request: starting");
     // On Windows, is_terminal() can hang - avoid calling it
     let use_pty = matches!(io_mode, IoMode::Tty) ||
@@ -105,6 +110,19 @@ pub(crate) fn build_command_request(cmd_parts: &[String], io_mode: IoMode, reuse
     }
     if reuse_vm {
         m.insert("reuse_vm".to_string(), serde_json::Value::Bool(true));
+    }
+    // Add environment variables if provided
+    if let Some(env) = env_vars {
+        if !env.is_empty() {
+            m.insert(
+                "env".to_string(),
+                serde_json::Value::Object(
+                    env.iter()
+                        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                        .collect(),
+                ),
+            );
+        }
     }
     serde_json::Value::Object(m)
 }
@@ -267,6 +285,7 @@ pub fn send_command_via_vsock(
     io_mode: IoMode,
     reuse_vm: bool,
     sock_path: &Path,
+    env_vars: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<i32> {
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
@@ -311,7 +330,7 @@ pub fn send_command_via_vsock(
 
     log::debug!("libkrun: Unix socket connected, sending command {:?}", cmd_parts);
 
-    let request = build_command_request(cmd_parts, io_mode, reuse_vm);
+    let request = build_command_request(cmd_parts, io_mode, reuse_vm, env_vars);
     let request_json = serde_json::to_vec(&request)?;
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
@@ -442,6 +461,7 @@ pub fn send_command_via_vsock(
     io_mode: IoMode,
     reuse_vm: bool,
     sock_path: &Path,
+    env_vars: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<i32> {
     crate::debug_epkg!("libkrun_stream: send_command_via_vsock starting");
     crate::debug_epkg!("libkrun_stream: about to resolve io_mode...");
@@ -462,7 +482,7 @@ pub fn send_command_via_vsock(
     crate::debug_epkg!("libkrun_stream: brief wait for pipe buffer propagation...");
     std::thread::sleep(std::time::Duration::from_millis(10));
     crate::debug_epkg!("libkrun_stream: building command request");
-    let request = build_command_request(cmd_parts, io_mode, reuse_vm);
+    let request = build_command_request(cmd_parts, io_mode, reuse_vm, env_vars);
     crate::debug_epkg!("libkrun_stream: serializing to json");
     let request_json = serde_json::to_vec(&request)?;
     crate::debug_epkg!("libkrun_stream: writing {} bytes to stream", request_json.len());
@@ -577,6 +597,7 @@ pub fn send_command_over_stream(
     cmd_parts: &[String],
     io_mode: IoMode,
     reuse_vm: bool,
+    env_vars: Option<&std::collections::HashMap<String, String>>,
     mut stream: impl Read + Write + Send + 'static,
 ) -> Result<i32> {
     crate::debug_epkg!("libkrun_stream: send_command_over_stream starting");
@@ -590,7 +611,7 @@ pub fn send_command_over_stream(
     crate::debug_epkg!("libkrun_stream: sending command request...");
 
     // Build and send command request
-    let request = build_command_request(cmd_parts, io_mode, reuse_vm);
+    let request = build_command_request(cmd_parts, io_mode, reuse_vm, env_vars);
     let request_json = serde_json::to_vec(&request)?;
     crate::debug_epkg!("libkrun_stream: writing {} bytes to stream", request_json.len());
     stream.write_all(&request_json)?;

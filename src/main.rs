@@ -1745,10 +1745,28 @@ fn try_env_from_epkg_activenv(config: &mut EPKGConfig) -> bool {
     config.common.env_name = env_name.to_string();
     config.common.env_explicit = true;
     if let Ok(env_root) = env::var("EPKG_ENV_ROOT") {
-        config.common.env_root = env_root;
+        config.common.env_root = env_root.clone();
         config.common.in_env_root = true;
+        // Set ENV_CONFIG immediately with the correct env_root from EPKG_ENV_ROOT
+        // This is critical for VM guest execution where paths differ from host
+        let env_config = models::EnvConfig {
+            name: env_name.to_string(),
+            env_root: env_root.clone(),
+            env_base: env_root.clone(),
+            ..Default::default()
+        };
+        match models::set_env_config(env_config) {
+            Ok(()) => {
+                log::debug!("env: set_env_config succeeded with env_root={}", env_root);
+            }
+            Err(existing) => {
+                log::debug!("env: set_env_config failed, ENV_CONFIG already set with env_root={}", existing.env_root);
+            }
+        }
+        log::debug!("env: from EPKG_ACTIVE_ENV -> {} with EPKG_ENV_ROOT={}", config.common.env_name, config.common.env_root);
+    } else {
+        log::debug!("env: from EPKG_ACTIVE_ENV -> {}", config.common.env_name);
     }
-    log::debug!("env: from EPKG_ACTIVE_ENV -> {}", config.common.env_name);
     true
 }
 
@@ -1798,14 +1816,17 @@ fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
         );
         return Ok(());
     }
+    // Check EPKG_ACTIVE_ENV BEFORE /etc/epkg/env.yaml
+    // This is critical for VM guest execution where we want to use the host's environment
+    // selection (passed via EPKG_ACTIVE_ENV) rather than the VM rootfs's env.yaml
+    if try_env_from_epkg_activenv(config) {
+        return Ok(());
+    }
     if try_detect_environment_from_env_yaml(config)? {
         return Ok(());
     }
     if !config.common.env_name.is_empty() {
         log::debug!("env: using existing env_name -> {}", config.common.env_name);
-        return Ok(());
-    }
-    if try_env_from_epkg_activenv(config) {
         return Ok(());
     }
     if try_env_from_run_command(config)? {
