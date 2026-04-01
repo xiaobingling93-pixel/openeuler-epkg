@@ -782,7 +782,7 @@ fn create_and_configure_vm(
     // On macOS, acquire cross-process lock before VM creation.
     // macOS HVF returns HV_DENIED when multiple processes try to create VMs simultaneously.
     // The lock is released after VM context creation completes (before VM starts).
-    #[cfg(target_os = "macos")]
+    #[cfg(all(feature = "libkrun", target_os = "macos"))]
     let vm_lock = VmCreateLock::acquire()?;
 
     let ctx = unsafe { KrunContext::create()? };
@@ -790,7 +790,7 @@ fn create_and_configure_vm(
     // Release lock immediately after VM context creation.
     // The HV_DENIED only happens during hv_vm_create() call inside KrunContext::create().
     // Multiple VMs can run concurrently after creation succeeds.
-    #[cfg(target_os = "macos")]
+    #[cfg(all(feature = "libkrun", target_os = "macos"))]
     drop(vm_lock);
 
     let cpus = crate::run::resolve_vm_cpus(run_options);
