@@ -73,33 +73,36 @@ Per-inode EA caching eliminates repeated file I/O for same file:
 
 ### Remaining Bottlenecks
 
-1. **OPEN operations (~10ms avg)** - Windows CreateFileW overhead
-   - `symlink_metadata`: 30μs (negligible, optimized to reuse metadata)
-   - `read_reparse_kind`: 0.3μs (negligible, optimized)
-   - `metadata`: 0.1μs (negligible, reused symlink_metadata)
-   - `File::open`: **10-11ms** - 97% of OPEN time
-   - Windows ACL security checks, antivirus scan, file system driver
-   - **API alternatives tested (no significant improvement):**
-     - CreateFileW: ~6% faster (within noise margin)
-     - NtCreateFile: similar performance to std::fs::File::open
-     - Conclusion: bottleneck is Windows kernel, not API choice
+**Main Bottleneck: READ operations (81% of FUSE time)**
 
-2. **READ operations (~2.3ms avg)** - Multiple sources
-   - `get_handle`: 1.7μs (negligible)
-   - `lock_file`: 0.5μs (negligible)
-   - `seek`: 0.8μs (negligible)
-   - `alloc_buffer`: 34μs (buffer allocation)
-   - `read` (file I/O): 29μs
-   - `write` (virtio queue): 256μs
-   - **virtio overhead: ~2ms** (inherent protocol cost)
-     - pop (avail ring): 200-700μs
-     - rw (memory mapping): 400-3500μs
-     - add (used ring): 700-4300μs
+1. **READ virtio overhead: ~922ms (85% of READ time)**
+   - This is inherent to virtio/FUSE protocol
+   - Includes: queue pop/add, memory mapping, guest-host communication
+   - Difficult to optimize without architecture changes
+   - Tracked components: 159ms (15%) - write 130ms, I/O 16ms, buffer 12ms
 
-3. **VM boot time (1.4s)** - WHPX overhead
-   - WHPX VM creation
-   - Kernel boot and init
-   - WHPX exit statistics: ~54ms total (not main bottleneck)
+2. **OPEN operations: ~195ms (15% of FUSE time)**
+   - 20 OPEN operations, ~9.5ms each
+   - 97% of time is File::open (Windows kernel)
+   - API alternatives tested (CreateFileW, NtCreateFile): no significant improvement
+   - Windows ACL, antivirus, filesystem driver are the bottleneck
+
+3. **WHPX exits: ~54ms (4% of total)**
+   - Not a significant bottleneck
+   - MemoryAccess: 17ms, Canceled: 17ms, X64Cpuid: 12ms
+
+### Performance Summary
+
+| Category | Time | % of Total |
+|----------|------|------------|
+| **READ virtio overhead** | 922ms | 66% |
+| READ tracked operations | 159ms | 11% |
+| OPEN operations | 195ms | 14% |
+| Other FUSE | 54ms | 4% |
+| WHPX exits | 54ms | 4% |
+| **Total** | **~1400ms** | **100%** |
+
+**Key Insight:** 66% of time is virtio queue overhead in READ operations.
 
 ### WHPX Exit Statistics
 
@@ -145,6 +148,49 @@ The macOS baseline uses Hardware Virtualization (HV) which has significantly low
 than Windows WHPX. The VM boot time on macOS is essentially instant (~50ms).
 
 ## Virtiofs Operations Breakdown
+
+### End-to-End Timing Analysis (warm run: ~1.4s)
+
+```
+Total Wall Time: ~1.4s
+├── FUSE Operations: 1330ms (95%)
+│   ├── READ:  1081ms (81% of FUSE)
+│   ├── OPEN:   195ms (15% of FUSE)
+│   ├── WRITE:   29ms (2%)
+│   └── Other:   25ms (2%)
+└── WHPX Exits:    54ms (4%)
+```
+
+### READ Operation Breakdown (1081ms total)
+
+| Component | Time | Percentage |
+|-----------|------|------------|
+| **Untracked (virtio overhead)** | **922ms** | **85%** |
+| write (virtio queue) | 130ms | 12% |
+| alloc_buffer | 12ms | 1% |
+| read (file I/O) | 16ms | 1.5% |
+| Other (lock, seek, handle) | 1ms | <1% |
+
+**Key Finding:** 85% of READ time is untracked virtio queue overhead, not the actual file I/O.
+
+### OPEN Operation Breakdown (195ms total, 20 ops)
+
+| Component | Time | Per Op |
+|-----------|------|--------|
+| File::open | 189ms | 9.5ms |
+| symlink_metadata | 0.7ms | 35μs |
+| read_reparse_kind | 0.02ms | 1μs |
+| metadata | 0.01ms | <1μs |
+
+**Key Finding:** 97% of OPEN time is File::open (Windows kernel overhead).
+
+### Cold vs Warm Run Comparison
+
+| Run | Time | Notes |
+|-----|------|-------|
+| Run 1 (cold) | 4.2s | First run, all caches cold |
+| Run 2 (warm) | 1.4s | Windows file system cache warmed |
+| Run 3 (warm) | 1.4s | Stable performance |
 
 ### Test Results (after init binary fix)
 
@@ -196,12 +242,18 @@ than Windows WHPX. The VM boot time on macOS is essentially instant (~50ms).
 ## Future Optimization Opportunities
 
 1. **VM reuse mode**: Keep VM running for multiple commands (--reuse_vm)
-   - Eliminates 1.4s VM boot overhead per command
-2. **OPEN optimization**: Windows CreateFileW alternative
-   - `EPKG_USE_CREATEFILEW=1` provides ~6% improvement
-   - Main bottleneck is Windows kernel, not API choice
-3. **READ optimization**: virtio overhead is inherent
-   - ~2ms per operation from virtio protocol
-   - Difficult to optimize without changing architecture
+   - Eliminates cold start overhead (4.2s → 1.4s)
+   - Most effective optimization for repeated commands
+
+2. **READ virtio optimization**: 66% of total time
+   - Inherent virtio/FUSE protocol overhead
+   - Difficult to optimize without architecture changes
+   - Consider: larger READ sizes, batching, DAX mapping
+
+3. **OPEN optimization**: 14% of total time
+   - Windows kernel bottleneck, limited optimization potential
+   - Consider: file handle pooling, aggressive caching
+
 4. **Virtiofs cache warming**: Pre-cache frequently used files
+
 5. **Init binary optimization**: Further reduce size or use compressed init
