@@ -117,6 +117,14 @@ unsafe extern "C" {
         c_tag: *const std::ffi::c_char,
         c_path: *const std::ffi::c_char,
     ) -> i32;
+    /// Mount an additional directory via virtiofs into the guest with DAX support.
+    /// shm_size: size of the DAX shared memory window in bytes (e.g., 256 MiB = 1 << 28)
+    unsafe fn krun_add_virtiofs2(
+        ctx_id: u32,
+        c_tag: *const std::ffi::c_char,
+        c_path: *const std::ffi::c_char,
+        shm_size: u64,
+    ) -> i32;
     /// Signal the shutdown eventfd to trigger VM shutdown.
     /// This properly writes to the EventFd on all platforms.
     fn krun_signal_shutdown(ctx_id: u32) -> i32;
@@ -1034,13 +1042,23 @@ impl KrunContext {
     #[allow(dead_code)]
     #[allow(dead_code)]
     unsafe fn add_virtiofs(&self, tag: &str, path: &str) -> Result<()> {
+        // Use add_virtiofs2 with default DAX window size of 256 MiB
+        // This enables DAX (Direct Access) for better virtiofs performance
+        const DEFAULT_VIRTIOFS_SHM_SIZE: u64 = 1 << 28; // 256 MiB
+        self.add_virtiofs2(tag, path, DEFAULT_VIRTIOFS_SHM_SIZE)
+    }
+
+    #[allow(dead_code)]
+    unsafe fn add_virtiofs2(&self, tag: &str, path: &str, shm_size: u64) -> Result<()> {
         let tag_c = CString::new(tag)
             .map_err(|e| eyre::eyre!("invalid tag: {}", e))?;
         let path_c = CString::new(path)
             .map_err(|e| eyre::eyre!("invalid path: {}", e))?;
+        log::debug!("libkrun: krun_add_virtiofs2(tag={}, path={}, shm_size={} MiB)",
+                   tag, path, shm_size / (1024 * 1024));
         check_status(
-            "krun_add_virtiofs",
-            unsafe { krun_add_virtiofs(self.ctx_id, tag_c.as_ptr(), path_c.as_ptr()) }
+            "krun_add_virtiofs2",
+            unsafe { krun_add_virtiofs2(self.ctx_id, tag_c.as_ptr(), path_c.as_ptr(), shm_size) }
         )
     }
 
