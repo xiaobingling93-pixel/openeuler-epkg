@@ -399,6 +399,14 @@ fn rewrite_dylib_paths_for_file_in_env(mach_o_path: &Path, env_root: &Path) -> R
         return Ok(());
     }
 
+    // Remove code signature before modifying Mach-O to avoid warnings
+    // install_name_tool changes invalidate code signatures
+    let _ = Command::new("codesign")
+        .arg("--remove-signature")
+        .arg(mach_o_path)
+        .status();
+    // Ignore failure - file may not be signed or may be ad-hoc signed
+
     // Apply changes using install_name_tool
     for (old_path, new_path) in &changes {
         let status = Command::new("install_name_tool")
