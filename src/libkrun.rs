@@ -1343,6 +1343,25 @@ pub fn shutdown_vm_reuse_session_if_active() -> Result<()> {
     }
 }
 
+/// Check if there's an active VM reuse session for a specific env_root.
+/// Returns true if there's an active VM session for the same environment.
+/// This is a helper function for scriptlets/hooks to check if they should inherit VM settings.
+pub fn is_vm_reuse_active_for_env(env_root: &Path) -> bool {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let guard = VM_REUSE_SESSION.lock().unwrap();
+        if let Some(session) = guard.as_ref() {
+            return session.env_root == env_root;
+        }
+        false
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = env_root;
+        false
+    }
+}
+
 #[cfg(feature = "libkrun")]
 fn krun_vsock_shutdown_join_free(
     vm_thread: std::thread::JoinHandle<i32>,

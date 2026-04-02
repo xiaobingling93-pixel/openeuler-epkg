@@ -297,6 +297,9 @@ fn run_desktop_update_command(
     }
 
     // Prepare RunOptions for fork_and_execute
+    // Inherit VM settings from active VM reuse session during install/upgrade.
+    // This allows desktop update commands to reuse the same VM that was created for the main command.
+    // The VM reuse logic is handled in fork_and_execute() -> prepare_run_options_for_command().
     let mut run_options = crate::run::RunOptions {
         command: command.to_string(),
         args: args.iter().map(|s| s.to_string()).collect(),

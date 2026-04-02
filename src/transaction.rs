@@ -517,12 +517,16 @@ fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
         // Check if ldconfig exists in the environment before trying to run it
         match run::find_command_in_env_path("ldconfig", env_root) {
             Ok(ldconfig_path) => {
+                // Inherit VM settings from active VM reuse session during install/upgrade.
+                // This allows ldconfig to reuse the same VM that was created for the main command.
+                // The VM reuse logic is handled in fork_and_execute() -> prepare_run_options_for_command().
                 let mut run_options = run::RunOptions {
                     command: ldconfig_path.to_string_lossy().to_string(),
                     no_exit: true,
                     chdir_to_env_root: true, // ldconfig should run relative to environment root
                     ..Default::default()
                 };
+
                 // Nested under `epkg run --isolate=vm` (e.g. e2e): libc::clone with namespace flags
                 // can return EPERM; ldconfig only needs the env tree, not an extra namespace.
                 if utils::e2e_backend_is_vm() {

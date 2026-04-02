@@ -1035,6 +1035,9 @@ u nobody     65534:65534 - /nonexistent         /usr/sbin/nologin"#;
 
 fn run_in_env(env_root: &Path, cmd: &str, args: &[&str])
 {
+    // Inherit VM settings from active VM reuse session during install/upgrade.
+    // This allows hooks to reuse the same VM that was created for the main command.
+    // The VM reuse logic is handled in fork_and_execute() -> prepare_run_options_for_command().
     let run_options = RunOptions {
         command: cmd.to_string(),
         args: args.iter().map(|s| s.to_string()).collect(),
@@ -1043,6 +1046,7 @@ fn run_in_env(env_root: &Path, cmd: &str, args: &[&str])
         timeout: 30,
         ..Default::default()
     };
+
     if let Err(e) = fork_and_execute(env_root, &run_options) {
         log::warn!("Failed to run {}: {}", cmd, e);
     }
@@ -1575,6 +1579,9 @@ pub fn execute_hook(
     };
 
     // Execute the hook
+    // Inherit VM settings from active VM reuse session during install/upgrade.
+    // This allows hooks to reuse the same VM that was created for the main command.
+    // The VM reuse logic is handled in fork_and_execute() -> prepare_run_options_for_command().
     let run_options = crate::run::RunOptions {
         command,
         args,

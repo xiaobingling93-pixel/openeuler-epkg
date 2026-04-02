@@ -21,6 +21,21 @@ use crate::models::*;
     all(feature = "libkrun", not(target_os = "linux"))
 ))]
 pub const VM_SESSION_DONE_CMD: &str = "__epkg_vm_session_done__";
+
+/// Check if there's an active VM reuse session for a specific env_root.
+/// Returns true if there's an active VM session for the same environment.
+/// Used by scriptlets/hooks to inherit VM settings during install/upgrade.
+#[cfg(feature = "libkrun")]
+pub fn is_vm_reuse_active_for_env(env_root: &Path) -> bool {
+    crate::libkrun::is_vm_reuse_active_for_env(env_root)
+}
+
+/// Stub for non-libkrun builds - always returns false.
+#[cfg(not(feature = "libkrun"))]
+pub fn is_vm_reuse_active_for_env(_env_root: &Path) -> bool {
+    false
+}
+
 #[cfg(target_os = "linux")]
 use crate::namespace::{determine_process_config, build_unified_context, create_process_with_namespaces};
 use crate::lfs;
@@ -1234,6 +1249,14 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
         ) {
             run_options.reuse_vm = true;
         }
+    }
+
+    // Inherit VM settings from active VM reuse session.
+    // This allows scriptlets/hooks/ldconfig to reuse the same VM that was created
+    // for the main install/upgrade command, avoiding ~2-3 seconds VM boot overhead.
+    if is_vm_reuse_active_for_env(env_root) {
+        run_options.reuse_vm = true;
+        run_options.effective_sandbox.isolate_mode = Some(IsolateMode::Vm);
     }
 
     // Silence unused warning on Linux
