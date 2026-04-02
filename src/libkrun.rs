@@ -63,7 +63,7 @@ fn cleanup_stale_vm_files() {
     }
 }
 
-#[cfg(all(feature = "libkrun", target_os = "macos"))]
+#[cfg(not(all(feature = "libkrun", target_os = "macos")))]
 fn cleanup_stale_vm_files() {}
 
 /// Import vm_session functions used in this module
@@ -485,8 +485,7 @@ fn build_libkrun_config(
     // because each character requires a VM exit and MMIO write. Reduce loglevel and disable
     // earlyprintk when not debugging to speed up boot.
     let vm_debug = std::env::var("EPKG_VM_DEBUG").is_ok();
-    // let loglevel = if vm_debug { "loglevel=8 debug" } else { "quiet loglevel=1" };
-    let loglevel = "loglevel=8";
+    let loglevel = if vm_debug { "loglevel=8 debug" } else { "quiet loglevel=1" };
 
     // Additional performance optimizations for VMs:
     // - nowatchdog: Disable watchdog timers (not needed in VMs)
