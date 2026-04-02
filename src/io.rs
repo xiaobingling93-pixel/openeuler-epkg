@@ -600,6 +600,23 @@ pub fn load_installed_packages() -> Result<()> {
     for (k, v) in packages {
         installed.insert(k, v);
     }
+
+    // Also load from pending-packages.json if it exists (for crash recovery)
+    // This handles the case where installation completed but generation wasn't updated
+    #[cfg(unix)]
+    {
+        if installed.is_empty() {
+            if let Ok(pending) = load_pending_packages() {
+                if !pending.is_empty() {
+                    log::debug!("Loaded {} packages from pending-packages.json (crash recovery)", pending.len());
+                    for (k, v) in pending {
+                        installed.insert(k, Arc::new(v));
+                    }
+                }
+            }
+        }
+    }
+
     drop(installed);
     let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
     let mut pkgline2installed = PACKAGE_CACHE.pkgline2installed.write().unwrap();
@@ -662,7 +679,7 @@ pub fn save_pending_packages(packages: &InstalledPackagesMap) -> Result<()> {
 
 /// Load pending packages from pending-packages.json
 /// Returns an empty map if the file doesn't exist
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub fn load_pending_packages() -> Result<HashMap<String, InstalledPackageInfo>> {
     let file_path = get_pending_packages_path()?;
     if !lfs::exists_on_host(&file_path) {
@@ -692,7 +709,7 @@ pub fn remove_pending_packages() -> Result<()> {
 /// Load installed packages including pending packages from the current transaction
 /// This is used by dpkg-query to see packages being installed.
 /// Updates PACKAGE_CACHE.installed_packages with pending packages merged in.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub fn load_installed_packages_with_pending() -> Result<()> {
     // First load installed packages
     load_installed_packages()?;
