@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::Duration;
 
 #[cfg(unix)]
-pub fn setup_vsock_ready_listener() -> Result<Option<std::os::unix::net::UnixListener>> {
+pub fn setup_vsock_ready_listener(env_hash: &str) -> Result<Option<std::os::unix::net::UnixListener>> {
     let run_dir = &crate::models::dirs().epkg_run;
     // Clean up stale sockets from previous runs
     if let Ok(entries) = std::fs::read_dir(run_dir) {
@@ -23,8 +23,7 @@ pub fn setup_vsock_ready_listener() -> Result<Option<std::os::unix::net::UnixLis
         }
     }
 
-    let _pid = std::process::id();
-    let ready_path = run_dir.join(format!("ready-{}.sock", _pid));
+    let ready_path = run_dir.join(format!("ready-{}.sock", env_hash));
     let _ = std::fs::remove_file(&ready_path);
 
     log::debug!("libkrun: creating ready listener on {}", ready_path.display());
@@ -222,11 +221,10 @@ impl WindowsReadyPipe {
 }
 
 #[cfg(windows)]
-pub fn setup_vsock_ready_listener() -> Result<Option<WindowsReadyPipe>> {
+pub fn setup_vsock_ready_listener(env_hash: &str) -> Result<Option<WindowsReadyPipe>> {
     let run_dir = &crate::models::dirs().epkg_run;
     let _ = std::fs::create_dir_all(run_dir);
-    let pid = std::process::id();
-    let ready_path = run_dir.join(format!("ready-{pid}.sock"));
+    let ready_path = run_dir.join(format!("ready-{}.sock", env_hash));
     let pipe_name = pipe_name_from_sock_path(&ready_path)?;
     let full = format!("\\\\.\\pipe\\{}", pipe_name);
     let wide = to_wide_null(&full);

@@ -452,9 +452,10 @@ fn build_libkrun_config(
     #[cfg(any(not(feature = "libkrun"), target_os = "linux"))]
     let has_existing_session = false;
     // Note: epkg.vsock_reverse=1 is now default in libkrun's DEFAULT_KERNEL_CMDLINE for Windows.
-    // Only explicitly set epkg.vsock_reverse=0 when disabling reverse mode.
-    // For reuse: first command uses reverse mode, then Guest switches to forward mode.
-    let use_reverse_vsock = use_vsock && !has_existing_session;
+    // For cross-process VM reuse, we use forward mode (Guest listens, Host connects).
+    // The ready port 10001 solves timing issues - Guest notifies Host when ready.
+    // This allows any host process to connect to the VM for reuse.
+    let use_reverse_vsock = false;  // Always use forward mode for cross-process reuse
     crate::debug_epkg!("libkrun: use_vsock={} has_existing_session={} use_reverse_vsock={}",
                use_vsock, has_existing_session, use_reverse_vsock);
     log::info!("libkrun: use_vsock={} has_existing_session={} use_reverse_vsock={}",
@@ -1778,28 +1779,34 @@ fn run_reverse_vsock_mode_inner(
     log::debug!("libkrun: reverse vsock command completed with exit code {}", exit_code);
 
     if run_options.reuse_vm {
-        // Stay in reverse mode for reuse: Guest reconnects to Host for each subsequent command
+        // Switch to forward mode for reuse: Guest becomes listener, Host connects.
+        // This allows cross-process VM reuse - any host process can connect to the socket.
+        // The socket path is predictable (env_hash-based) and stored in session file.
         #[cfg(unix)]
         {
+            // Close the reverse listener - Guest will switch to forward mode
+            drop(reverse_listener);
             *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
                 ctx_id,
-                vsock_sock_path,
+                vsock_sock_path: vsock_sock_path.clone(),
                 vm_thread,
                 env_root: env_root.to_path_buf(),
-                reverse_listener: Some(reverse_listener),
+                reverse_listener: None,  // Forward mode: no reverse listener
             });
-            log::debug!("libkrun: VM session kept alive for reuse (reverse mode)");
+            log::info!("libkrun: VM session kept alive for reuse (switched to forward mode, socket {})",
+                       vsock_sock_path.display());
             return apply_krun_exit_policy(exit_code, run_options);
         }
         #[cfg(windows)]
         {
             *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
                 ctx_id,
-                vsock_sock_path,
+                vsock_sock_path: vsock_sock_path.clone(),
                 vm_thread,
                 env_root: env_root.to_path_buf(),
             });
-            log::debug!("libkrun: VM session kept alive for reuse (reverse mode)");
+            log::info!("libkrun: VM session kept alive for reuse (switched to forward mode, socket {})",
+                       vsock_sock_path.display());
             return apply_krun_exit_policy(exit_code, run_options);
         }
     }
@@ -1863,11 +1870,13 @@ pub fn run_command_in_krun(
         let vm_ctx = create_and_configure_vm(env_root, run_options, &config)?;
         crate::debug_epkg!("VM configured (ctx_id={})", vm_ctx.ctx.ctx_id);
 
+        // Use env_hash for ready listener (matches vsock socket naming)
+        let env_hash = hash_env_root(env_root);
         #[cfg(unix)]
-        let ready_listener = libkrun_bridge::setup_vsock_ready_listener()?
+        let ready_listener = libkrun_bridge::setup_vsock_ready_listener(&env_hash)?
             .ok_or_else(|| eyre::eyre!("libkrun: missing ready listener"))?;
         #[cfg(windows)]
-        let ready_pipe = libkrun_bridge::setup_vsock_ready_listener()?
+        let ready_pipe = libkrun_bridge::setup_vsock_ready_listener(&env_hash)?
             .ok_or_else(|| eyre::eyre!("libkrun: missing ready listener"))?;
 
         crate::debug_epkg!("vsock ready listener set up");
@@ -1890,6 +1899,14 @@ pub fn run_command_in_krun(
         libkrun_bridge::wait_guest_ready_windows(&ready_pipe, Some(&start_failed_rx))?;
         crate::debug_epkg!("libkrun: guest is ready");
 
+        // Register session IMMEDIATELY after Guest is ready (before sending command).
+        // This allows other processes to discover the VM while the first command is running.
+        if run_options.reuse_vm {
+            let _ = register_vm_session(env_root, &vsock_sock_path);
+            log::info!("vm_session: registered VM session for {} (socket {})",
+                       env_root.display(), vsock_sock_path.display());
+        }
+
         // Guest is ready - proceed directly to send command.
         // The ready signal confirms guest vm_daemon is running and waiting.
 
@@ -1907,8 +1924,6 @@ pub fn run_command_in_krun(
         if run_options.reuse_vm {
             #[cfg(not(target_os = "linux"))]
             {
-                // Register session file for cross-process discovery
-                let _ = register_vm_session(env_root, &vsock_sock_path);
                 *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
                     ctx_id,
                     vsock_sock_path,

@@ -1682,13 +1682,12 @@ fn run_reverse_vsock_client() -> Result<()> {
                     return Ok(());
                 }
                 ConnectionDisposition::ReuseWait { idle_timeout_ms } => {
-                    kmsg_write("<6>run_reverse_vsock_client: continuing in reverse mode for reuse\n");
-                    // Keep using reverse mode for reuse - reconnect to Host for next command
-                    // This avoids the complexity of switching between reverse/forward modes
-                    log::debug!("vm-daemon: continuing in reverse mode for reuse");
-                    // Wait a moment for Host to set up new listener
-                    std::thread::sleep(Duration::from_millis(100));
-                    connect_and_handle_reverse(idle_timeout_ms)
+                    kmsg_write("<6>run_reverse_vsock_client: switching to forward mode for reuse\n");
+                    // Switch to forward mode for reuse: become listener, allow any host process to connect.
+                    // This enables cross-process VM reuse - the session file points to our socket.
+                    log::info!("vm-daemon: switching to forward mode for reuse (cross-process capable)");
+                    let _ = idle_timeout_ms;
+                    run_vsock_server()
                 }
             }
         }
