@@ -526,9 +526,9 @@ fn map_to_conda_arch(arch: &str) -> String {
         _ => "64", // Default to 64-bit for unknown architectures
     };
 
-    // Special handling for macOS ARM64
+    // Special handling for macOS ARM64: conda uses "osx-arm64" not just "arm64"
     if os == "osx" && (arch == "aarch64" || arch == "arm64") {
-        "arm64".to_string()
+        "osx-arm64".to_string()
     } else {
         format!("{}-{}", os, conda_arch)
     }
