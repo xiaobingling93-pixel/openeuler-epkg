@@ -572,12 +572,14 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
         }
     }
 
-    // For VM mode with Linux distro, construct default path in usr/bin
-    // Linux packages typically have binaries in /usr/bin
+    // For VM mode, if command not found in any standard location, return error
+    // rather than a non-existent default path
     if is_vm_mode {
-        let cmd_path = env_root.join("usr").join("bin").join(&run_options.command);
-        debug!("VM mode: using default path {} for command '{}'", cmd_path.display(), run_options.command);
-        return Ok(cmd_path);
+        return Err(eyre::eyre!(
+            "Command '{}' not found in {} (checked: bin/, usr/bin/)",
+            run_options.command,
+            env_root.display()
+        ));
     }
 
     if lfs::exists_on_host(Path::new(&run_options.command)) {
