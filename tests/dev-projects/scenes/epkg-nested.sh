@@ -99,20 +99,54 @@ log "Installing bash"
 # Determine epkg command to use inside environment
 # In nested environments, we need to use the same binary
 log "Determining epkg command for nested execution"
-epkg_cmd="$EPKG_BIN"
-log "Using epkg binary: $epkg_cmd"
+
+# Check if running on macOS with VM mode - inside VM, host paths are not accessible
+# Inside VM, epkg is available at /usr/bin/epkg or /opt/epkg/envs/self/usr/bin/epkg
+case "$(uname -s)" in
+    Darwin)
+        # On macOS, epkg runs in a VM. Inside the VM, the epkg binary is at a different path.
+        # Use just 'epkg' since it's in PATH inside the VM
+        epkg_cmd="epkg"
+        log "macOS detected: using 'epkg' from PATH inside VM"
+        ;;
+    *)
+        epkg_cmd="$EPKG_BIN"
+        log "Using epkg binary: $epkg_cmd"
+        ;;
+esac
 
 # Test nested epkg list
 log "Testing epkg list via nested bash command"
-if ! "$EPKG_BIN" -e "$TEST_ENV" run bash -c "\"$epkg_cmd\" -e \"$TEST_ENV\" list" >/dev/null 2>&1; then
-    error "Nested epkg list command failed"
-fi
+# On macOS VM, nested epkg uses 'root' user, so environment paths differ.
+# Use EPKG_ACTIVE_ENV (already set by parent epkg) instead of -e option.
+case "$(uname -s)" in
+    Darwin)
+        # Inside VM, EPKG_ACTIVE_ENV is set, so just run 'epkg list' without -e
+        if ! "$EPKG_BIN" -e "$TEST_ENV" run bash -c "\"$epkg_cmd\" list" >/dev/null 2>&1; then
+            error "Nested epkg list command failed"
+        fi
+        ;;
+    *)
+        if ! "$EPKG_BIN" -e "$TEST_ENV" run bash -c "\"$epkg_cmd\" -e \"$TEST_ENV\" list" >/dev/null 2>&1; then
+            error "Nested epkg list command failed"
+        fi
+        ;;
+esac
 log "Nested epkg list works"
 
 # Compare output between direct and nested
 log "Comparing direct vs nested epkg list output"
 list1=$("$EPKG_BIN" -e "$TEST_ENV" list 2>/dev/null | tail -n +5 | grep -v '^Total' | grep -v '^$' | sort)
-list2=$("$EPKG_BIN" -e "$TEST_ENV" run bash -c "\"$epkg_cmd\" -e \"$TEST_ENV\" list" 2>/dev/null | tail -n +5 | grep -v '^Total' | grep -v '^$' | sort)
+
+case "$(uname -s)" in
+    Darwin)
+        # Inside VM, EPKG_ACTIVE_ENV is set, so just run 'epkg list' without -e
+        list2=$("$EPKG_BIN" -e "$TEST_ENV" run bash -c "\"$epkg_cmd\" list" 2>/dev/null | tail -n +5 | grep -v '^Total' | grep -v '^$' | sort)
+        ;;
+    *)
+        list2=$("$EPKG_BIN" -e "$TEST_ENV" run bash -c "\"$epkg_cmd\" -e \"$TEST_ENV\" list" 2>/dev/null | tail -n +5 | grep -v '^Total' | grep -v '^$' | sort)
+        ;;
+esac
 
 if [ "$list1" != "$list2" ]; then
     log "ERROR: epkg list output differs between direct and nested"
@@ -125,5 +159,30 @@ if [ "$list1" != "$list2" ]; then
     error "Output mismatch between direct and nested epkg list"
 fi
 log "Direct and nested epkg list outputs match"
+
+# Test nested epkg install
+# NOTE: On macOS, nested install is not fully supported because the mirrors.json
+# file is accessed via a symlink to the host development directory, which doesn't
+# exist inside the VM. This will be addressed in a future update.
+case "$(uname -s)" in
+    Darwin)
+        warn "Skipping nested epkg install test on macOS (mirrors.json not accessible in VM)"
+        ;;
+    *)
+        log "Testing nested epkg install"
+        TEST_PKG="tree"
+        if ! "$EPKG_BIN" -e "$TEST_ENV" run bash -c "\"$epkg_cmd\" -e \"$TEST_ENV\" --assume-yes install $TEST_PKG" >/dev/null 2>&1; then
+            error "Nested epkg install command failed"
+        fi
+        log "Nested epkg install works"
+
+        # Verify install succeeded with nested epkg list
+        log "Verifying nested epkg install succeeded"
+        if ! "$EPKG_BIN" -e "$TEST_ENV" run bash -c "\"$epkg_cmd\" -e \"$TEST_ENV\" list | grep -w $TEST_PKG" >/dev/null 2>&1; then
+            error "Package $TEST_PKG not found after nested install"
+        fi
+        log "Nested epkg install verification passed"
+        ;;
+esac
 
 log "All nested epkg tests passed for $TARGET_OS"
