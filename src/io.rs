@@ -706,31 +706,6 @@ pub fn remove_pending_packages() -> Result<()> {
     Ok(())
 }
 
-/// Load installed packages including pending packages from the current transaction
-/// This is used by dpkg-query to see packages being installed.
-/// Updates PACKAGE_CACHE.installed_packages with pending packages merged in.
-#[cfg(unix)]
-pub fn load_installed_packages_with_pending() -> Result<()> {
-    // First load installed packages
-    load_installed_packages()?;
-
-    // Then load and merge pending packages into the cache
-    let pending = load_pending_packages()?;
-    if !pending.is_empty() {
-        let count = pending.len();
-        let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();
-        let mut pkgline2installed = PACKAGE_CACHE.pkgline2installed.write().unwrap();
-        for (pkgkey, info) in pending {
-            let info_arc = Arc::new(info);
-            pkgline2installed.insert(info_arc.pkgline.clone(), Arc::clone(&info_arc));
-            installed.insert(pkgkey, info_arc);
-        }
-        log::debug!("Merged {} pending packages into installed packages cache", count);
-    }
-
-    Ok(())
-}
-
 pub fn read_world(env: &str, generation_id: u32) -> Result<HashMap<String, String>> {
     let generations_root = get_generations_root(env)?;
     let file_path = generations_root.join(generation_id.to_string()).join("world.json");
