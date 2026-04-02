@@ -291,6 +291,23 @@ pub fn rewrite_dylib_paths_for_env(env_root: &Path) -> Result<()> {
         }
     }
 
+    // Scan libexec/ directory (gcc internal tools like cc1, cc1plus are here)
+    let libexec_dir = env_root.join("libexec");
+    if libexec_dir.exists() {
+        for entry in walkdir::WalkDir::new(&libexec_dir).into_iter().filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if entry.file_type().is_symlink() {
+                continue;
+            }
+            if path.is_file() && is_mach_o_file(path) {
+                let real_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+                if seen_real_paths.insert(real_path.clone()) {
+                    mach_o_files.push(real_path);
+                }
+            }
+        }
+    }
+
     // Scan Frameworks/ directory (macOS Python framework, etc.)
     let frameworks_dir = env_root.join("Frameworks");
     if frameworks_dir.exists() {

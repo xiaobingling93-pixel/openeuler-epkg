@@ -280,8 +280,90 @@ fn create_ebin_wrappers(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate:
         created_ebin_paths.push(ruby_ebin_path);
     }
 
+    // Special-case: create unversioned aliases for versioned commands.
+    // Homebrew gcc provides gcc-15 but not gcc; create gcc -> gcc-15 wrapper.
+    // Same for g++ and gfortran.
+    created_ebin_paths.extend(create_versioned_command_aliases(env_root)?);
+
     log::debug!("create_ebin_wrappers: returning {} created paths: {:?}", created_ebin_paths.len(), created_ebin_paths);
     Ok(created_ebin_paths)
+}
+
+/// Create unversioned command aliases for versioned binaries.
+///
+/// Homebrew gcc provides gcc-15 but not gcc; create gcc -> gcc-15 wrapper.
+/// Same for g++ and gfortran. This allows users to run `gcc` instead of `gcc-15`.
+fn create_versioned_command_aliases(env_root: &Path) -> Result<Vec<PathBuf>> {
+    let mut created_paths: Vec<PathBuf> = Vec::new();
+
+    let versioned_commands = [
+        ("gcc", "gcc-"),
+        ("g++", "g++-"),
+        ("gfortran", "gfortran-"),
+    ];
+
+    for (unversioned, versioned_prefix) in versioned_commands {
+        let unversioned_ebin = env_root.join("ebin").join(unversioned);
+
+        // Skip if unversioned command already exists
+        if lfs::exists_in_env(&unversioned_ebin) {
+            continue;
+        }
+
+        // Find the highest versioned command (e.g., gcc-15, gcc-14)
+        let ebin_dir = env_root.join("ebin");
+        if let Ok(entries) = fs::read_dir(&ebin_dir) {
+            let mut versioned_bins: Vec<(String, PathBuf)> = entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if name.starts_with(versioned_prefix) {
+                        // Extract version number for sorting
+                        let version_str = &name[versioned_prefix.len()..];
+                        if let Ok(version) = version_str.parse::<u32>() {
+                            Some((format!("{:03}", version), e.path()))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Sort by version descending to get highest version first
+            versioned_bins.sort_by(|a, b| b.0.cmp(&a.0));
+
+            if let Some((_, versioned_path)) = versioned_bins.first() {
+                // Create wrapper for unversioned command
+                let script_content = format!(
+                    "#!/bin/sh\nexec {:?} \"$@\"\n",
+                    versioned_path
+                );
+
+                let temp_path = ebin_dir.join(format!(".tmp-{}-alias", unversioned));
+
+                let mut wrapper = fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&temp_path)
+                    .with_context(|| format!("Failed to open temp file for {} alias wrapper", unversioned))?;
+
+                wrapper.write_all(script_content.as_bytes())
+                    .with_context(|| format!("Failed to write {} alias wrapper", unversioned))?;
+
+                drop(wrapper);
+                set_wrapper_permissions(&temp_path)?;
+                fs::rename(&temp_path, &unversioned_ebin)
+                    .with_context(|| format!("Failed to rename temp file to {}", unversioned_ebin.display()))?;
+
+                created_paths.push(unversioned_ebin);
+            }
+        }
+    }
+
+    Ok(created_paths)
 }
 
 /// Create symlinks in usr/bin/ for libexec/bin/ executables.
@@ -527,6 +609,12 @@ fn create_ebin_wrapper(env_root: &Path, fs_file_absolute: &Path, fs_file_relativ
                 .with_context(|| format!("Failed to handle elf for {}", ebin_path.display()))?;
             return Ok(Some(ebin_path));
         }
+        FileType::MachO => {
+            // macOS native binary - create simple exec wrapper
+            create_binary_wrapper(&resolved_env_path, &ebin_path)
+                .with_context(|| format!("Failed to create MachO wrapper for {}", resolved_env_path.display()))?;
+            return Ok(Some(ebin_path));
+        }
         FileType::ShellScript
         | FileType::PerlScript
         | FileType::PythonScript
@@ -621,6 +709,44 @@ fn create_script_wrapper(
         fs_file.display(),
         file_type,
         first_line
+    );
+    Ok(())
+}
+
+/// Create a simple exec wrapper for native binaries (Mach-O on macOS).
+/// This creates a shell script that directly execs the binary.
+fn create_binary_wrapper(fs_file: &Path, ebin_path: &Path) -> Result<()> {
+    // Create script wrapper atomically: write to temp file first, then rename.
+    let ebin_dir = ebin_path.parent()
+        .ok_or_else(|| eyre::eyre!("Failed to get parent directory for {}", ebin_path.display()))?;
+    let temp_path = ebin_dir.join(format!(".tmp-{}", ebin_path.file_name().unwrap().to_string_lossy()));
+
+    // Write to temporary file
+    let mut wrapper = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&temp_path)
+        .with_context(|| format!("Failed to open temp file {} for create_binary_wrapper", temp_path.display()))?;
+
+    // Simple exec wrapper for native binary
+    let script_content = format!("#!/bin/sh\nexec {:?} \"$@\"\n", fs_file);
+    wrapper.write_all(script_content.as_bytes())
+        .with_context(|| format!("Failed to write binary wrapper to {}", temp_path.display()))?;
+
+    drop(wrapper); // Close file before rename
+
+    // Set permissions on temp file before rename
+    set_wrapper_permissions(&temp_path)?;
+
+    // Atomic rename: this replaces any existing file at ebin_path
+    fs::rename(&temp_path, ebin_path)
+        .with_context(|| format!("Failed to rename temp file {} to {}", temp_path.display(), ebin_path.display()))?;
+
+    log::debug!(
+        "Created binary wrapper: ebin_path={}, fs_file={}",
+        ebin_path.display(),
+        fs_file.display()
     );
     Ok(())
 }

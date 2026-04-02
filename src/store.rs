@@ -15,7 +15,7 @@ use color_eyre::Result;
 use color_eyre::eyre::{self, eyre, WrapErr};
 use walkdir::WalkDir;
 use uuid::Uuid;
-use crate::models::{dirs, Package, PackageFormat, InstalledPackageInfo};
+use crate::models::{dirs, Package, PackageFormat, InstalledPackageInfo, PACKAGE_CACHE};
 use crate::package;
 #[cfg(unix)] use crate::userdb;
 use crate::mtree::{escape_mtree_path, unescape_mtree_path};
@@ -716,10 +716,19 @@ fn collect_store_pkglines() -> Result<(std::collections::HashMap<String, Vec<Str
                     .into_iter()
                     .filter_map(|e| e.ok())
                     .any(|e| e.file_type().is_file());
-                if !has_files {
-                    log::debug!("Skipping package {} - 'fs' directory is empty (files moved to env)", package_path.display());
+
+                // For Move link type, fs/ is empty but info/consumed.json exists
+                // We still need to track these pkglines for exposure operations
+                let is_consumed = package_path.join("info/consumed.json").exists();
+
+                if !has_files && !is_consumed {
+                    log::debug!("Skipping package {} - 'fs' directory is empty", package_path.display());
                     skipped_missing_fs += 1;
                     continue;
+                }
+
+                if !has_files && is_consumed {
+                    log::debug!("Package {} has empty fs/ but is consumed (Move link type), including in pkglines", package_path.display());
                 }
 
                 if let Some(pkgline) = package_path.file_name().and_then(|name| name.to_str()) {
@@ -1392,6 +1401,18 @@ pub fn fill_pkglines_in_plan(
     // Also process skipped reinstalls - they need pkgline for exposure
     for (pkgkey, info_arc) in plan.skipped_reinstalls.iter_mut() {
         log::trace!("fill_pkglines_in_plan: processing skipped reinstall {}", pkgkey);
+
+        // For skipped reinstalls, first try to get pkgline from already installed packages
+        // This is important for Move link type where store is consumed
+        if let Some(installed_info) = PACKAGE_CACHE.installed_packages.read().unwrap().get(pkgkey) {
+            if !installed_info.pkgline.is_empty() {
+                Arc::make_mut(info_arc).pkgline = installed_info.pkgline.clone();
+                matched_count += 1;
+                log::trace!("fill_pkglines_in_plan: got pkgline from installed_packages for {}: {}", pkgkey, installed_info.pkgline);
+                continue;
+            }
+        }
+
         if try_match_and_fill_pkgline(pkgkey, Arc::make_mut(info_arc), &store_pkglines_by_pkgkey)? {
             matched_count += 1;
             log::trace!("fill_pkglines_in_plan: matched skipped reinstall {} -> pkgline {}", pkgkey, info_arc.pkgline);

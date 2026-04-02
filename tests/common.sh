@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # OS list for tests that iterate over multiple distros (sandbox dev-projects, e2e, etc.)
-ALL_OS="openeuler fedora debian ubuntu alpine archlinux conda msys2"
+ALL_OS="openeuler fedora debian ubuntu alpine archlinux brew conda msys2"
 
 # Find and set epkg binary path
 set_epkg_bin() {

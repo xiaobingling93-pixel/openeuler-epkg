@@ -37,6 +37,7 @@ use clap::error::{ErrorKind as ClapErrorKind, ContextKind, ContextValue};
 #[derive(Debug, PartialEq)]
 pub enum FileType {
     Elf,
+    MachO,      // macOS Mach-O binary
     Symlink,
     ShellScript,
     PerlScript,
@@ -53,6 +54,7 @@ impl FileType {
     pub fn as_str(&self) -> &'static str {
         match self {
             FileType::Elf => "ELF 64-bit LSB executable",
+            FileType::MachO => "Mach-O executable",
             FileType::Symlink => "Symbolic link",
             FileType::ShellScript => "Shell script, ASCII text executable",
             FileType::PerlScript => "Perl script, ASCII text executable",
@@ -176,7 +178,12 @@ pub fn truncate_display(s: &str, max_len: usize) -> String {
 
 // Get file type
 pub fn get_file_type(file: &Path) -> Result<(FileType, String)> {
-    const ELF_MAGIC: &[u8] = &[0x7f, b'E', b'L', b'F'];
+    const ELF_MAGIC:       &[u8] = &[0x7f, b'E', b'L', b'F'];
+    // Mach-O magic numbers (little-endian byte order)
+    const MACHO_MAGIC_64:  &[u8] = &[0xcf, 0xfa, 0xed, 0xfe]; // MH_MAGIC_64 (0xFEEDFACF)
+    const MACHO_MAGIC_32:  &[u8] = &[0xfe, 0xed, 0xfa, 0xce]; // MH_MAGIC (0xFEEDFACE)
+    const MACHO_CIGAM_64:  &[u8] = &[0xfe, 0xed, 0xcf, 0xfa]; // MH_CIGAM_64 (big-endian 64-bit)
+    const MACHO_CIGAM_32:  &[u8] = &[0xce, 0xfa, 0xed, 0xfe]; // MH_CIGAM (big-endian 32-bit)
 
     // For symlinks, follow the link and check the target's type
     let file_to_check = if lfs::is_symlink(&file) {
@@ -195,6 +202,13 @@ pub fn get_file_type(file: &Path) -> Result<(FileType, String)> {
     if let Ok(_) = file.read_exact(&mut buffer) {
         if buffer.starts_with(ELF_MAGIC) {
             return Ok((FileType::Elf, String::new()));
+        }
+        // Check Mach-O binaries (macOS)
+        if buffer.starts_with(MACHO_MAGIC_64) ||
+           buffer.starts_with(MACHO_MAGIC_32) ||
+           buffer.starts_with(MACHO_CIGAM_64) ||
+           buffer.starts_with(MACHO_CIGAM_32) {
+            return Ok((FileType::MachO, String::new()));
         }
     }
 
