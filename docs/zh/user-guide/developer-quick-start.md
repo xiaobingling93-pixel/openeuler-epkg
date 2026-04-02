@@ -4,6 +4,11 @@
 
 ## 1. 安装构建依赖
 
+**支持的平台和主机操作系统：**
+- Linux (x86_64, aarch64, riscv64, loongarch64): Debian/Ubuntu, openEuler, Fedora, Archlinux
+- macOS (x86_64, aarch64) with homebrew
+- Windows (x86_64)，在 WSL2 Debian/Ubuntu 中
+
 ```bash
 git clone https://atomgit.com/openeuler/epkg
 cd epkg
@@ -12,12 +17,53 @@ make dev-depends
 
 ## 2. 构建并安装 epkg
 
+### Linux / macOS
+
 ```bash
 make
 target/debug/epkg self install
 ```
 
-然后启动一个新的 shell（或 `source ~/.bashrc`）以更新 PATH。
+然后启动一个新的 shell（或 `source ~/.bashrc` / 重启终端）以更新 PATH。
+
+### Windows
+
+```bash
+make cross-windows  # 或：cross-windows-release
+target/debug/epkg.exe self install
+```
+
+在 WSL2 中，您可以直接运行 Windows .exe 文件，无需 Wine 或单独的 Windows 机器。
+
+调试环境变量设置：
+```
+export WSLENV=EPKG_DEBUG_LIBKRUN/p:RUST_LOG/p
+export EPKG_DEBUG_LIBKRUN=1
+export RUST_LOG=debug
+target/debug/epkg.exe ...
+```
+
+或更灵活的方式：
+```
+/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command "
+  \$env:RUST_LOG='trace'
+  \$env:LIBKRUN_WINDOWS_VERBOSE_DEBUG='1'
+  C:\Users\epkg\.epkg\envs\self\usr\bin\epkg.exe run -e alpine ls /proc
+  Write-Host 'Exit code:' \$LASTEXITCODE
+"
+```
+
+### 从 Debian 构建发布版本
+
+我们从 Debian Linux 构建和发布 epkg[.exe]。
+
+**构建：**
+```bash
+make crossdev-depends   # 只需运行一次
+make release-all
+```
+
+生成的二进制文件位于 `target/<triple>/release/epkg[.exe]`，链接到 `dist/` 并在那里计算 sha256。
 
 ## 3. 开发循环
 
@@ -28,7 +74,7 @@ make
 epkg --version
 ```
 
-使用 `make [static]` 然后 `epkg ...` 进行快速的编辑-测试循环，无需重新安装。
+使用 `make` 然后 `epkg ...` 进行快速的编辑-测试循环，无需重新安装。
 
 ## 4. 尝试一个 channel
 
