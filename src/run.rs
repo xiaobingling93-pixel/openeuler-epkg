@@ -36,6 +36,30 @@ pub fn is_vm_reuse_active_for_env(_env_root: &Path) -> bool {
     false
 }
 
+/// Try to connect to an existing VM session and execute the command.
+/// Returns Some(exit_code) if successfully connected and executed.
+/// Returns None if no existing VM session exists.
+#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+fn try_connect_and_execute_vm(env_root: &Path, run_options: &RunOptions) -> Result<Option<i32>> {
+    // Build command parts
+    let mut cmd_parts = vec![run_options.command.clone()];
+    cmd_parts.extend(run_options.args.clone());
+
+    log::debug!("run: checking for existing VM session for {}", env_root.display());
+
+    crate::libkrun::execute_via_existing_vm(
+        env_root,
+        &cmd_parts,
+        run_options.io_mode,
+        Some(&run_options.env_vars),
+    )
+}
+
+#[cfg(not(all(feature = "libkrun", not(target_os = "linux"))))]
+fn try_connect_and_execute_vm(_env_root: &Path, _run_options: &RunOptions) -> Result<Option<i32>> {
+    Ok(None)
+}
+
 #[cfg(target_os = "linux")]
 use crate::namespace::{determine_process_config, build_unified_context, create_process_with_namespaces};
 use crate::lfs;
@@ -692,6 +716,13 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
             // VM sandbox mode - supported via libkrun
             #[cfg(feature = "libkrun")]
             {
+                // Check for existing VM session to reuse (cross-process discovery)
+                #[cfg(not(target_os = "linux"))]
+                if let Some(exit_code) = try_connect_and_execute_vm(env_root, &prepared_opts)? {
+                    log::info!("run: reused existing VM session, exit_code={}", exit_code);
+                    return Ok(Some(exit_code));
+                }
+
                 crate::debug_epkg!("fork_and_execute: libkrun feature enabled, resolving command path");
                 let cmd_path = resolve_command_path(env_root, &prepared_opts)?;
                 crate::debug_epkg!("fork_and_execute: command path resolved: {:?}", cmd_path);
@@ -1259,6 +1290,12 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
     if is_vm_reuse_active_for_env(env_root) {
         run_options.reuse_vm = true;
         run_options.effective_sandbox.isolate_mode = Some(IsolateMode::Vm);
+    }
+
+    // If vm_keep_timeout is set, enable reuse_vm mode to keep the VM alive
+    // after the command completes.
+    if run_options.vm_keep_timeout.is_some() {
+        run_options.reuse_vm = true;
     }
 
     // Silence unused warning on Linux

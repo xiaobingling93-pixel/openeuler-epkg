@@ -279,6 +279,10 @@ fn main() -> Result<()> {
 
     attach_session_log_under_epkg_cache();
 
+    // Clean up stale VM session files from crashed processes (non-Linux only)
+    #[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+    crate::libkrun::cleanup_stale_vm_sessions();
+
     #[cfg(target_os = "linux")]
     if invoked_as_init {
         use std::io::Write;

@@ -66,6 +66,281 @@ fn cleanup_stale_vm_files() {
 #[cfg(not(all(feature = "libkrun", target_os = "macos")))]
 fn cleanup_stale_vm_files() {}
 
+// ============================================================================
+// Cross-Process VM Session Discovery
+// ============================================================================
+
+/// VM session information stored on disk for cross-process discovery.
+/// File location: {epkg_run}/vm-sessions/{env_hash}.json
+#[cfg(feature = "libkrun")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VmSessionInfo {
+    /// Session file format version
+    pub version: u32,
+    /// Environment root path (for validation)
+    pub env_root: std::path::PathBuf,
+    /// PID of the process that owns this VM session
+    pub pid: u32,
+    /// Path to the vsock Unix socket/named pipe
+    pub socket_path: std::path::PathBuf,
+    /// Unix timestamp when session was created
+    pub created_at: u64,
+    /// Unix timestamp of last activity (for stale detection)
+    pub last_activity: u64,
+}
+
+/// Compute a deterministic hash for an env_root path.
+/// Used for session file naming and socket path generation.
+#[cfg(feature = "libkrun")]
+fn hash_env_root(env_root: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    env_root.hash(&mut hasher);
+    // Use first 8 bytes as hex string (16 chars)
+    let hash = hasher.finish();
+    format!("{:016x}", hash)
+}
+
+/// Get the VM session file path for an env_root.
+/// Location: {epkg_run}/vm-sessions/{env_hash}.json
+#[cfg(feature = "libkrun")]
+fn vm_session_file_path(env_root: &Path) -> std::path::PathBuf {
+    let env_hash = hash_env_root(env_root);
+    crate::models::dirs().epkg_run
+        .join("vm-sessions")
+        .join(format!("{}.json", env_hash))
+}
+
+/// Get the vsock socket path for an env_root.
+/// This is predictable, enabling cross-process discovery.
+/// Pattern: {epkg_run}/vsock-{env_hash}.sock
+#[cfg(feature = "libkrun")]
+pub fn vm_socket_path_for_env(env_root: &Path) -> std::path::PathBuf {
+    let env_hash = hash_env_root(env_root);
+    crate::models::dirs().epkg_run.join(format!("vsock-{}.sock", env_hash))
+}
+
+/// Check if a process with the given PID is still alive.
+#[cfg(all(feature = "libkrun", unix))]
+fn is_process_alive(pid: u32) -> bool {
+    // Send signal 0 to check if process exists
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok()
+}
+
+#[cfg(all(feature = "libkrun", windows))]
+fn is_process_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::OpenProcess;
+    use windows::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION;
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if let Ok(h) = handle {
+            let _ = CloseHandle(h);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Discover an existing VM session for the given env_root.
+/// Returns session info if a live VM exists, None otherwise.
+#[cfg(feature = "libkrun")]
+fn discover_vm_session(env_root: &Path) -> Result<Option<VmSessionInfo>> {
+    let session_file = vm_session_file_path(env_root);
+
+    if !session_file.exists() {
+        return Ok(None);
+    }
+
+    let content = match std::fs::read_to_string(&session_file) {
+        Ok(c) => c,
+        Err(e) => {
+            log::debug!("libkrun: failed to read session file {}: {}", session_file.display(), e);
+            return Ok(None);
+        }
+    };
+
+    let info: VmSessionInfo = match serde_json::from_str(&content) {
+        Ok(i) => i,
+        Err(e) => {
+            log::debug!("libkrun: failed to parse session file {}: {}", session_file.display(), e);
+            // Corrupt file, clean up
+            let _ = std::fs::remove_file(&session_file);
+            return Ok(None);
+        }
+    };
+
+    // Verify env_root matches
+    if info.env_root != env_root {
+        log::debug!("libkrun: session file env_root mismatch: {} vs {}", info.env_root.display(), env_root.display());
+        return Ok(None);
+    }
+
+    // Check if process is still alive
+    if !is_process_alive(info.pid) {
+        log::debug!("libkrun: session process {} is dead, cleaning up", info.pid);
+        cleanup_vm_session_files(&session_file, &info.socket_path);
+        return Ok(None);
+    }
+
+    // Verify socket exists and is connectable
+    #[cfg(unix)]
+    let socket_connectable = std::os::unix::net::UnixStream::connect(&info.socket_path).is_ok();
+    #[cfg(windows)]
+    let socket_connectable = crate::libkrun_bridge::connect_vsock_bridge(&info.socket_path, 1).is_ok();
+
+    if !socket_connectable {
+        log::debug!("libkrun: session socket {} is not connectable, cleaning up", info.socket_path.display());
+        cleanup_vm_session_files(&session_file, &info.socket_path);
+        return Ok(None);
+    }
+
+    log::info!("libkrun: discovered active VM session for {} (PID {}, socket {})",
+               env_root.display(), info.pid, info.socket_path.display());
+    Ok(Some(info))
+}
+
+/// Clean up session file and socket file.
+#[cfg(feature = "libkrun")]
+fn cleanup_vm_session_files(session_file: &Path, socket_path: &Path) {
+    let _ = std::fs::remove_file(session_file);
+    let _ = std::fs::remove_file(socket_path);
+    log::debug!("libkrun: cleaned up session files: {} and {}", session_file.display(), socket_path.display());
+}
+
+/// Register a new VM session to the on-disk session file.
+/// Must be called after VM starts successfully.
+#[cfg(feature = "libkrun")]
+fn register_vm_session(env_root: &Path, socket_path: &Path) -> Result<()> {
+    let session_dir = crate::models::dirs().epkg_run.join("vm-sessions");
+    lfs::create_dir_all(&session_dir)?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let session_info = VmSessionInfo {
+        version: 1,
+        env_root: env_root.to_path_buf(),
+        pid: std::process::id(),
+        socket_path: socket_path.to_path_buf(),
+        created_at: now,
+        last_activity: now,
+    };
+
+    let session_file = vm_session_file_path(env_root);
+    let content = serde_json::to_string_pretty(&session_info)?;
+    std::fs::write(&session_file, content)?;
+
+    log::info!("libkrun: registered VM session: {}", session_file.display());
+    Ok(())
+}
+
+/// Unregister a VM session (called when VM shuts down).
+#[cfg(feature = "libkrun")]
+fn unregister_vm_session(env_root: &Path) -> Result<()> {
+    let session_file = vm_session_file_path(env_root);
+    if session_file.exists() {
+        // Read socket path before removing session file
+        if let Ok(content) = std::fs::read_to_string(&session_file) {
+            if let Ok(info) = serde_json::from_str::<VmSessionInfo>(&content) {
+                let _ = std::fs::remove_file(&info.socket_path);
+            }
+        }
+        let _ = std::fs::remove_file(&session_file);
+        log::info!("libkrun: unregistered VM session: {}", session_file.display());
+    }
+    Ok(())
+}
+
+/// Clean up stale VM session files from crashed processes.
+/// Called at startup and during VM creation.
+#[cfg(feature = "libkrun")]
+pub fn cleanup_stale_vm_sessions() {
+    let sessions_dir = crate::models::dirs().epkg_run.join("vm-sessions");
+    if !sessions_dir.exists() {
+        return;
+    }
+
+    if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension() != Some(std::ffi::OsStr::new("json")) {
+                continue;
+            }
+
+            // Try to parse session file
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(info) = serde_json::from_str::<VmSessionInfo>(&content) {
+                    // Check if process is alive
+                    if !is_process_alive(info.pid) {
+                        log::debug!("libkrun: cleaning up stale session for PID {}", info.pid);
+                        cleanup_vm_session_files(&path, &info.socket_path);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "libkrun"))]
+pub fn cleanup_stale_vm_sessions() {}
+
+/// Connect to an existing VM session for the given env_root.
+/// Returns a connected stream if successful, None if no session exists.
+#[cfg(all(feature = "libkrun", unix))]
+fn connect_to_existing_vm_socket(env_root: &Path) -> Result<Option<std::os::unix::net::UnixStream>> {
+    let info = match discover_vm_session(env_root)? {
+        Some(i) => i,
+        None => return Ok(None),
+    };
+
+    let stream = std::os::unix::net::UnixStream::connect(&info.socket_path)?;
+    log::info!("libkrun: connected to existing VM socket: {}", info.socket_path.display());
+    Ok(Some(stream))
+}
+
+#[cfg(all(feature = "libkrun", windows))]
+fn connect_to_existing_vm_socket(env_root: &Path) -> Result<Option<crate::libkrun_bridge::NamedPipeStream>> {
+    let info = match discover_vm_session(env_root)? {
+        Some(i) => i,
+        None => return Ok(None),
+    };
+
+    let stream = crate::libkrun_bridge::connect_vsock_bridge(&info.socket_path, 5)?;
+    log::info!("libkrun: connected to existing VM pipe: {}", info.socket_path.display());
+    Ok(Some(stream))
+}
+
+/// Execute a command via an existing VM session.
+/// Used by install/upgrade/remove on non-Linux to run operations in the guest.
+#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+pub fn execute_via_existing_vm(
+    env_root: &Path,
+    cmd_parts: &[String],
+    io_mode: crate::models::IoMode,
+    env_vars: Option<&std::collections::HashMap<String, String>>,
+) -> Result<Option<i32>> {
+    let stream = match connect_to_existing_vm_socket(env_root)? {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+
+    log::info!("libkrun: executing command via existing VM: {:?}", cmd_parts);
+    let exit_code = libkrun_stream::send_command_over_stream(
+        cmd_parts,
+        io_mode,
+        false, // not reuse_vm - just a one-shot command
+        env_vars,
+        stream,
+    )?;
+
+    Ok(Some(exit_code))
+}
+
 /// Cross-process file lock for VM creation on macOS.
 /// Prevents concurrent hv_vm_create() calls that cause HV_DENIED errors on macOS HVF.
 /// The lock is held during VM context creation and released immediately after.
@@ -828,13 +1103,17 @@ struct VmContext {
 ///
 /// Returns host path for the command socket/pipe.
 #[cfg(feature = "libkrun")]
-fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext, reverse: bool) -> Result<std::path::PathBuf> {
+fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext, env_root: &Path, reverse: bool) -> Result<std::path::PathBuf> {
     let run_dir = &crate::models::dirs().epkg_run;
     lfs::create_dir_all(run_dir)?;
-    let sock_path = run_dir.join(format!("vsock-{}.sock", std::process::id()));
+
+    // Use env_hash-based socket path for cross-process discovery
+    let sock_path = vm_socket_path_for_env(env_root);
     let _ = std::fs::remove_file(&sock_path);
 
-    let ready_path = run_dir.join(format!("ready-{}.sock", std::process::id()));
+    // Ready path uses same hash pattern
+    let env_hash = hash_env_root(env_root);
+    let ready_path = run_dir.join(format!("ready-{}.sock", env_hash));
     let _ = std::fs::remove_file(&ready_path);
 
     unsafe {
@@ -1096,7 +1375,7 @@ fn create_and_configure_vm(
         }
 
         if config.use_vsock {
-            let sock_path = setup_libkrun_vsock_host_sockets(&ctx, config.use_reverse_vsock)?;
+            let sock_path = setup_libkrun_vsock_host_sockets(&ctx, env_root, config.use_reverse_vsock)?;
             let vsock_sock_path = Some(sock_path);
             return Ok(VmContext { ctx, vsock_sock_path });
         }
@@ -1429,6 +1708,10 @@ fn send_session_done_unix(sock_path: &Path) -> Result<()> {
 #[cfg(all(feature = "libkrun", not(target_os = "linux")))]
 fn shutdown_krun_session_impl(session: VmReuseSession) -> Result<()> {
     log::debug!("libkrun: shutting down reuse VM session");
+
+    // Unregister session file first
+    let _ = unregister_vm_session(&session.env_root);
+
     send_session_done_unix(&session.vsock_sock_path)?;
     let result = unsafe { krun_signal_shutdown(session.ctx_id) };
     if result < 0 {
@@ -1472,14 +1755,25 @@ pub fn shutdown_vm_reuse_session_if_active() -> Result<()> {
 /// Check if there's an active VM reuse session for a specific env_root.
 /// Returns true if there's an active VM session for the same environment.
 /// This is a helper function for scriptlets/hooks to check if they should inherit VM settings.
+///
+/// Checks both:
+/// 1. In-memory session (fast path for same-process)
+/// 2. On-disk session file (cross-process discovery)
 pub fn is_vm_reuse_active_for_env(env_root: &Path) -> bool {
     #[cfg(not(target_os = "linux"))]
     {
-        let guard = VM_REUSE_SESSION.lock().unwrap();
-        if let Some(session) = guard.as_ref() {
-            return session.env_root == env_root;
+        // Fast path: check in-memory session first
+        {
+            let guard = VM_REUSE_SESSION.lock().unwrap();
+            if let Some(session) = guard.as_ref() {
+                if session.env_root == env_root {
+                    return true;
+                }
+            }
         }
-        false
+
+        // Cross-process: check on-disk session file
+        discover_vm_session(env_root).ok().flatten().is_some()
     }
     #[cfg(target_os = "linux")]
     {
@@ -1697,6 +1991,8 @@ fn run_reverse_vsock_mode_inner(
         // Stay in reverse mode for reuse: Guest reconnects to Host for each subsequent command
         #[cfg(unix)]
         {
+            // Register session file for cross-process discovery
+            let _ = register_vm_session(env_root, &vsock_sock_path);
             *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
                 ctx_id,
                 vsock_sock_path,
@@ -1709,6 +2005,8 @@ fn run_reverse_vsock_mode_inner(
         }
         #[cfg(windows)]
         {
+            // Register session file for cross-process discovery
+            let _ = register_vm_session(env_root, &vsock_sock_path);
             *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
                 ctx_id,
                 vsock_sock_path,
@@ -1823,6 +2121,8 @@ pub fn run_command_in_krun(
         if run_options.reuse_vm {
             #[cfg(not(target_os = "linux"))]
             {
+                // Register session file for cross-process discovery
+                let _ = register_vm_session(env_root, &vsock_sock_path);
                 *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
                     ctx_id,
                     vsock_sock_path,
