@@ -1745,6 +1745,11 @@ build_static() {
         # Deploy to self environment
         install_hardlink "target/$rust_target/$build_dir/$BINARY_NAME" "$DEV_ENV_BIN_DIR/$BINARY_NAME"
         echo "[DEPLOY-hardlink] $DEV_ENV_BIN_DIR/$BINARY_NAME"
+        # Re-sign after copy/hardlink to preserve entitlements (cross-filesystem copy loses signature)
+        if [[ -f "$DEV_ENV_BIN_DIR/$BINARY_NAME" ]]; then
+            codesign --force --sign - --entitlements "$entitlements" "$DEV_ENV_BIN_DIR/$BINARY_NAME" && \
+                echo "[CODESIGN] Re-signed $DEV_ENV_BIN_DIR/$BINARY_NAME with hypervisor entitlements"
+        fi
         # Update epkg hardlinks in native environments (those WITHOUT init)
         # Linux distro environments (with init) already have Linux ELF epkg from build_static_linux
         local envs_dir="${DEV_ENV_BIN_DIR%/*/*/*}"
