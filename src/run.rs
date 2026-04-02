@@ -391,11 +391,20 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
     let is_unix_absolute = run_options.command.starts_with('/');
 
     if is_unix_absolute {
+        let cmd_path = PathBuf::from(&run_options.command);
+
         // First, check if the path is already under env_root (e.g., /Users/aa/.epkg/envs/debian/usr/bin/sh)
         // This happens when scriptlets.rs passes a full host path. In this case, return it directly.
-        let cmd_path = PathBuf::from(&run_options.command);
         if cmd_path.starts_with(env_root) {
             debug!("Command {} is already under env_root, using directly", cmd_path.display());
+            return Ok(cmd_path);
+        }
+
+        // On macOS, absolute paths like /Users/aa/... are host paths.
+        // If the path exists on the host, use it directly.
+        // Only treat paths like /usr/bin/... as Unix-style paths to resolve within env.
+        if cmd_path.exists() {
+            debug!("Command {} exists on host, using directly", cmd_path.display());
             return Ok(cmd_path);
         }
 
@@ -798,7 +807,9 @@ fn fork_and_execute_direct(env_root: &Path, run_options: &RunOptions) -> Result<
     // Convert guest path to host path if needed.
     // When skip_namespace_isolation is true, resolve_command_path may return a guest path
     // (e.g., /usr/bin/curl) but we need the full host path for direct execution.
-    let cmd_path = if cmd_path.is_absolute() && !cmd_path.starts_with(env_root) {
+    // However, if the path already exists on the host (e.g., /Users/aa/... on macOS),
+    // use it directly without conversion.
+    let cmd_path = if cmd_path.is_absolute() && !cmd_path.starts_with(env_root) && !cmd_path.exists() {
         // This is a guest path - convert to host path
         let host_path = env_root.join(cmd_path.strip_prefix("/").unwrap_or(&cmd_path));
         debug!("Converting guest path {} to host path {}", cmd_path.display(), host_path.display());
@@ -855,7 +866,17 @@ fn fork_and_execute_direct(env_root: &Path, run_options: &RunOptions) -> Result<
     }
 
     // Note: Brew packages use absolute paths rewritten at link time (LinkType::Move),
-    // so no DYLD_LIBRARY_PATH is needed.
+    // so no DYLD_LIBRARY_PATH is needed. However, we need to add ebin to PATH
+    // so that scripts can find commands from the environment.
+    if channel_format == crate::models::PackageFormat::Brew {
+        let ebin_path = env_root.join("ebin");
+        if ebin_path.exists() {
+            let current_path = std::env::var("PATH").unwrap_or_default();
+            let new_path = format!("{}:{}", ebin_path.display(), current_path);
+            env_vars.insert("PATH".to_string(), new_path);
+            debug!("Added ebin to PATH: {}", ebin_path.display());
+        }
+    }
 
     // Apply environment variables
     for (key, value) in &env_vars {
