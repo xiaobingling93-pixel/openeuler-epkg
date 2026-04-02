@@ -152,6 +152,8 @@ mod qemu;
 #[cfg(feature = "libkrun")]
 mod libkrun;
 
+#[cfg(not(target_os = "linux"))]
+mod vm_session;
 #[cfg(target_os = "linux")]
 mod vm_client;
 mod busybox;
@@ -280,8 +282,17 @@ fn main() -> Result<()> {
     attach_session_log_under_epkg_cache();
 
     // Clean up stale VM session files from crashed processes (non-Linux only)
-    #[cfg(all(feature = "libkrun", not(target_os = "linux")))]
-    crate::libkrun::cleanup_stale_vm_sessions();
+    #[cfg(not(target_os = "linux"))]
+    crate::vm_session::cleanup_stale_vm_sessions();
+
+    // Try to route install/upgrade/remove/restore commands via existing VM session.
+    // This ensures data integrity by running these operations in the same VM context.
+    #[cfg(not(target_os = "linux"))]
+    {
+        if let Some(exit_code) = try_route_command_via_vm(crate::models::clap_matches())? {
+            std::process::exit(exit_code);
+        }
+    }
 
     #[cfg(target_os = "linux")]
     if invoked_as_init {
@@ -2335,6 +2346,64 @@ fn command_info(sub_matches: &clap::ArgMatches) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+/// Try to route a command via an existing VM session.
+/// Returns Some(exit_code) if command was routed through VM, None if no VM exists.
+/// This ensures data integrity by running install/upgrade/remove in the same VM context.
+#[cfg(not(target_os = "linux"))]
+fn try_route_command_via_vm(matches: &clap::ArgMatches) -> Result<Option<i32>> {
+    use std::collections::HashMap;
+
+    // Commands that should be routed through existing VM
+    let (subcommand_name, sub_matches) = match matches.subcommand() {
+        Some(("install", sm)) => ("install", sm),
+        Some(("upgrade", sm)) => ("upgrade", sm),
+        Some(("remove", sm)) => ("remove", sm),
+        Some(("restore", sm)) => ("restore", sm),
+        _ => return Ok(None), // Not a command that needs VM routing
+    };
+
+    // Check if there's an active VM session for the current environment
+    let env_root = crate::dirs::get_env_root(config().common.env_name.clone())?;
+    if !crate::vm_session::is_vm_session_active(&env_root) {
+        log::debug!("main: no active VM session for {}, proceeding with normal execution", env_root.display());
+        return Ok(None);
+    }
+
+    log::info!("main: routing '{}' command through existing VM session for {}",
+               subcommand_name, env_root.display());
+
+    // Build command to send to VM
+    let mut cmd_parts = vec![
+        std::env::current_exe()?.to_string_lossy().to_string(),
+        "-e".to_string(),
+        config().common.env_name.clone(),
+        subcommand_name.to_string(),
+    ];
+
+    // Add package specs
+    if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
+        for spec in package_specs {
+            cmd_parts.push(spec.clone());
+        }
+    }
+
+    // Add --yes flag for non-interactive mode in VM
+    cmd_parts.push("--yes".to_string());
+
+    // Build environment variables to pass
+    let env_vars: HashMap<String, String> = std::env::vars()
+        .filter(|(k, _)| k.starts_with("EPKG_") || k.starts_with("RUST_LOG") || k == "HOME")
+        .collect();
+
+    // Execute via existing VM
+    crate::libkrun::execute_via_existing_vm(
+        &env_root,
+        &cmd_parts,
+        crate::models::IoMode::Stream,
+        Some(&env_vars),
+    )
 }
 
 fn command_install(sub_matches: &clap::ArgMatches) -> Result<()> {
