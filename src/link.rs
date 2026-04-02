@@ -173,15 +173,34 @@ pub fn link_package_generic(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> 
                 if let Ok(content) = std::fs::read_to_string(&marker_path) {
                     if let Ok(marker) = serde_json::from_str::<serde_json::Value>(&content) {
                         if let Some(existing_env) = marker.get("env_root").and_then(|v| v.as_str()) {
-                            // Store is consumed, copy files from existing environment instead of moving
-                            log::info!("Store {} already consumed by environment {}, copying files instead of moving",
-                                      store_path.display(), existing_env);
                             let existing_env_path = std::path::PathBuf::from(existing_env);
+                            let same_env = existing_env_path == plan.env_root;
 
-                            // Get file list and copy each file
+                            // Get file list to check if files exist in env
                             let fs_files = utils::list_package_files_with_info(store_fs_dir.to_str()
                                 .ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path: {}", store_fs_dir.display()))?)
                                 .with_context(|| format!("Failed to list package files in {}", store_fs_dir.display()))?;
+
+                            // Check if files actually exist in the existing env
+                            // This handles the case where package was removed but consumed.json wasn't cleaned
+                            let files_exist_in_env = check_files_exist_in_env(&existing_env_path, &fs_files);
+
+                            if same_env && !files_exist_in_env {
+                                // Stale consumed.json: files were removed from this env but marker wasn't cleaned
+                                log::warn!("Store {} has stale consumed.json pointing to {} (same env), files don't exist. Removing marker to trigger re-download.",
+                                          store_path.display(), existing_env);
+                                lfs::remove_file(&marker_path)
+                                    .with_context(|| format!("Failed to remove stale consumed.json at {}", marker_path.display()))?;
+                                // Return error to trigger re-download flow
+                                return Err(eyre::eyre!("Store {} needs re-download (stale consumed.json removed)", store_path.display()));
+                            }
+
+                            // Store is consumed, copy files from existing environment instead of moving
+                            log::info!("Store {} already consumed by environment {}, copying files instead of moving",
+                                      store_path.display(), existing_env);
+                            if same_env {
+                                log::debug!("Copying from same env (files already in place, ensuring they exist)");
+                            }
 
                             // Copy files from existing env to new env
                             return copy_files_from_env(&plan.env_root, &existing_env_path, &fs_files);
@@ -259,6 +278,33 @@ fn copy_files_from_env(new_env_root: &Path, existing_env_root: &Path, fs_files: 
 
     log::info!("Copied {} files from {} to {}", fs_files.len(), existing_env_root.display(), new_env_root.display());
     Ok(())
+}
+
+/// Check if any files from the package actually exist in the environment.
+/// Returns true if at least one regular file exists.
+/// Used to detect stale consumed.json (package was removed but marker wasn't cleaned).
+fn check_files_exist_in_env(env_root: &Path, fs_files: &[crate::mtree::MtreeFileInfo]) -> bool {
+    for fs_file_info in fs_files {
+        // Skip directories
+        if fs_file_info.is_dir() {
+            continue;
+        }
+
+        let fhs_file = &fs_file_info.path;
+        let rel_host = lfs::host_path_from_manifest_rel_path(fhs_file.trim_start_matches('/'));
+        let env_file = env_root.join(&rel_host);
+
+        // Check if file exists (from host POV, since we're outside env)
+        if lfs::exists_on_host(&env_file) {
+            // Found at least one file, files exist in env
+            log::debug!("Found existing file in env: {}", env_file.display());
+            return true;
+        }
+    }
+
+    // No files found in env
+    log::debug!("No package files found in env: {}", env_root.display());
+    false
 }
 
 /// Unlink files that are in old_package but not in new_package

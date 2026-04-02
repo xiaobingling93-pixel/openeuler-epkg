@@ -6,20 +6,34 @@
 
 log "Starting history/restore test"
 
+# Detect platform and set appropriate channel
+if [ "$(uname -s)" = "Darwin" ]; then
+    TEST_CHANNEL="brew"
+    TEST_PKG1="jq"
+    TEST_PKG2="tree"
+    TEST_PKG3="curl"
+else
+    TEST_CHANNEL="alpine"
+    TEST_PKG1="jq"
+    TEST_PKG2="htop"
+    TEST_PKG3="curl"
+fi
+log "Using channel: $TEST_CHANNEL"
+
 ENV_NAME="test-history"
 
 log "Creating environment: $ENV_NAME"
 epkg env remove "$ENV_NAME" 2>/dev/null
-epkg env create "$ENV_NAME" -c alpine || error "Failed to create environment"
+epkg env create "$ENV_NAME" -c $TEST_CHANNEL || error "Failed to create environment"
 
-log "Installing jq and curl"
-epkg -e "$ENV_NAME" --assume-yes install jq curl || error "Failed to install jq and curl"
+log "Installing $TEST_PKG1 and $TEST_PKG3"
+epkg -e "$ENV_NAME" --assume-yes install $TEST_PKG1 $TEST_PKG3 || error "Failed to install $TEST_PKG1 and $TEST_PKG3"
 
-log "Installing jq and htop (htop should be new)"
-epkg -e "$ENV_NAME" --assume-yes install jq htop || error "Failed to install jq and htop"
+log "Installing $TEST_PKG1 and $TEST_PKG2 ($TEST_PKG2 should be new)"
+epkg -e "$ENV_NAME" --assume-yes install $TEST_PKG1 $TEST_PKG2 || error "Failed to install $TEST_PKG1 and $TEST_PKG2"
 
-log "Removing curl"
-epkg -e "$ENV_NAME" --assume-yes remove curl || error "Failed to remove curl"
+log "Removing $TEST_PKG3"
+epkg -e "$ENV_NAME" --assume-yes remove $TEST_PKG3 || error "Failed to remove $TEST_PKG3"
 
 log "Installing ripgrep"
 epkg -e "$ENV_NAME" --assume-yes install ripgrep || error "Failed to install ripgrep"
@@ -44,19 +58,19 @@ log "History shows $GEN_COUNT generations"
 log "Restoring to -2"
 epkg -e "$ENV_NAME" --assume-yes restore -2 || error "Failed to restore to -2"
 
-# Verify that jq/htop are installed, curl/rg are not
+# Verify that packages are in expected state after restore
 log "Verifying installed packages after restore"
 
-if ! epkg -e "$ENV_NAME" run jq --version; then
-    error "jq not found after restore"
+if ! epkg -e "$ENV_NAME" run $TEST_PKG1 --version; then
+    error "$TEST_PKG1 not found after restore"
 fi
 
-if ! epkg -e "$ENV_NAME" run htop --version; then
-    error "htop not found after restore"
+if ! epkg -e "$ENV_NAME" run $TEST_PKG2 --version; then
+    error "$TEST_PKG2 not found after restore"
 fi
 
-if ! epkg -e "$ENV_NAME" run curl --version; then
-    error "curl not found after restore"
+if ! epkg -e "$ENV_NAME" run $TEST_PKG3 --version; then
+    error "$TEST_PKG3 not found after restore"
 fi
 
 if epkg -e "$ENV_NAME" run rg --version >/dev/null 2>&1; then
