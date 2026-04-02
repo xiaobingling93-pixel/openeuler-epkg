@@ -24,6 +24,12 @@ set -e
 #   Windows      | x86_64            | enabled (static linked)
 #   Windows      | other archs       | disabled
 #
+# IMPORTANT: Do NOT build in git/libkrun/ directory!
+#   - libkrun is statically linked into epkg via Cargo feature
+#   - Run `make` from epkg root directory, NOT from git/libkrun/
+#   - The git/libkrun/ directory is a git submodule for source code only
+#   - Building in git/libkrun/ will NOT produce a working epkg binary
+#
 # User Override:
 #   - FEATURES="auto"   : auto-enable libkrun for supported platforms (default)
 #   - FEATURES=""       : disable all features (no libkrun)

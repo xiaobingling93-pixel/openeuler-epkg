@@ -749,6 +749,14 @@ export LIBKRUN_WINDOWS_VERBOSE_DEBUG=1
 4. 日志时间戳可能不更新（WSL2 文件系统缓存问题）
 
 **构建注意事项**:
+
+> **重要：不要在 git/libkrun 目录中直接构建！**
+> epkg 使用静态链接方式集成 libkrun，而不是动态链接。
+> libkrun 代码通过 Cargo feature 在 epkg 构建时静态链接到二进制中。
+> 直接在 git/libkrun 中运行 `make` 是错误的做法！
+>
+> 正确做法：始终在 epkg 根目录运行 `make` 或 `make cross-windows`。
+
 ```bash
 # Windows 交叉编译需要两步构建:
 # 1. 先构建 Linux 版本（生成 init/init 供嵌入）
