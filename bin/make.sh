@@ -343,6 +343,49 @@ has_cmd()
     command -v "$1" >/dev/null
 }
 
+# Detect if running in WSL2 (Windows Subsystem for Linux)
+# Returns 0 (true) if in WSL2, 1 (false) otherwise
+is_wsl2() {
+    # Check /proc/version for WSL2 signature
+    if [[ -f /proc/version ]]; then
+        if grep -q "microsoft-standard-WSL" /proc/version 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Ensure mingw-w64 cross-compiler is installed for Windows cross-compilation
+# Auto-installs on WSL2/Debian if not present
+ensure_cross_windows_depends() {
+    local mingw_prefix=$(detect_mingw)
+
+    if [[ -n "$mingw_prefix" ]]; then
+        echo "[CHECK] mingw-w64 cross-compiler found: ${mingw_prefix}-gcc"
+        return 0
+    fi
+
+    echo "[CHECK] mingw-w64 cross-compiler not found"
+
+    # Auto-install on WSL2/Debian
+    if is_wsl2 && has_cmd apt; then
+        echo "[INSTALL] Installing mingw-w64 for Windows cross-compilation..."
+        local SUDO=""
+        [[ $(id -u) -ne 0 ]] && SUDO="sudo"
+        $SUDO apt-get update -qq
+        $SUDO apt-get install -y gcc-mingw-w64-x86-64
+        echo "[INSTALL-OK] mingw-w64 installed"
+        return 0
+    fi
+
+    # Not WSL2/Debian: show warning with manual install instructions
+    echo "[WARN] mingw-w64 cross-compiler not available"
+    echo "       On Debian/Ubuntu: sudo apt-get install gcc-mingw-w64-x86-64"
+    echo "       On Fedora/RHEL:   sudo dnf install mingw64-gcc"
+    echo "       On Arch Linux:    sudo pacman -S mingw-w64-gcc"
+    return 1
+}
+
 # Detect package manager
 detect_package_manager() {
     # Detect available package manager based on OS family
@@ -1819,6 +1862,9 @@ cross-windows() {
         echo "       aarch64 is not supported due to missing mingw-w64 libraries"
         exit 1
     fi
+
+    # Ensure mingw-w64 cross-compiler is available (auto-install on WSL2/Debian)
+    ensure_cross_windows_depends || exit 1
 
     # Always build Linux binary first - needed for VM mode deployment
     # Unconditional: code may have changed even if binary exists
