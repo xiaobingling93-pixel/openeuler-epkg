@@ -432,14 +432,38 @@ fn spawn_child_piped(
     if let Some(cwd) = &request.cwd {
         child.current_dir(cwd);
     }
-    if let Some((uid, gid)) = resolve_request_user(request.user.as_deref())? {
+    let uid_gid = resolve_request_user(request.user.as_deref())?;
+    if let Some((uid, gid)) = uid_gid {
         use std::os::unix::process::CommandExt;
         log::debug!("vm-daemon spawn_child_piped: setting child uid={} gid={}", uid, gid);
         child.uid(uid);
         child.gid(gid);
     }
-    log::debug!("vm-daemon spawn_child_piped: setting env: {:?}", request.env);
-    child.envs(&request.env);
+
+    // Build environment with HOME set appropriately
+    let mut env = request.env.clone();
+    if !env.contains_key("HOME") {
+        let home = if let Some((uid, _)) = uid_gid {
+            if uid == 0 {
+                "/root".to_string()
+            } else {
+                // Try to find user's home from passwd
+                let passwd_entries = crate::userdb::read_passwd(None)?;
+                passwd_entries
+                    .iter()
+                    .find(|u| u.uid == uid)
+                    .map(|u| u.dir.clone())
+                    .unwrap_or_else(|| format!("/home/{}", uid))
+            }
+        } else {
+            // No user specified, running as current user (likely root from init)
+            "/root".to_string()
+        };
+        env.insert("HOME".to_string(), home);
+    }
+
+    log::debug!("vm-daemon spawn_child_piped: setting env: {:?}", env);
+    child.envs(&env);
     child.stdin(std::process::Stdio::piped());
     child.stdout(std::process::Stdio::piped());
     child.stderr(std::process::Stdio::piped());
@@ -480,19 +504,42 @@ fn pty_run_child(request: &CommandRequest, master: OwnedFd, slave: OwnedFd) -> !
     if let Some(cwd) = &request.cwd {
         cmd.current_dir(cwd);
     }
-    match resolve_request_user(request.user.as_deref()) {
+    let uid_gid = match resolve_request_user(request.user.as_deref()) {
         Ok(Some((uid, gid))) => {
             log::debug!("vm-daemon pty child: setting child uid={} gid={}", uid, gid);
             cmd.uid(uid);
             cmd.gid(gid);
+            Some((uid, gid))
         }
-        Ok(None) => {}
+        Ok(None) => None,
         Err(e) => {
             log::debug!("vm-daemon pty child: failed to resolve user {:?}: {}", request.user, e);
             std::process::exit(1);
         }
+    };
+
+    // Build environment with HOME set appropriately
+    let mut env = request.env.clone();
+    if !env.contains_key("HOME") {
+        let home = if let Some((uid, _)) = uid_gid {
+            if uid == 0 {
+                "/root".to_string()
+            } else {
+                // Try to find user's home from passwd
+                let passwd_entries = crate::userdb::read_passwd(None);
+                passwd_entries
+                    .ok()
+                    .and_then(|entries| entries.iter().find(|u| u.uid == uid).map(|u| u.dir.clone()))
+                    .unwrap_or_else(|| format!("/home/{}", uid))
+            }
+        } else {
+            // No user specified, running as current user (likely root from init)
+            "/root".to_string()
+        };
+        env.insert("HOME".to_string(), home);
     }
-    cmd.envs(&request.env);
+
+    cmd.envs(&env);
     log_process_identity("vm-daemon pty child before exec");
     let err = cmd.exec();
     log::debug!("Failed to execute command: {}", err);
