@@ -25,7 +25,8 @@ epkg() {
     echo "$cmd" >&2
     "$EPKG_BINARY" "$@"
     local exit_code=$?
-    if [ $exit_code -ne 0 ]; then
+    # Ignore SIGPIPE (141 = 128 + 13) - expected when piping to grep -q
+    if [ $exit_code -ne 0 ] && [ $exit_code -ne 141 ]; then
         echo "ERROR: epkg command failed with exit code $exit_code" >&2
     fi
     return $exit_code
