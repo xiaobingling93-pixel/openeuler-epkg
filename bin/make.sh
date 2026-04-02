@@ -2,39 +2,117 @@
 set -e
 
 # =============================================================================
-# Build Policy
+# Cross-Platform Build System
 # =============================================================================
 #
-# Static Linking (Default):
-#   - All meaningful/default/actively-used builds are statically linked
-#   - This applies to both debug and release/deploy builds
-#   - Static binaries are self-contained and portable across environments
+# CONCEPTS
+# --------
+# Three platform types with different build requirements:
 #
-# Dynamic Linking (Legacy):
-#   - Only retained for potential corner case usage
-#   - NOT recommended for production or deployment
-#   - Commands: `dynamic-build`, `dynamic-release`
+#   Platform    | Host Binary    | VM Guest Binary | Build Strategy
+#   ------------|----------------|-----------------|------------------
+#   Linux       | ELF (musl)     | Same as host    | Single native build
+#   macOS       | Mach-O         | ELF (musl)      | Cross-compile + native
+#   Windows     | .exe (mingw)   | ELF (musl)      | Cross-compile + native
 #
-# libkrun Feature Auto-Enable Matrix:
+# Key insight: On macOS/Windows, the host runs native binary but VM guest
+# needs Linux ELF. This requires TWO builds per development cycle.
+#
+# Environment Types and Binary Requirements:
+#   - Linux distro environments (have usr/bin/init): need Linux ELF
+#   - Native environments (Conda/Brew, no init): need host-native binary
+#
+# DIRECTORY LAYOUT
+# ----------------
+# Build outputs (Rust target directories):
+#   target/<rust_target>/debug/epkg          - primary build output
+#   target/<rust_target>/release/epkg        - release build output
+#
+# Distribution (release artifacts):
+#   dist/epkg-linux-<arch>                   - Linux ELF (musl static)
+#   dist/epkg-macos-<arch>                   - macOS Mach-O
+#   dist/epkg-windows-<arch>.exe             - Windows executable
+#
+# Self environment (active development):
+#   ~/.epkg/envs/self/usr/bin/epkg           - host-native binary
+#   ~/.epkg/envs/self/usr/bin/epkg-linux-<arch> - Linux ELF (VM guest)
+#   ~/.epkg/envs/self/usr/bin/init           - symlink to epkg-linux-<arch>
+#
+# Other environments (Linux distros or native):
+#   ~/.epkg/envs/<env>/usr/bin/epkg          - hardlink to appropriate binary
+#   ~/.epkg/envs/<env>/usr/bin/init          - hardlink (Linux distro envs only)
+#
+# Rust Target Triples:
+#   Linux:   <arch>-unknown-linux-musl       (musl, static)
+#   macOS:   <arch>-apple-darwin             (native)
+#   Windows: <arch>-pc-windows-gnu           (mingw-w64)
+#
+# BUILD STEPS BY PLATFORM
+# -----------------------
+#
+# Linux (native build):
+#   1. build_static() builds musl target
+#   2. Single binary serves both host and VM guest
+#   3. update_all_env_hardlinks() syncs all environments
+#
+# macOS (cross-compile + native):
+#   1. build_static_linux() cross-compiles Linux ELF (aarch64-unknown-linux-musl)
+#      - Uses musl cross-compiler: aarch64-linux-musl-gcc
+#      - Deploys to ~/.epkg/envs/self/usr/bin/epkg-linux-aarch64
+#      - Updates Linux distro environments (those with init)
+#   2. build_static() builds native macOS target (aarch64-apple-darwin)
+#      - Uses native clang compiler
+#      - Deploys to ~/.epkg/envs/self/usr/bin/epkg
+#      - Updates native environments (those without init)
+#   3. codesign with hypervisor entitlements for libkrun
+#
+# Windows/WSL2 (cross-compile + native):
+#   1. build_static() builds Linux ELF (x86_64-unknown-linux-musl)
+#      - Runs natively on WSL2 Linux
+#      - Deploys to ~/.epkg/envs/self/usr/bin/epkg-linux-x86_64
+#   2. cross-windows() cross-compiles Windows .exe (x86_64-pc-windows-gnu)
+#      - Uses mingw-w64 cross-compiler: x86_64-w64-mingw32-gcc
+#      - Deploys to Windows %USERPROFILE%\.epkg\envs\self\usr\bin\epkg.exe
+#   3. update_all_env_hardlinks() syncs WSL2 environments
+#      - Also syncs Windows-side environments (XDEV copy to NTFS)
+#
+# Hardlink Deployment Chain (atomic updates, same inode):
+#   build:  target/<rust_target>/debug/epkg
+#              |
+#              v (install_hardlink)
+#   self:   ~/.epkg/envs/self/usr/bin/epkg[-linux-<arch>]
+#              |
+#              v (update_all_env_hardlinks / per-env sync)
+#   envs:   ~/.epkg/envs/<env>/usr/bin/epkg  ----> hardlink
+#           ~/.epkg/envs/<env>/usr/bin/init  ----> hardlink (Linux distro envs)
+#
+# Static Linking Policy
+# ---------------------
+# All builds use static linking (default and recommended):
+#   - Self-contained, portable binaries
+#   - No runtime dependency on system libraries
+#   - Musl libc for Linux targets (static CRT)
+#
+# Dynamic linking retained only for legacy compatibility (not recommended).
+#
+# libkrun Feature Auto-Enable Matrix
+# ----------------------------------
 #   Platform     | Architecture      | libkrun
 #   -------------|-------------------|--------
 #   Linux        | x86_64/aarch64/riscv64 | enabled (static linked)
 #   Linux        | loongarch64       | disabled (not supported)
 #   macOS        | aarch64           | enabled (static linked)
 #   Windows      | x86_64            | enabled (static linked)
-#   Windows      | other archs       | disabled
+#   macOS x86_64 / Windows !x86_64  | disabled
 #
 # IMPORTANT: Do NOT build in git/libkrun/ directory!
 #   - libkrun is statically linked into epkg via Cargo feature
 #   - Run `make` from epkg root directory, NOT from git/libkrun/
-#   - The git/libkrun/ directory is a git submodule for source code only
-#   - Building in git/libkrun/ will NOT produce a working epkg binary
 #
 # User Override:
-#   - FEATURES="auto"   : auto-enable libkrun for supported platforms (default)
-#   - FEATURES=""       : disable all features (no libkrun)
-#   - FEATURES="libkrun": explicitly enable libkrun
-#   - FEATURES="..."    : custom features (comma-separated)
+#   FEATURES="auto"    : auto-enable libkrun (default)
+#   FEATURES=""        : disable all features
+#   FEATURES="libkrun" : explicitly enable
 #
 # =============================================================================
 
@@ -600,11 +678,9 @@ install_to_dev_env() {
 }
 
 # Update hardlinks in all environments to point to the new epkg binary.
-# This ensures that all environments have hardlinks pointing to the newly installed binary.
-# Files updated: envs/*/usr/bin/epkg
-# Files updated on Linux: envs/*/usr/bin/init (same as epkg, Linux ELF)
-# On macOS, init is updated separately with the Linux ELF binary (see update_env_init_hardlinks).
-# Called on both Linux (epkg-linux-$arch) and macOS (epkg) builds.
+# Only called on Linux hosts. On macOS/Windows, environments are updated
+# individually in build_static_linux (Linux distro envs) and build_static (native envs).
+# Files updated: envs/*/usr/bin/epkg and envs/*/usr/bin/init (same binary on Linux)
 update_all_env_hardlinks() {
     local self_epkg_linux="$1"
     local envs_dir="${DEV_ENV_BIN_DIR%/*/*/*}"  # Go from usr/bin to envs dir
