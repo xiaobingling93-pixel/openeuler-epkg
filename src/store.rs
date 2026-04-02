@@ -842,6 +842,30 @@ pub fn is_store_consumed(store_path: &Path) -> bool {
     false
 }
 
+/// Find a file from a consumed store in the environment that consumed it.
+/// Returns (env_root, file_path_in_env) if found.
+pub fn find_consumed_store_file(store_path: &Path, fhs_file: &Path) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let marker_path = store_path.join(CONSUMED_MARKER_FILE);
+    if !lfs::exists_on_host(&marker_path) {
+        return None;
+    }
+
+    // Read the consumed marker to get env_root
+    let content = fs::read_to_string(&marker_path).ok()?;
+    let marker: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let env_root = marker.get("env_root")?.as_str()?;
+    let env_root = std::path::PathBuf::from(env_root);
+
+    // Construct the file path in the environment
+    let file_path = env_root.join(fhs_file.strip_prefix("/").unwrap_or(fhs_file));
+
+    if lfs::exists_on_host(&file_path) {
+        Some((env_root, file_path))
+    } else {
+        None
+    }
+}
+
 /// Validate store package integrity by checking if consumed marker exists or files are missing.
 /// Returns true if the store appears valid, false if consumed or corrupted.
 fn validate_store_integrity(pkgline: &str) -> bool {

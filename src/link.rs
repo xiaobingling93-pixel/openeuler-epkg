@@ -163,12 +163,35 @@ pub fn link_package(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> Result<(
 /// Link package files using generic (non-format-specific) linking
 /// This handles standard file linking without format-specific metadata processing
 pub fn link_package_generic(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> Result<()> {
-    // For LinkType::Move, create consumed marker before moving files
-    // This ensures the store is marked as consumed even if the move fails partway
+    // For LinkType::Move, check if store is already consumed by another environment
     if plan.link == LinkType::Move {
         if let Some(store_path) = store_fs_dir.parent() {
-            // store_fs_dir is like /path/to/store/pkgline/fs
-            // store_path is like /path/to/store/pkgline
+            // Check if the store was already consumed by another environment
+            if crate::store::is_store_consumed(store_path) {
+                // Read the existing consumed marker to find which env has the files
+                let marker_path = store_path.join("info/consumed.json");
+                if let Ok(content) = std::fs::read_to_string(&marker_path) {
+                    if let Ok(marker) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Some(existing_env) = marker.get("env_root").and_then(|v| v.as_str()) {
+                            // Store is consumed, copy files from existing environment instead of moving
+                            log::info!("Store {} already consumed by environment {}, copying files instead of moving",
+                                      store_path.display(), existing_env);
+                            let existing_env_path = std::path::PathBuf::from(existing_env);
+
+                            // Get file list and copy each file
+                            let fs_files = utils::list_package_files_with_info(store_fs_dir.to_str()
+                                .ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path: {}", store_fs_dir.display()))?)
+                                .with_context(|| format!("Failed to list package files in {}", store_fs_dir.display()))?;
+
+                            // Copy files from existing env to new env
+                            return copy_files_from_env(&plan.env_root, &existing_env_path, &fs_files);
+                        }
+                    }
+                }
+            }
+
+            // Create consumed marker before moving files
+            // This ensures the store is marked as consumed even if the move fails partway
             crate::store::create_consumed_marker(store_path, &plan.env_root.display().to_string(), &plan.env_root)
                 .with_context(|| format!("Failed to create consumed marker for {}", store_path.display()))?;
         }
@@ -185,6 +208,56 @@ pub fn link_package_generic(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> 
     // 2. The consumed.json marker already indicates the store is consumed
     // 3. Empty directories in fs/ don't take significant space
 
+    Ok(())
+}
+
+/// Copy files from an existing environment to a new environment.
+/// Used when the store is already consumed by another environment.
+fn copy_files_from_env(new_env_root: &Path, existing_env_root: &Path, fs_files: &[crate::mtree::MtreeFileInfo]) -> Result<()> {
+    for fs_file_info in fs_files {
+        let fhs_file = &fs_file_info.path;
+        let rel_host = lfs::host_path_from_manifest_rel_path(fhs_file.trim_start_matches('/'));
+        let existing_file = existing_env_root.join(&rel_host);
+        let target_path = new_env_root.join(&rel_host);
+
+        // Skip directories
+        if fs_file_info.is_dir() {
+            if !lfs::exists_on_host(&target_path) {
+                lfs::create_dir_all(&target_path)?;
+            }
+            continue;
+        }
+
+        // Skip if existing file doesn't exist (may have been removed)
+        if !lfs::exists_on_host(&existing_file) {
+            log::debug!("Skipping missing file: {}", existing_file.display());
+            continue;
+        }
+
+        // Create parent directory if needed
+        if let Some(parent) = target_path.parent() {
+            if !lfs::exists_on_host(parent) {
+                lfs::create_dir_all(parent)?;
+            }
+        }
+
+        // Copy file or symlink
+        if fs_file_info.is_link() {
+            // Copy symlink target
+            let link_target = std::fs::read_link(&existing_file)
+                .with_context(|| format!("Failed to read symlink {}", existing_file.display()))?;
+            lfs::symlink_file_for_virtiofs(&link_target, &target_path)
+                .with_context(|| format!("Failed to create symlink {}", target_path.display()))?;
+        } else {
+            // Copy regular file
+            lfs::copy(&existing_file, &target_path)
+                .with_context(|| format!("Failed to copy {} to {}", existing_file.display(), target_path.display()))?;
+        }
+
+        log::trace!("Copied: {} -> {}", existing_file.display(), target_path.display());
+    }
+
+    log::info!("Copied {} files from {} to {}", fs_files.len(), existing_env_root.display(), new_env_root.display());
     Ok(())
 }
 
@@ -629,6 +702,35 @@ fn cleanup_existing_target(
 
 fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path, link_type: LinkType, can_reflink: bool) -> Result<()> {
     log::trace!("mirror_regular_file: fs_file={}, target_path={}, link_type={:?}", fs_file.display(), target_path.display(), link_type);
+
+    // For Move/Runpath link type, check if source file exists
+    // If not, the store may have been consumed by another environment
+    if matches!(link_type, LinkType::Move | LinkType::Runpath) && !lfs::exists_on_host(fs_file) {
+        // Check if target already exists (file was moved from this store to another env)
+        // In this case, we need to copy from the existing location
+        if let Ok(metadata) = lfs::symlink_metadata(target_path) {
+            if metadata.is_file() || metadata.file_type().is_symlink() {
+                log::debug!("Source file {} doesn't exist but target {} already exists - skipping",
+                           fs_file.display(), target_path.display());
+                return Ok(());
+            }
+        }
+
+        // Try to find the file in consumed store's env
+        if let Some(store_path) = fs_file.parent().and_then(|p| p.parent()) {
+            if let Some((_existing_env_path, existing_file_path)) = crate::store::find_consumed_store_file(store_path, fhs_file) {
+                log::info!("Store consumed, copying from existing env: {} -> {}", existing_file_path.display(), target_path.display());
+                // Copy from existing environment instead of moving from store
+                lfs::copy(&existing_file_path, target_path)?;
+                return Ok(());
+            }
+        }
+
+        return Err(eyre::eyre!(
+            "Source file {} doesn't exist for Move link type. The store may have been consumed by another environment.",
+            fs_file.display()
+        ));
+    }
 
     // Ensure parent directory exists before creating any links
     if let Some(parent) = target_path.parent() {

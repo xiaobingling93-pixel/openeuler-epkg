@@ -6,6 +6,16 @@
 
 log "Starting export/import test"
 
+# Detect platform and set appropriate channel
+if [ "$(uname -s)" = "Darwin" ]; then
+    TEST_CHANNEL="brew"
+    TEST_PKGS="jq tree"
+else
+    TEST_CHANNEL="alpine"
+    TEST_PKGS="jq htop"
+fi
+log "Using channel: $TEST_CHANNEL, packages: $TEST_PKGS"
+
 # Create a test environment
 ENV_NAME="test-export"
 ENV2_NAME="test-import"
@@ -13,10 +23,10 @@ ENV2_NAME="test-import"
 log "Creating environment: $ENV_NAME"
 epkg env remove "$ENV_NAME" 2>/dev/null
 epkg env remove "$ENV2_NAME" 2>/dev/null
-epkg env create "$ENV_NAME" -c alpine || error "Failed to create environment"
+epkg env create "$ENV_NAME" -c $TEST_CHANNEL || error "Failed to create environment"
 
-log "Installing jq and htop"
-epkg -e "$ENV_NAME" --assume-yes install jq htop || error "Failed to install packages"
+log "Installing $TEST_PKGS"
+epkg -e "$ENV_NAME" --assume-yes install $TEST_PKGS || error "Failed to install packages"
 
 # Export to a file
 EXPORT_FILE="/tmp/epkg-export-$ENV_NAME.yaml"
@@ -52,15 +62,15 @@ fi
 
 log "Package lists match"
 
-# Verify that jq and htop commands are installed in env2
+# Verify that commands are installed in env2
 log "Verifying jq command in env2"
 if ! epkg -e "$ENV2_NAME" run jq --version; then
     error "jq not found in env2"
 fi
 
-log "Verifying htop command in env2"
-if ! epkg -e "$ENV2_NAME" run htop --version; then
-    error "htop not found in env2"
+log "Verifying tree command in env2"
+if ! epkg -e "$ENV2_NAME" run tree --version; then
+    error "tree not found in env2"
 fi
 
 log "Export/import test completed successfully"
