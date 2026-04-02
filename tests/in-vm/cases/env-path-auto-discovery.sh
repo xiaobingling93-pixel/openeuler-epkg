@@ -6,6 +6,20 @@
 
 log "Starting env path auto-discovery test"
 
+# Detect platform and set appropriate channel
+# On macOS, use brew for native packages; on Linux, use alpine
+if [ "$(uname -s)" = "Darwin" ]; then
+    TEST_CHANNEL="brew"
+    # Use smaller packages for testing
+    TEST_PKG_SMALL="jq"
+    TEST_PKG_ALT="tree"
+else
+    TEST_CHANNEL="alpine"
+    TEST_PKG_SMALL="jq"
+    TEST_PKG_ALT="htop"
+fi
+log "Using channel: $TEST_CHANNEL"
+
 # Helper function to mimic env_name_from_path logic
 env_name_from_path() {
     local path="$1"
@@ -25,7 +39,9 @@ env_name_from_path() {
 }
 
 # Create a temporary directory for our test environments
-TEST_DIR=$(mktemp -d)
+# Use ~/.epkg/tmp to ensure same filesystem as store (required for LinkType::Move)
+TEST_DIR="${HOME}/.epkg/tmp/env-path-test-$$"
+mkdir -p "$TEST_DIR"
 trap "rm -rf '$TEST_DIR'" EXIT
 
 ORIG_DIR=$(pwd)
@@ -36,7 +52,7 @@ ORIG_DIR=$(pwd)
 log "Test 1: --root DIR option with env create"
 ENV_ROOT="$TEST_DIR/myenv"
 log "Creating environment at path: $ENV_ROOT"
-epkg env create --root "$ENV_ROOT" -c alpine || error "Failed to create environment with --root"
+epkg env create --root "$ENV_ROOT" -c $TEST_CHANNEL || error "Failed to create environment with --root"
 
 # Compute expected auto-generated name
 EXPECTED_NAME=$(env_name_from_path "$ENV_ROOT")
@@ -77,16 +93,16 @@ COMPLEX_PATH="$TEST_DIR/some/deep/nested/env"
 mkdir -p "$(dirname "$COMPLEX_PATH")"
 COMPLEX_NAME=$(env_name_from_path "$COMPLEX_PATH")
 epkg env remove "$COMPLEX_NAME" 2>/dev/null
-epkg env create --root "$COMPLEX_PATH" -c alpine || error "Failed to create environment with complex path"
+epkg env create --root "$COMPLEX_PATH" -c $TEST_CHANNEL || error "Failed to create environment with complex path"
 log "Complex path auto-generated name: $COMPLEX_NAME"
 # Verify registration
 if ! epkg env list | grep -q "$COMPLEX_NAME"; then
     error "Complex path environment '$COMPLEX_NAME' not found in env list"
 fi
-# Install htop via --root
-epkg --root "$COMPLEX_PATH" --assume-yes install htop || error "Failed to install htop in complex env"
-if ! epkg --root "$COMPLEX_PATH" run htop --version; then
-    error "htop not found in complex env via --root"
+# Install TEST_PKG_ALT via --root
+epkg --root "$COMPLEX_PATH" --assume-yes install $TEST_PKG_ALT || error "Failed to install $TEST_PKG_ALT in complex env"
+if ! epkg --root "$COMPLEX_PATH" run $TEST_PKG_ALT --version; then
+    error "$TEST_PKG_ALT not found in complex env via --root"
 fi
 
 # ============================================================================
@@ -99,18 +115,18 @@ mkdir -p "$EENV_DIR"
 EENV_NAME=$(env_name_from_path "$EENV_DIR")
 epkg env remove "$EENV_NAME" 2>/dev/null
 # Create environment at .eenv path
-epkg env create --root "$EENV_DIR" -c alpine || error "Failed to create environment at .eenv"
+epkg env create --root "$EENV_DIR" -c $TEST_CHANNEL || error "Failed to create environment at .eenv"
 
-# Install a package in that environment (we'll install htop)
-epkg --root "$EENV_DIR" --assume-yes install /bin/sh htop || error "Failed to install htop"
+# Install a package in that environment (we'll install TEST_PKG_ALT)
+epkg --root "$EENV_DIR" --assume-yes install $TEST_PKG_ALT || error "Failed to install $TEST_PKG_ALT"
 
 # Create a script in a subdirectory (not in .eenv)
 SCRIPT_DIR="$TEST_DIR/project/subdir"
 mkdir -p "$SCRIPT_DIR"
 SCRIPT="$SCRIPT_DIR/test.sh"
-cat > "$SCRIPT" <<'EOF'
+cat > "$SCRIPT" <<EOF
 #!/bin/sh
-htop --version
+$TEST_PKG_ALT --version
 EOF
 chmod +x "$SCRIPT"
 
@@ -132,20 +148,20 @@ log "Test 3: Registered environment search for non--rootath commands"
 # Create a new environment with a unique command installed
 ENV2_NAME="test-registered-search"
 epkg env remove "$ENV2_NAME" 2>/dev/null
-epkg env create "$ENV2_NAME" -c alpine || error "Failed to create environment $ENV2_NAME"
-epkg -e "$ENV2_NAME" --assume-yes install htop || error "Failed to install htop"
+epkg env create "$ENV2_NAME" -c $TEST_CHANNEL || error "Failed to create environment $ENV2_NAME"
+epkg -e "$ENV2_NAME" --assume-yes install $TEST_PKG_ALT || error "Failed to install $TEST_PKG_ALT"
 
-if ! epkg run -e "$ENV2_NAME" htop --version; then
-    error "Failed to find htop"
+if ! epkg run -e "$ENV2_NAME" $TEST_PKG_ALT --version; then
+    error "Failed to find $TEST_PKG_ALT"
 fi
 
-# Run 'htop' without explicit environment; should find in registered environments
-# Note: This only works if htop is not a path (no slash) and no .eenv found.
+# Run '$TEST_PKG_ALT' without explicit environment; should find in registered environments
+# Note: This only works if $TEST_PKG_ALT is not a path (no slash) and no .eenv found.
 # We'll run from a directory with no .eenv.
 cd "$TEST_DIR"
 epkg env register "$ENV2_NAME"
-if ! epkg run htop --version; then
-    error "Failed to find htop in registered environments"
+if ! epkg run $TEST_PKG_ALT --version; then
+    error "Failed to find $TEST_PKG_ALT in registered environments"
 fi
 epkg env unregister "$ENV2_NAME"
 cd "$ORIG_DIR"
@@ -168,15 +184,15 @@ log "Test 5: -e overrides --root precedence"
 ENV3_PATH="$TEST_DIR/env3"
 ENV3_NAME="explicit-name"
 epkg env remove "$ENV3_NAME" 2>/dev/null
-epkg env create --root "$ENV3_PATH" -c alpine || error "Failed to create env3 via --root"
-epkg env create "$ENV3_NAME" -c alpine || error "Failed to create env3 via -e"
+epkg env create --root "$ENV3_PATH" -c $TEST_CHANNEL || error "Failed to create env3 via --root"
+epkg env create "$ENV3_NAME" -c $TEST_CHANNEL || error "Failed to create env3 via -e"
 # Install different packages in each to distinguish
 epkg --root "$ENV3_PATH" --assume-yes install jq || error "Failed to install jq in path env"
-epkg -e "$ENV3_NAME" --assume-yes install htop || error "Failed to install htop in named env"
+epkg -e "$ENV3_NAME" --assume-yes install $TEST_PKG_ALT || error "Failed to install $TEST_PKG_ALT in named env"
 
-# Run with both -e and --root; -e should take precedence, so htop should be found, jq not
-if ! epkg -e "$ENV3_NAME" --root "$ENV3_PATH" run htop --version; then
-    error "htop not found when both -e and --root flags present (-e should win)"
+# Run with both -e and --root; -e should take precedence, so $TEST_PKG_ALT should be found, jq not
+if ! epkg -e "$ENV3_NAME" --root "$ENV3_PATH" run $TEST_PKG_ALT --version; then
+    error "$TEST_PKG_ALT not found when both -e and --root flags present (-e should win)"
 fi
 # Verify jq is not found (should error)
 if epkg -e "$ENV3_NAME" --root "$ENV3_PATH" run jq --version; then
