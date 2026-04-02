@@ -895,3 +895,234 @@ FEATURES="libkrun embedded_init" make cross-windows
 - 嵌入的简化 init **无法提供完整的 epkg 功能**
 - 仅用于早期启动阶段调试，验证 VM 能否启动
 - 生产环境必须使用默认的 `/usr/bin/init` 以获得完整功能
+
+---
+
+## DAX (Direct Access) 故障排查
+
+### DAX 概述
+
+**DAX (Direct Access)** 是 virtiofs 的一项性能优化功能，允许 guest 内核直接将文件映射到内存，绕过 virtio 队列进行读写操作。这可以提供约 **40 倍**的性能提升（从 ~2ms 降至 ~50μs）。
+
+**工作原理：**
+1. Guest 内核通过 FUSE_SETUPMAPPING 请求文件映射
+2. Host (libkrun) 打开文件并创建内存映射 (MapViewOfFile)
+3. Host 通过 WorkerMessage::FsAddMapping 通知 VMM 线程
+4. VMM 调用 WHvMapGpaRange() 将 host 内存映射到 guest 物理地址
+5. Guest 内核可直接通过 DAX 读写文件，无需 virtio 请求
+6. 完成后 FUSE_REMOVEMAPPING 解除映射
+
+### DAX 常见问题
+
+#### 1. DAX 导致内核 panic (error -34 / -ERANGE)
+
+**症状**: `Kernel panic - not syncing: Requested init /usr/bin/init failed (error -34)`
+
+**根本原因**:
+- Windows WHPX 不支持传统的 DAX 共享内存窗口
+- `virtio_fs_direct_access()` 返回 `-ERANGE`，但 DAX 代码路径未正确处理
+- 内核尝试执行 init 时，DAX 读失败导致 panic
+
+**诊断步骤**:
+```bash
+# 检查内核是否配置了 CONFIG_FUSE_DAX
+zgrep CONFIG_FUSE_DAX /proc/config.gz 2>/dev/null || echo "无法检查"
+
+# 查看控制台日志中的 DAX 相关消息
+# 搜索: "DAX enabled without memory window" 或 "no memory window"
+```
+
+**解决方案**:
+
+**方案一：更新内核（推荐）**
+
+应用 kernel patch 0021（已包含在 sandbox-kernel）：
+```
+patches/0021-virtiofs-Allow-DAX-without-memory-window-on-WHPX.patch
+```
+
+该 patch 包含以下修复：
+1. **fs/fuse/dax.c**: 当 `-ERANGE` 返回时创建合成 DAX 范围（synthetic ranges）
+2. **fs/fuse/virtio_fs.c**: 无内存窗口时返回 `-ERANGE`，但继续启用 DAX
+3. **fs/dax.c**: 在 `dax_iomap_iter()` 中将 `-ERANGE` 转换为 `-EIO`
+
+**关键代码逻辑：**
+```c
+// fs/dax.c: dax_iomap_iter()
+if (map_len < 0) {
+    ret = dax_mem2blk_err(map_len);
+    // -ERANGE from dax_direct_access means no memory window
+    // available (e.g., virtio-fs per-inode DAX on WHPX).
+    // Convert to -EIO to signal a retryable I/O error.
+    if (ret == -ERANGE)
+        ret = -EIO;
+    break;
+}
+```
+
+**方案二：临时禁用 DAX**
+
+如果不需要 DAX 性能优化，可以禁用它：
+```bash
+# 在 kernel args 中添加 dax=never
+epkg run --kernel-args="dax=never" -e alpine ls /
+```
+
+#### 2. DAX setupmapping 失败 (write mode)
+
+**症状**: FUSE_SETUPMAPPING 返回错误，或文件只能读不能写
+
+**根本原因**:
+- Windows `setupmapping` 实现最初硬编码为只读模式
+- 当 kernel 请求写模式映射时，Windows API 调用失败
+
+**诊断步骤**:
+```bash
+# 启用 virtiofs 调试日志
+export LIBKRUN_WINDOWS_VERBOSE_DEBUG=1
+
+# 查看日志中的 setupmapping 消息
+# 搜索: "setupmapping: inode=... write_mode=..."
+```
+
+**解决方案**:
+
+确保 libkrun 代码正确处理 write_mode：
+
+```rust
+// src/devices/src/virtio/fs/windows/passthrough.rs
+let write_mode = (flags & fuse::SetupmappingFlags::WRITE.bits()) != 0;
+
+// 根据 write_mode 设置不同的 Windows API 参数
+let (access, share_mode, page_protect, map_access) = if write_mode {
+    (
+        FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        PAGE_READWRITE,
+        FILE_MAP_READ | FILE_MAP_WRITE,
+    )
+} else {
+    (
+        FILE_GENERIC_READ.0,
+        FILE_SHARE_READ,
+        PAGE_READONLY,
+        FILE_MAP_READ,
+    )
+};
+```
+
+#### 3. DAX 映射泄漏
+
+**症状**: 运行多个 VM 后系统内存不足，或 `WHvMapGpaRange` 失败
+
+**根本原因**:
+- `FUSE_REMOVEMAPPING` 未正确调用
+- Host 端映射未清理（`UnmapViewOfFile` 或 `WHvUnmapGpaRange` 失败）
+
+**诊断步骤**:
+```bash
+# 查看 virtiofs-debug.log 中的 removemapping 消息
+# 搜索: "removemapping: guest_addr=..."
+
+# 检查是否有 "Failed to remove GPA mapping" 错误
+```
+
+**解决方案**:
+1. 确保 `removemapping` 正确实现：
+   - 先从 `map_windows` HashMap 移除并获取 host_addr
+   - 发送 `FsRemoveMapping` 到 VMM
+   - 成功后调用 `UnmapViewOfFile`
+   - 使用 `std::mem::forget(mapping_handle)` 保持映射句柄打开直到 removemapping
+
+2. 添加错误处理和日志记录
+
+#### 4. 验证 DAX 是否工作
+
+**方法 1: 查看内核日志**
+```bash
+# 在 guest 中查看
+dmesg | grep -i dax
+```
+
+应看到：
+```
+DAX: enabled without memory window (per-inode only)
+virtiofs: no memory window, using synthetic ranges for per-inode DAX
+```
+
+**方法 2: 性能对比测试**
+```bash
+# 使用 dd 测试文件读取速度
+dd if=/usr/bin/busybox of=/dev/null bs=1M count=10
+
+# DAX 启用时：~50-100μs 每请求
+# DAX 禁用时：~2ms 每请求
+```
+
+**方法 3: 查看 FUSE 操作日志**
+```bash
+# 启用调试后查看 fuse-ops.log
+# DAX 工作时应该看到很少或没有 READ 操作
+# 因为读取通过 DAX 内存映射完成，不走 FUSE
+```
+
+### DAX 调试技巧
+
+**启用 DAX 调试日志**:
+```bash
+export LIBKRUN_WINDOWS_VERBOSE_DEBUG=1
+# 或
+export LIBKRUN_WINDOWS_TRACE_ALL_PATHS=1  # 跟踪所有路径
+```
+
+**关键日志文件**:
+- `~/.epkg/cache/vmm-logs/virtiofs-debug.log` - passthrough 文件系统日志
+- `~/.epkg/cache/vmm-logs/fuse-ops.log` - FUSE 操作日志
+
+**关键日志消息**:
+```
+# setupmapping 成功
+[VIRTIOFS-FS] setupmapping: success guest_addr=7f1234000000
+
+# removemapping
+[VIRTIOFS-FS] removemapping: guest_addr=7f1234000000 len=2097152
+
+# DAX init 标志
+[VIRTIOFS-FS] init: HAS_INODE_DAX flag set in response
+```
+
+### DAX 代码位置参考
+
+| 组件 | 文件 | 关键函数 |
+|------|------|---------|
+| WorkerMessage | `src/utils/src/worker_message.rs` | `FsAddMapping`, `FsRemoveMapping` |
+| setupmapping | `src/devices/src/virtio/fs/windows/passthrough.rs` | `setupmapping()` |
+| removemapping | `src/devices/src/virtio/fs/windows/passthrough.rs` | `removemapping()` |
+| VMM 映射 | `src/vmm/src/windows/vstate.rs` | `add_mapping()`, `remove_mapping()` |
+| VMM 消息处理 | `src/vmm/src/worker.rs` | `match_worker_message()` |
+| Kernel patch | `patches/0021-virtiofs-Allow-DAX-without-memory-window-on-WHPX.patch` | 多文件 |
+
+### DAX 关键设计点
+
+**1. 无共享内存窗口**
+- WHPX 不支持传统的 DAX 共享内存窗口
+- 使用 per-inode DAX：每个文件单独映射
+- Kernel patch 创建 "合成范围"（synthetic ranges）作为跟踪 cookie
+
+**2. 线程安全**
+- `map_windows`: `Mutex<HashMap<guest_addr, host_addr>>` 跟踪活跃映射
+- `FsAddMapping`/`FsRemoveMapping` 通过 crossbeam_channel 发送到 VMM worker 线程
+- `WHvMapGpaRange`/`WHvUnmapGpaRange` 从 VMM worker 线程调用（非 virtiofs 线程）
+
+**3. 错误处理**
+- setupmapping 返回 libc 错误码（ENOSYS, EINVAL, EACCES 等）
+- VMM 映射失败被记录但不暴露给 guest（不应发生）
+- 部分失败时尝试清理以防止资源泄漏
+
+**4. Windows 特定 API**
+- `CreateFileW`: 根据 write_mode 使用不同访问权限打开文件
+- `CreateFileMappingW`: 创建文件映射对象
+- `MapViewOfFile`: 将文件映射到 host 进程内存
+- `UnmapViewOfFile`: 从 host 进程解除映射
+- `WHvMapGpaRange`: 将 host 内存映射到 guest 物理地址（WHPX）
+- `WHvUnmapGpaRange`: 从 guest 物理地址解除映射（WHPX）
