@@ -5,19 +5,37 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 E2E_DIR="$SCRIPT_DIR"
 export PROJECT_ROOT="${SCRIPT_DIR%/tests/in-vm*}"
 
-# Static epkg for the VM guest (musl); host uses the same binary to run `epkg run`
+# Static epkg for the VM guest (musl); host uses native binary to run `epkg run`
 ARCH=$(uname -m)
 case "$ARCH" in
 	x86_64) RUST_TARGET=x86_64-unknown-linux-musl ;;
-	aarch64) RUST_TARGET=aarch64-unknown-linux-musl ;;
+	arm64|aarch64) RUST_TARGET=aarch64-unknown-linux-musl ;;
 	riscv64) RUST_TARGET=riscv64gc-unknown-linux-musl ;;
 	loongarch64) RUST_TARGET=loongarch64-unknown-linux-musl ;;
 	*) exit 1 ;;
 esac
-EPKG_BINARY="$PROJECT_ROOT/target/$RUST_TARGET/debug/epkg"
+EPKG_GUEST_BINARY="$PROJECT_ROOT/target/$RUST_TARGET/debug/epkg"
+
+# Host uses native binary (macOS or Linux)
+case "$(uname -s)" in
+	Darwin)
+		EPKG_BINARY="$PROJECT_ROOT/target/aarch64-apple-darwin/debug/epkg"
+		;;
+	Linux)
+		EPKG_BINARY="$EPKG_GUEST_BINARY"
+		;;
+	*)
+		echo "Unsupported OS: $(uname -s)" >&2
+		exit 1
+		;;
+esac
+
+if [ ! -x "$EPKG_GUEST_BINARY" ]; then
+	make -C "$PROJECT_ROOT" static-$ARCH
+fi
 
 if [ ! -x "$EPKG_BINARY" ]; then
-	make -C "$PROJECT_ROOT" static-$ARCH
+	make -C "$PROJECT_ROOT"
 fi
 
 [ -z "$LIGHT_TEST" ] && LIGHT_TEST=1
