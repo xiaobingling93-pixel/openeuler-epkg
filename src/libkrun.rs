@@ -1371,14 +1371,32 @@ fn krun_vsock_shutdown_join_free(
 }
 
 #[cfg(feature = "libkrun")]
+#[allow(unused_variables)]
 fn krun_vsock_shutdown_join_free_exit(
     vm_thread: std::thread::JoinHandle<i32>,
     ctx_id: u32,
     exit_code: i32,
 ) -> ! {
-    krun_vsock_shutdown_join_free(vm_thread, ctx_id);
-    crate::debug_epkg!("libkrun: exiting with code {}", exit_code);
-    std::process::exit(exit_code);
+    // On macOS HVF, the VM thread can cause the process to exit before vm_thread.join()
+    // returns. This appears to be related to how HVF terminates the VM.
+    //
+    // As a workaround, we skip the VM cleanup on non-Linux and exit immediately with
+    // the correct exit code. The OS will clean up the VM resources when the process exits.
+    #[cfg(not(target_os = "linux"))]
+    {
+        crate::debug_epkg!("libkrun: skipping VM cleanup on non-Linux, exiting with code {}", exit_code);
+        // Signal shutdown to VM (best effort)
+        let _ = unsafe { krun_signal_shutdown(ctx_id) };
+        // Don't wait for VM thread - just exit with the correct code
+        std::process::exit(exit_code);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        krun_vsock_shutdown_join_free(vm_thread, ctx_id);
+        crate::debug_epkg!("libkrun: exiting with code {}", exit_code);
+        std::process::exit(exit_code);
+    }
 }
 
 #[cfg(feature = "libkrun")]
