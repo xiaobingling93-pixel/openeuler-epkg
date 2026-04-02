@@ -1429,16 +1429,22 @@ build_static_linux() {
             # On Linux hosts, update both epkg and init hardlinks (they're the same binary)
             update_all_env_hardlinks "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
         else
-            # On macOS/Windows, only update init hardlinks with the Linux ELF binary
-            # The epkg hardlinks will be updated with native binary by build_static()
+            # On macOS/Windows, update both epkg and init for Linux distro environments
+            # Linux distro environments are identified by having usr/bin/init
             local envs_dir="${DEV_ENV_BIN_DIR%/*/*/*}"
             for env_dir in "$envs_dir"/*; do
                 [[ -d "$env_dir" ]] || continue
                 [[ "${env_dir##*/}" == "self" ]] && continue
                 local init_path="$env_dir/usr/bin/init"
-                if [[ -f "$init_path" ]] && [[ ! "$init_path" -ef "$DEV_ENV_BIN_DIR/epkg-linux-${arch}" ]]; then
-                    rm -f "$init_path" && ln "$DEV_ENV_BIN_DIR/epkg-linux-${arch}" "$init_path" && \
-                        echo "[SYNC-hardlink] $init_path"
+                # Only update if this is a Linux distro environment (has init)
+                if [[ -f "$init_path" ]]; then
+                    for filename in epkg init; do
+                        local target_path="$env_dir/usr/bin/$filename"
+                        if [[ -f "$target_path" ]] && [[ ! "$target_path" -ef "$DEV_ENV_BIN_DIR/epkg-linux-${arch}" ]]; then
+                            rm -f "$target_path" && ln "$DEV_ENV_BIN_DIR/epkg-linux-${arch}" "$target_path" && \
+                                echo "[SYNC-hardlink] $target_path"
+                        fi
+                    done
                 fi
             done
         fi
@@ -1663,8 +1669,21 @@ build_static() {
         # Deploy to self environment
         install_hardlink "target/$rust_target/$build_dir/$BINARY_NAME" "$DEV_ENV_BIN_DIR/$BINARY_NAME"
         echo "[DEPLOY-hardlink] $DEV_ENV_BIN_DIR/$BINARY_NAME"
-        # Update hardlinks in all environments to point to the new binary
-        update_all_env_hardlinks "$DEV_ENV_BIN_DIR/$BINARY_NAME"
+        # Update epkg hardlinks in native environments (those WITHOUT init)
+        # Linux distro environments (with init) already have Linux ELF epkg from build_static_linux
+        local envs_dir="${DEV_ENV_BIN_DIR%/*/*/*}"
+        for env_dir in "$envs_dir"/*; do
+            [[ -d "$env_dir" ]] || continue
+            [[ "${env_dir##*/}" == "self" ]] && continue
+            local epkg_path="$env_dir/usr/bin/epkg"
+            local init_path="$env_dir/usr/bin/init"
+            # Skip Linux distro environments (they have init and already got Linux ELF epkg)
+            [[ -f "$init_path" ]] && continue
+            if [[ -f "$epkg_path" ]] && [[ ! "$epkg_path" -ef "$DEV_ENV_BIN_DIR/$BINARY_NAME" ]]; then
+                rm -f "$epkg_path" && ln "$DEV_ENV_BIN_DIR/$BINARY_NAME" "$epkg_path" && \
+                    echo "[SYNC-hardlink] $epkg_path"
+            fi
+        done
         echo "[DONE] native macOS build completed"
     fi
 }
