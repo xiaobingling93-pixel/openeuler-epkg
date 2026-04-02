@@ -660,14 +660,23 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
         // (store is a subdirectory of home_epkg)
         try_add_mount(&dirs().epkg_store, None, true, true);
     } else if is_guest_root {
-        // For non-root host + root guest: mount user dirs to system paths
-        // Root in guest can write anywhere, so this works well
-        // IMPORTANT: Add store first (for symlinks), then home_epkg (which covers store as subdirectory)
-        // We need store mounted at its original path for symlink resolution
-        try_add_mount(&dirs().epkg_store, None, true, true);
-        try_add_mount(&dirs().home_epkg, Some(Path::new("/opt/epkg")), false, true);
-        try_add_mount(&dirs().home_cache, Some(Path::new("/opt/epkg/cache")), false, true);
-        // Don't mount host /opt/epkg - it's not writable by non-root host user
+        // For non-root host + root guest: align mount with host's shared_store setting.
+        //
+        // Host non-root always has shared_store=false (can't write to /opt/epkg).
+        // To make guest's determine_shared_store() return correct value, mount to
+        // /root/.epkg so guest sees private layout.
+        //
+        // Guest root's determine_shared_store() checks:
+        // 1. is_root -> true (guest is root)
+        // 2. /opt/epkg/envs exists? -> false (we mount to /root/.epkg)
+        // 3. $HOME/.epkg/envs exists? -> true (we mount home_epkg to /root/.epkg)
+        // So returns false (private) correctly.
+        //
+        // self env is then at user_envs/self = /root/.epkg/envs/self which exists.
+        // store is at /root/.epkg/store (mounted as part of home_epkg).
+        try_add_mount(&dirs().home_epkg, Some(Path::new("/root/.epkg")), false, true);
+        // Mount cache separately since home_cache is outside home_epkg on macOS
+        try_add_mount(&dirs().home_cache, Some(Path::new("/root/.cache")), false, true);
     } else {
         // For non-root host + non-root guest: mount to same paths
         // The guest user will have the same UID as the host user (via virtiofs
