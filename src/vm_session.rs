@@ -11,6 +11,7 @@
 use std::path::Path;
 use color_eyre::Result;
 use crate::lfs;
+use crate::utils::hash_env_root;
 
 /// VM session information stored on disk for cross-process discovery.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -27,17 +28,6 @@ pub struct VmSessionInfo {
     pub created_at: u64,
     /// Unix timestamp of last activity (for stale detection)
     pub last_activity: u64,
-}
-
-/// Compute a deterministic hash for an env_root path.
-/// Used for session file naming and socket path generation.
-pub fn hash_env_root(env_root: &Path) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    env_root.hash(&mut hasher);
-    // Use first 8 bytes as hex string (16 chars)
-    let hash = hasher.finish();
-    format!("{:016x}", hash)
 }
 
 /// Get the VM session file path for an env_root.
@@ -125,7 +115,7 @@ pub fn discover_vm_session(env_root: &Path) -> Result<Option<VmSessionInfo>> {
     #[cfg(unix)]
     let socket_connectable = std::os::unix::net::UnixStream::connect(&info.socket_path).is_ok();
     #[cfg(windows)]
-    let socket_connectable = crate::vm_client::connect_to_vm(&info.socket_path, 1).is_ok();
+    let socket_connectable = crate::libkrun::libkrun_bridge::connect_vsock_bridge(&info.socket_path, 1).is_ok();
 
     if !socket_connectable {
         log::debug!("vm_session: session socket {} is not connectable, cleaning up", info.socket_path.display());
