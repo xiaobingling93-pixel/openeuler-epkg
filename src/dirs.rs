@@ -400,6 +400,17 @@ pub fn find_env_base(env_name: &str) -> Option<PathBuf> {
     if base.join(env_config_relative_path()).exists() {
         return Some(base);
     }
+
+    // When running inside VM guest (home_epkg mounted to /opt/epkg),
+    // check /opt/epkg/envs/self which is where the self env resides after virtiofs mount.
+    #[cfg(unix)]
+    if env_name == SELF_ENV {
+        let vm_self_base = PathBuf::from("/opt/epkg/envs/self");
+        if vm_self_base.join(env_config_relative_path()).exists() {
+            return Some(vm_self_base);
+        }
+    }
+
     None
 }
 
@@ -436,6 +447,18 @@ pub fn get_epkg_src_path() -> PathBuf {
     if user_path.exists() {
         log::debug!("Using user's epkg source path: {:?}", user_path);
         return user_path;
+    }
+
+    // When running inside VM guest (home_epkg mounted to /opt/epkg),
+    // check /opt/epkg/envs/self/usr/src/epkg which is where the self env's
+    // source symlink resides after virtiofs mount.
+    #[cfg(unix)]
+    {
+        let vm_self_path = PathBuf::from("/opt/epkg/envs/self/usr/src/epkg");
+        if vm_self_path.exists() {
+            log::debug!("Using VM-mounted self epkg source path: {:?}", vm_self_path);
+            return vm_self_path;
+        }
     }
 
     // Compute public_envs path directly without calling public_envs_path() which uses dirs_ref()

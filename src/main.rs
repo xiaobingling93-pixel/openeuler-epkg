@@ -1743,6 +1743,45 @@ fn try_env_from_epkg_activenv(config: &mut EPKGConfig) -> bool {
     let env_name = active_env.split(':').next().unwrap_or(&active_env);
     // Remove pure mode suffix if present
     let env_name = env_name.trim_end_matches(PURE_ENV_SUFFIX);
+
+    // If -e was used explicitly with a different env_name, don't override it.
+    // But still use EPKG_ENV_ROOT for path resolution if available.
+    if config.common.env_name_explicit && !config.common.env_name.is_empty() && config.common.env_name != env_name {
+        // User explicitly requested a different environment via -e.
+        // Still check if EPKG_ENV_ROOT can help with path resolution.
+        if let Ok(env_root) = env::var("EPKG_ENV_ROOT") {
+            // The EPKG_ENV_ROOT points to the parent's environment, not the requested one.
+            // We need to find the requested env in the same parent directory structure.
+            // For VM mode: EPKG_ENV_ROOT=/opt/epkg/envs/test-nested-debug
+            // Parent dir is /opt/epkg/envs
+            if let Some(parent_dir) = Path::new(&env_root).parent() {
+                let requested_env_root = parent_dir.join(&config.common.env_name);
+                if requested_env_root.join("etc/epkg/env.yaml").exists() {
+                    config.common.env_root = requested_env_root.to_string_lossy().to_string();
+                    config.common.in_env_root = true;
+                    // Set ENV_CONFIG for the requested environment
+                    let env_config = models::EnvConfig {
+                        name: config.common.env_name.clone(),
+                        env_root: config.common.env_root.clone(),
+                        env_base: config.common.env_root.clone(),
+                        ..Default::default()
+                    };
+                    match models::set_env_config(env_config) {
+                        Ok(()) => {
+                            log::debug!("env: from EPKG_ENV_ROOT parent dir, found env {} at {}",
+                                config.common.env_name, config.common.env_root);
+                        }
+                        Err(existing) => {
+                            log::debug!("env: set_env_config failed, ENV_CONFIG already set with env_root={}", existing.env_root);
+                        }
+                    }
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     config.common.env_name = env_name.to_string();
     config.common.env_explicit = true;
     if let Ok(env_root) = env::var("EPKG_ENV_ROOT") {
@@ -1807,6 +1846,13 @@ fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
     if try_apply_explicit_env_root(config)? {
         return Ok(());
     }
+    // Check EPKG_ACTIVE_ENV BEFORE /etc/epkg/env.yaml
+    // This is critical for VM guest execution where we want to use the host's environment
+    // selection (passed via EPKG_ACTIVE_ENV) rather than the VM rootfs's env.yaml
+    // Even if -e was used explicitly, respect EPKG_ACTIVE_ENV if it matches the requested env.
+    if try_env_from_epkg_activenv(config) {
+        return Ok(());
+    }
     // `-e NAME` sets env_name + env_name_explicit. Do not let `/etc/epkg/env.yaml` on the current
     // root (e.g. virtiofs / when the harness env is the guest filesystem) override the chosen
     // environment — that would target the wrong directory for any subcommand.
@@ -1815,12 +1861,6 @@ fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
             "env: explicit -e {}, skipping /etc/epkg/env.yaml and further auto-detection",
             config.common.env_name
         );
-        return Ok(());
-    }
-    // Check EPKG_ACTIVE_ENV BEFORE /etc/epkg/env.yaml
-    // This is critical for VM guest execution where we want to use the host's environment
-    // selection (passed via EPKG_ACTIVE_ENV) rather than the VM rootfs's env.yaml
-    if try_env_from_epkg_activenv(config) {
         return Ok(());
     }
     if try_detect_environment_from_env_yaml(config)? {

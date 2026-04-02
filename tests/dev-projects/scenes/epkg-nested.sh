@@ -160,29 +160,38 @@ if [ "$list1" != "$list2" ]; then
 fi
 log "Direct and nested epkg list outputs match"
 
-# Test nested epkg install
-# NOTE: On macOS, nested install is not fully supported because the mirrors.json
-# file is accessed via a symlink to the host development directory, which doesn't
-# exist inside the VM. This will be addressed in a future update.
+# Test nested epkg install via 'epkg run epkg install'
+log "Testing nested epkg install via 'epkg run epkg install'"
+TEST_PKG="tree"
 case "$(uname -s)" in
     Darwin)
-        warn "Skipping nested epkg install test on macOS (mirrors.json not accessible in VM)"
-        ;;
-    *)
-        log "Testing nested epkg install"
-        TEST_PKG="tree"
-        if ! "$EPKG_BIN" -e "$TEST_ENV" run bash -c "\"$epkg_cmd\" -e \"$TEST_ENV\" --assume-yes install $TEST_PKG" >/dev/null 2>&1; then
+        # On macOS VM, EPKG_ACTIVE_ENV is set, so nested epkg auto-detects the environment
+        if ! "$EPKG_BIN" -e "$TEST_ENV" run "$epkg_cmd" --assume-yes install "$TEST_PKG" >/dev/null 2>&1; then
             error "Nested epkg install command failed"
         fi
-        log "Nested epkg install works"
-
-        # Verify install succeeded with nested epkg list
-        log "Verifying nested epkg install succeeded"
-        if ! "$EPKG_BIN" -e "$TEST_ENV" run bash -c "\"$epkg_cmd\" -e \"$TEST_ENV\" list | grep -w $TEST_PKG" >/dev/null 2>&1; then
-            error "Package $TEST_PKG not found after nested install"
+        ;;
+    *)
+        if ! "$EPKG_BIN" -e "$TEST_ENV" run "$epkg_cmd" -e "$TEST_ENV" --assume-yes install "$TEST_PKG" >/dev/null 2>&1; then
+            error "Nested epkg install command failed"
         fi
-        log "Nested epkg install verification passed"
         ;;
 esac
+log "Nested epkg install works"
+
+# Verify install succeeded with nested epkg list
+log "Verifying nested epkg install succeeded"
+case "$(uname -s)" in
+    Darwin)
+        if ! "$EPKG_BIN" -e "$TEST_ENV" run "$epkg_cmd" list 2>/dev/null | grep -qw "$TEST_PKG"; then
+            error "Package $TEST_PKG not found after nested install"
+        fi
+        ;;
+    *)
+        if ! "$EPKG_BIN" -e "$TEST_ENV" run "$epkg_cmd" -e "$TEST_ENV" list 2>/dev/null | grep -qw "$TEST_PKG"; then
+            error "Package $TEST_PKG not found after nested install"
+        fi
+        ;;
+esac
+log "Nested epkg install verification passed"
 
 log "All nested epkg tests passed for $TARGET_OS"

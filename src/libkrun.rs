@@ -662,6 +662,29 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
         }
     }
 
+    // Add epkg source directory for mirrors.json access.
+    // The source path is typically a symlink (e.g., ~/.epkg/envs/self/usr/src/epkg -> /path/to/epkg).
+    // We need to mount the actual source directory so nested epkg can access mirrors.json.
+    let epkg_src_path = crate::dirs::get_epkg_src_path();
+    if epkg_src_path.exists() {
+        // Resolve symlink to get the actual source directory
+        match fs::canonicalize(&epkg_src_path) {
+            Ok(resolved_src) => {
+                // Only mount if the resolved path is outside already-mounted directories
+                if !resolved_src.starts_with(&dirs().home_epkg)
+                   && !resolved_src.starts_with(&dirs().opt_epkg)
+                   && !resolved_src.starts_with(&dirs().epkg_store) {
+                    // Mount the source directory to the same path in guest
+                    // This makes mirrors.json accessible for nested epkg commands
+                    try_add_mount(&resolved_src, None, true, true);
+                }
+            }
+            Err(e) => {
+                log::debug!("libkrun: could not resolve epkg src path {}: {}", epkg_src_path.display(), e);
+            }
+        }
+    }
+
     // Add /lib/modules if exists (for kernel module loading)
     try_add_mount(Path::new("/lib/modules"), None, true, true);
 
