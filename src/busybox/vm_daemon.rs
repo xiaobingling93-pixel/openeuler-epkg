@@ -648,27 +648,38 @@ fn drain_pipes(
 }
 
 /// Handle TCP input for non-PTY mode: parse stdin messages and forward to child.
-fn handle_nonpty_tcp_input(
+/// Handle TCP input: parse messages and forward stdin/signals to child process.
+/// Returns (tcp_eof, stdin_eof) - true if TCP closed, true if stdin EOF received.
+fn handle_nonpty_tcp_input<W: std::io::Write>(
     stream: &mut TcpStream,
+    stdin_file: &mut Option<W>,
     tcp_buf: &mut [u8],
     tcp_buf_pos: &mut usize,
-) -> Result<bool> {
+) -> Result<(bool, bool)> {
     match stream.read(&mut tcp_buf[*tcp_buf_pos..]) {
-        Ok(0) => Ok(true), // EOF from TCP
+        Ok(0) => Ok((true, false)), // EOF from TCP
         Ok(n) => {
             *tcp_buf_pos += n;
+            let mut stdin_eof = false;
             process_tcp_line_buffer(tcp_buf, tcp_buf_pos, |msg| {
                 match msg {
-                    // Stdin messages are no longer supported since we close
-                    // stdin immediately after writing initial data. This is
-                    // kept for protocol compatibility.
-                    StreamMessage::Stdin { .. } => Ok(()),
+                    StreamMessage::Stdin { data, .. } => {
+                        if let Some(ref mut stdin) = stdin_file {
+                            let bytes = STANDARD.decode(&data)?;
+                            stdin.write_all(&bytes)?;
+                        }
+                        Ok(())
+                    }
+                    StreamMessage::StdinEof { .. } => {
+                        stdin_eof = true;
+                        Ok(())
+                    }
                     _ => Ok(()),
                 }
             })?;
-            Ok(false)
+            Ok((false, stdin_eof))
         }
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok((false, false)),
         Err(e) => Err(e.into()),
     }
 }
@@ -848,44 +859,50 @@ fn handle_stderr_event(
     }
 }
 
-/// Handle poll events for non-PTY mode: process stdout/stderr/stdin. Returns true if should break loop.
-fn handle_nonpty_poll_events(
+/// Handle poll events for non-PTY mode: process stdout/stderr/stdin. Returns (should_break, stdin_eof_received).
+fn handle_nonpty_poll_events<W: std::io::Write>(
     poll_fds: &[PollFd],
     stdout_file: &mut std::process::ChildStdout,
     stderr_file: &mut std::process::ChildStderr,
+    stdin_file: &mut Option<W>,
     stream: &mut TcpStream,
     buf: &mut [u8],
     tcp_buf: &mut [u8],
     tcp_buf_pos: &mut usize,
     seq_out: &mut u64,
     seq_err: &mut u64,
-) -> Result<bool> {
+) -> Result<(bool, bool)> {
     if poll_fds[0].revents().unwrap().contains(PollFlags::POLLIN) {
         if handle_stdout_event(stdout_file, stream, buf, seq_out)? {
-            return Ok(true);
+            return Ok((true, false));
         }
     }
 
     if poll_fds[1].revents().unwrap().contains(PollFlags::POLLIN) {
         if handle_stderr_event(stderr_file, stream, buf, seq_err)? {
-            return Ok(true);
+            return Ok((true, false));
         }
     }
 
     if poll_fds[2].revents().unwrap().contains(PollFlags::POLLIN) {
-        if handle_nonpty_tcp_input(stream, tcp_buf, tcp_buf_pos)? {
-            return Ok(true);
+        let (tcp_eof, stdin_eof) = handle_nonpty_tcp_input(stream, stdin_file, tcp_buf, tcp_buf_pos)?;
+        if tcp_eof {
+            return Ok((true, false));
+        }
+        if stdin_eof {
+            return Ok((false, true));
         }
     }
 
-    Ok(false)
+    Ok((false, false))
 }
 
 /// Poll loop for non-PTY mode: forward pipe output to TCP, TCP input to stdin, check child status.
-fn nonpty_poll_loop(
+fn nonpty_poll_loop<W: std::io::Write>(
     child_pid: Pid,
     stdout_file: &mut std::process::ChildStdout,
     stderr_file: &mut std::process::ChildStderr,
+    mut stdin_file: Option<W>,
     stream: &mut TcpStream,
     initial_data: Option<Vec<u8>>,
 ) -> Result<Option<nix::sys::wait::WaitStatus>> {
@@ -931,7 +948,18 @@ fn nonpty_poll_loop(
                 }
             }
             Ok(_) => {
-                if handle_nonpty_poll_events(&poll_fds, stdout_file, stderr_file, stream, &mut buf, &mut tcp_buf, &mut tcp_buf_pos, &mut seq_out, &mut seq_err)? {
+                let (should_break, stdin_eof) = handle_nonpty_poll_events(
+                    &poll_fds, stdout_file, stderr_file, &mut stdin_file, stream,
+                    &mut buf, &mut tcp_buf, &mut tcp_buf_pos, &mut seq_out, &mut seq_err
+                )?;
+
+                // If stdin EOF received, drop stdin_file to close the pipe
+                if stdin_eof {
+                    log::debug!("execute_without_pty: stdin EOF received, closing stdin pipe");
+                    stdin_file = None;
+                }
+
+                if should_break {
                     break;
                 }
 
@@ -959,20 +987,51 @@ fn execute_without_pty(request: &CommandRequest, stream: &mut TcpStream, initial
             Ok(-1)
         }
         SpawnOutcome::Spawned(child, stdin_pipe, stdout_pipe, stderr_pipe) => {
-            let stdin_file  = stdin_pipe;
+            let mut stdin_file  = Some(stdin_pipe);
             let mut stdout_file = stdout_pipe;
             let mut stderr_file = stderr_pipe;
 
+            // Write request.stdin field if provided
             if !request.stdin.is_empty() {
-                let mut stdin_file_mut = &stdin_file;
-                stdin_file_mut.write_all(request.stdin.as_bytes())?;
+                if let Some(ref mut stdin) = stdin_file {
+                    stdin.write_all(request.stdin.as_bytes())?;
+                }
             }
-            // Close stdin to signal EOF to child process. Without this, commands like
-            // `sh` will hang waiting for input.
-            drop(stdin_file);
+
+            // Process initial data (leftover bytes from request parsing) as JSON messages
+            // These may contain stdin messages that need to be decoded and forwarded
+            if let Some(data) = initial_data {
+                if !data.is_empty() {
+                    log::debug!("execute_without_pty: processing initial data ({} bytes)", data.len());
+                    let mut tcp_buf = [0u8; TCP_LINE_BUF_SIZE];
+                    let len = data.len().min(tcp_buf.len());
+                    tcp_buf[..len].copy_from_slice(&data[..len]);
+                    let mut tcp_buf_pos = len;
+
+                    // Process stdin messages in the initial data
+                    process_tcp_line_buffer(&mut tcp_buf, &mut tcp_buf_pos, |msg| {
+                        match msg {
+                            StreamMessage::Stdin { data, .. } => {
+                                if let Some(ref mut stdin) = stdin_file {
+                                    let bytes = STANDARD.decode(&data)?;
+                                    stdin.write_all(&bytes)?;
+                                    log::debug!("execute_without_pty: wrote {} bytes to stdin from initial_data", bytes.len());
+                                }
+                                Ok(())
+                            }
+                            StreamMessage::StdinEof { .. } => {
+                                log::debug!("execute_without_pty: stdin EOF in initial_data, closing stdin pipe");
+                                stdin_file = None;
+                                Ok(())
+                            }
+                            _ => Ok(())
+                        }
+                    })?;
+                }
+            }
 
             let child_pid    = Pid::from_raw(child.id() as i32);
-            let child_status = nonpty_poll_loop(child_pid, &mut stdout_file, &mut stderr_file, stream, initial_data)?;
+            let child_status = nonpty_poll_loop(child_pid, &mut stdout_file, &mut stderr_file, stdin_file, stream, None)?;
 
             let status = match child_status {
                 Some(s) => s,

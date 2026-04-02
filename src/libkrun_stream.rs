@@ -56,6 +56,8 @@ fn flush_named_pipe(file: &std::fs::File) -> std::io::Result<()> {
 enum StreamMessage {
     #[serde(rename = "stdin")]
     Stdin { data: String, seq: u64 },
+    #[serde(rename = "stdin_eof")]
+    StdinEof { seq: u64 },
     #[serde(rename = "stdout")]
     Stdout { data: String, seq: u64 },
     #[serde(rename = "stderr")]
@@ -153,130 +155,146 @@ fn resolve_io_mode(io_mode: IoMode) -> (bool, bool) {
     }
 }
 
-fn handle_streaming_simple(stream: &mut impl Read, is_batch: bool) -> Result<i32> {
-    use std::io::BufReader;
-    use std::io::BufRead;
+#[cfg(unix)]
+fn handle_streaming_simple(stream: &mut std::os::unix::net::UnixStream, _is_batch: bool) -> Result<i32> {
+    use std::os::unix::io::AsRawFd;
 
-    crate::debug_epkg!("handle_streaming_simple: [PERF] starting, is_batch={}", is_batch);
-    let func_start = std::time::Instant::now();
-    // In reverse vsock mode, the guest sends "READY\n" first to signal readiness.
-    // We need to read and skip this signal before reading the actual response.
-    // For non-batch mode, this is handled by the line-by-line parser.
-    if is_batch {
-        // Batch mode: read entire response as single JSON object
-        // First, read lines until we get a non-"READY" line (the actual JSON response)
-        let mut response = String::new();
-        let reader = BufReader::new(stream);
-        crate::debug_epkg!("handle_streaming_simple: batch mode - reading response...");
+    let exit_code = Arc::new(Mutex::new(None));
+    let exit_code_clone = exit_code.clone();
 
-        for line in reader.lines() {
-            crate::debug_epkg!("handle_streaming_simple: waiting for line...");
-            let line = match line {
-                Ok(l) => l,
-                Err(e) => {
-                    crate::debug_epkg!("handle_streaming_simple: ERROR reading line: {}", e);
-                    return Err(e.into());
+    // Reader thread: reads stdout/stderr/exit messages from stream
+    let stream_clone = stream.try_clone()?;
+    let reader = thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(&stream_clone);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    // Skip "READY" signal from reverse vsock handshake
+                    if trimmed == "READY" {
+                        crate::debug_epkg!("handle_streaming_simple: stream mode - skipped READY signal");
+                        continue;
+                    }
+
+                    let msg: StreamMessage = match serde_json::from_str(trimmed) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            log::debug!("Failed to parse stream message: {} (line: {})", e, trimmed);
+                            continue;
+                        }
+                    };
+
+                    match msg {
+                        StreamMessage::Stdout { data, .. } => {
+                            if let Ok(decoded) = STANDARD.decode(&data) {
+                                let _ = std::io::stdout().write_all(&decoded);
+                                let _ = std::io::stdout().flush();
+                            }
+                        }
+                        StreamMessage::Stderr { data, .. } => {
+                            if let Ok(decoded) = STANDARD.decode(&data) {
+                                let _ = std::io::stderr().write_all(&decoded);
+                                let _ = std::io::stderr().flush();
+                            }
+                        }
+                        StreamMessage::Exit { code } => {
+                            *exit_code_clone.lock().unwrap() = Some(code);
+                            break;
+                        }
+                        StreamMessage::Error { message } => {
+                            log::debug!("VM error: {}", message);
+                        }
+                        _ => {}
+                    }
                 }
-            };
-            crate::debug_epkg!("handle_streaming_simple: read line: {:?}", line);
-            // Skip "READY" signal from reverse vsock handshake
-            if line == "READY" {
-                crate::debug_epkg!("handle_streaming_simple: skipped READY signal");
-                continue;
+                Err(_) => break,
             }
-            // First non-READY line is the start of the JSON response
-            // For batch mode, we expect the entire JSON on one line (or concatenated)
-            response = line;
-            // Try to parse what we have so far
+        }
+    });
+
+    // Stdin thread: reads from host stdin and forwards to stream
+    let stdin_fd = std::io::stdin().as_raw_fd();
+    let mut seq: u64 = 0;
+
+    loop {
+        if exit_code.lock().unwrap().is_some() {
             break;
         }
-        crate::debug_epkg!("handle_streaming_simple: broke from first loop, response len={}", response.len());
 
-        // Continue reading remaining lines and append (for large responses)
-        // Note: this is a simplified approach; proper JSON streaming would be better
-        crate::debug_epkg!("handle_streaming_simple: read {} bytes response", response.len());
-
-        #[derive(Deserialize)]
-        struct BatchResult {
-            exit_code: i32,
-            stdout: String,
-            stderr: String,
-        }
-        crate::debug_epkg!("handle_streaming_simple: parsing JSON response: {}", response);
-        let result: BatchResult = match serde_json::from_str(&response) {
-            Ok(r) => {
-                crate::debug_epkg!("handle_streaming_simple: JSON parsed successfully");
-                r
-            }
-            Err(e) => {
-                crate::debug_epkg!("handle_streaming_simple: JSON parse FAILED: {} (response: {:?})", e, response);
-                return Err(eyre::eyre!("Failed to parse batch response: {} ({:?})", e, response));
-            }
-        };
-
-        crate::debug_epkg!("handle_streaming_simple: stdout={} bytes, stderr={} bytes",
-            result.stdout.len(), result.stderr.len());
-
-        if !result.stdout.is_empty() {
-            let stdout_bytes = STANDARD.decode(&result.stdout)?;
-            std::io::stdout().write_all(&stdout_bytes)?;
-        }
-        if !result.stderr.is_empty() {
-            let stderr_bytes = STANDARD.decode(&result.stderr)?;
-            std::io::stderr().write_all(&stderr_bytes)?;
-        }
-        crate::debug_epkg!("handle_streaming_simple: returning exit_code={}", result.exit_code);
-        crate::debug_epkg!("handle_streaming_simple: [PERF] total time {:.3}ms", func_start.elapsed().as_secs_f64() * 1000.0);
-        Ok(result.exit_code)
-    } else {
-        // Stream mode: read line by line, each line is a JSON message
-        let reader = BufReader::new(stream);
-        let mut exit_code = 0;
-
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            // Skip "READY" signal from reverse vsock handshake
-            if line == "READY" {
-                crate::debug_epkg!("handle_streaming_simple: stream mode - skipped READY signal");
-                continue;
-            }
-
-            let msg: StreamMessage = match serde_json::from_str(&line) {
-                Ok(m) => m,
-                Err(e) => {
-                    log::debug!("Failed to parse stream message: {} (line: {})", e, line);
-                    continue;
+        // Poll for stdin input with timeout
+        let mut pfd = [libc::pollfd {
+            fd: stdin_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        let ready = unsafe { libc::poll(pfd.as_mut_ptr(), 1, 50) };
+        if ready > 0 && (pfd[0].revents & libc::POLLIN) != 0 {
+            let mut buf = [0u8; 4096];
+            match std::io::stdin().read(&mut buf) {
+                Ok(0) => break, // EOF from host stdin
+                Ok(n) => {
+                    let data = STANDARD.encode(&buf[..n]);
+                    let msg = StreamMessage::Stdin { data, seq };
+                    seq += 1;
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = stream.write_all(json.as_bytes());
+                        let _ = stream.write_all(b"\n");
+                    }
                 }
-            };
-
-            match msg {
-                StreamMessage::Stdout { data, .. } => {
-                    let stdout_bytes = STANDARD.decode(&data)
-                        .map_err(|e| eyre::eyre!("Failed to decode stdout: {}", e))?;
-                    std::io::stdout().write_all(&stdout_bytes)?;
-                    std::io::stdout().flush()?;
-                }
-                StreamMessage::Stderr { data, .. } => {
-                    let stderr_bytes = STANDARD.decode(&data)
-                        .map_err(|e| eyre::eyre!("Failed to decode stderr: {}", e))?;
-                    std::io::stderr().write_all(&stderr_bytes)?;
-                    std::io::stderr().flush()?;
-                }
-                StreamMessage::Exit { code } => {
-                    exit_code = code;
-                    break;
-                }
-                StreamMessage::Error { message } => {
-                    return Err(eyre::eyre!("VM error: {}", message));
-                }
-                _ => {}
+                Err(_) => break,
             }
         }
-        Ok(exit_code)
     }
+
+    reader.join().ok();
+    let code = exit_code.lock().unwrap().unwrap_or(0);
+    Ok(code)
+}
+
+/// Handle batch mode: read single JSON response with exit code and output.
+#[cfg(unix)]
+fn handle_batch_response(stream: &mut std::os::unix::net::UnixStream) -> Result<i32> {
+    use std::io::BufRead;
+
+    let mut response = String::new();
+    let reader = std::io::BufReader::new(stream);
+
+    for line in reader.lines() {
+        let line = line?;
+        // Skip "READY" signal from reverse vsock handshake
+        if line == "READY" {
+            continue;
+        }
+        response = line;
+        break;
+    }
+
+    #[derive(Deserialize)]
+    struct BatchResult {
+        exit_code: i32,
+        stdout: String,
+        stderr: String,
+    }
+
+    let result: BatchResult = serde_json::from_str(&response)
+        .map_err(|e| eyre::eyre!("Failed to parse batch response: {} ({:?})", e, response))?;
+
+    if !result.stdout.is_empty() {
+        let stdout_bytes = STANDARD.decode(&result.stdout)?;
+        std::io::stdout().write_all(&stdout_bytes)?;
+    }
+    if !result.stderr.is_empty() {
+        let stderr_bytes = STANDARD.decode(&result.stderr)?;
+        std::io::stderr().write_all(&stderr_bytes)?;
+    }
+
+    Ok(result.exit_code)
 }
 
 #[cfg(unix)]
@@ -338,8 +356,10 @@ pub fn send_command_via_vsock(
 
     if use_pty {
         handle_streaming_unix(&mut stream)
+    } else if is_batch {
+        handle_batch_response(&mut stream)
     } else {
-        handle_streaming_simple(&mut stream, is_batch)
+        handle_streaming_simple(&mut stream, false)
     }
 }
 
@@ -477,7 +497,7 @@ pub fn send_command_via_vsock(
 
     // WaitNamedPipeA already ensures the named pipe is ready (guest has connected).
     // The guest sends READY signal immediately after connection.
-    // We can proceed directly - handle_streaming_simple will skip the READY signal.
+    // We can proceed directly - handlers will skip the READY signal.
     // No additional delay needed since WaitNamedPipeA ensures the guest is ready.
     crate::debug_epkg!("libkrun_stream: connection ready, proceeding immediately");
     let request = build_command_request(cmd_parts, io_mode, reuse_vm, env_vars);
@@ -491,15 +511,16 @@ pub fn send_command_via_vsock(
     flush_named_pipe(&stream)?;
     crate::debug_epkg!("libkrun_stream: request sent");
 
-    if use_pty {
-        handle_streaming_windows(&mut stream)
+    // All non-batch modes need stdin forwarding on Windows
+    if is_batch {
+        handle_batch_response_windows(&mut stream)
     } else {
-        handle_streaming_simple(&mut stream, is_batch)
+        handle_streaming_with_stdin(&mut stream)
     }
 }
 
 #[cfg(windows)]
-fn handle_streaming_windows(stream: &mut std::fs::File) -> Result<i32> {
+fn handle_streaming_with_stdin(stream: &mut std::fs::File) -> Result<i32> {
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -515,7 +536,11 @@ fn handle_streaming_windows(stream: &mut std::fs::File) -> Result<i32> {
             match reader.read_line(&mut line) {
                 Ok(0) => break,
                 Ok(_) => {
-                    if let Ok(msg) = serde_json::from_str::<StreamMessage>(&line) {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    if let Ok(msg) = serde_json::from_str::<StreamMessage>(trimmed) {
                         match msg {
                             StreamMessage::Stdout { data, .. } => {
                                 if let Ok(decoded) = STANDARD.decode(&data) {
@@ -583,61 +608,297 @@ fn handle_streaming_windows(stream: &mut std::fs::File) -> Result<i32> {
     Ok(code)
 }
 
+/// Handle batch mode on Windows: read single JSON response.
+#[cfg(windows)]
+fn handle_batch_response_windows(stream: &mut std::fs::File) -> Result<i32> {
+    let mut reader = std::io::BufReader::new(stream);
+    let mut response = String::new();
+
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if trimmed == "READY" {
+                    continue;
+                }
+                response = trimmed.to_string();
+                break;
+            }
+            Err(_) => break,
+        }
+    }
+
+    #[derive(Deserialize)]
+    struct BatchResult {
+        exit_code: i32,
+        stdout: String,
+        stderr: String,
+    }
+
+    let result: BatchResult = serde_json::from_str(&response)
+        .map_err(|e| eyre::eyre!("Failed to parse batch response: {} ({:?})", e, response))?;
+
+    if !result.stdout.is_empty() {
+        let stdout_bytes = STANDARD.decode(&result.stdout)?;
+        std::io::stdout().write_all(&stdout_bytes)?;
+    }
+    if !result.stderr.is_empty() {
+        let stderr_bytes = STANDARD.decode(&result.stderr)?;
+        std::io::stderr().write_all(&stderr_bytes)?;
+    }
+
+    Ok(result.exit_code)
+}
+
 // =============================================================================
 // Reverse mode support: Send command over an existing stream
 // =============================================================================
 
+/// Simple output-only handler for reverse mode and other cases where stdin is not available.
+/// Reads line by line and handles stdout/stderr/exit messages.
+fn handle_output_only(stream: &mut (impl Read + Write), is_batch: bool) -> Result<i32> {
+    use std::io::BufReader;
+
+    if is_batch {
+        // Batch mode: read single JSON response
+        let reader = BufReader::new(stream);
+        let mut response = String::new();
+
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            if line == "READY" {
+                continue;
+            }
+            response = line;
+            break;
+        }
+
+        #[derive(Deserialize)]
+        struct BatchResult {
+            exit_code: i32,
+            stdout: String,
+            stderr: String,
+        }
+
+        let result: BatchResult = serde_json::from_str(&response)
+            .map_err(|e| eyre::eyre!("Failed to parse batch response: {} ({:?})", e, response))?;
+
+        if !result.stdout.is_empty() {
+            let stdout_bytes = STANDARD.decode(&result.stdout)?;
+            std::io::stdout().write_all(&stdout_bytes)?;
+        }
+        if !result.stderr.is_empty() {
+            let stderr_bytes = STANDARD.decode(&result.stderr)?;
+            std::io::stderr().write_all(&stderr_bytes)?;
+        }
+
+        Ok(result.exit_code)
+    } else {
+        // Stream mode: read line by line
+        let reader = BufReader::new(stream);
+        let mut exit_code = 0;
+
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            if line == "READY" {
+                continue;
+            }
+
+            let msg: StreamMessage = match serde_json::from_str(&line) {
+                Ok(m) => m,
+                Err(e) => {
+                    log::debug!("Failed to parse stream message: {} (line: {})", e, line);
+                    continue;
+                }
+            };
+
+            match msg {
+                StreamMessage::Stdout { data, .. } => {
+                    let stdout_bytes = STANDARD.decode(&data)
+                        .map_err(|e| eyre::eyre!("Failed to decode stdout: {}", e))?;
+                    std::io::stdout().write_all(&stdout_bytes)?;
+                    std::io::stdout().flush()?;
+                }
+                StreamMessage::Stderr { data, .. } => {
+                    let stderr_bytes = STANDARD.decode(&data)
+                        .map_err(|e| eyre::eyre!("Failed to decode stderr: {}", e))?;
+                    std::io::stderr().write_all(&stderr_bytes)?;
+                    std::io::stderr().flush()?;
+                }
+                StreamMessage::Exit { code } => {
+                    exit_code = code;
+                    break;
+                }
+                StreamMessage::Error { message } => {
+                    return Err(eyre::eyre!("VM error: {}", message));
+                }
+                _ => {}
+            }
+        }
+        Ok(exit_code)
+    }
+}
+
 /// Send command over an existing stream (for reverse mode).
 /// In reverse mode, the Host accepts a connection from Guest, then uses that
 /// connection to send commands and receive results.
+/// For non-batch modes, this forwards stdin from host to the guest.
 #[cfg(not(windows))]
 pub fn send_command_over_stream(
     cmd_parts: &[String],
     io_mode: IoMode,
     reuse_vm: bool,
     env_vars: Option<&std::collections::HashMap<String, String>>,
-    mut stream: impl Read + Write + Send + 'static,
+    mut stream: impl Read + Write + Send + 'static + std::os::unix::io::AsRawFd,
 ) -> Result<i32> {
-    crate::debug_epkg!("libkrun_stream: send_command_over_stream starting");
-    let (use_pty, is_batch) = resolve_io_mode(io_mode);
-    crate::debug_epkg!("libkrun_stream: io_mode={:?}, use_pty={}, is_batch={}, reuse_vm={}",
-        io_mode, use_pty, is_batch, reuse_vm);
+    use std::os::unix::io::AsRawFd;
 
-    // In reverse mode, the connection is already fully established when we receive it.
-    // The Guest sent READY immediately after connect, so we can proceed directly.
-    // No delay needed here - the vsock handshake is complete.
-    crate::debug_epkg!("libkrun_stream: sending command request...");
+    crate::debug_epkg!("libkrun_stream: send_command_over_stream starting");
+    let (_use_pty, is_batch) = resolve_io_mode(io_mode);
+    crate::debug_epkg!("libkrun_stream: io_mode={:?}, is_batch={}, reuse_vm={}",
+        io_mode, is_batch, reuse_vm);
 
     // Build and send command request
     let request = build_command_request(cmd_parts, io_mode, reuse_vm, env_vars);
     let request_json = serde_json::to_vec(&request)?;
-    crate::debug_epkg!("libkrun_stream: writing {} bytes to stream", request_json.len());
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
     stream.flush()?;
-    crate::debug_epkg!("libkrun_stream: request sent, waiting for response...");
-    
-    // CRITICAL: In reverse mode, we need to ensure the request is fully sent before reading.
-    // Without this, the guest may not receive the request due to buffering.
-    stream.flush()?;
-    crate::debug_epkg!("libkrun_stream: flushed stream after sending request");
 
-    // Handle response based on mode
-    let result = if use_pty {
-        // PTY mode: Use the generic handler since stream type may vary
-        handle_streaming_simple(&mut stream, false)
-    } else if is_batch {
-        handle_streaming_simple(&mut stream, true)
-    } else {
-        handle_streaming_simple(&mut stream, false)
-    };
-
-    match &result {
-        Ok(code) => crate::debug_epkg!("libkrun_stream: command completed with exit code {}", code),
-        Err(e) => crate::debug_epkg!("libkrun_stream: command failed with error: {}", e),
+    // For batch mode, use simple output-only handler
+    if is_batch {
+        return handle_output_only(&mut stream, true);
     }
 
-    result
+    // For non-batch mode, use polling to handle both stdin forwarding and output
+    // Set stream to non-blocking mode
+    let stream_fd = stream.as_raw_fd();
+    let original_flags = unsafe { libc::fcntl(stream_fd, libc::F_GETFL) };
+    if original_flags >= 0 {
+        unsafe { libc::fcntl(stream_fd, libc::F_SETFL, original_flags | libc::O_NONBLOCK); }
+    }
+
+    let stdin_fd = std::io::stdin().as_raw_fd();
+    let mut exit_code = 0;
+    let mut got_exit = false;
+    let mut stdin_eof_sent = false;
+    let mut line_buf = Vec::new();
+    let mut seq: u64 = 0;
+
+    loop {
+        if got_exit {
+            break;
+        }
+
+        // Poll both stdin and stream for readability
+        let mut poll_fds = [
+            libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: stream_fd, events: libc::POLLIN, revents: 0 },
+        ];
+
+        let ready = unsafe { libc::poll(poll_fds.as_mut_ptr(), 2, 50) };
+
+        if ready < 0 {
+            let errno = std::io::Error::last_os_error();
+            if errno.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            break;
+        }
+
+        // Check for stdin input (or EOF via POLLHUP)
+        if !stdin_eof_sent && ((poll_fds[0].revents & libc::POLLIN) != 0 || (poll_fds[0].revents & libc::POLLHUP) != 0) {
+            let mut buf = [0u8; 4096];
+            match std::io::stdin().read(&mut buf) {
+                Ok(0) => {
+                    // EOF from stdin - send stdin_eof to close guest's stdin pipe
+                    let msg = StreamMessage::StdinEof { seq };
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = stream.write_all(json.as_bytes());
+                        let _ = stream.write_all(b"\n");
+                        let _ = stream.flush();
+                    }
+                    stdin_eof_sent = true;
+                }
+                Ok(n) => {
+                    let encoded = STANDARD.encode(&buf[..n]);
+                    let msg = StreamMessage::Stdin { data: encoded, seq };
+                    seq += 1;
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = stream.write_all(json.as_bytes());
+                        let _ = stream.write_all(b"\n");
+                        let _ = stream.flush();
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+
+        // Check for stream output
+        if (poll_fds[1].revents & libc::POLLIN) != 0 {
+            let mut buf = [0u8; 4096];
+            match stream.read(&mut buf) {
+                Ok(0) => {
+                    // EOF from stream
+                    break;
+                }
+                Ok(n) => {
+                    // Process received data - may contain partial lines
+                    for &byte in &buf[..n] {
+                        line_buf.push(byte);
+                        if byte == b'\n' {
+                            let line = String::from_utf8_lossy(&line_buf);
+                            let trimmed = line.trim();
+                            if !trimmed.is_empty() && trimmed != "READY" {
+                                if let Ok(msg) = serde_json::from_str::<StreamMessage>(trimmed) {
+                                    match msg {
+                                        StreamMessage::Stdout { data, .. } => {
+                                            if let Ok(decoded) = STANDARD.decode(&data) {
+                                                let _ = std::io::stdout().write_all(&decoded);
+                                                let _ = std::io::stdout().flush();
+                                            }
+                                        }
+                                        StreamMessage::Stderr { data, .. } => {
+                                            if let Ok(decoded) = STANDARD.decode(&data) {
+                                                let _ = std::io::stderr().write_all(&decoded);
+                                                let _ = std::io::stderr().flush();
+                                            }
+                                        }
+                                        StreamMessage::Exit { code } => {
+                                            exit_code = code;
+                                            got_exit = true;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            line_buf.clear();
+                        }
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(_) => break,
+            }
+        }
+    }
+
+    // Restore original flags
+    if original_flags >= 0 {
+        unsafe { libc::fcntl(stream_fd, libc::F_SETFL, original_flags); }
+    }
+
+    Ok(exit_code)
 }
 
 /// Windows-specific function to send command over a named pipe.
@@ -650,9 +911,9 @@ pub fn send_command_over_named_pipe(
     mut stream: std::fs::File,
 ) -> Result<i32> {
     crate::debug_epkg!("libkrun_stream: send_command_over_named_pipe starting");
-    let (use_pty, is_batch) = resolve_io_mode(io_mode);
-    crate::debug_epkg!("libkrun_stream: io_mode={:?}, use_pty={}, is_batch={}, reuse_vm={}",
-        io_mode, use_pty, is_batch, reuse_vm);
+    let (_use_pty, is_batch) = resolve_io_mode(io_mode);
+    crate::debug_epkg!("libkrun_stream: io_mode={:?}, is_batch={}, reuse_vm={}",
+        io_mode, is_batch, reuse_vm);
 
     // Build and send command request
     let request = build_command_request(cmd_parts, io_mode, reuse_vm, None);
@@ -668,14 +929,12 @@ pub fn send_command_over_named_pipe(
     crate::debug_epkg!("libkrun_stream: [PERF] write+flush took {:.3}ms", write_start.elapsed().as_secs_f64() * 1000.0);
     crate::debug_epkg!("libkrun_stream: [PERF] waiting for response...");
 
-    // Handle response
+    // Handle response with stdin forwarding
     let response_start = std::time::Instant::now();
-    let result = if use_pty {
-        handle_streaming_simple(&mut stream, false)
-    } else if is_batch {
-        handle_streaming_simple(&mut stream, true)
+    let result = if is_batch {
+        handle_batch_response_windows(&mut stream)
     } else {
-        handle_streaming_simple(&mut stream, false)
+        handle_streaming_with_stdin(&mut stream)
     };
     crate::debug_epkg!("libkrun_stream: [PERF] response handling took {:.3}ms", response_start.elapsed().as_secs_f64() * 1000.0);
 

@@ -55,6 +55,8 @@ extern "C" fn handle_sigwinch(_: i32) {
 pub enum StreamMessage {
     #[serde(rename = "stdin")]
     Stdin { data: String, seq: u64 },
+    #[serde(rename = "stdin_eof")]
+    StdinEof { seq: u64 },
     #[serde(rename = "stdout")]
     Stdout { data: String, seq: u64 },
     #[serde(rename = "stderr")]
