@@ -599,9 +599,12 @@ install_to_dev_env() {
     fi
 }
 
-# Update hardlinks in all environments to point to the new epkg-linux binary.
+# Update hardlinks in all environments to point to the new epkg binary.
 # This ensures that all environments have hardlinks pointing to the newly installed binary.
-# Files updated: envs/*/usr/bin/epkg and envs/*/usr/bin/init
+# Files updated: envs/*/usr/bin/epkg
+# Files updated on Linux: envs/*/usr/bin/init (same as epkg, Linux ELF)
+# On macOS, init is updated separately with the Linux ELF binary (see update_env_init_hardlinks).
+# Called on both Linux (epkg-linux-$arch) and macOS (epkg) builds.
 update_all_env_hardlinks() {
     local self_epkg_linux="$1"
     local envs_dir="${DEV_ENV_BIN_DIR%/*/*/*}"  # Go from usr/bin to envs dir
@@ -619,8 +622,16 @@ update_all_env_hardlinks() {
         local env_usr_bin="$env_dir/usr/bin"
         [[ -d "$env_usr_bin" ]] || continue
 
-        # Update epkg and init hardlinks
-        for filename in epkg init; do
+        # On Linux, update both epkg and init hardlinks (they're the same binary)
+        # On macOS, only update epkg - init is updated separately with Linux ELF binary
+        local host_os=$(uname -s)
+        if [[ "$host_os" == "Linux" ]]; then
+            local filenames="epkg init"
+        else
+            local filenames="epkg"
+        fi
+
+        for filename in $filenames; do
             local target_path="$env_usr_bin/$filename"
             if [[ -f "$target_path" ]]; then
                 # Check if already hardlinked to the correct inode
@@ -641,7 +652,7 @@ update_all_env_hardlinks() {
     done
 
     if [[ $updated_count -gt 0 ]]; then
-        echo "[SYNC-total] Updated $updated_count hardlinks in WSL environments"
+        echo "[SYNC-total] Updated $updated_count hardlinks in environments"
     fi
 
     # Update Windows-side environments (WSL only)
@@ -1414,7 +1425,25 @@ build_static_linux() {
         echo "[DEPLOY-hardlink] $DEV_ENV_BIN_DIR/epkg-linux-${arch}"
 
         # Update hardlinks in all environments
+        # On Linux hosts, this updates both epkg and init
+        # On macOS/Windows hosts, this only updates epkg (init updated below)
         update_all_env_hardlinks "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
+
+        # On macOS/Windows, also update init hardlinks with the Linux ELF binary
+        # The init binary is used as the VM guest init process, so it must be Linux ELF
+        local host_os=$(uname -s)
+        if [[ "$host_os" != "Linux" ]]; then
+            local envs_dir="${DEV_ENV_BIN_DIR%/*/*/*}"
+            for env_dir in "$envs_dir"/*; do
+                [[ -d "$env_dir" ]] || continue
+                [[ "${env_dir##*/}" == "self" ]] && continue
+                local init_path="$env_dir/usr/bin/init"
+                if [[ -f "$init_path" ]] && [[ ! "$init_path" -ef "$DEV_ENV_BIN_DIR/epkg-linux-${arch}" ]]; then
+                    rm -f "$init_path" && ln "$DEV_ENV_BIN_DIR/epkg-linux-${arch}" "$init_path" && \
+                        echo "[SYNC-hardlink] $init_path"
+                fi
+            done
+        fi
     fi
 }
 
@@ -1636,6 +1665,8 @@ build_static() {
         # Deploy to self environment
         install_hardlink "target/$rust_target/$build_dir/$BINARY_NAME" "$DEV_ENV_BIN_DIR/$BINARY_NAME"
         echo "[DEPLOY-hardlink] $DEV_ENV_BIN_DIR/$BINARY_NAME"
+        # Update hardlinks in all environments to point to the new binary
+        update_all_env_hardlinks "$DEV_ENV_BIN_DIR/$BINARY_NAME"
         echo "[DONE] native macOS build completed"
     fi
 }
