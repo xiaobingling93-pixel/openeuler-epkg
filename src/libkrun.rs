@@ -397,7 +397,8 @@ fn build_libkrun_config(
     // because each character requires a VM exit and MMIO write. Reduce loglevel and disable
     // earlyprintk when not debugging to speed up boot.
     let vm_debug = std::env::var("EPKG_VM_DEBUG").is_ok();
-    let loglevel = if vm_debug { "loglevel=8 debug" } else { "quiet loglevel=1" };
+    // let loglevel = if vm_debug { "loglevel=8 debug" } else { "quiet loglevel=1" };
+    let loglevel = "loglevel=8";
 
     // Additional performance optimizations for VMs:
     // - nowatchdog: Disable watchdog timers (not needed in VMs)
@@ -423,7 +424,7 @@ fn build_libkrun_config(
         // All Windows-specific params in one place, no duplication
         format!(
             "reboot=k panic=-1 panic_print=0 nomodule console=ttyS0,115200 {} \
-             rootfstype=virtiofs rw no-kvmapf \
+             rootfstype=virtiofs rw dax no-kvmapf \
              lpj=11979608 tsc=reliable no_timer_check \
              i8042.noaux i8042.nomux i8042.nopnp \
              {} nowatchdog nmi_watchdog=0 \
@@ -438,7 +439,7 @@ fn build_libkrun_config(
         let reverse = if use_reverse_vsock { " epkg.vsock_reverse=1" } else { "" };
         format!(
             "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 {} \
-             rootfstype=virtiofs rw no-kvmapf {} {}{} init={}",
+             rootfstype=virtiofs rw dax no-kvmapf {} {}{} init={}",
             ep, vm_perf, loglevel, reverse, GUEST_INIT_PATH
         )
     };
