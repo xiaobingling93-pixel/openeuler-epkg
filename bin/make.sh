@@ -1424,15 +1424,13 @@ build_static_linux() {
         install_hardlink "$linux_epkg" "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
         echo "[DEPLOY-hardlink] $DEV_ENV_BIN_DIR/epkg-linux-${arch}"
 
-        # Update hardlinks in all environments
-        # On Linux hosts, this updates both epkg and init
-        # On macOS/Windows hosts, this only updates epkg (init updated below)
-        update_all_env_hardlinks "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
-
-        # On macOS/Windows, also update init hardlinks with the Linux ELF binary
-        # The init binary is used as the VM guest init process, so it must be Linux ELF
         local host_os=$(uname -s)
-        if [[ "$host_os" != "Linux" ]]; then
+        if [[ "$host_os" == "Linux" ]]; then
+            # On Linux hosts, update both epkg and init hardlinks (they're the same binary)
+            update_all_env_hardlinks "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
+        else
+            # On macOS/Windows, only update init hardlinks with the Linux ELF binary
+            # The epkg hardlinks will be updated with native binary by build_static()
             local envs_dir="${DEV_ENV_BIN_DIR%/*/*/*}"
             for env_dir in "$envs_dir"/*; do
                 [[ -d "$env_dir" ]] || continue
