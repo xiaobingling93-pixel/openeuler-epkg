@@ -172,18 +172,71 @@ pub struct BrewRequirement {
     pub specs: Vec<String>,
 }
 
+/// Get fallback bottle tags for macOS when the primary tag is not available.
+/// Returns a list of tags to try in order of preference.
+/// For arm64: tahoe -> sequoia -> sonoma -> ventura -> monterey
+/// For x86_64: tahoe -> sequoia -> sonoma -> ventura -> monterey
+fn get_bottle_tag_fallbacks(bottle_tag: &str) -> Vec<String> {
+    // Check if it's arm64 or x86_64
+    let (arm_prefix, tags): (&str, &[&str]) = if bottle_tag.starts_with("arm64_") {
+        ("arm64_", &["tahoe", "sequoia", "sonoma", "ventura", "monterey"])
+    } else if bottle_tag.starts_with("x86_64_") {
+        // Linux uses x86_64_linux, no fallback needed
+        return vec![bottle_tag.to_string()];
+    } else {
+        // Intel macOS tags don't have prefix
+        ("", &["tahoe", "sequoia", "sonoma", "ventura", "monterey"])
+    };
+
+    // Find the position of current tag in the list
+    let current_base = bottle_tag.strip_prefix(arm_prefix).unwrap_or(bottle_tag);
+    let current_idx = tags.iter().position(|&t| t == current_base).unwrap_or(0);
+
+    // Return tags from current position onwards (older versions as fallback)
+    tags[current_idx..]
+        .iter()
+        .map(|&t| format!("{}{}", arm_prefix, t))
+        .collect()
+}
+
 impl BrewFormula {
+    /// Find the best available bottle for the requested tag.
+    /// Falls back to older macOS versions if the exact tag is not available.
+    fn find_best_bottle<'a>(&'a self, bottle: &'a BrewBottleStable, bottle_tag: &str) -> Option<(&'a BrewBottleFile, String)> {
+        // First, try the exact bottle_tag
+        if let Some(file) = bottle.files.get(bottle_tag) {
+            return Some((file, bottle_tag.to_string()));
+        }
+
+        // Try "all" for noarch packages
+        if let Some(file) = bottle.files.get("all") {
+            return Some((file, "all".to_string()));
+        }
+
+        // Try fallback tags for older macOS versions
+        for fallback_tag in get_bottle_tag_fallbacks(bottle_tag) {
+            if fallback_tag != bottle_tag {
+                if let Some(file) = bottle.files.get(&fallback_tag) {
+                    log::debug!("Using fallback bottle tag {} instead of {} for {}",
+                               fallback_tag, bottle_tag, self.name);
+                    return Some((file, fallback_tag));
+                }
+            }
+        }
+
+        None
+    }
+
     /// Convert to epkg's internal Package format
     pub fn to_package(&self, bottle_tag: &str) -> Option<Package> {
         let bottle = self.bottle.as_ref()?.stable.as_ref()?;
 
-        // Try the specific bottle_tag first, then fall back to "all" for noarch packages
-        let bottle_file = bottle.files.get(bottle_tag)
-            .or_else(|| bottle.files.get("all"))?;
+        // Try the specific bottle_tag first, then try fallback tags for older macOS versions
+        // This handles cases where a package doesn't have a bottle for the newest macOS
+        let (bottle_file, actual_tag) = self.find_best_bottle(bottle, bottle_tag)?;
 
         // Determine if this is a noarch package
         let is_noarch = bottle.files.contains_key("all") && !bottle.files.contains_key(bottle_tag);
-        let actual_tag = if is_noarch { "all" } else { bottle_tag };
 
         let version = self.versions.stable.clone()?;
 
@@ -295,18 +348,25 @@ pub fn get_bottle_tag() -> String {
     #[cfg(target_os = "macos")]
     {
         // Detect macOS version for bottle tag
-        // sequoia (15), sonoma (14), ventura (13), monterey (12), big_sur (11)
+        // tahoe (26), sequoia (15), sonoma (14), ventura (13), monterey (12), big_sur (11)
         match std::process::Command::new("uname").arg("-r").output() {
             Ok(output) => {
                 let version = String::from_utf8_lossy(&output.stdout);
                 let parts: Vec<&str> = version.trim().split('.').collect();
                 if let Ok(major) = parts[0].parse::<u32>() {
                     // Darwin version to macOS version mapping
+                    // Darwin 25 -> macOS 26 (Tahoe)
                     // Darwin 24 -> macOS 15 (Sequoia)
                     // Darwin 23 -> macOS 14 (Sonoma)
                     // Darwin 22 -> macOS 13 (Ventura)
                     // etc.
                     match major {
+                        25 => {
+                            #[cfg(target_arch = "aarch64")]
+                            return "arm64_tahoe".to_string();
+                            #[cfg(target_arch = "x86_64")]
+                            return "tahoe".to_string();
+                        }
                         24 => {
                             #[cfg(target_arch = "aarch64")]
                             return "arm64_sequoia".to_string();
@@ -332,10 +392,19 @@ pub fn get_bottle_tag() -> String {
                             return "monterey".to_string();
                         }
                         _ => {
-                            #[cfg(target_arch = "aarch64")]
-                            return "arm64_ventura".to_string();
-                            #[cfg(target_arch = "x86_64")]
-                            return "ventura".to_string();
+                            // For newer macOS versions not yet in mapping, use tahoe
+                            // Homebrew typically supports the latest macOS with backward compatibility
+                            if major > 25 {
+                                #[cfg(target_arch = "aarch64")]
+                                return "arm64_tahoe".to_string();
+                                #[cfg(target_arch = "x86_64")]
+                                return "tahoe".to_string();
+                            } else {
+                                #[cfg(target_arch = "aarch64")]
+                                return "arm64_ventura".to_string();
+                                #[cfg(target_arch = "x86_64")]
+                                return "ventura".to_string();
+                            }
                         }
                     }
                 }
