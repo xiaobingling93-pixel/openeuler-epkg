@@ -561,9 +561,17 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
         try_add_mount(&dirs().home_epkg, None, false, true);
         try_add_mount(&dirs().home_cache, None, false, true);
         try_add_mount(&dirs().opt_epkg, None, false, true);
+        // Mount store directory for symlinks in cross-filesystem environments
+        // Symlinks in temp directories point to store, so VM needs access
+        // IMPORTANT: Add store BEFORE home_epkg so it's not skipped by seen_paths check
+        // (store is a subdirectory of home_epkg)
+        try_add_mount(&dirs().epkg_store, None, true, true);
     } else if is_guest_root {
         // For non-root host + root guest: mount user dirs to system paths
         // Root in guest can write anywhere, so this works well
+        // IMPORTANT: Add store first (for symlinks), then home_epkg (which covers store as subdirectory)
+        // We need store mounted at its original path for symlink resolution
+        try_add_mount(&dirs().epkg_store, None, true, true);
         try_add_mount(&dirs().home_epkg, Some(Path::new("/opt/epkg")), false, true);
         try_add_mount(&dirs().home_cache, Some(Path::new("/opt/epkg/cache")), false, true);
         // Don't mount host /opt/epkg - it's not writable by non-root host user
@@ -571,6 +579,8 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
         // For non-root host + non-root guest: mount to same paths
         // The guest user will have the same UID as the host user (via virtiofs
         // passthrough), so they can access their own files
+        // IMPORTANT: Add store first for symlinks
+        try_add_mount(&dirs().epkg_store, None, true, true);
         try_add_mount(&dirs().home_epkg, None, false, true);
         try_add_mount(&dirs().home_cache, None, false, true);
         // Don't mount host /opt/epkg - not writable by non-root user
