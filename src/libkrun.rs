@@ -544,6 +544,42 @@ fn build_libkrun_config(
     })
 }
 
+/// # VM Virtiofs Mount Architecture
+///
+/// ## Root Filesystem
+/// The VM rootfs is set to env_root via `krun_set_root()`. This means:
+/// - Guest `/` = host env_root (e.g., `/Users/aa/.epkg/envs/test-env`)
+/// - Guest `/etc/epkg/env.yaml` exists and contains the environment config
+/// - `try_detect_environment_from_env_yaml()` finds the env automatically
+/// - `in_env_root = true` is set, making guest use `/` as effective root
+///
+/// ## Additional Mounts
+/// Extra virtiofs mounts serve two purposes:
+///
+/// 1. **Make host paths in env.yaml valid in VM**
+///    - env.yaml contains host paths like `env_base: /Users/aa/.epkg/envs/test-env`
+///    - Mounts like `home_epkg → /opt/epkg` make these paths accessible in VM
+///    - This allows nested epkg to resolve paths from env.yaml correctly
+///
+/// 2. **Enable cross-environment operations**
+///    - `/opt/epkg/envs` contains symlinks to all environments
+///    - Symlinks point to host paths (e.g., `/Users/aa/.epkg/envs/other-env`)
+///    - These host paths are mounted and valid in VM
+///    - So `epkg -e other-env ...` works in nested context
+///
+/// ## Environment Detection Without EPKG_ACTIVE_ENV
+/// Since rootfs = env_root:
+/// - `try_detect_environment_from_env_yaml()` returns true
+/// - No need for parent to pass EPKG_ACTIVE_ENV/EPKG_ENV_ROOT
+/// - Nested epkg auto-detects environment from `/etc/epkg/env.yaml`
+/// - `in_env_root = true` ensures operations use `/` as effective root
+///
+/// ## Path Resolution
+/// When `in_env_root = true`:
+/// - `get_env_config_path(env_name)` returns `/etc/epkg/env.yaml` for current env
+/// - For other envs, uses `/opt/epkg/envs` which has valid symlinks
+/// - Store paths are accessible via mounted `home_epkg` → `/opt/epkg`
+///
 /// Build virtiofs mount specs from mount specs.
 /// Returns Vec<(tag, host_path, guest_path, read_only)> for each directory mount.
 /// Skips non-directory sources since virtiofs only supports directory bind mounts.

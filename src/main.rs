@@ -1565,12 +1565,26 @@ fn apply_env_config_from_path(env_root_or_etc: &Path, config: &mut EPKGConfig) -
     }
     let env_config_data = read_yaml_file::<EnvConfig>(&config_path)?;
     config.common.env_name = env_config_data.name.clone();
-    config.common.env_root = env_config_data.env_root.clone();
     config.common.env_explicit = true;
     // Only set in_env_root when we're inside the env (loading from /etc/epkg/env.yaml).
     // With -r PATH we're on the host; run must do namespace isolation so -r and -e are equivalent.
     config.common.in_env_root = env_root_or_etc == Path::new("/");
-    let _ = set_env_config(env_config_data);
+    // When in_env_root=true, use "/" as env_root for all path lookups.
+    // This is critical for VM guest execution where VM rootfs = env_root,
+    // so all paths should be relative to "/" not the host path from env.yaml.
+    if config.common.in_env_root {
+        config.common.env_root = "/".to_string();
+    } else {
+        config.common.env_root = env_config_data.env_root.clone();
+    }
+    // Set ENV_CONFIG with the corrected env_root
+    let env_config = models::EnvConfig {
+        name:     env_config_data.name.clone(),
+        env_root: config.common.env_root.clone(),
+        env_base: config.common.env_root.clone(),
+        ..Default::default()
+    };
+    let _ = set_env_config(env_config);
     Ok(())
 }
 
@@ -1733,6 +1747,7 @@ fn try_apply_explicit_env_root(config: &mut EPKGConfig) -> Result<bool> {
 }
 
 /// Apply EPKG_ACTIVE_ENV / EPKG_ENV_ROOT if set. Returns true if environment was set.
+/// This is a fallback mechanism - prefer /etc/epkg/env.yaml for VM guest execution.
 fn try_env_from_epkg_activenv(config: &mut EPKGConfig) -> bool {
     let Ok(active_env) = env::var("EPKG_ACTIVE_ENV") else {
         return false;
@@ -1745,15 +1760,12 @@ fn try_env_from_epkg_activenv(config: &mut EPKGConfig) -> bool {
     let env_name = env_name.trim_end_matches(PURE_ENV_SUFFIX);
 
     // If -e was used explicitly with a different env_name, don't override it.
-    // But still use EPKG_ENV_ROOT for path resolution if available.
     if config.common.env_name_explicit && !config.common.env_name.is_empty() && config.common.env_name != env_name {
         // User explicitly requested a different environment via -e.
-        // Still check if EPKG_ENV_ROOT can help with path resolution.
+        // Try to find it using EPKG_ENV_ROOT's parent directory.
         if let Ok(env_root) = env::var("EPKG_ENV_ROOT") {
-            // The EPKG_ENV_ROOT points to the parent's environment, not the requested one.
-            // We need to find the requested env in the same parent directory structure.
-            // For VM mode: EPKG_ENV_ROOT=/opt/epkg/envs/test-nested-debug
-            // Parent dir is /opt/epkg/envs
+            // For VM mode: EPKG_ENV_ROOT=/opt/epkg/envs/test-env
+            // Parent dir is /opt/epkg/envs, look for sibling env there.
             if let Some(parent_dir) = Path::new(&env_root).parent() {
                 let requested_env_root = parent_dir.join(&config.common.env_name);
                 if requested_env_root.join("etc/epkg/env.yaml").exists() {
@@ -1761,9 +1773,9 @@ fn try_env_from_epkg_activenv(config: &mut EPKGConfig) -> bool {
                     config.common.in_env_root = true;
                     // Set ENV_CONFIG for the requested environment
                     let env_config = models::EnvConfig {
-                        name: config.common.env_name.clone(),
-                        env_root: config.common.env_root.clone(),
-                        env_base: config.common.env_root.clone(),
+                        name:          config.common.env_name.clone(),
+                        env_root:      config.common.env_root.clone(),
+                        env_base:      config.common.env_root.clone(),
                         ..Default::default()
                     };
                     match models::set_env_config(env_config) {
@@ -1772,7 +1784,8 @@ fn try_env_from_epkg_activenv(config: &mut EPKGConfig) -> bool {
                                 config.common.env_name, config.common.env_root);
                         }
                         Err(existing) => {
-                            log::debug!("env: set_env_config failed, ENV_CONFIG already set with env_root={}", existing.env_root);
+                            log::debug!("env: set_env_config failed, ENV_CONFIG already set with env_root={}",
+                                existing.env_root);
                         }
                     }
                     return true;
@@ -1787,10 +1800,9 @@ fn try_env_from_epkg_activenv(config: &mut EPKGConfig) -> bool {
     if let Ok(env_root) = env::var("EPKG_ENV_ROOT") {
         config.common.env_root = env_root.clone();
         config.common.in_env_root = true;
-        // Set ENV_CONFIG immediately with the correct env_root from EPKG_ENV_ROOT
-        // This is critical for VM guest execution where paths differ from host
+        // Set ENV_CONFIG with the correct env_root from EPKG_ENV_ROOT
         let env_config = models::EnvConfig {
-            name: env_name.to_string(),
+            name:     env_name.to_string(),
             env_root: env_root.clone(),
             env_base: env_root.clone(),
             ..Default::default()
@@ -1800,10 +1812,12 @@ fn try_env_from_epkg_activenv(config: &mut EPKGConfig) -> bool {
                 log::debug!("env: set_env_config succeeded with env_root={}", env_root);
             }
             Err(existing) => {
-                log::debug!("env: set_env_config failed, ENV_CONFIG already set with env_root={}", existing.env_root);
+                log::debug!("env: set_env_config failed, ENV_CONFIG already set with env_root={}",
+                    existing.env_root);
             }
         }
-        log::debug!("env: from EPKG_ACTIVE_ENV -> {} with EPKG_ENV_ROOT={}", config.common.env_name, config.common.env_root);
+        log::debug!("env: from EPKG_ACTIVE_ENV -> {} with EPKG_ENV_ROOT={}",
+            config.common.env_name, config.common.env_root);
     } else {
         log::debug!("env: from EPKG_ACTIVE_ENV -> {}", config.common.env_name);
     }
@@ -1846,24 +1860,28 @@ fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
     if try_apply_explicit_env_root(config)? {
         return Ok(());
     }
-    // Check EPKG_ACTIVE_ENV BEFORE /etc/epkg/env.yaml
-    // This is critical for VM guest execution where we want to use the host's environment
-    // selection (passed via EPKG_ACTIVE_ENV) rather than the VM rootfs's env.yaml
-    // Even if -e was used explicitly, respect EPKG_ACTIVE_ENV if it matches the requested env.
-    if try_env_from_epkg_activenv(config) {
-        return Ok(());
+    // Check /etc/epkg/env.yaml FIRST for VM guest execution.
+    // In VM mode, rootfs = env_root, so /etc/epkg/env.yaml is the authoritative source.
+    // This eliminates the need for EPKG_ACTIVE_ENV/EPKG_ENV_ROOT env vars.
+    // Skip if -e was explicit with a DIFFERENT env_name (user wants different env).
+    if !config.common.env_name_explicit || config.common.env_name.is_empty() {
+        if try_detect_environment_from_env_yaml(config)? {
+            return Ok(());
+        }
     }
     // `-e NAME` sets env_name + env_name_explicit. Do not let `/etc/epkg/env.yaml` on the current
     // root (e.g. virtiofs / when the harness env is the guest filesystem) override the chosen
     // environment — that would target the wrong directory for any subcommand.
     if config.common.env_name_explicit && !config.common.env_name.is_empty() {
         log::debug!(
-            "env: explicit -e {}, skipping /etc/epkg/env.yaml and further auto-detection",
+            "env: explicit -e {}, skipping further auto-detection",
             config.common.env_name
         );
         return Ok(());
     }
-    if try_detect_environment_from_env_yaml(config)? {
+    // EPKG_ACTIVE_ENV as fallback for backwards compatibility.
+    // Prefer /etc/epkg/env.yaml over env vars for cleaner design.
+    if try_env_from_epkg_activenv(config) {
         return Ok(());
     }
     if !config.common.env_name.is_empty() {
