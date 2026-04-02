@@ -1875,6 +1875,10 @@ cross-windows() {
 
     cargo build --target "$target" --ignore-rust-version "${cargo_args[@]}" "${cargo_feature_args[@]}"
 
+    # Create symlink for easy access: target/$build_dir/epkg.exe -> target/$target/$build_dir/epkg.exe
+    mkdir -p "target/$build_dir"
+    ln -sf "$PROJECT_ROOT/target/$target/$build_dir/${BINARY_NAME}.exe" "target/$build_dir/${BINARY_NAME}.exe"
+
     echo "[BUILD-OK] Windows ($arch, $mode): target/$target/$build_dir/${BINARY_NAME}.exe"
 
     # Path to the locally built Linux ELF (epkg-linux-$arch) for native Windows VM mode
