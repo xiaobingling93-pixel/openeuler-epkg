@@ -55,8 +55,9 @@ fn try_connect_and_execute_vm(env_root: &Path, run_options: &RunOptions) -> Resu
     )
 }
 
-#[cfg(not(all(feature = "libkrun", not(target_os = "linux"))))]
+#[cfg(all(feature = "libkrun", target_os = "linux"))]
 fn try_connect_and_execute_vm(_env_root: &Path, _run_options: &RunOptions) -> Result<Option<i32>> {
+    // On Linux, VM mode runs natively without needing cross-process VM reuse
     Ok(None)
 }
 

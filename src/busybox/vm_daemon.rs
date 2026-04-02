@@ -1700,6 +1700,7 @@ fn run_reverse_vsock_client() -> Result<()> {
 
 /// Inner function for reverse mode: connect to Host and handle one command.
 /// Called recursively for VM reuse sessions.
+#[allow(dead_code)]
 fn connect_and_handle_reverse(_idle_timeout_ms: u32) -> Result<()> {
     use nix::sys::socket::{connect, socket, AddressFamily, SockType, SockFlag, VsockAddr};
     use std::os::fd::IntoRawFd;

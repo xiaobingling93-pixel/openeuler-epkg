@@ -1934,6 +1934,7 @@ pub fn parse_size_bytes_opt(size_str: &str) -> Option<u64> {
 
 /// Compute a deterministic hash for an env_root path.
 /// Used for session file naming and socket path generation.
+#[cfg(any(feature = "libkrun", not(target_os = "linux")))]
 pub fn hash_env_root(env_root: &Path) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
