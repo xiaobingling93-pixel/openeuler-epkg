@@ -223,7 +223,13 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
 
     // Even if user didn't confirm (or no changes planned), still need to expose
     // skipped reinstalls that have ebin_exposure=true
+    // But NOT in dry-run mode - we should not modify anything
     if !go_on {
+        if models::config().common.dry_run {
+            log::debug!("Dry run mode: skipping exposure of skipped reinstalls");
+            return Ok(plan);
+        }
+
         let has_reinstalls_to_expose = plan.skipped_reinstalls.iter()
             .any(|(_, info)| info.ebin_exposure);
 
