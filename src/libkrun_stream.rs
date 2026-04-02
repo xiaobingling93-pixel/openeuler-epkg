@@ -478,10 +478,8 @@ pub fn send_command_via_vsock(
     // WaitNamedPipeA already ensures the named pipe is ready (guest has connected).
     // The guest sends READY signal immediately after connection.
     // We can proceed directly - handle_streaming_simple will skip the READY signal.
-    // Only a small safety margin is needed for pipe buffer propagation.
-    crate::debug_epkg!("libkrun_stream: brief wait for pipe buffer propagation...");
-    std::thread::sleep(std::time::Duration::from_millis(10));
-    crate::debug_epkg!("libkrun_stream: building command request");
+    // No additional delay needed since WaitNamedPipeA ensures the guest is ready.
+    crate::debug_epkg!("libkrun_stream: connection ready, proceeding immediately");
     let request = build_command_request(cmd_parts, io_mode, reuse_vm, env_vars);
     crate::debug_epkg!("libkrun_stream: serializing to json");
     let request_json = serde_json::to_vec(&request)?;
