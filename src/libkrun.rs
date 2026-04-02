@@ -63,7 +63,7 @@ fn cleanup_stale_vm_files() {
     }
 }
 
-#[cfg(not(all(feature = "libkrun", target_os = "macos")))]
+#[cfg(all(feature = "libkrun", target_os = "macos"))]
 fn cleanup_stale_vm_files() {}
 
 /// Import vm_session functions used in this module
