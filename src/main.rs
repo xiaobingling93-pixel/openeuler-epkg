@@ -52,6 +52,7 @@ mod transaction;
 mod world;
 mod utils;
 mod mtree;
+mod auto_idmap;
 #[cfg(unix)]
 mod posix;
 mod history;

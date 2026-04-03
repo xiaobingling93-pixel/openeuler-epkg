@@ -337,10 +337,22 @@ pub fn build_guest_command(cmd_path: &Path, args: &[String]) -> Result<(Vec<Stri
 /// the same mounts and UID mapping as the rest of the sandbox. See virtio-fs/virtiofsd#36.
 ///
 /// Logs are written to `virtiofsd_log_path` so the terminal stays free for send_command_via_tcp.
+///
+/// # Arguments
+///
+/// * `shared_dir` - Directory to share with VM
+/// * `virtiofsd_bin` - Path to virtiofsd binary
+/// * `virtiofsd_log_path` - Path for virtiofsd log output
+/// * `is_root` - Whether running as root (enables --inode-file-handles=prefer)
+/// * `translate_uid` - UID mapping specs for --translate-uid
+/// * `translate_gid` - GID mapping specs for --translate-gid
 fn start_virtiofsd_at(
     shared_dir: &Path,
     virtiofsd_bin: &str,
     virtiofsd_log_path: &Path,
+    is_root: bool,
+    translate_uid: &[String],
+    translate_gid: &[String],
 ) -> Result<(tempfile::TempDir, std::process::Child, std::path::PathBuf)> {
     use std::fs::File;
     use std::process::{Command, Stdio};
@@ -361,15 +373,26 @@ fn start_virtiofsd_at(
         .arg(socket_path.display().to_string())
         .arg("--cache")
         .arg("auto")
-        // Use file handles when permitted so guest caches by inode/handle (avoids ENFILE when available).
-        // mandatory requires DAC_READ_SEARCH; "prefer" tries handles and falls back to fds if EPERM.
-        .arg("--inode-file-handles=prefer")
         .arg("--sandbox").arg("none")
         // 0 = leave RLIMIT_NOFILE unchanged; avoids WARN when hard limit < 1000000
         .arg("--rlimit-nofile").arg("0");
 
-    // UID/GID translation handled by user namespace
-    // Disable virtiofsd's internal sandboxing since we run it in namespace
+    // Only add --inode-file-handles=prefer if running as root
+    // (requires CAP_DAC_READ_SEARCH capability)
+    if is_root {
+        virtiofsd_cmd.arg("--inode-file-handles=prefer");
+    }
+
+    // Announce submounts to guest
+    virtiofsd_cmd.arg("--announce-submounts");
+
+    // Add UID/GID translation options
+    for spec in translate_uid {
+        virtiofsd_cmd.arg("--translate-uid").arg(spec);
+    }
+    for spec in translate_gid {
+        virtiofsd_cmd.arg("--translate-gid").arg(spec);
+    }
 
     // Redirect stdout/stderr to log file so terminal stays free for send_command_via_tcp.
     let log_file = File::create(virtiofsd_log_path)
@@ -619,6 +642,9 @@ fn setup_rootfs_mode(
     existing_socket_path: Option<&Path>,
     virtiofsd_bin: Option<&String>,
     virtiofsd_log_path: &Path,
+    is_root: bool,
+    translate_uid: &[String],
+    translate_gid: &[String],
 ) -> Result<RootFsMode> {
     // Check env var for explicit rootfs selection (EPKG_VM_ROOTFS=9p or virtiofs)
     if let Ok(rootfs_choice) = std::env::var("EPKG_VM_ROOTFS") {
@@ -644,7 +670,7 @@ fn setup_rootfs_mode(
 
     // Try virtiofsd if available
     if let Some(virtiofsd_bin) = virtiofsd_bin {
-        match start_virtiofsd_at(env_root, virtiofsd_bin, virtiofsd_log_path) {
+        match start_virtiofsd_at(env_root, virtiofsd_bin, virtiofsd_log_path, is_root, translate_uid, translate_gid) {
             Ok((tmpdir, child, path)) => {
                 return Ok(RootFsMode::Virtiofs(Some((tmpdir, child)), path));
             }
@@ -868,11 +894,35 @@ pub fn run_command_in_qemu(
     let vm_memory_mb = crate::run::resolve_vm_memory_mib(run_options);
     let (qemu_log_path, virtiofsd_log_path) = setup_vmm_logs()?;
 
+    // Get host UID/GID for auto-mapping policy
+    let host_uid = users::get_current_uid();
+    let host_gid = users::get_current_gid();
+
+    // Apply auto-mapping policy for non-root users
+    let (auto_uid, auto_gid) = if crate::auto_idmap::should_auto_map(host_uid) {
+        crate::auto_idmap::auto_idmap_specs(host_uid, host_gid, run_options.user.as_deref())
+    } else {
+        (vec![], vec![])
+    };
+
+    // Merge with user-specified mappings
+    let translate_uid = crate::auto_idmap::merge_idmap_specs(
+        auto_uid,
+        run_options.translate_uid.clone(),
+    );
+    let translate_gid = crate::auto_idmap::merge_idmap_specs(
+        auto_gid,
+        run_options.translate_gid.clone(),
+    );
+
     let rootfs_mode = setup_rootfs_mode(
         env_root,
         existing_socket_path,
         virtiofsd_bin.as_ref(),
         &virtiofsd_log_path,
+        host_uid == 0,
+        &translate_uid,
+        &translate_gid,
     )?;
 
     let mount_tag = "epkg_env";

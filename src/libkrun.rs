@@ -1142,17 +1142,38 @@ fn create_and_configure_vm(
         ctx.set_root(root_path_str)?;
         log::info!("libkrun: rootfs configured: {}", root_path_str);
 
+        // Get host UID/GID for auto-mapping policy
+        let host_uid = users::get_current_uid();
+        let host_gid = users::get_current_gid();
+
+        // Apply auto-mapping policy for non-root users
+        let (auto_uid, auto_gid) = if crate::auto_idmap::should_auto_map(host_uid) {
+            crate::auto_idmap::auto_idmap_specs(host_uid, host_gid, run_options.user.as_deref())
+        } else {
+            (vec![], vec![])
+        };
+
+        // Merge with user-specified mappings
+        let translate_uid = crate::auto_idmap::merge_idmap_specs(
+            auto_uid,
+            run_options.translate_uid.clone(),
+        );
+        let translate_gid = crate::auto_idmap::merge_idmap_specs(
+            auto_gid,
+            run_options.translate_gid.clone(),
+        );
+
         // Set UID/GID mapping if provided
-        if !run_options.translate_uid.is_empty() || !run_options.translate_gid.is_empty() {
-            let uid_json = convert_idmap_spec_to_json(&run_options.translate_uid)?;
-            let gid_json = convert_idmap_spec_to_json(&run_options.translate_gid)?;
+        if !translate_uid.is_empty() || !translate_gid.is_empty() {
+            let uid_json = convert_idmap_spec_to_json(&translate_uid)?;
+            let gid_json = convert_idmap_spec_to_json(&translate_gid)?;
             let uid_cstr = std::ffi::CString::new(uid_json)?;
             let gid_cstr = std::ffi::CString::new(gid_json)?;
             check_status("krun_set_idmap",
                 krun_set_idmap(ctx.ctx_id, uid_cstr.as_ptr(), gid_cstr.as_ptr())
             )?;
             log::info!("libkrun: UID/GID mapping configured: uid={}, gid={}",
-                       run_options.translate_uid.len(), run_options.translate_gid.len());
+                       translate_uid.len(), translate_gid.len());
         }
 
         // Add additional virtiofs mounts
