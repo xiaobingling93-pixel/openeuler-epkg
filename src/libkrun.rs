@@ -13,40 +13,6 @@ use color_eyre::Result;
 use crate::lfs;
 use crate::run::RunOptions;
 
-/// Convert CLI-style ID mapping spec to JSON format expected by libkrun.
-/// Input format: "map:0:501:1" or "guest:0:501:1" etc.
-/// Output format: {"Bidirectional":{"guest":0,"host":501,"count":1}} etc.
-fn convert_idmap_spec_to_json(specs: &[String]) -> Result<String> {
-    let json_entries: Vec<serde_json::Value> = specs
-        .iter()
-        .map(|spec| {
-            let parts: Vec<&str> = spec.split(':').collect();
-            if parts.len() != 4 {
-                return Err(eyre::eyre!("Invalid ID map spec '{}': expected 4 parts", spec));
-            }
-            let prefix = parts[0];
-            let v1: u32 = parts[1].parse()
-                .map_err(|e| eyre::eyre!("Invalid ID map spec '{}': {}", spec, e))?;
-            let v2: u32 = parts[2].parse()
-                .map_err(|e| eyre::eyre!("Invalid ID map spec '{}': {}", spec, e))?;
-            let count: u32 = parts[3].parse()
-                .map_err(|e| eyre::eyre!("Invalid ID map spec '{}': {}", spec, e))?;
-
-            let json = match prefix {
-                "map" => serde_json::json!({"Bidirectional": {"guest": v1, "host": v2, "count": count}}),
-                "guest" => serde_json::json!({"Guest": {"from_guest": v1, "to_host": v2, "count": count}}),
-                "host" => serde_json::json!({"Host": {"from_host": v1, "to_guest": v2, "count": count}}),
-                "squash-guest" => serde_json::json!({"SquashGuest": {"from_guest": v1, "to_host": v2, "count": count}}),
-                "squash-host" => serde_json::json!({"SquashHost": {"from_host": v1, "to_guest": v2, "count": count}}),
-                _ => return Err(eyre::eyre!("Invalid ID map prefix '{}' in spec '{}'", prefix, spec)),
-            };
-            Ok(json)
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    Ok(serde_json::to_string(&json_entries)?)
-}
-
 /// Clean up stale VM-related files in run_dir.
 /// Called at VM startup to remove orphan socket/lock files from crashed processes.
 #[cfg(all(feature = "libkrun", target_os = "macos"))]
@@ -1165,10 +1131,10 @@ fn create_and_configure_vm(
 
         // Set UID/GID mapping if provided
         if !translate_uid.is_empty() || !translate_gid.is_empty() {
-            let uid_json = convert_idmap_spec_to_json(&translate_uid)?;
-            let gid_json = convert_idmap_spec_to_json(&translate_gid)?;
-            let uid_cstr = std::ffi::CString::new(uid_json)?;
-            let gid_cstr = std::ffi::CString::new(gid_json)?;
+            let uid_specs = crate::auto_idmap::specs_to_string(&translate_uid);
+            let gid_specs = crate::auto_idmap::specs_to_string(&translate_gid);
+            let uid_cstr = std::ffi::CString::new(uid_specs)?;
+            let gid_cstr = std::ffi::CString::new(gid_specs)?;
             check_status("krun_set_idmap",
                 krun_set_idmap(ctx.ctx_id, uid_cstr.as_ptr(), gid_cstr.as_ptr())
             )?;
