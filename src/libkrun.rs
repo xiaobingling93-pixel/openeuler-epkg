@@ -1108,28 +1108,37 @@ fn create_and_configure_vm(
         ctx.set_root(root_path_str)?;
         log::info!("libkrun: rootfs configured: {}", root_path_str);
 
-        // Get host UID/GID for auto-mapping policy
-        let host_uid = users::get_current_uid();
-        let host_gid = users::get_current_gid();
+        // Get host UID/GID for auto-mapping policy (Unix only)
+        #[cfg(unix)]
+        let (translate_uid, translate_gid) = {
+            let host_uid = users::get_current_uid();
+            let host_gid = users::get_current_gid();
 
-        // Apply auto-mapping policy for non-root users
-        let (auto_uid, auto_gid) = if crate::auto_idmap::should_auto_map(host_uid) {
-            crate::auto_idmap::auto_idmap_specs(host_uid, host_gid, run_options.user.as_deref())
-        } else {
-            (vec![], vec![])
+            // Apply auto-mapping policy for non-root users
+            let (auto_uid, auto_gid) = if crate::auto_idmap::should_auto_map(host_uid) {
+                crate::auto_idmap::auto_idmap_specs(host_uid, host_gid, run_options.user.as_deref())
+            } else {
+                (vec![], vec![])
+            };
+
+            // Merge with user-specified mappings
+            let translate_uid = crate::auto_idmap::merge_idmap_specs(
+                auto_uid,
+                run_options.translate_uid.clone(),
+            );
+            let translate_gid = crate::auto_idmap::merge_idmap_specs(
+                auto_gid,
+                run_options.translate_gid.clone(),
+            );
+            (translate_uid, translate_gid)
         };
 
-        // Merge with user-specified mappings
-        let translate_uid = crate::auto_idmap::merge_idmap_specs(
-            auto_uid,
-            run_options.translate_uid.clone(),
-        );
-        let translate_gid = crate::auto_idmap::merge_idmap_specs(
-            auto_gid,
-            run_options.translate_gid.clone(),
-        );
+        // On Windows, no UID/GID mapping
+        #[cfg(windows)]
+        let (_translate_uid, _translate_gid): (Vec<String>, Vec<String>) = (vec![], vec![]);
 
-        // Set UID/GID mapping if provided
+        // Set UID/GID mapping if provided (Unix only)
+        #[cfg(unix)]
         if !translate_uid.is_empty() || !translate_gid.is_empty() {
             let uid_specs = crate::auto_idmap::specs_to_string(&translate_uid);
             let gid_specs = crate::auto_idmap::specs_to_string(&translate_gid);
