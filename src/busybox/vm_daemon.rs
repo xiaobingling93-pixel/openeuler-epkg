@@ -191,6 +191,7 @@ fn write_stream_message(stream: &mut TcpStream, msg: &StreamMessage) -> Result<(
     let json = serde_json::to_string(msg)?;
     stream.write_all(json.as_bytes())?;
     stream.write_all(b"\n")?;
+    stream.flush()?;
     Ok(())
 }
 
