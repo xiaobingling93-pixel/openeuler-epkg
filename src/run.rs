@@ -141,6 +141,13 @@ pub struct RunOptions {
     /// wait this many seconds for another connection (`epkg run --reuse`). `None` = one-shot VM.
     pub vm_keep_timeout: Option<u32>,
 
+    /// UID mapping specifications for virtiofs in VM mode.
+    /// Format: same as virtiofsd (e.g., "map:0:501:1", "squash-guest:0:501:65536").
+    pub translate_uid: Vec<String>,
+    /// GID mapping specifications for virtiofs in VM mode.
+    /// Format: same as virtiofsd (e.g., "map:0:20:1", "squash-guest:0:20:65536").
+    pub translate_gid: Vec<String>,
+
     /// Original host UID before any namespace setup (for VM mount configuration).
     /// This is the real UID on the host, which may differ from the namespaced UID.
     pub host_uid: Option<u32>,
@@ -1613,6 +1620,21 @@ pub fn parse_options_run(options: &mut EPKGConfig, sub_matches: &clap::ArgMatche
         }
     }
 
+    // Parse UID/GID translation options for VM mode
+    let translate_uid: Vec<String> = sub_matches
+        .get_many::<String>("translate-uid")
+        .map(|v| v.cloned().collect())
+        .unwrap_or_default();
+    let translate_gid: Vec<String> = sub_matches
+        .get_many::<String>("translate-gid")
+        .map(|v| v.cloned().collect())
+        .unwrap_or_default();
+    if (!translate_uid.is_empty() || !translate_gid.is_empty()) && isolate_mode != Some(crate::models::IsolateMode::Vm) {
+        return Err(eyre::eyre!(
+            "--translate-uid and --translate-gid require --isolate=vm"
+        ));
+    }
+
     // Create sandbox options from CLI inputs
     let sandbox = crate::models::SandboxOptions {
         isolate_mode,
@@ -1635,6 +1657,8 @@ pub fn parse_options_run(options: &mut EPKGConfig, sub_matches: &clap::ArgMatche
         vmm_order,
         vm_reuse_connect,
         vm_keep_timeout,
+        translate_uid,
+        translate_gid,
         ..Default::default()
     };
 

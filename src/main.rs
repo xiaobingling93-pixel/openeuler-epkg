@@ -1081,6 +1081,20 @@ fn add_run_subcommand(cmd: Command) -> Command {
                         .value_parser(clap::value_parser!(u32))
                 )
                 .arg(
+                    Arg::new("translate-uid")
+                        .long("translate-uid")
+                        .value_name("SPEC")
+                        .help("UID mapping for --isolate=vm (e.g., 'map:0:501:1' or 'squash-guest:0:501:65536', can be repeated)")
+                        .action(ArgAction::Append)
+                )
+                .arg(
+                    Arg::new("translate-gid")
+                        .long("translate-gid")
+                        .value_name("SPEC")
+                        .help("GID mapping for --isolate=vm (e.g., 'map:0:20:1' or 'squash-guest:0:20:65536', can be repeated)")
+                        .action(ArgAction::Append)
+                )
+                .arg(
                     Arg::new("io")
                         .short('i')
                         .long("io")
