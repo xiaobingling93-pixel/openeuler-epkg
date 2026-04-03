@@ -516,7 +516,7 @@ fn build_libkrun_config(
     // because each character requires a VM exit and MMIO write. Reduce loglevel and disable
     // earlyprintk when not debugging to speed up boot.
     let vm_debug = std::env::var("EPKG_VM_DEBUG").is_ok();
-    let loglevel = if vm_debug { "loglevel=8 debug" } else { "quiet loglevel=1" };
+    let loglevel = if vm_debug { "loglevel=8 debug" } else { "quiet loglevel=0" };
 
     // Additional performance optimizations for VMs:
     // - nowatchdog: Disable watchdog timers (not needed in VMs)
@@ -1194,6 +1194,20 @@ fn create_and_configure_vm(
 
         setup_console_output(ctx.ctx_id)?;
         log::info!("libkrun: console output configured");
+
+        // On macOS, disable implicit virtio console to prevent kernel messages
+        // (like "sysrq: Power Off" during shutdown) from appearing in stdout.
+        // The kernel cmdline uses console=hvc0, which is the virtio console.
+        // Without this, shutdown messages leak into the user's command output
+        // in stream mode (where stdout is passed through directly).
+        #[cfg(target_os = "macos")]
+        {
+            if std::env::var("EPKG_DEBUG_LIBKRUN").is_err() {
+                check_status("krun_disable_implicit_console",
+                    unsafe { krun_disable_implicit_console(ctx.ctx_id) })?;
+                log::debug!("libkrun: disabled implicit virtio console (hvc0)");
+            }
+        }
 
         // Add serial console device for Windows VMs.
         // This is required for the kernel to have a working console on WHPX.
