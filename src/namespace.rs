@@ -888,7 +888,61 @@ fn vm_mount_spec_strings() -> Vec<String> {
         spec_strings.push("/lib/modules:ro,try".to_string());
     }
 
+    // Auto-mount Windows drives from /mnt (like WSL2) when running on Windows
+    spec_strings.extend(windows_drive_mount_specs());
+
     spec_strings
+}
+
+/// Detect Windows drives mounted under /mnt (like WSL2) and generate mount specs.
+/// This allows 'epkg.exe run' on Windows to automatically access C:, D:, etc.
+/// Returns mount specs like "/mnt/c:/mnt/c:try" for each drive letter found.
+fn windows_drive_mount_specs() -> Vec<String> {
+    let mut specs = Vec::new();
+    let mnt_path = std::path::Path::new("/mnt");
+
+    if !mnt_path.exists() {
+        return specs;
+    }
+
+    let entries = match fs::read_dir(mnt_path) {
+        Ok(e) => e,
+        Err(_) => return specs,
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = match name.to_str() {
+            Some(s) => s,
+            None => continue,
+        };
+
+        // Check if entry is a single letter (drive letter like 'c', 'd', etc.)
+        if name_str.len() != 1 {
+            continue;
+        }
+
+        let c = name_str.chars().next().unwrap();
+        if !c.is_ascii_alphabetic() {
+            continue;
+        }
+
+        // Verify it's a directory
+        let metadata = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if !metadata.is_dir() {
+            continue;
+        }
+
+        // Generate mount spec: /mnt/c:/mnt/c:try
+        let mount_path = format!("/mnt/{}", name_str);
+        specs.push(format!("{}:try", mount_path));
+        trace!("Added Windows drive mount spec: {}", mount_path);
+    }
+
+    specs
 }
 
 /// Add mount for epkg binary dir so guest init can find epkg for vm-daemon.
