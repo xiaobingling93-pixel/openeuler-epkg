@@ -597,6 +597,25 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     create_epkg_symlink(&target_epkg)
         .context("Failed to create epkg symlink in PATH")?;
 
+    // Codesign the downloaded binary with hypervisor entitlements on macOS
+    // This is required for libkrun VM support
+    #[cfg(target_os = "macos")]
+    {
+        let epkg_src = crate::dirs::path_join(env_root, &["usr", "src", "epkg"]);
+        let entitlements = epkg_src.join("assets/macos/epkg.entitlements");
+        if entitlements.exists() {
+            codesign_with_entitlements(&target_epkg, &entitlements)?;
+            // Also sign epkg-linux if it exists
+            let arch = &config().common.arch;
+            let epkg_linux_target = usr_bin.join(format!("epkg-linux-{}", arch));
+            if epkg_linux_target.exists() {
+                codesign_with_entitlements(&epkg_linux_target, &entitlements)?;
+            }
+        } else {
+            log::warn!("Entitlements file not found at {}", entitlements.display());
+        }
+    }
+
     Ok(())
 }
 
@@ -723,6 +742,34 @@ fn link_home_epkg_subdir(home_epkg: &Path, name: &str, target: &Path) {
             e
         );
     }
+}
+
+/// Codesign a binary with hypervisor entitlements on macOS.
+/// This is required for libkrun VM support.
+#[cfg(target_os = "macos")]
+fn codesign_with_entitlements(binary: &Path, entitlements: &Path) -> Result<()> {
+    use std::process::Command;
+
+    log::info!("Codesigning {} with entitlements {}", binary.display(), entitlements.display());
+
+    let output = Command::new("codesign")
+        .arg("--force")
+        .arg("--sign")
+        .arg("-")
+        .arg("--entitlements")
+        .arg(entitlements)
+        .arg(binary)
+        .output()
+        .context("Failed to execute codesign command")?;
+
+    if output.status.success() {
+        log::info!("Successfully signed {} with hypervisor entitlements", binary.display());
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::warn!("Failed to codesign {}: {}", binary.display(), stderr);
+    }
+
+    Ok(())
 }
 
 /// Safely copy a binary using atomic operations to avoid conflicts with running processes

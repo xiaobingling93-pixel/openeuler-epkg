@@ -1735,7 +1735,7 @@ build_static() {
     if [[ "$is_macos" == "true" ]]; then
         echo "[BUILD-OK] macOS ($arch, $mode): target/$rust_target/$build_dir/$BINARY_NAME"
         # Sign with hypervisor entitlements for libkrun VM support
-        local entitlements="$PROJECT_ROOT/target/aarch64-apple-darwin/epkg.entitlements"
+        local entitlements="$PROJECT_ROOT/assets/macos/epkg.entitlements"
         codesign --force --sign - --entitlements "$entitlements" "$PROJECT_ROOT/target/$rust_target/$build_dir/$BINARY_NAME" && \
             echo "[CODESIGN] Signed with hypervisor entitlements"
         # Deploy macOS binary to dist/ (only for release mode, deploy_release_binary handles this)
@@ -1746,6 +1746,7 @@ build_static() {
         install_hardlink "target/$rust_target/$build_dir/$BINARY_NAME" "$DEV_ENV_BIN_DIR/$BINARY_NAME"
         echo "[DEPLOY-hardlink] $DEV_ENV_BIN_DIR/$BINARY_NAME"
         # Re-sign after copy/hardlink to preserve entitlements (cross-filesystem copy loses signature)
+        local entitlements="$PROJECT_ROOT/assets/macos/epkg.entitlements"
         if [[ -f "$DEV_ENV_BIN_DIR/$BINARY_NAME" ]]; then
             codesign --force --sign - --entitlements "$entitlements" "$DEV_ENV_BIN_DIR/$BINARY_NAME" && \
                 echo "[CODESIGN] Re-signed $DEV_ENV_BIN_DIR/$BINARY_NAME with hypervisor entitlements"
