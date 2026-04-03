@@ -2398,12 +2398,18 @@ fn try_route_command_via_vm(matches: &clap::ArgMatches) -> Result<Option<i32>> {
         .collect();
 
     // Execute via existing VM
-    crate::libkrun::execute_via_existing_vm(
-        &env_root,
-        &cmd_parts,
-        crate::models::IoMode::Stream,
-        Some(&env_vars),
-    )
+    #[cfg(feature = "libkrun")]
+    {
+        crate::libkrun::execute_via_existing_vm(
+            &env_root,
+            &cmd_parts,
+            crate::models::IoMode::Stream,
+            Some(&env_vars),
+        )?;
+        Ok(None)
+    }
+    #[cfg(not(feature = "libkrun"))]
+    Err(eyre::eyre!("VM session routing requires libkrun feature"))
 }
 
 fn command_install(sub_matches: &clap::ArgMatches) -> Result<()> {

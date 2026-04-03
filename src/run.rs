@@ -56,6 +56,7 @@ fn try_connect_and_execute_vm(env_root: &Path, run_options: &RunOptions) -> Resu
 }
 
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
+#[allow(dead_code)]
 fn try_connect_and_execute_vm(_env_root: &Path, _run_options: &RunOptions) -> Result<Option<i32>> {
     // On Linux, VM mode runs natively without needing cross-process VM reuse
     Ok(None)
@@ -701,11 +702,9 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
 
 #[cfg(not(target_os = "linux"))]
 pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Option<i32>> {
-    crate::debug_epkg!("fork_and_execute: starting for non-Linux platform");
     // Prepare options (merge sandbox settings)
     let mut prepared_opts = run_options.clone();
     prepare_run_options_for_command(env_root, &mut prepared_opts);
-    crate::debug_epkg!("fork_and_execute: options prepared, isolate_mode={:?}", prepared_opts.effective_sandbox.isolate_mode);
 
     // Non-Linux platforms only support VM sandbox mode
     let isolate_mode = prepared_opts.effective_sandbox.isolate_mode
@@ -713,10 +712,12 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
 
     match isolate_mode {
         IsolateMode::Vm => {
-            crate::debug_epkg!("fork_and_execute: VM mode selected");
             // VM sandbox mode - supported via libkrun
             #[cfg(feature = "libkrun")]
             {
+                crate::debug_epkg!("fork_and_execute: starting for non-Linux platform");
+                crate::debug_epkg!("fork_and_execute: options prepared, isolate_mode={:?}", prepared_opts.effective_sandbox.isolate_mode);
+                crate::debug_epkg!("fork_and_execute: VM mode selected");
                 // Check for existing VM session to reuse (cross-process discovery)
                 #[cfg(not(target_os = "linux"))]
                 if let Some(exit_code) = try_connect_and_execute_vm(env_root, &prepared_opts)? {

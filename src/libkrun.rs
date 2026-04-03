@@ -64,6 +64,7 @@ fn cleanup_stale_vm_files() {
 }
 
 #[cfg(all(feature = "libkrun", not(target_os = "macos")))]
+#[allow(dead_code)]
 fn cleanup_stale_vm_files() {}
 
 /// Import vm_session functions used in this module
@@ -1435,6 +1436,7 @@ struct VmReuseSession {
 }
 
 #[cfg(feature = "libkrun")]
+#[allow(dead_code)]
 static VM_REUSE_SESSION: Mutex<Option<VmReuseSession>> = Mutex::new(None);
 
 #[cfg(feature = "libkrun")]

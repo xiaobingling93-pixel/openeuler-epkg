@@ -662,6 +662,7 @@ fn handle_batch_response_windows(stream: &mut std::fs::File) -> Result<i32> {
 /// Simple output-only handler for reverse mode and other cases where stdin is not available.
 /// Reads line by line and handles stdout/stderr/exit messages.
 #[cfg(not(windows))]
+#[allow(dead_code)]
 fn handle_output_only(stream: &mut (impl Read + Write), is_batch: bool) -> Result<i32> {
     use std::io::BufReader;
 
@@ -756,6 +757,7 @@ fn handle_output_only(stream: &mut (impl Read + Write), is_batch: bool) -> Resul
 /// connection to send commands and receive results.
 /// For non-batch modes, this forwards stdin from host to the guest.
 #[cfg(not(windows))]
+#[allow(dead_code)]
 pub fn send_command_over_stream(
     cmd_parts: &[String],
     io_mode: IoMode,

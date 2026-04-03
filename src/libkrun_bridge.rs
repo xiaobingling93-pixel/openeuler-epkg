@@ -417,6 +417,7 @@ pub fn connect_vsock_bridge(sock_path: &Path, max_retries: u32) -> Result<std::f
 /// Set up a reverse listener for Guest to connect to.
 /// In reverse mode, Host listens and Guest initiates the connection.
 #[cfg(unix)]
+#[allow(dead_code)]
 pub fn setup_reverse_listener(sock_path: &Path) -> Result<std::os::unix::net::UnixListener> {
     // Clean up any stale socket
     let _ = std::fs::remove_file(sock_path);
@@ -435,6 +436,7 @@ pub fn setup_reverse_listener(sock_path: &Path) -> Result<std::os::unix::net::Un
 /// Accept a connection from Guest in reverse mode.
 /// Uses poll() for efficient waiting without busy-looping.
 #[cfg(unix)]
+#[allow(dead_code)]
 pub fn accept_reverse_connection(
     listener: &std::os::unix::net::UnixListener,
     vm_start_failed_rx: Option<&std::sync::mpsc::Receiver<()>>,

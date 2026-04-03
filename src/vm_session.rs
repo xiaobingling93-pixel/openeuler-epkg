@@ -112,10 +112,12 @@ pub fn discover_vm_session(env_root: &Path) -> Result<Option<VmSessionInfo>> {
     }
 
     // Verify socket exists and is connectable
-    #[cfg(unix)]
+    #[cfg(all(unix, feature = "libkrun"))]
     let socket_connectable = std::os::unix::net::UnixStream::connect(&info.socket_path).is_ok();
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "libkrun"))]
     let socket_connectable = crate::libkrun::libkrun_bridge::connect_vsock_bridge(&info.socket_path, 1).is_ok();
+    #[cfg(not(feature = "libkrun"))]
+    let socket_connectable = false;
 
     if !socket_connectable {
         log::debug!("vm_session: session socket {} is not connectable, cleaning up", info.socket_path.display());
