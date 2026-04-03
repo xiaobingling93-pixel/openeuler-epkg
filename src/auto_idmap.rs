@@ -103,6 +103,7 @@ fn resolve_guest_user(user: Option<&str>) -> (u32, u32) {
 /// Convert ID map specs to a single newline-separated string.
 ///
 /// Used for passing to libkrun FFI.
+#[cfg(feature = "libkrun")]
 pub fn specs_to_string(specs: &[String]) -> String {
     specs.join("\n")
 }
