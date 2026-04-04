@@ -200,13 +200,20 @@ use log::LevelFilter;
 use log;
 use list::ListScope;
 
+use std::io::IsTerminal;
+
 #[cfg(not(test))]
 fn main() -> Result<()> {
-    color_eyre::config::HookBuilder::default()
+    let mut builder = color_eyre::config::HookBuilder::default()
         .display_env_section(false)                 // Don't show environment variables by default
-        .display_location_section(true)             // Show file:line:column
-        .theme(color_eyre::config::Theme::dark())   // Use dark theme for better contrast
-        .install()?;
+        .display_location_section(true);             // Show file:line:column
+
+    // Only apply colored theme when stderr is a terminal (not redirected)
+    if std::io::stderr().is_terminal() {
+        builder = builder.theme(color_eyre::config::Theme::dark());
+    }
+
+    builder.install()?;
 
     // Install rustls crypto provider before any TLS operations
     // This is required when using ureq with rustls-no-provider feature
