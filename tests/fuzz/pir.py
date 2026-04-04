@@ -471,6 +471,85 @@ def create_environment(os_name: str) -> str:
     return env_name
 
 
+def run_fuzz_iteration(os_name: str, env_name: str, packages: list,
+                        batch_size: int) -> tuple[str, bool]:
+    """
+    Run single fuzz iteration: install, test executables, restore.
+
+    Returns:
+        tuple: (error_type or None, has_error)
+    """
+    loop_commands = []
+    loop_log = ""
+
+    # Select random packages
+    batch = random.sample(packages, min(batch_size, len(packages)))
+    batch_str = ' '.join(batch)
+    log(f"Selected packages: {batch_str}")
+
+    # Install packages
+    cmd_str = f"epkg -e {env_name} install --assume-yes {batch_str}"
+    loop_commands.append(cmd_str)
+
+    result = run_epkg(['install', '--assume-yes'] + batch, env_name)
+    loop_log += f"=== INSTALL ===\n{result.stdout}\n{result.stderr}\n"
+
+    install_error = result.returncode != 0
+    log_errors = check_log_for_errors(result.stdout + result.stderr)
+
+    if install_error or log_errors:
+        error_type = "install_fail" if install_error else "install_warn"
+        save_bad_case(os_name, loop_commands, loop_log, error_type)
+        log(f"Install error detected")
+        return error_type, True
+
+    # Test executables
+    executables = get_installed_executables(env_name)
+    log(f"Testing {len(executables)} executables")
+
+    exe_errors = []
+    for exe in executables:
+        cmd_str = f"epkg -e {env_name} run {exe} --help"
+        loop_commands.append(cmd_str)
+
+        success, output = test_executable_help(env_name, exe)
+        loop_log += f"=== RUN {exe} ===\n{output}\n"
+
+        if not success:
+            exe_errors.append(exe)
+            log(f"Executable test failed: {exe}")
+
+    if exe_errors:
+        save_bad_case(os_name, loop_commands, loop_log, "exe_fail")
+        log(f"Executable errors detected")
+        return "exe_fail", True
+
+    # Restore to generation 1
+    log("Restoring to generation 1")
+    cmd_str = f"epkg -e {env_name} restore 1"
+    loop_commands.append(cmd_str)
+
+    result = run_epkg(['restore', '1'], env_name)
+    loop_log += f"=== RESTORE ===\n{result.stdout}\n{result.stderr}\n"
+
+    if result.returncode != 0:
+        save_bad_case(os_name, loop_commands, loop_log, "restore_fail")
+        log(f"Restore error detected")
+        return "restore_fail", True
+
+    # Check tmpfs usage
+    usage = get_tmpfs_usage_percent()
+    log(f"TMPFS usage: {usage:.1f}%")
+
+    if usage > 80:
+        log("Running epkg gc to free memory")
+        result = run_epkg(['gc'], env_name='self')
+        log(f"GC output: {result.stdout[:100]}")
+
+    time.sleep(1)
+    return None, False
+
+
 def cmd_run(os_name: str, batch_size: int, max_errors: int):
     """
     Main fuzz test loop.
@@ -482,17 +561,22 @@ def cmd_run(os_name: str, batch_size: int, max_errors: int):
     - Check tmpfs usage, gc if needed
     - Save bad cases on errors
     """
+    # Ensure CACHE_DIR and BAD_CASES_DIR are set
+    if not CACHE_DIR:
+        log("ERROR: CACHE_DIR environment variable is required")
+        return
+
+    global BAD_CASES_DIR
+    BAD_CASES_DIR = Path(CACHE_DIR) / "bad-cases"
+    if not BAD_CASES_DIR.exists():
+        BAD_CASES_DIR.mkdir(parents=True, exist_ok=True)
+
     env_name = create_environment(os_name)
     packages = get_available_packages(os_name, env_name)
 
     if not packages:
         log("ERROR: No packages available")
         return
-
-    # Ensure BAD_CASES_DIR is set
-    global BAD_CASES_DIR
-    if not BAD_CASES_DIR and CACHE_DIR:
-        BAD_CASES_DIR = Path(CACHE_DIR) / "bad-cases"
 
     error_count = 0
     loop_count = 0
@@ -503,77 +587,12 @@ def cmd_run(os_name: str, batch_size: int, max_errors: int):
         loop_count += 1
         log(f"=== Loop {loop_count} ===")
 
-        loop_commands = []
-        loop_log = ""
-
-        # Select random packages
-        batch = random.sample(packages, min(batch_size, len(packages)))
-        batch_str = ' '.join(batch)
-        log(f"Selected packages: {batch_str}")
-
-        # Install packages
-        cmd_str = f"epkg -e {env_name} install --assume-yes {batch_str}"
-        loop_commands.append(cmd_str)
-
-        result = run_epkg(['install', '--assume-yes'] + batch, env_name)
-        loop_log += f"=== INSTALL ===\n{result.stdout}\n{result.stderr}\n"
-
-        install_error = result.returncode != 0
-        log_errors = check_log_for_errors(result.stdout + result.stderr)
-
-        if install_error or log_errors:
-            error_type = "install_fail" if install_error else "install_warn"
-            save_bad_case(os_name, loop_commands, loop_log, error_type)
+        error_type, has_error = run_fuzz_iteration(
+            os_name, env_name, packages, batch_size
+        )
+        if has_error:
             error_count += 1
-            log(f"Install error detected ({error_count}/{max_errors})")
-        else:
-            # Test executables
-            executables = get_installed_executables(env_name)
-            log(f"Testing {len(executables)} executables")
-
-            exe_errors = []
-            for exe in executables:
-                cmd_str = f"epkg -e {env_name} run {exe} --help"
-                loop_commands.append(cmd_str)
-
-                success, output = test_executable_help(env_name, exe)
-                loop_log += f"=== RUN {exe} ===\n{output}\n"
-
-                if not success:
-                    exe_errors.append(exe)
-                    log(f"Executable test failed: {exe}")
-
-            if exe_errors:
-                save_bad_case(os_name, loop_commands, loop_log, "exe_fail")
-                error_count += 1
-                log(f"Executable errors detected ({error_count}/{max_errors})")
-
-        # Restore to generation 1
-        log("Restoring to generation 1")
-        cmd_str = f"epkg -e {env_name} restore 1"
-        loop_commands.append(cmd_str)
-
-        result = run_epkg(['restore', '1'], env_name)
-        loop_log += f"=== RESTORE ===\n{result.stdout}\n{result.stderr}\n"
-
-        if result.returncode != 0:
-            save_bad_case(os_name, loop_commands, loop_log, "restore_fail")
-            error_count += 1
-            log(f"Restore error detected ({error_count}/{max_errors})")
-
-        # Check tmpfs usage
-        usage = get_tmpfs_usage_percent()
-        log(f"TMPFS usage: {usage:.1f}%")
-
-        if usage > 80:
-            log("Running epkg gc to free memory")
-            cmd_str = "epkg gc"
-            loop_commands.append(cmd_str)
-
-            result = run_epkg(['gc'], env_name='self')
-            loop_log += f"=== GC ===\n{result.stdout}\n{result.stderr}\n"
-
-        time.sleep(1)
+            log(f"Error count: {error_count}/{max_errors}")
 
     log(f"Fuzz test completed: {loop_count} loops, {error_count} errors")
 
