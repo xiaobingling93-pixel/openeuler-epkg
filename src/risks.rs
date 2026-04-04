@@ -11,8 +11,9 @@ use std::sync::Arc;
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use crate::models::InstalledPackagesMap;
-use crate::plan::{InstallationPlan, FilesystemInfo};
 use crate::models::PACKAGE_CACHE;
+use crate::models::config;
+use crate::plan::{InstallationPlan, FilesystemInfo};
 use crate::package_cache::map_pkgline2filelist;
 
 /// Returns true if `rel_path` (relative path under package `fs/`, POSIX separators) is a directory
@@ -339,12 +340,22 @@ pub fn validate_file_conflicts(
                         continue;
                     } else {
                         // Conflict with installed package
-                        return Err(eyre!(
-                            "File conflict: {} (from package {}) conflicts with installed file from package {}",
-                            file_path,
-                            pkgkey,
-                            existing_pkgkey
-                        ));
+                        if config().install.ignore_file_conflicts {
+                            log::warn!(
+                                "File conflict IGNORED: {} (from package {}) conflicts with installed file from package {} (--ignore-file-conflicts)",
+                                file_path,
+                                pkgkey,
+                                existing_pkgkey
+                            );
+                            continue;
+                        } else {
+                            return Err(eyre!(
+                                "File conflict: {} (from package {}) conflicts with installed file from package {}",
+                                file_path,
+                                pkgkey,
+                                existing_pkgkey
+                            ));
+                        }
                     }
                 }
             }

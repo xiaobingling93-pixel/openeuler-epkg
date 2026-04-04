@@ -495,10 +495,10 @@ def run_fuzz_iteration(os_name: str, env_name: str, packages: list,
     log(f"Selected packages: {batch_str}")
 
     # Install packages
-    cmd_str = f"epkg -e {env_name} install --assume-yes {batch_str}"
+    cmd_str = f"epkg -e {env_name} install --assume-yes --ignore-file-conflicts {batch_str}"
     loop_commands.append(cmd_str)
 
-    result = run_epkg(['install', '--assume-yes'] + batch, env_name)
+    result = run_epkg(['install', '--assume-yes', '--ignore-file-conflicts'] + batch, env_name)
     loop_log += f"=== INSTALL ===\n{result.stdout}\n{result.stderr}\n"
 
     install_error = result.returncode != 0

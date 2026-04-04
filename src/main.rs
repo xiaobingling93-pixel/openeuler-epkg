@@ -947,6 +947,7 @@ fn add_package_operation_subcommands(cmd: Command) -> Command {
             .arg(arg!(--"no-install-essentials" "Do not automatically install essential packages"))
             .arg(arg!(--"no-install" <PACKAGES> "Packages to exclude from installation (comma-separated list, use -pkgname to remove from list)").value_delimiter(','))
             .arg(arg!(--"prefer-low-version" "Prefer lower/older versions when multiple candidates are available"))
+            .arg(arg!(--"ignore-file-conflicts" "Ignore file conflicts and continue installation (dangerous, may break system)"))
             .arg(arg!(<PACKAGE_SPEC> ... "Package specifications to install (can be package names, local .rpm/.deb files, or URLs to package files)"))
             .arg_required_else_help(true)
     )
@@ -2205,6 +2206,9 @@ fn parse_options_install(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches
     }
     if sub_matches.contains_id("prefer-low-version") {
         config.install.prefer_low_version = sub_matches.get_flag("prefer-low-version");
+    }
+    if sub_matches.contains_id("ignore-file-conflicts") {
+        config.install.ignore_file_conflicts = sub_matches.get_flag("ignore-file-conflicts");
     }
     Ok(())
 }

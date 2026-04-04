@@ -1166,6 +1166,8 @@ pub struct InstallOptions {
     pub no_install: String, // Original cmdline string for --no-install (e.g., "pkg1,pkg2,-pkg3")
     #[serde(default)]
     pub prefer_low_version: bool,
+    #[serde(default)]
+    pub ignore_file_conflicts: bool,
 }
 
 #[derive(Default, Debug, Clone, Deserialize)]
