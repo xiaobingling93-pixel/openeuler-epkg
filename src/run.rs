@@ -729,7 +729,13 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
                 #[cfg(not(target_os = "linux"))]
                 if let Some(exit_code) = try_connect_and_execute_vm(env_root, &prepared_opts)? {
                     log::info!("run: reused existing VM session, exit_code={}", exit_code);
-                    return Ok(Some(exit_code));
+                    // For foreground processes, return Ok(None) on success, or error on failure
+                    // This matches the documented behavior: Ok(None) for foreground processes
+                    if exit_code == 0 {
+                        return Ok(None);
+                    } else {
+                        return Err(eyre::eyre!("Command exited with code {} in reused VM session", exit_code));
+                    }
                 }
 
                 crate::debug_epkg!("fork_and_execute: libkrun feature enabled, resolving command path");
