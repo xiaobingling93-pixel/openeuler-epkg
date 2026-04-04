@@ -331,7 +331,7 @@ def get_installed_executables(env_name: str) -> list:
 
 def test_executable_help(env_name: str, exe_path: str) -> tuple[bool, str]:
     """Test if executable can run with --help or --version."""
-    result = run_epkg(['run', exe_path, '--help'], env_name)
+    result = run_epkg(['run', '--', exe_path, '--help'], env_name)
 
     if result.returncode == 0:
         return True, result.stdout + result.stderr
@@ -348,7 +348,7 @@ def test_executable_help(env_name: str, exe_path: str) -> tuple[bool, str]:
         return False, output
 
     # Try --version as fallback
-    result = run_epkg(['run', exe_path, '--version'], env_name)
+    result = run_epkg(['run', '--', exe_path, '--version'], env_name)
     output = result.stdout + result.stderr
 
     if result.returncode == 0 or any(keyword in output for keyword in ['version', 'Version', 'Copyright']):
