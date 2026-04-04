@@ -533,12 +533,13 @@ fn build_libkrun_config(
     #[cfg(not(target_os = "windows"))]
     let vm_perf = "nowatchdog nmi_watchdog=0";
 
+    let init_path = if cfg!(feature = "embedded_init") { "/init.krun" } else { GUEST_INIT_PATH };
+    let reverse = if use_reverse_vsock { " epkg.vsock_reverse=1" } else { "" };
+
     // Build base cmdline - epkg controls all parameters for maximum flexibility
     // libkrun's DEFAULT_KERNEL_CMDLINE is minimal and may be replaced entirely
     #[cfg(target_os = "windows")]
     let base_cmdline = {
-        let init_path = if cfg!(feature = "embedded_init") { "/init.krun" } else { GUEST_INIT_PATH };
-        let reverse = if cfg!(feature = "embedded_init") { "" } else { " epkg.vsock_reverse=1" };
         // All Windows-specific params in one place, no duplication
         // Performance: Disable unused virtio devices to reduce boot time (~100ms savings)
         format!(
@@ -556,11 +557,10 @@ fn build_libkrun_config(
     #[cfg(not(target_os = "windows"))]
     let base_cmdline = {
         let ep = if vm_debug { "earlyprintk=hvc0" } else { "" };
-        let reverse = if use_reverse_vsock { " epkg.vsock_reverse=1" } else { "" };
         format!(
             "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 {} \
              rootfstype=virtiofs rw dax no-kvmapf {} {}{} init={}",
-            ep, vm_perf, loglevel, reverse, GUEST_INIT_PATH
+            ep, vm_perf, loglevel, reverse, init_path
         )
     };
     let mut kernel_args = base_cmdline;
