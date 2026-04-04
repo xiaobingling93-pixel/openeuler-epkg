@@ -220,10 +220,14 @@ def find_epkg_binary() -> Path:
     if EPKG_BIN:
         candidates.append(Path(EPKG_BIN))
 
+    # Find relative to script location (tests/fuzz/pir.py -> project_root)
+    script_dir = Path(__file__).parent
+    project_root = script_dir.parent.parent
+
     candidates.extend([
         HOME / ".epkg" / "envs" / "self" / "usr" / "bin" / "epkg",
-        Path.cwd() / "target" / "debug" / "epkg",
-        Path.cwd() / "target" / "release" / "epkg",
+        project_root / "target" / "debug" / "epkg",
+        project_root / "target" / "release" / "epkg",
     ])
 
     for path in candidates:
