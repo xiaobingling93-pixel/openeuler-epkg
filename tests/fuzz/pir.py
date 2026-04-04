@@ -20,6 +20,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 # Default configuration
 DEFAULT_BATCH_SIZE = 10
@@ -550,7 +551,7 @@ def run_fuzz_iteration(os_name: str, env_name: str, packages: list,
     return None, False
 
 
-def get_cache_dir_from_symlink() -> Path | None:
+def get_cache_dir_from_symlink() -> Optional[Path]:
     """Get CACHE_DIR from existing cache symlink."""
     cache_link = get_cache_symlink_path()
     if cache_link.exists() and cache_link.is_symlink():
