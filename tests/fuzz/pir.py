@@ -186,9 +186,11 @@ def cmd_setup(dry_run: bool = False) -> bool:
     # Setup .epkg symlink
     if epkg_link.exists():
         if epkg_link.is_symlink():
+            # On macOS, /tmp -> /private/tmp, so compare resolved paths
             current_target = epkg_link.resolve()
-            if current_target != tmpfs_path:
-                log(f"WARNING: .epkg links to {current_target}, expected {tmpfs_path}")
+            expected_target = tmpfs_path.resolve()
+            if current_target != expected_target:
+                log(f"WARNING: .epkg links to {current_target}, expected {expected_target}")
         else:
             log(f"ERROR: .epkg exists but is not a symlink")
             return False
@@ -199,9 +201,11 @@ def cmd_setup(dry_run: bool = False) -> bool:
     # Setup cache symlink
     if cache_link.exists():
         if cache_link.is_symlink():
+            # Compare resolved paths for consistency
             current_target = cache_link.resolve()
-            if current_target != cache_dir:
-                log(f"WARNING: cache links to {current_target}, expected {cache_dir}")
+            expected_target = cache_dir.resolve()
+            if current_target != expected_target:
+                log(f"WARNING: cache links to {current_target}, expected {expected_target}")
         else:
             log(f"ERROR: cache exists but is not a symlink")
             return False
