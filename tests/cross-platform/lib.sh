@@ -5,7 +5,10 @@
 # Detect the Python command name for the current platform
 # On Windows, conda only provides 'python.exe', not 'python3.exe'
 _get_python_cmd() {
-    if [ "$OS" = "Windows_NT" ]; then
+    # Check if running Windows epkg.exe (from WSL2 or native Windows)
+    if echo "$EPKG_BIN" | grep -q '\.exe$'; then
+        echo "python"
+    elif [ "$OS" = "Windows_NT" ]; then
         echo "python"
     else
         echo "python3"
@@ -125,7 +128,7 @@ test_ml_scikit() {
 test_util_jq() {
     run_install jq || return 1
     run jq --version || return 1
-    run jq . <<< '{"test":1}' || return 1
+    echo '{"test":1}' | run jq . || return 1
     return 0
 }
 
@@ -375,20 +378,19 @@ test_msys2_mingw_cpp_dev() {
 # Typical users install Python + numpy + pandas for data analysis
 test_conda_data_science() {
     local skip_list="$1"
+    local py_cmd="$(_get_python_cmd)"
 
     echo "--- Conda: Data Science scenario ---"
 
-    # Install Python
+    # Install Python (try run first, if fails due to GC, reinstall)
     if ! echo "$skip_list" | grep -qw "ds_python"; then
-        run_install python || return 1
-        local py_cmd="$(_get_python_cmd)"
+        run $py_cmd --version 2>/dev/null || run_install python || return 1
         run $py_cmd --version || return 1
     fi
 
     # Install numpy
     if ! echo "$skip_list" | grep -qw "ds_numpy"; then
         run_install numpy || return 1
-        local py_cmd="$(_get_python_cmd)"
         run $py_cmd -c "import numpy; print('numpy:', numpy.__version__)" || return 1
     fi
 
@@ -592,13 +594,14 @@ test_suite_run() {
 
     # epkg run with python (reliable cross-platform)
     if ! echo "$skip_list" | grep -qw "run_python"; then
-        epkg install python
-        epkg run $py_cmd --version || return 1
+        # Try to run first, if fails (e.g., after GC), reinstall
+        run $py_cmd --version 2>/dev/null || run_install python || return 1
+        run $py_cmd --version || return 1
     fi
 
     # epkg run with python -c
     if ! echo "$skip_list" | grep -qw "run_python_c"; then
-        epkg run $py_cmd -c "import os; print('Run test OK')" || return 1
+        run $py_cmd -c "import os; print('Run test OK')" || return 1
     fi
 
     return 0
