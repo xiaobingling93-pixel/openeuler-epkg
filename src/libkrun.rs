@@ -1805,6 +1805,11 @@ fn run_reverse_vsock_mode_inner(
         }
         Err(e) => {
             crate::debug_epkg!("accept_reverse_connection FAILED: {}", e);
+            // VM startup failed - wait for VM thread to finish and clean up context
+            log::error!("libkrun: VM startup failed: {}", e);
+            let _ = unsafe { krun_signal_shutdown(ctx_id) };
+            let _ = vm_thread.join();
+            let _ = unsafe { krun_free_ctx(ctx_id) };
             return Err(e);
         }
     };
@@ -1816,6 +1821,11 @@ fn run_reverse_vsock_mode_inner(
         }
         Err(e) => {
             crate::debug_epkg!("accept_reverse_connection FAILED: {}", e);
+            // VM startup failed - wait for VM thread to finish and clean up context
+            log::error!("libkrun: VM startup failed: {}", e);
+            let _ = unsafe { krun_signal_shutdown(ctx_id) };
+            let _ = vm_thread.join();
+            let _ = unsafe { krun_free_ctx(ctx_id) };
             return Err(e);
         }
     };
@@ -1993,9 +2003,18 @@ pub fn run_command_in_krun(
 
         crate::debug_epkg!("libkrun: waiting for guest to be ready (with timeout)...");
         #[cfg(unix)]
-        libkrun_bridge::wait_guest_ready_unix(&ready_listener, Some(&start_failed_rx))?;
+        let ready_result = libkrun_bridge::wait_guest_ready_unix(&ready_listener, Some(&start_failed_rx));
         #[cfg(windows)]
-        libkrun_bridge::wait_guest_ready_windows(&ready_pipe, Some(&start_failed_rx))?;
+        let ready_result = libkrun_bridge::wait_guest_ready_windows(&ready_pipe, Some(&start_failed_rx));
+
+        if let Err(e) = ready_result {
+            // VM startup failed - wait for VM thread to finish and clean up context
+            log::error!("libkrun: VM startup failed: {}", e);
+            let _ = unsafe { krun_signal_shutdown(ctx_id) };
+            let _ = vm_thread.join();
+            let _ = unsafe { krun_free_ctx(ctx_id) };
+            return Err(e);
+        }
         crate::debug_epkg!("libkrun: guest is ready");
 
         // Register session IMMEDIATELY after Guest is ready (before sending command).

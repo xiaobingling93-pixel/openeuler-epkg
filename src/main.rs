@@ -257,6 +257,34 @@ fn main() -> Result<()> {
             std::env::current_exe().as_ref().map(|p| p.display().to_string()).unwrap_or_else(|_| "<unknown>".to_string()));
     }
 
+    // Increase file descriptor limit on macOS to avoid "Too many open files" errors
+    // when running multiple VM operations (scriptlets). The default soft limit on macOS
+    // is only 256, which is too low for VM operations.
+    #[cfg(target_os = "macos")]
+    {
+        /// Minimum FD soft limit threshold - don't increase if already above this
+        const MIN_FD_LIMIT: u64 = 10_240;
+        /// Target FD limit to set if current is below MIN_FD_LIMIT
+        const TARGET_FD_LIMIT: u64 = 81_920;
+
+        let mut rlim: libc::rlimit = unsafe { std::mem::zeroed() };
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) } == 0 {
+            let soft = rlim.rlim_cur;
+            let hard = rlim.rlim_max;
+            // If soft limit is too low, try to increase it
+            if soft < MIN_FD_LIMIT {
+                let target = std::cmp::min(hard, TARGET_FD_LIMIT);
+                rlim.rlim_cur = target;
+                if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) } != 0 {
+                    let err = std::io::Error::last_os_error();
+                    log::warn!("Failed to increase file descriptor limit from {} to {}: {}", soft, target, err);
+                } else {
+                    log::debug!("Increased file descriptor limit from {} to {}", soft, target);
+                }
+            }
+        }
+    }
+
     log::debug!("argv[{}]: {:?}", argv.len(), argv);
 
     // Init CONFIG (and CLAP_MATCHES) for either applet or epkg main invocation
