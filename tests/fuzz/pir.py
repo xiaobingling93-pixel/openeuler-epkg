@@ -214,6 +214,14 @@ def cmd_setup(dry_run: bool = False) -> bool:
         cache_link.parent.mkdir(parents=True, exist_ok=True)
         cache_link.symlink_to(cache_dir)
 
+    # Ensure epkg binary is available (run self install if needed)
+    try:
+        epkg_bin = find_epkg_binary()
+        log(f"epkg binary: {epkg_bin}")
+    except RuntimeError as e:
+        log(f"ERROR: {e}")
+        return False
+
     return True
 
 
@@ -229,24 +237,25 @@ def find_epkg_binary() -> Path:
     project_root = script_dir.parent.parent
 
     self_epkg = HOME / ".epkg" / "envs" / "self" / "usr" / "bin" / "epkg"
+    self_assets = HOME / ".epkg" / "envs" / "self" / "usr" / "src" / "epkg" / "assets" / "repos"
     debug_epkg = project_root / "target" / "debug" / "epkg"
     release_epkg = project_root / "target" / "release" / "epkg"
 
-    candidates.extend([self_epkg, debug_epkg, release_epkg])
+    # Check if self env exists and is complete (has assets/repos)
+    if self_epkg.exists() and self_assets.exists():
+        return self_epkg.resolve()
 
-    for path in candidates:
-        if path.exists() and path.is_file():
-            return path.resolve()
+    candidates.extend([debug_epkg, release_epkg])
 
-    # If self env doesn't exist but we have a built binary, run self install
+    # Find a built binary
     built_epkg = None
-    for path in [debug_epkg, release_epkg]:
+    for path in candidates:
         if path.exists() and path.is_file():
             built_epkg = path
             break
 
     if built_epkg:
-        log(f"Running epkg self install (self env not found)")
+        log(f"Running epkg self install (self env not found or incomplete)")
         result = subprocess.run(
             [str(built_epkg), 'self', 'install'],
             capture_output=True, text=True
@@ -433,11 +442,28 @@ def save_bad_case(os_name: str, commands: list, log_content: str, error_type: st
 def create_environment(os_name: str) -> str:
     """Create fuzz test environment for the OS."""
     env_name = f"fuzz-{os_name}"
+    epkg_bin = find_epkg_binary()
+    env_path = get_epkg_symlink_path() / "envs" / env_name
 
-    run_epkg(['env', 'remove', env_name], env_name='self', capture_output=False)
+    env_vars = os.environ.copy()
+    env_vars['RUST_LOG'] = 'warn'
+    env_vars['RUST_BACKTRACE'] = '1'
+
+    # Remove existing env only if it exists
+    if env_path.exists():
+        log(f"Removing existing environment: {env_name}")
+        result = subprocess.run(
+            [str(epkg_bin), '-e', 'self', 'env', 'remove', env_name],
+            capture_output=True, text=True, env=env_vars
+        )
+        if result.returncode != 0:
+            log(f"env remove failed: {result.stderr[:200]}")
 
     log(f"Creating environment: {env_name}")
-    result = run_epkg(['env', 'create', env_name, '-c', os_name], env_name='self')
+    result = subprocess.run(
+        [str(epkg_bin), '-e', 'self', 'env', 'create', env_name, '-c', os_name],
+        capture_output=True, text=True, env=env_vars
+    )
 
     if result.returncode != 0:
         raise RuntimeError(f"Failed to create environment: {result.stderr}")
