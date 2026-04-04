@@ -1515,17 +1515,22 @@ fn validate_env_name(env_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Generate an environment name from a dir by replacing '/' with '__'.
+/// Generate an environment name from a dir by replacing '/' and '\' with '__'.
 /// Auto-generated names start with '__' to distinguish them from user-provided names.
 fn env_name_from_path(dir: &str) -> String {
     // Convert to absolute path for consistent naming
     let abs_dir = crate::utils::to_absolute_path(dir);
 
-    let trimmed = abs_dir.trim_matches('/');
+    // Trim both '/' and '\\' to handle Windows paths
+    let trimmed = abs_dir.trim_matches(|c| c == '/' || c == '\\');
     if trimmed.is_empty() {
         return "sysroot".to_string();
     }
-    let with_underscores = trimmed.replace('/', "__");
+    // Replace both '/' and '\\' with "__", and ':' with "_" (for Windows drive letters)
+    let with_underscores = trimmed
+        .replace('/', "__")
+        .replace('\\', "__")
+        .replace(':', "_");
     // Ensure name starts with '__' to mark as auto-generated
     if with_underscores.starts_with("__") {
         with_underscores
