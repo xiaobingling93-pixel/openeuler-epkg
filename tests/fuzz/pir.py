@@ -214,7 +214,7 @@ def cmd_setup(dry_run: bool = False) -> bool:
 
 
 def find_epkg_binary() -> Path:
-    """Find epkg binary path."""
+    """Find epkg binary path, run self install if needed."""
     candidates = []
 
     if EPKG_BIN:
@@ -224,15 +224,35 @@ def find_epkg_binary() -> Path:
     script_dir = Path(__file__).parent
     project_root = script_dir.parent.parent
 
-    candidates.extend([
-        HOME / ".epkg" / "envs" / "self" / "usr" / "bin" / "epkg",
-        project_root / "target" / "debug" / "epkg",
-        project_root / "target" / "release" / "epkg",
-    ])
+    self_epkg = HOME / ".epkg" / "envs" / "self" / "usr" / "bin" / "epkg"
+    debug_epkg = project_root / "target" / "debug" / "epkg"
+    release_epkg = project_root / "target" / "release" / "epkg"
+
+    candidates.extend([self_epkg, debug_epkg, release_epkg])
 
     for path in candidates:
         if path.exists() and path.is_file():
             return path.resolve()
+
+    # If self env doesn't exist but we have a built binary, run self install
+    built_epkg = None
+    for path in [debug_epkg, release_epkg]:
+        if path.exists() and path.is_file():
+            built_epkg = path
+            break
+
+    if built_epkg:
+        log(f"Running epkg self install (self env not found)")
+        result = subprocess.run(
+            [str(built_epkg), 'self', 'install'],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            log(f"ERROR: epkg self install failed: {result.stderr}")
+            raise RuntimeError("epkg self install failed")
+        if self_epkg.exists():
+            return self_epkg.resolve()
+        return built_epkg.resolve()
 
     raise RuntimeError("epkg binary not found. Set EPKG_BIN or build the project.")
 
