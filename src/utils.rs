@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::io::{BufRead, BufReader, Read, Write, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Write, Seek, SeekFrom, IsTerminal};
 use std::path::Path;
 use std::path::PathBuf;
 use color_eyre::Result;
@@ -759,7 +759,7 @@ pub fn user_prompt_and_confirm() -> Result<bool> {
     }
 
     // Auto-assume-yes when stdin is not a TTY (e.g., running from script)
-    let stdin_is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) != 0 };
+    let stdin_is_tty = std::io::stdin().is_terminal();
     if !stdin_is_tty {
         return Ok(true);
     }

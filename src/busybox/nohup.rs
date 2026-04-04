@@ -3,6 +3,7 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use std::env;
 use std::fs::OpenOptions;
+use std::io::IsTerminal;
 use std::process;
 
 pub struct NohupOptions {
@@ -52,8 +53,8 @@ pub fn run(options: NohupOptions) -> Result<()> {
     };
 
     // Check if stdout/stderr are terminals
-    let stdout_is_tty = unsafe { libc::isatty(libc::STDOUT_FILENO) != 0 };
-    let stderr_is_tty = unsafe { libc::isatty(libc::STDERR_FILENO) != 0 };
+    let stdout_is_tty = std::io::stdout().is_terminal();
+    let stderr_is_tty = std::io::stderr().is_terminal();
 
     let cmd = &options.command[0];
     let args = &options.command[1..];

@@ -1,7 +1,7 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
-use std::io::{self, Write, BufRead, BufReader};
+use std::io::{self, Write, BufRead, BufReader, IsTerminal};
 use std::fs;
 use mlua::Lua;
 use crate::shebang::strip_shebang;
@@ -261,9 +261,7 @@ enum Control {
 
 fn run_interactive(lua: &Lua) -> Result<()> {
     // Check if we're in a TTY
-    let is_tty = unsafe {
-        libc::isatty(libc::STDOUT_FILENO) != 0 && libc::isatty(libc::STDIN_FILENO) != 0
-    };
+    let is_tty = std::io::stdout().is_terminal() && std::io::stdin().is_terminal();
     if !is_tty {
         return Err(eyre!("rpmlua: interactive mode requires a TTY"));
     }
