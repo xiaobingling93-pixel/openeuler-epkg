@@ -550,6 +550,14 @@ def run_fuzz_iteration(os_name: str, env_name: str, packages: list,
     return None, False
 
 
+def get_cache_dir_from_symlink() -> Path | None:
+    """Get CACHE_DIR from existing cache symlink."""
+    cache_link = get_cache_symlink_path()
+    if cache_link.exists() and cache_link.is_symlink():
+        return cache_link.resolve()
+    return None
+
+
 def cmd_run(os_name: str, batch_size: int, max_errors: int):
     """
     Main fuzz test loop.
@@ -561,13 +569,20 @@ def cmd_run(os_name: str, batch_size: int, max_errors: int):
     - Check tmpfs usage, gc if needed
     - Save bad cases on errors
     """
-    # Ensure CACHE_DIR and BAD_CASES_DIR are set
-    if not CACHE_DIR:
-        log("ERROR: CACHE_DIR environment variable is required")
+    # Get CACHE_DIR from env or existing symlink
+    cache_dir = None
+    if CACHE_DIR:
+        cache_dir = Path(CACHE_DIR)
+    else:
+        cache_dir = get_cache_dir_from_symlink()
+
+    if not cache_dir:
+        log("ERROR: CACHE_DIR not set and cache symlink not found")
+        log("       Run 'pir.py setup' first or set CACHE_DIR environment variable")
         return
 
     global BAD_CASES_DIR
-    BAD_CASES_DIR = Path(CACHE_DIR) / "bad-cases"
+    BAD_CASES_DIR = cache_dir / "bad-cases"
     if not BAD_CASES_DIR.exists():
         BAD_CASES_DIR.mkdir(parents=True, exist_ok=True)
 
