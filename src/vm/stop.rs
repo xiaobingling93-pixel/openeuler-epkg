@@ -75,7 +75,7 @@ fn send_shutdown_to_guest(socket_path: &Path) -> Result<()> {
     // Windows: use named pipe
     use std::io::Write;
 
-    let stream = crate::libkrun::libkrun_bridge::connect_vsock_bridge(socket_path, 5)?;
+    let stream = crate::libkrun::bridge::connect_vsock_bridge(socket_path, 5)?;
 
     // Send session_done command
     let request = serde_json::json!({

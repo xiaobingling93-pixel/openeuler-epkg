@@ -7,7 +7,7 @@
 //! - `vm status` - Show VM status (YAML) (all platforms)
 //!
 //! Session management (session.rs) is used by libkrun backend on non-Linux for
-//! cross-process VM discovery. On Linux, QEMU VMs are managed through vm_client directly.
+//! cross-process VM discovery. On Linux, QEMU VMs are managed through vm::client directly.
 //!
 //! Guest daemon (guest_daemon.rs) runs inside the VM to handle commands from host.
 
@@ -27,6 +27,9 @@ mod status;
 
 #[cfg(target_os = "linux")]
 pub mod guest_daemon;
+
+#[cfg(target_os = "linux")]
+pub mod client;
 
 #[cfg(not(target_os = "linux"))]
 pub use session::{VmConfig, discover_vm_session, register_vm_session, register_vm_session_simple, unregister_vm_session, is_vm_session_active, vm_socket_path_for_env};

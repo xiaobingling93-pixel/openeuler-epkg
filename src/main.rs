@@ -156,7 +156,6 @@ mod libkrun;
 
 // vm session management is available on all platforms for cross-process discovery
 mod vm;
-mod vm_client;
 mod busybox;
 mod info;
 mod list;

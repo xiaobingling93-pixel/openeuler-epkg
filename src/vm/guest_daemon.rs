@@ -137,7 +137,7 @@ use nix::sys::socket::{self, AddressFamily, SockType, SockFlag, VsockAddr, Backl
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use crate::run::VM_SESSION_DONE_CMD;
-use crate::vm_client::StreamMessage;
+use super::client::StreamMessage;
 
 /// Poll timeout in milliseconds for PTY/pipe and TCP wait.
 const POLL_TIMEOUT_MS: u32 = 1000;

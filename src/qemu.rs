@@ -162,7 +162,7 @@ fn get_qemu_cpu_model(qemu_bin: &str) -> &'static str {
         "host"
     }
 }
-use crate::vm_client;
+use crate::vm::client;
 use color_eyre::eyre;
 use color_eyre::Result;
 use crate::models::dirs;
@@ -797,7 +797,7 @@ fn handle_guest_execution(
         // `vm_keep_timeout: Some(_)` enables reuse_session + idle window for `epkg run --reuse`.
         let qemu_stderr_path = qemu_log_path.with_extension("stderr.log");
         let reuse_session = vm_keep_timeout.is_some();
-        match vm_client::wait_ready_and_send_command_with_qemu(
+        match client::wait_ready_and_send_command_with_qemu(
             cmd_parts,
             io_mode,
             10000,
@@ -827,7 +827,7 @@ fn handle_guest_execution(
             }
         }
     } else if use_control_channel {
-        match vm_client::send_command_via_tcp(cmd_parts, io_mode) {
+        match client::send_command_via_tcp(cmd_parts, io_mode) {
             Ok(cmd_exit_code) => {
                 let _ = qemu_child
                     .wait()
@@ -873,7 +873,7 @@ pub fn run_command_in_qemu(
 ) -> Result<()> {
     if run_options.vm_reuse_connect {
         let (cmd_parts, _) = build_guest_command(guest_cmd_path, &run_options.args)?;
-        let code = vm_client::send_command_to_running_qemu_guest(
+        let code = client::send_command_to_running_qemu_guest(
             &cmd_parts,
             run_options.io_mode,
             run_options.vm_keep_timeout,

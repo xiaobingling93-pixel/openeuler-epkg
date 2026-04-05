@@ -270,6 +270,10 @@ def run_fuzz_iteration(os_name, env_name, ...):
 
 | 文件 | 功能 |
 |------|------|
+| `src/libkrun/mod.rs` | libkrun 模块入口 |
+| `src/libkrun/core.rs` | libkrun VM 核心逻辑（run_vm_daemon_mode） |
+| `src/libkrun/bridge.rs` | vsock 桥接（ready listener、connect、reverse mode） |
+| `src/libkrun/stream.rs` | 命令流处理（send_command_via_vsock、streaming I/O） |
 | `src/vm/mod.rs` | vm 模块入口 |
 | `src/vm/session.rs` | Session 文件管理 |
 | `src/vm/start.rs` | vm start 实现 |
@@ -278,9 +282,8 @@ def run_fuzz_iteration(os_name, env_name, ...):
 | `src/vm/list.rs` | vm list 实现 |
 | `src/vm/status.rs` | vm status 实现 |
 | `src/vm/guest_daemon.rs` | Guest 端 vm_daemon |
-| `src/libkrun.rs` | libkrun backend（run_vm_daemon_mode） |
-| `src/libkrun_bridge.rs` | vsock 桥接（ready listener、connect、reverse mode） |
-| `src/libkrun_stream.rs` | 命令流处理（send_command_via_vsock、streaming I/O） |
+| `src/vm/client.rs` | QEMU TCP/vsock client |
+| `src/qemu.rs` | QEMU backend |
 | `src/run.rs` | 自动复用机制 |
 
 ## 验证步骤

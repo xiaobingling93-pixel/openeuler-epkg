@@ -123,7 +123,7 @@ fn connect_to_existing_vm_socket(env_root: &Path) -> Result<Option<std::fs::File
         None => return Ok(None),
     };
 
-    let stream = libkrun_bridge::connect_vsock_bridge(&info.socket_path, 5)?;
+    let stream = super::bridge::connect_vsock_bridge(&info.socket_path, 5)?;
     log::info!("libkrun: connected to existing VM pipe: {}", info.socket_path.display());
     Ok(Some(stream))
 }
@@ -143,7 +143,7 @@ pub fn execute_via_existing_vm(
     };
 
     log::info!("libkrun: executing command via existing VM: {:?}", cmd_parts);
-    let exit_code = libkrun_stream::send_command_over_stream(
+    let exit_code = super::stream::send_command_over_stream(
         cmd_parts,
         io_mode,
         false, // not reuse_vm - just a one-shot command
@@ -171,7 +171,7 @@ pub fn execute_via_existing_vm(
     };
 
     log::info!("libkrun: executing command via existing VM: {:?}", cmd_parts);
-    let exit_code = libkrun_stream::send_command_over_named_pipe(
+    let exit_code = super::stream::send_command_over_named_pipe(
         cmd_parts,
         io_mode,
         false, // not reuse_vm - just a one-shot command
@@ -231,13 +231,6 @@ impl VmCreateLock {
 /// to the embedded init binary, defined in libkrun git's embedded_init feature).
 #[cfg(feature = "libkrun")]
 const GUEST_INIT_PATH: &str = "/usr/bin/init";
-
-#[cfg(feature = "libkrun")]
-#[path = "libkrun_bridge.rs"]
-pub mod libkrun_bridge;
-#[cfg(feature = "libkrun")]
-#[path = "libkrun_stream.rs"]
-mod libkrun_stream;
 
 #[cfg(feature = "libkrun")]
 extern crate krun as krun_crate;
@@ -1017,7 +1010,7 @@ fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext, env_root: &Path, reverse:
         }
         #[cfg(windows)]
         {
-            let stem = libkrun_bridge::pipe_name_from_sock_path(&sock_path)?;
+            let stem = super::bridge::pipe_name_from_sock_path(&sock_path)?;
             let stem_c = CString::new(stem).map_err(|e| eyre::eyre!("invalid vsock pipe name: {}", e))?;
             check_status(
                 "krun_add_vsock_port2_windows",
@@ -1039,7 +1032,7 @@ fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext, env_root: &Path, reverse:
             }
             #[cfg(windows)]
             {
-                let stem = libkrun_bridge::pipe_name_from_sock_path(&ready_path)?;
+                let stem = super::bridge::pipe_name_from_sock_path(&ready_path)?;
                 let stem_c = CString::new(stem).map_err(|e| eyre::eyre!("invalid ready pipe name: {}", e))?;
                 check_status(
                     "krun_add_vsock_port2_windows",
@@ -1574,9 +1567,9 @@ fn try_reuse_existing_krun_session(
         if has_reverse_listener {
             let listener = reverse_listener_opt.unwrap()?;
             log::debug!("libkrun: accepting reverse connection for reuse...");
-            let stream = libkrun_bridge::accept_reverse_connection(&listener, None)?;
+            let stream = super::bridge::accept_reverse_connection(&listener, None)?;
             log::debug!("libkrun: Guest reconnected, sending command...");
-            let exit_code = libkrun_stream::send_command_over_stream(
+            let exit_code = super::stream::send_command_over_stream(
                 &config.cmd_parts,
                 run_options.io_mode,
                 run_options.reuse_vm,
@@ -1591,7 +1584,7 @@ fn try_reuse_existing_krun_session(
         }
 
         // Forward mode: Host connects to Guest
-        let code = libkrun_stream::send_command_via_vsock(
+        let code = super::stream::send_command_via_vsock(
             &config.cmd_parts,
             run_options.io_mode,
             run_options.reuse_vm,
@@ -1618,7 +1611,7 @@ fn try_reuse_existing_krun_session(
 
 #[cfg(all(feature = "libkrun", not(target_os = "linux")))]
 fn send_session_done_unix(sock_path: &Path) -> Result<()> {
-    let req = serde_json::to_vec(&libkrun_stream::build_command_request(
+    let req = serde_json::to_vec(&super::stream::build_command_request(
         &[crate::run::VM_SESSION_DONE_CMD.to_string()],
         crate::models::IoMode::Stream,
         false,
@@ -1628,14 +1621,14 @@ fn send_session_done_unix(sock_path: &Path) -> Result<()> {
     ))?;
     #[cfg(unix)]
     {
-        let mut stream = libkrun_bridge::connect_vsock_bridge(sock_path, 30)?;
+        let mut stream = super::bridge::connect_vsock_bridge(sock_path, 30)?;
         stream.write_all(&req)?;
         stream.write_all(b"\n")?;
         stream.flush()?;
     }
     #[cfg(windows)]
     {
-        let mut stream = libkrun_bridge::connect_vsock_bridge(sock_path, 30)?;
+        let mut stream = super::bridge::connect_vsock_bridge(sock_path, 30)?;
         stream.write_all(&req)?;
         stream.write_all(b"\n")?;
         stream.flush()?;
@@ -1734,7 +1727,7 @@ fn krun_vsock_shutdown_join_free_exit(
         crate::debug_epkg!("libkrun: skipping VM cleanup on non-Linux, exiting with code {}", exit_code);
         // Dump FUSE statistics before exit (debug mode only)
         if std::env::var("EPKG_DEBUG_LIBKRUN").is_ok() {
-            unsafe { crate::libkrun::krun_dump_fuse_stats(ctx_id) };
+            unsafe { krun_dump_fuse_stats(ctx_id) };
         }
         // Signal shutdown to VM (best effort)
         let _ = unsafe { krun_signal_shutdown(ctx_id) };
@@ -1817,9 +1810,9 @@ fn run_reverse_vsock_mode_inner(
     // Set up reverse listener on Host (port 10000)
     // In reverse mode, Host listens and Guest connects
     #[cfg(unix)]
-    let reverse_listener = libkrun_bridge::setup_reverse_listener(&vsock_sock_path)?;
+    let reverse_listener = super::bridge::setup_reverse_listener(&vsock_sock_path)?;
     #[cfg(windows)]
-    let reverse_pipe = libkrun_bridge::setup_reverse_listener(&vsock_sock_path)?;
+    let reverse_pipe = super::bridge::setup_reverse_listener(&vsock_sock_path)?;
 
     crate::debug_epkg!("reverse listener set up on {}", vsock_sock_path.display());
 
@@ -1834,7 +1827,7 @@ fn run_reverse_vsock_mode_inner(
     // Wait for Guest to connect (with timeout)
     crate::debug_epkg!("[PERF] waiting for Guest to connect...");
     #[cfg(unix)]
-    let stream = match libkrun_bridge::accept_reverse_connection(&reverse_listener, Some(&start_failed_rx)) {
+    let stream = match super::bridge::accept_reverse_connection(&reverse_listener, Some(&start_failed_rx)) {
         Ok(s) => {
             crate::debug_epkg!("[PERF] Guest connected after {:.3}ms", vm_start.elapsed().as_secs_f64() * 1000.0);
             s
@@ -1850,7 +1843,7 @@ fn run_reverse_vsock_mode_inner(
         }
     };
     #[cfg(windows)]
-    let stream = match libkrun_bridge::accept_reverse_connection(reverse_pipe, Some(&start_failed_rx)) {
+    let stream = match super::bridge::accept_reverse_connection(reverse_pipe, Some(&start_failed_rx)) {
         Ok(s) => {
             crate::debug_epkg!("[PERF] Guest connected after {:.3}ms", vm_start.elapsed().as_secs_f64() * 1000.0);
             s
@@ -1880,7 +1873,7 @@ fn run_reverse_vsock_mode_inner(
     // Send command over the accepted connection
     // On Windows, use the named-pipe-specific function that calls FlushFileBuffers
     #[cfg(windows)]
-    let exit_code = match libkrun_stream::send_command_over_named_pipe(
+    let exit_code = match super::stream::send_command_over_named_pipe(
         &config.cmd_parts,
         run_options.io_mode,
         run_options.reuse_vm,
@@ -1899,7 +1892,7 @@ fn run_reverse_vsock_mode_inner(
         }
     };
     #[cfg(not(windows))]
-    let exit_code = match libkrun_stream::send_command_over_stream(
+    let exit_code = match super::stream::send_command_over_stream(
         &config.cmd_parts,
         run_options.io_mode,
         run_options.reuse_vm,
@@ -2022,10 +2015,10 @@ pub fn run_command_in_krun(
         // Use env_hash for ready listener (matches vsock socket naming)
         let env_hash = crate::utils::hash_env_root(env_root);
         #[cfg(unix)]
-        let ready_listener = libkrun_bridge::setup_vsock_ready_listener(&env_hash)?
+        let ready_listener = super::bridge::setup_vsock_ready_listener(&env_hash)?
             .ok_or_else(|| eyre::eyre!("libkrun: missing ready listener"))?;
         #[cfg(windows)]
-        let ready_pipe = libkrun_bridge::setup_vsock_ready_listener(&env_hash)?
+        let ready_pipe = super::bridge::setup_vsock_ready_listener(&env_hash)?
             .ok_or_else(|| eyre::eyre!("libkrun: missing ready listener"))?;
 
         crate::debug_epkg!("vsock ready listener set up");
@@ -2043,9 +2036,9 @@ pub fn run_command_in_krun(
 
         crate::debug_epkg!("libkrun: waiting for guest to be ready (with timeout)...");
         #[cfg(unix)]
-        let ready_result = libkrun_bridge::wait_guest_ready_unix(&ready_listener, Some(&start_failed_rx));
+        let ready_result = super::bridge::wait_guest_ready_unix(&ready_listener, Some(&start_failed_rx));
         #[cfg(windows)]
-        let ready_result = libkrun_bridge::wait_guest_ready_windows(&ready_pipe, Some(&start_failed_rx));
+        let ready_result = super::bridge::wait_guest_ready_windows(&ready_pipe, Some(&start_failed_rx));
 
         if let Err(e) = ready_result {
             // VM startup failed - wait for VM thread to finish and clean up context
@@ -2075,7 +2068,7 @@ pub fn run_command_in_krun(
         // The ready signal confirms guest vm_daemon is running and waiting.
 
         crate::debug_epkg!("libkrun: sending command via vsock...");
-        let exit_code = libkrun_stream::send_command_via_vsock(
+        let exit_code = super::stream::send_command_via_vsock(
             &config.cmd_parts,
             run_options.io_mode,
             run_options.reuse_vm,
@@ -2158,7 +2151,7 @@ pub fn run_vm_daemon_mode(
 
     // Setup ready listener
     let env_hash = crate::utils::hash_env_root(env_root);
-    let ready_listener = libkrun_bridge::setup_vsock_ready_listener(&env_hash)?
+    let ready_listener = super::bridge::setup_vsock_ready_listener(&env_hash)?
         .ok_or_else(|| eyre::eyre!("libkrun: missing ready listener"))?;
 
     // Start VM thread
@@ -2166,7 +2159,7 @@ pub fn run_vm_daemon_mode(
     let vm_thread = start_libkrun_vm(vm_ctx.ctx, start_failed_tx);
 
     // Wait for guest ready
-    let ready_result = libkrun_bridge::wait_guest_ready_unix(&ready_listener, Some(&start_failed_rx));
+    let ready_result = super::bridge::wait_guest_ready_unix(&ready_listener, Some(&start_failed_rx));
     if let Err(e) = ready_result {
         log::error!("libkrun: VM startup failed in daemon mode: {}", e);
         let _ = unsafe { krun_signal_shutdown(ctx_id) };
