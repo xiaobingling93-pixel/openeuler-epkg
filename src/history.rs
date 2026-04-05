@@ -28,6 +28,12 @@ pub fn get_current_generation_id() -> Result<u32> {
     Ok(generation_id)
 }
 
+/// Create a new generation directory for install/upgrade/remove/restore operations.
+///
+/// Always creates generation (current_id + 1):
+/// - env create creates generation 0
+/// - subsequent operations (install, restore) always increment by 1
+/// - restore creates new generation with content matching the restore target
 pub fn create_new_generation_with_root(generations_root: &Path) -> Result<PathBuf> {
     // Get current generation info
     let current_link = generations_root.join("current");
@@ -171,6 +177,15 @@ pub fn print_history() -> Result<()> {
     Ok(())
 }
 
+/// Rollback/restore environment to a specific generation.
+///
+/// Generation semantics:
+/// - Generation 0: created by `env create` (empty initial state)
+/// - Each install/restore operation creates a new generation (current_id + 1)
+/// - Restore only works on CONTENT (installed packages), not on generation number
+/// - After restore to generation N, a new generation (current_id + 1) is created
+///   with content matching generation N
+/// - `restore 0` restores to empty state (like fresh `env create`)
 pub fn rollback_history(rollback_id: i32) -> Result<()> {
     crate::repo::sync_channel_metadata()?;
 
