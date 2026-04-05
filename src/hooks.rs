@@ -1501,17 +1501,10 @@ fn parse_hook_exec(hook: &Hook) -> Result<(String, Vec<String>)> {
         // For VM mode, convert host path to guest path
         #[cfg(not(target_os = "linux"))]
         let pkginfo_dir = {
-            let home_epkg = crate::models::dirs().home_epkg.clone();
-            let home_epkg_resolved = std::fs::canonicalize(&home_epkg).unwrap_or_else(|_| home_epkg.clone());
             let pkginfo_path = std::path::Path::new(&pkginfo_dir);
-            let pkginfo_resolved = std::fs::canonicalize(pkginfo_path).unwrap_or_else(|_| pkginfo_path.to_path_buf());
-            if let Ok(relative) = pkginfo_resolved.strip_prefix(&home_epkg_resolved) {
-                format!("/opt/epkg/{}", relative.to_string_lossy().trim_start_matches('/'))
-            } else if let Ok(relative) = pkginfo_path.strip_prefix(&crate::models::dirs().home_epkg) {
-                format!("/opt/epkg/{}", relative.to_string_lossy().trim_start_matches('/'))
-            } else {
-                pkginfo_dir
-            }
+            crate::scriptlets::host_path_to_guest_path(pkginfo_path)
+                .to_string_lossy()
+                .to_string()
         };
         hook.action.exec.replace("%PKGINFO_DIR", &pkginfo_dir)
     } else {

@@ -15,7 +15,7 @@ use color_eyre::eyre::{eyre, Result};
 /// - host_nonroot + guest_root: home_epkg → /root/.epkg, home_cache → /root/.cache
 /// - host_nonroot + guest_nonroot: same path (UIDs match via virtiofs)
 #[cfg(not(target_os = "linux"))]
-fn host_path_to_guest_path(host_path: &std::path::Path) -> std::path::PathBuf {
+pub fn host_path_to_guest_path(host_path: &std::path::Path) -> std::path::PathBuf {
     use crate::models::dirs;
 
     let home_epkg = dirs().home_epkg.clone();
@@ -137,7 +137,7 @@ fn host_path_to_guest_path(host_path: &std::path::Path) -> std::path::PathBuf {
 }
 
 #[cfg(target_os = "linux")]
-fn host_path_to_guest_path(host_path: &std::path::Path) -> std::path::PathBuf {
+pub fn host_path_to_guest_path(host_path: &std::path::Path) -> std::path::PathBuf {
     host_path.to_path_buf()
 }
 

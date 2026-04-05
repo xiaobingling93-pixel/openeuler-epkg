@@ -459,6 +459,8 @@ def save_bad_case(os_name: str, commands: list, log_content: str, error_type: st
         f.write("#   - \"do proper fix\" - 正确修复，不要临时方案\n")
         f.write("#   - \"no fix for sake of fix\" - 不要为了修而修\n")
         f.write("#   - 反虚假声明: 不确定的地方说不确定，没验证就不要暗示通过了\n")
+        f.write("#   - 消除干扰项: 例如，日志中的正常行为warn(各用户场景下均无实际风险), 应降级为debug/info，避免干扰未来分析\n")
+        f.write("#     (就像需要消除所有build warnings一样)\n")
         f.write("# ============================================================\n")
         f.write("#\n")
         f.write("# AI troubleshooting guide:\n")
