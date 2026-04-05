@@ -534,6 +534,25 @@ def create_environment(os_name: str) -> str:
     return env_name
 
 
+def get_current_generation(env_name: str) -> int:
+    """Get current generation number for an environment."""
+    env_path = get_epkg_symlink_path() / "envs" / env_name
+    current_link = env_path / "generations" / "current"
+
+    if not current_link.exists():
+        return 0
+
+    target = current_link.resolve()
+    if not target.exists():
+        return 0
+
+    gen_name = target.name
+    try:
+        return int(gen_name)
+    except ValueError:
+        return 0
+
+
 def run_fuzz_iteration(os_name: str, env_name: str, packages: list,
                         batch_size: int, whitelist: list) -> tuple[str, bool]:
     """
@@ -625,12 +644,18 @@ def run_fuzz_iteration(os_name: str, env_name: str, packages: list,
         log(f"Executable errors detected")
         return "exe_fail", True
 
-    # Restore to generation 1
-    log("Restoring to generation 1")
-    cmd_str = f"epkg -e {env_name} restore 1"
+    # Skip restore if current generation is still 0 (install didn't advance generation)
+    current_gen = get_current_generation(env_name)
+    if current_gen == 0:
+        log(f"Current generation is 0, skipping restore")
+        return None, False
+
+    # Restore to generation 0 (empty state)
+    log("Restoring to generation 0")
+    cmd_str = f"epkg -e {env_name} restore 0"
     loop_commands.append(cmd_str)
 
-    result = run_epkg(['restore', '1'], env_name)
+    result = run_epkg(['restore', '0'], env_name)
     loop_log += f"=== RESTORE ===\n{result.stdout}\n{result.stderr}\n"
 
     if result.returncode != 0:
