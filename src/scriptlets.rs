@@ -615,8 +615,11 @@ fn try_scriptlet_interpreter_loop(
     script_path: &std::path::Path,
     interpreters: &[&'static str],
     params: Vec<String>,
-) -> Result<bool> {
+) -> Result<(bool, bool)> {
     let mut script_executed = false;
+    // Track if all interpreter failures were due to VM startup failure (systemic issue)
+    // When VM fails to start, subsequent scriptlet failures are expected cascading effects
+    let mut all_vm_failures = true;
     for interpreter in interpreters {
         let interpreter_path = crate::dirs::path_join(env_root, &["usr", "bin"]).join(interpreter);
 
@@ -718,6 +721,10 @@ fn try_scriptlet_interpreter_loop(
                     script_executed = true;
                     break;
                 } else {
+                    // Check if this is a VM startup failure (systemic issue)
+                    if !error_msg.contains("VM failed to start") {
+                        all_vm_failures = false;
+                    }
                     log::debug!(
                         "Failed to execute {:?} scriptlet for package {} using {}: {}, trying next interpreter",
                         scriptlet_type,
@@ -730,7 +737,9 @@ fn try_scriptlet_interpreter_loop(
             }
         }
     }
-    Ok(script_executed)
+    // When VM failed to start (systemic issue), scriptlet failures are expected cascading effects
+    // Return script_executed and whether this was a VM failure
+    Ok((script_executed, all_vm_failures))
 }
 
 /// Run a single scriptlet for one package
@@ -781,7 +790,7 @@ pub fn run_scriptlet(
             let interpreters = get_interpreters_for_script(script_name);
             let params = scriptlet_type.get_script_params(package_format, is_upgrade, old_version.as_deref(), new_version.as_deref());
 
-            let script_executed = try_scriptlet_interpreter_loop(
+            let (script_executed, all_vm_failures) = try_scriptlet_interpreter_loop(
                 env_root,
                 store_root,
                 package_format,
@@ -794,12 +803,23 @@ pub fn run_scriptlet(
             )?;
 
             if !script_executed {
-                log::warn!(
-                    "No suitable interpreter found for {:?} scriptlet {} for package {}",
-                    scriptlet_type,
-                    script_name,
-                    pkgkey
-                );
+                // When VM failed to start (systemic issue), scriptlet failures are expected
+                // cascading effects - log as DEBUG instead of WARN to avoid noise
+                if all_vm_failures {
+                    log::debug!(
+                        "Scriptlet {:?} {} skipped for package {} due to VM startup failure",
+                        scriptlet_type,
+                        script_name,
+                        pkgkey
+                    );
+                } else {
+                    log::warn!(
+                        "No suitable interpreter found for {:?} scriptlet {} for package {}",
+                        scriptlet_type,
+                        script_name,
+                        pkgkey
+                    );
+                }
             } else {
                 // Successfully executed a scriptlet, return early
                 return Ok(());

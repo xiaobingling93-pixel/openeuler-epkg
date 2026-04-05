@@ -1595,7 +1595,13 @@ pub fn execute_hook(
             unreachable!("Foreground process should not return PID")
         }
         Err(e) => {
-            if hook.action.abort_on_fail {
+            let error_msg = format!("{}", e);
+            // When VM failed to start (systemic issue), hook failures are expected
+            // cascading effects - log as DEBUG instead of WARN to avoid noise
+            if error_msg.contains("VM failed to start") {
+                log::debug!("Hook {} skipped due to VM startup failure", hook.file_path);
+                Ok(())
+            } else if hook.action.abort_on_fail {
                 Err(e).with_context(|| format!("Hook {} failed and AbortOnFail is set", hook.file_path))
             } else {
                 log::warn!("Hook {} failed: {}", hook.file_path, e);
