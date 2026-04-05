@@ -455,10 +455,9 @@ def get_tmpfs_usage_percent() -> float:
 
 
 def load_whitelist() -> list:
-    """Load error whitelist from tests/test_depends-whitelist.txt."""
+    """Load error whitelist from tests/fuzz/whitelist.txt."""
     script_dir = Path(__file__).parent
-    project_root = script_dir.parent.parent
-    whitelist_file = project_root / "tests" / "test_depends-whitelist.txt"
+    whitelist_file = script_dir / "whitelist.txt"
 
     patterns = []
     if whitelist_file.exists():
@@ -526,7 +525,7 @@ def save_bad_case(os_name: str, commands: list, log_content: str, error_type: st
             f.write("#\n")
             f.write("# Whitelist handling:\n")
             f.write("#   If this is a repo dependency issue (not epkg bug), add pattern to\n")
-            f.write("#   tests/test_depends-whitelist.txt with a comment explaining:\n")
+            f.write("#   tests/fuzz/whitelist.txt with a comment explaining:\n")
             f.write("#     - Package name and version\n")
             f.write("#     - Why it's unresolvable (e.g., broken deps in upstream repo)\n")
         f.write("#\n")

@@ -14,11 +14,66 @@ DEFAULT_BATCH_N = 100
 ALL_OSES = ['openeuler', 'opensuse', 'fedora', 'debian', 'ubuntu', 'archlinux', 'alpine', 'conda']
 
 
+def script_name() -> str:
+    """Get the script name for display in usage and debug output."""
+    return sys.argv[0]
+
+
+def debug_solve(os_name: str, pkg_to_install: str, grep_pkg: str = None):
+    """Run debug solve with RUST_LOG=debug and output to /tmp/dd.
+
+    Usage: depends.py --debug --os=<OS> <pkg_to_install> [--grep=<PKG>]
+
+    Example:
+        depends.py --debug --os=fedora vtk
+        depends.py --debug --os=fedora vtk --grep=hdf5
+    """
+    debug_log = '/tmp/dd'
+    cmd = ['epkg', '--assume-no', '-e', os_name, 'install', '--no-install-essentials', pkg_to_install]
+
+    # Run with RUST_LOG=debug
+    import os as os_module
+    env = os_module.environ.copy()
+    env['RUST_LOG'] = 'debug'
+
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    # Strip DEBUG prefix from log lines
+    debug_content = re.sub(r'^.*DEBUG ', '', result.stderr, flags=re.MULTILINE)
+
+    # Write to debug log file
+    with open(debug_log, 'w') as f:
+        f.write(debug_content)
+        f.write(f"\n\nreproduce command:\n")
+        f.write(f"    RUST_LOG=debug epkg --assume-no -e {os_name} install --no-install-essentials {pkg_to_install}\n")
+        f.write(f"\npackage metadata query command:\n")
+        f.write(f"    epkg -e {os_name} info {pkg_to_install}\n")
+
+        if grep_pkg:
+            f.write(f"\n    epkg -e {os_name} info {grep_pkg}\n")
+            f.write(f"\ndebug log grep command:\n")
+            f.write(f"    grep -F -C3 '{grep_pkg}' {debug_log}\n")
+
+    print(f"Debug log written to {debug_log}")
+
+    if grep_pkg:
+        # Show grep output for the problematic package
+        grep_result = subprocess.run(
+            ['grep', '-F', '-C3', grep_pkg, debug_log],
+            capture_output=True, text=True
+        )
+        if grep_result.stdout:
+            print(f"\nGrep output for '{grep_pkg}':")
+            print(grep_result.stdout)
+
+    # Show the log with less
+    subprocess.run(['less', debug_log])
+
+
 def load_error_whitelist() -> List[str]:
     """Load error whitelist patterns from a text file."""
     # Get the directory where this script is located
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    whitelist_file = os.path.join(script_dir, 'test_depends-whitelist.txt')
+    whitelist_file = os.path.join(script_dir, 'whitelist.txt')
 
     whitelist = []
     try:
@@ -48,8 +103,10 @@ def usage():
 Test package dependencies across different OS environments.
 
 Options:
-  --solver=<SOLVER>    Dependency solver to use: 'constraints' or 'simple'
-  --os=<OS_LIST>       Limit testing to specified OSes (comma-separated, e.g., debian,ubuntu)
+  --debug               Debug mode: run RUST_LOG=debug for single package
+  --grep=<PKG>          In debug mode, grep this package in debug log
+  --solver=<SOLVER>     Dependency solver to use: 'constraints' or 'simple'
+  --os=<OS_LIST>        Limit testing to specified OSes (comma-separated, e.g., debian,ubuntu)
   --batch=MxN           Customize batch size: M packages per batch, N batches (default: {DEFAULT_BATCH_M}x{DEFAULT_BATCH_N})
   --seed=<SEED>         Random seed for package selection (default: current time)
 
@@ -62,9 +119,11 @@ Examples:
   {script_name} --os=debian,ubuntu                 # Test random packages on debian and ubuntu only
   {script_name} --batch=5x20 --os=fedora           # Test 5x20 random packages on fedora only
   {script_name} --seed=12345                       # Test with specific random seed
-  {script_name} bash curl                           # Test bash and curl on all OSes
+  {script_name} bash curl                          # Test bash and curl on all OSes
   {script_name} --solver=constraints bash curl     # Test with constraints solver
   {script_name} --os=debian --solver=simple wine   # Test wine on debian with simple solver
+  {script_name} --debug --os=fedora vtk            # Debug mode: run with RUST_LOG=debug
+  {script_name} --debug --os=fedora vtk --grep=hdf5  # Debug + grep for hdf5
 
 Typical Stress Test + Debug Workflow:
 
@@ -80,13 +139,12 @@ Typical Stress Test + Debug Workflow:
 
   On test error:
     1. If it's a real package missing/conflicting issue:
-       vim tests/test_depends-whitelist.txt
+       vim tests/fuzz/whitelist.txt
        # Add the broken package pattern to ignore
 
     2. If it's a solver bug:
-       # Copy/paste and run the debug command shown in the error output:
-       tests/debug_solve.sh <os> <pkg_to_install> <pkg_no_candidate>
-       # Feed the debug log to AI for analysis
+       # Run the debug_solve() function shown in the error output
+       # Or manually run with RUST_LOG=debug and grep for pkg_no_candidate
 
     3. In rare cases, you may need to grep and check repodata:
        grep <pkg_no_candidate> ~/.cache/epkg/channels/<os>-*/*/*/provide2pkgnames.yaml
@@ -102,6 +160,8 @@ def parse_args(args: List[str]) -> argparse.Namespace:
     )
 
     parser.add_argument('-h', '--help', action='store_true', help='Show help message')
+    parser.add_argument('--debug', action='store_true', help='Debug mode: run RUST_LOG=debug for single package')
+    parser.add_argument('--grep', type=str, help='In debug mode, grep this package in debug log')
     parser.add_argument('--solver', type=str, choices=['constraints', 'simple'],
                        help="Dependency solver to use: 'constraints' or 'simple'")
     parser.add_argument('--os', type=str,
@@ -309,7 +369,7 @@ def run_install_test(os: str, batch_packages: List[str], solver_option: Optional
                 # Quote package names to handle special characters (e.g., python3.13dist(numpy))
                 print(f"Debug command:")
                 print(f"epkg -e {os} info '{pkg_no_candidate}'")
-                print(f"tests/debug_solve.sh {os} '{pkg_to_install}' '{pkg_no_candidate}'")
+                print(f"{script_name()} --debug --os={os} '{pkg_to_install}' --grep='{pkg_no_candidate}'")
 
             return False
         else:
@@ -373,6 +433,24 @@ def test_os(os: str, args: argparse.Namespace) -> bool:
 def main():
     """Main function."""
     args = parse_args(sys.argv[1:])
+
+    if args.help:
+        usage()
+        sys.exit(0)
+
+    # Handle debug mode
+    if args.debug:
+        if not args.packages:
+            print("Error: --debug requires PACKAGE argument", file=sys.stderr)
+            sys.exit(1)
+        if not args.selected_oses or len(args.selected_oses) != 1:
+            print("Error: --debug requires single --os argument", file=sys.stderr)
+            sys.exit(1)
+        os_name = args.selected_oses[0]
+        pkg_to_install = args.packages[0]
+        pkg_no_candidate = args.grep
+        debug_solve(os_name, pkg_to_install, args.grep)
+        return
 
     if args.help:
         usage()
