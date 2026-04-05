@@ -712,7 +712,7 @@ def restore_to_generation_zero(env_name: str) -> Tuple[subprocess.CompletedProce
     log("Restoring to generation 0")
     cmd_str = f"epkg -e {env_name} restore 0"
 
-    result = run_epkg(['restore', '0'], env_name, timeout=0)
+    result = run_epkg(['--assume-yes', 'restore', '0'], env_name, timeout=0)
     log_output = f"=== RESTORE ===\n{result.stdout}\n{result.stderr}\n"
 
     return result, cmd_str, log_output
@@ -737,7 +737,7 @@ def run_gc_if_needed(usage: float, force_gc: bool = False) -> None:
     """Run gc if usage exceeds threshold or force_gc is True."""
     if force_gc or usage > USAGE_THRESHOLD_GC:
         log(f"Running epkg gc (usage: {usage:.1f}%)")
-        result = run_epkg(['gc'], env_name='self')
+        result = run_epkg(['--assume-yes', 'gc'], env_name='self')
         log(f"GC output: {result.stdout[:100]}")
 
 
