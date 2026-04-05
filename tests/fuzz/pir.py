@@ -971,7 +971,7 @@ def cmd_run(os_name: str, batch_size: int, max_errors: int):
 def main():
     parser = argparse.ArgumentParser(
         description='PIR (Package Install/Restore) Fuzz Test for epkg',
-        usage='python3 pir.py [setup|run] [--os OS] [--batch N] [--max-err N]'
+        usage='python3 pir.py [setup|run] [--os OS] [--batch N] [--max-errors N]'
     )
     subparsers = parser.add_subparsers(dest='command', help='Commands')
 
@@ -983,12 +983,12 @@ def main():
     run_parser = subparsers.add_parser('run', help='Run fuzz test loop (assumes layout already setup)')
     run_parser.add_argument('--os', required=True, help='Target OS')
     run_parser.add_argument('--batch', type=int, default=DEFAULT_BATCH_SIZE, help='Batch size')
-    run_parser.add_argument('--max-err', type=int, default=DEFAULT_MAX_ERRORS, help='Max errors')
+    run_parser.add_argument('--max-errors', type=int, default=DEFAULT_MAX_ERRORS, help='Max errors')
 
     # Default (no subcommand): setup + run
     parser.add_argument('--os', help='Target OS (for default mode: setup + run)')
     parser.add_argument('--batch', type=int, default=DEFAULT_BATCH_SIZE, help='Batch size')
-    parser.add_argument('--max-err', type=int, default=DEFAULT_MAX_ERRORS, help='Max errors')
+    parser.add_argument('--max-errors', type=int, default=DEFAULT_MAX_ERRORS, help='Max errors')
     parser.add_argument('--dry-run', action='store_true', help='Dry run (setup only)')
 
     args = parser.parse_args()
