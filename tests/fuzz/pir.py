@@ -21,7 +21,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 # Global flag for signal handling
 _interrupted = False
@@ -30,6 +30,11 @@ _interrupted = False
 DEFAULT_BATCH_SIZE = 5
 DEFAULT_MAX_ERRORS = 10
 TMPFS_SIZE_GB = 6  # Target tmpfs size, or use < half system memory
+
+# Thresholds for env cleanup/recreate
+USAGE_THRESHOLD_RECREATE = 50  # Recreate env when usage > 50%
+USAGE_THRESHOLD_SKIP = 90      # Skip iteration when usage > 90%
+USAGE_THRESHOLD_GC = 80        # Run gc when usage > 80%
 
 # Environment variables
 EPKG_BIN = os.environ.get('EPKG_BIN', None)
@@ -365,7 +370,7 @@ def get_installed_executables(env_name: str) -> list:
     return executables
 
 
-def test_executable_help(env_name: str, exe_path: str) -> tuple[bool, str]:
+def test_executable_help(env_name: str, exe_path: str) -> Tuple[bool, str]:
     """Test if executable can run with --help or --version.
 
     Uses a short timeout (5s) to avoid hanging on broken executables.
@@ -584,6 +589,12 @@ def create_environment(os_name: str) -> str:
     return env_name
 
 
+def recreate_environment(os_name: str) -> str:
+    """Recreate fuzz test environment (more thorough cleanup than restore)."""
+    log(f"Recreating environment for {os_name}")
+    return create_environment(os_name)
+
+
 def get_current_generation(env_name: str) -> int:
     """Get current generation number for an environment."""
     env_path = get_epkg_symlink_path() / "envs" / env_name
@@ -603,88 +614,85 @@ def get_current_generation(env_name: str) -> int:
         return 0
 
 
-def run_fuzz_iteration(os_name: str, env_name: str, packages: list,
-                        batch_size: int, whitelist: list) -> tuple[str, bool]:
-    """
-    Run single fuzz iteration: install, test executables, restore.
+# ============================================================================
+# Refactored fuzz iteration functions
+# ============================================================================
 
-    Returns:
-        tuple: (error_type or None, has_error)
-    """
-    loop_commands = []
-    loop_log = ""
-
-    # Check disk space before install
-    usage = get_tmpfs_usage_percent()
-    if usage > 90:
-        log(f"Disk usage {usage:.1f}% > 90%, skipping iteration to avoid space issues")
-        # Run gc and return without error
-        result = run_epkg(['gc'], env_name='self')
-        log(f"GC output: {result.stdout[:200]}")
-        time.sleep(1)
-        return None, False
-
-    # Select random packages
+def select_random_packages(packages: list, batch_size: int) -> list:
+    """Select random batch of packages for testing."""
     batch = random.sample(packages, min(batch_size, len(packages)))
     batch_str = ' '.join(batch)
     log(f"Selected packages: {batch_str}")
+    return batch
 
-    # Install packages
+
+def install_packages_batch(env_name: str, batch: list) -> Tuple[subprocess.CompletedProcess, str, str]:
+    """Install a batch of packages and return results.
+
+    Returns:
+        Tuple: (result, cmd_str, log_output)
+    """
+    batch_str = ' '.join(batch)
     cmd_str = f"epkg -e {env_name} install --assume-yes --ignore-file-conflicts {batch_str}"
-    loop_commands.append(cmd_str)
 
     result = run_epkg(['install', '--assume-yes', '--ignore-file-conflicts'] + batch, env_name, timeout=0)
-    loop_log += f"=== INSTALL ===\n{result.stdout}\n{result.stderr}\n"
+    log_output = f"=== INSTALL ===\n{result.stdout}\n{result.stderr}\n"
+
+    return result, cmd_str, log_output
+
+
+def check_install_errors(result: subprocess.CompletedProcess, whitelist: list) -> Tuple[str, bool, bool]:
+    """Check install result for errors.
+
+    Returns:
+        Tuple: (error_type, has_error, is_whitelisted)
+    """
+    install_error = result.returncode != 0
+    log_errors = check_log_for_errors(result.stdout + result.stderr)
+    combined_output = result.stdout + result.stderr
+
+    # Check for disk space error - should exit gracefully
+    if "Insufficient disk space" in combined_output:
+        log(f"Insufficient disk space detected")
+        return None, False, False
 
     # Check for timeout
     if result.returncode == -1 and 'Timeout' in result.stderr:
-        save_bad_case(os_name, loop_commands, loop_log, "install_timeout", result.stderr)
-        log(f"Install timeout detected")
-        return "install_timeout", True
-
-    install_error = result.returncode != 0
-    log_errors = check_log_for_errors(result.stdout + result.stderr)
-
-    # Check for disk space error - should exit gracefully
-    if "Insufficient disk space" in result.stderr or "Insufficient disk space" in result.stdout:
-        log(f"Insufficient disk space, running gc and exiting gracefully")
-        result = run_epkg(['gc'], env_name='self')
-        log(f"GC output: {result.stdout[:200]}")
-        return None, False
+        return "install_timeout", True, False
 
     # Check for dependency resolution errors matching whitelist
-    # These are repo issues, not epkg bugs - skip saving as bad case
-    combined_output = result.stdout + result.stderr
     if "Dependency resolution failed" in combined_output:
         if error_matches_whitelist(combined_output, whitelist):
             log(f"Dependency resolution error matches whitelist - skipping (repo issue)")
-            return None, False
-        # Also check individual package names against whitelist
-        # Example: "No candidates were found for alpine-base alpine-base"
+            return None, False, True
         for pattern in whitelist:
             if pattern in combined_output:
                 log(f"Dependency error matches whitelist pattern '{pattern}' - skipping (repo issue)")
-                return None, False
+                return None, False, True
 
     if install_error or log_errors:
         error_type = "install_fail" if install_error else "install_warn"
-        error_msg = result.stderr if install_error else str(log_errors[:3])
-        # Check if this is a dependency resolution error
-        is_depends_error = "Dependency resolution failed" in combined_output
-        save_bad_case(os_name, loop_commands, loop_log, error_type, error_msg, is_depends_error)
-        log(f"Install error detected")
-        # Skip restore when install failed - generation may not have advanced
-        return error_type, True
+        return error_type, True, False
 
-    # Test executables
+    return None, False, False
+
+
+def test_executables_batch(env_name: str) -> Tuple[list, list, str]:
+    """Test installed executables.
+
+    Returns:
+        Tuple: (exe_errors, commands, log_output)
+    """
     executables = get_installed_executables(env_name)
     log(f"Testing {len(executables)} executables")
 
     exe_errors = []
-    failed_outputs = []  # Only record failed outputs to reduce log size
+    commands = []
+    failed_outputs = []
+
     for exe in executables:
         cmd_str = f"epkg -e {env_name} run {exe} --help"
-        loop_commands.append(cmd_str)
+        commands.append(cmd_str)
 
         success, output = test_executable_help(env_name, exe)
 
@@ -693,48 +701,154 @@ def run_fuzz_iteration(os_name: str, env_name: str, packages: list,
             failed_outputs.append(f"=== RUN {exe} (FAILED) ===\n{output}\n")
             log(f"Executable test failed: {exe}")
 
+    return exe_errors, commands, "".join(failed_outputs)
+
+
+def restore_to_generation_zero(env_name: str) -> Tuple[subprocess.CompletedProcess, str, str]:
+    """Restore environment to generation 0.
+
+    Returns:
+        Tuple: (result, cmd_str, log_output)
+    """
+    log("Restoring to generation 0")
+    cmd_str = f"epkg -e {env_name} restore 0"
+
+    result = run_epkg(['restore', '0'], env_name, timeout=0)
+    log_output = f"=== RESTORE ===\n{result.stdout}\n{result.stderr}\n"
+
+    return result, cmd_str, log_output
+
+
+def check_restore_errors(result: subprocess.CompletedProcess) -> Tuple[str, bool]:
+    """Check restore result for errors.
+
+    Returns:
+        Tuple: (error_type, has_error)
+    """
+    if result.returncode == -1 and 'Timeout' in result.stderr:
+        return "restore_timeout", True
+
+    if result.returncode != 0:
+        return "restore_fail", True
+
+    return None, False
+
+
+def run_gc_if_needed(usage: float, force_gc: bool = False) -> None:
+    """Run gc if usage exceeds threshold or force_gc is True."""
+    if force_gc or usage > USAGE_THRESHOLD_GC:
+        log(f"Running epkg gc (usage: {usage:.1f}%)")
+        result = run_epkg(['gc'], env_name='self')
+        log(f"GC output: {result.stdout[:100]}")
+
+
+# ============================================================================
+# Main fuzz iteration logic (refactored)
+# ============================================================================
+
+class FuzzIterationContext:
+    """Context for a single fuzz iteration."""
+    def __init__(self, os_name: str, env_name: str, packages: list,
+                 batch_size: int, whitelist: list, usage: float):
+        self.os_name = os_name
+        self.env_name = env_name
+        self.packages = packages
+        self.batch_size = batch_size
+        self.whitelist = whitelist
+        self.usage = usage
+
+        self.loop_commands = []
+        self.loop_log = ""
+        self.batch = []
+        self.need_recreate = False
+        self.need_gc = False
+
+    def should_skip_iteration(self) -> bool:
+        """Check if iteration should be skipped due to high disk usage."""
+        if self.usage > USAGE_THRESHOLD_SKIP:
+            log(f"Disk usage {self.usage:.1f}% > {USAGE_THRESHOLD_SKIP}%, skipping iteration")
+            self.need_gc = True
+            return True
+        return False
+
+    def should_recreate_env(self) -> bool:
+        """Check if env should be recreated due to moderate disk usage."""
+        if self.usage > USAGE_THRESHOLD_RECREATE:
+            log(f"Disk usage {self.usage:.1f}% > {USAGE_THRESHOLD_RECREATE}%, will recreate env after iteration")
+            self.need_recreate = True
+            return True
+        return False
+
+
+def run_fuzz_iteration(ctx: FuzzIterationContext) -> Tuple[str, bool]:
+    """
+    Run single fuzz iteration: install, test executables, restore.
+
+    Returns:
+        Tuple: (error_type or None, has_error)
+    """
+    # Step 1: Check disk usage - skip if too high
+    log(f"TMPFS usage: {ctx.usage:.1f}%")
+    if ctx.should_skip_iteration():
+        return None, False
+
+    # Step 2: Check if we need to recreate env later
+    ctx.should_recreate_env()
+
+    # Step 3: Select and install packages
+    ctx.batch = select_random_packages(ctx.packages, ctx.batch_size)
+    result, cmd_str, log_output = install_packages_batch(ctx.env_name, ctx.batch)
+    ctx.loop_commands.append(cmd_str)
+    ctx.loop_log += log_output
+
+    # Step 4: Check install errors
+    error_type, has_error, is_whitelisted = check_install_errors(result, ctx.whitelist)
+    if is_whitelisted:
+        return None, False
+
+    if has_error:
+        is_depends_error = "Dependency resolution failed" in (result.stdout + result.stderr)
+        error_msg = result.stderr if error_type == "install_fail" else str(check_log_for_errors(result.stdout + result.stderr)[:3])
+        save_bad_case(ctx.os_name, ctx.loop_commands, ctx.loop_log, error_type, error_msg, is_depends_error)
+        log(f"Install error detected: {error_type}")
+        # Even on error, we should try to clean up
+        ctx.need_recreate = True
+        return error_type, True
+
+    # Step 5: Test executables
+    exe_errors, exe_commands, exe_log = test_executables_batch(ctx.env_name)
+    ctx.loop_commands.extend(exe_commands)
+    ctx.loop_log += exe_log
+
     if exe_errors:
-        # Only include failed outputs in log to reduce size
-        loop_log += "".join(failed_outputs)
-        save_bad_case(os_name, loop_commands, loop_log, "exe_fail", f"Failed executables: {exe_errors}")
-        log(f"Executable errors detected")
+        save_bad_case(ctx.os_name, ctx.loop_commands, ctx.loop_log, "exe_fail", f"Failed executables: {exe_errors}")
+        log(f"Executable errors detected: {exe_errors}")
+        # Even on error, we should try to clean up
+        ctx.need_recreate = True
         return "exe_fail", True
 
-    # Skip restore if current generation is still 0 (install didn't advance generation)
-    current_gen = get_current_generation(env_name)
+    # Step 6: Restore to generation 0 (only if not recreating)
+    if ctx.need_recreate:
+        log("Skipping restore since env will be recreated")
+        return None, False
+
+    current_gen = get_current_generation(ctx.env_name)
     if current_gen == 0:
         log(f"Current generation is 0, skipping restore")
         return None, False
 
-    # Restore to generation 0 (empty state)
-    log("Restoring to generation 0")
-    cmd_str = f"epkg -e {env_name} restore 0"
-    loop_commands.append(cmd_str)
+    result, cmd_str, log_output = restore_to_generation_zero(ctx.env_name)
+    ctx.loop_commands.append(cmd_str)
+    ctx.loop_log += log_output
 
-    result = run_epkg(['restore', '0'], env_name, timeout=0)
-    loop_log += f"=== RESTORE ===\n{result.stdout}\n{result.stderr}\n"
+    # Step 7: Check restore errors
+    error_type, has_error = check_restore_errors(result)
+    if has_error:
+        save_bad_case(ctx.os_name, ctx.loop_commands, ctx.loop_log, error_type, result.stderr)
+        log(f"Restore error detected: {error_type}")
+        ctx.need_recreate = True
+        return error_type, True
 
-    # Check for timeout
-    if result.returncode == -1 and 'Timeout' in result.stderr:
-        save_bad_case(os_name, loop_commands, loop_log, "restore_timeout", result.stderr)
-        log(f"Restore timeout detected")
-        return "restore_timeout", True
-
-    if result.returncode != 0:
-        save_bad_case(os_name, loop_commands, loop_log, "restore_fail", result.stderr)
-        log(f"Restore error detected")
-        return "restore_fail", True
-
-    # Check tmpfs usage
-    usage = get_tmpfs_usage_percent()
-    log(f"TMPFS usage: {usage:.1f}%")
-
-    if usage > 80:
-        log("Running epkg gc to free memory")
-        result = run_epkg(['gc'], env_name='self')
-        log(f"GC output: {result.stdout[:100]}")
-
-    time.sleep(1)
     return None, False
 
 
@@ -751,10 +865,11 @@ def cmd_run(os_name: str, batch_size: int, max_errors: int):
     Main fuzz test loop.
 
     Loop:
+    - Check tmpfs usage, decide cleanup strategy
     - Install random packages
     - Test executables
-    - Restore to generation 0
-    - Check tmpfs usage, gc if needed
+    - Restore to generation 0 or recreate env
+    - Run gc at end of loop if needed
     - Save bad cases on errors
     """
     # Set up signal handlers for graceful Ctrl-C handling
@@ -786,7 +901,6 @@ def cmd_run(os_name: str, batch_size: int, max_errors: int):
         if item.name == ".old":
             continue
         # Move to .old with timestamp prefix
-        import time
         timestamp = time.strftime('%Y%m%d_%H%M%S')
         dest = old_dir / f"{timestamp}_{item.name}"
         try:
@@ -809,6 +923,7 @@ def cmd_run(os_name: str, batch_size: int, max_errors: int):
     loop_count = 0
 
     log(f"Starting fuzz loop: batch_size={batch_size}, max_errors={max_errors}")
+    log(f"Thresholds: recreate_env={USAGE_THRESHOLD_RECREATE}%, skip_iter={USAGE_THRESHOLD_SKIP}%, run_gc={USAGE_THRESHOLD_GC}%")
 
     while error_count < max_errors:
         # Check if user pressed Ctrl-C
@@ -819,12 +934,37 @@ def cmd_run(os_name: str, batch_size: int, max_errors: int):
         loop_count += 1
         log(f"=== Loop {loop_count} ===")
 
-        error_type, has_error = run_fuzz_iteration(
-            os_name, env_name, packages, batch_size, whitelist
+        # Get tmpfs usage ONCE per loop iteration
+        usage = get_tmpfs_usage_percent()
+
+        # Create iteration context
+        ctx = FuzzIterationContext(
+            os_name=os_name,
+            env_name=env_name,
+            packages=packages,
+            batch_size=batch_size,
+            whitelist=whitelist,
+            usage=usage
         )
+
+        # Run fuzz iteration
+        error_type, has_error = run_fuzz_iteration(ctx)
+
         if has_error:
             error_count += 1
             log(f"Error count: {error_count}/{max_errors}")
+
+        # Handle cleanup based on context flags
+        if ctx.need_recreate:
+            log("Recreating environment for thorough cleanup")
+            env_name = recreate_environment(os_name)
+            # Refresh packages list after recreate
+            packages = get_available_packages(os_name, env_name)
+
+        # Run gc at end of loop (only once)
+        run_gc_if_needed(usage, ctx.need_gc)
+
+        time.sleep(1)
 
     log(f"Fuzz test completed: {loop_count} loops, {error_count} errors")
 
@@ -867,9 +1007,9 @@ def main():
         log(f"Mode: run only (assumes layout already setup)")
         log(f"OS target: {args.os}")
         log(f"Batch size: {args.batch}")
-        log(f"Max errors: {args.max_err}")
+        log(f"Max errors: {args.max_errors}")
         try:
-            cmd_run(args.os, args.batch, args.max_err)
+            cmd_run(args.os, args.batch, args.max_errors)
         except KeyboardInterrupt:
             log("Interrupted by user")
         except Exception as e:
@@ -884,7 +1024,7 @@ def main():
         log(f"Mode: setup + run")
         log(f"OS target: {args.os}")
         log(f"Batch size: {args.batch}")
-        log(f"Max errors: {args.max_err}")
+        log(f"Max errors: {args.max_errors}")
 
         if not cmd_setup(args.dry_run):
             sys.exit(1)
@@ -894,7 +1034,7 @@ def main():
             sys.exit(0)
 
         try:
-            cmd_run(args.os, args.batch, args.max_err)
+            cmd_run(args.os, args.batch, args.max_errors)
         except KeyboardInterrupt:
             log("Interrupted by user")
         except Exception as e:
