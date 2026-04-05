@@ -807,6 +807,16 @@ def run_fuzz_iteration(ctx: FuzzIterationContext) -> Tuple[str, bool]:
     ctx.loop_commands.append(cmd_str)
     ctx.loop_log += log_output
 
+    # Step 3.5: Re-check disk usage after installation
+    # Installation may have consumed significant space, trigger gc if needed
+    post_install_usage = get_tmpfs_usage_percent()
+    if post_install_usage > USAGE_THRESHOLD_GC:
+        log(f"Post-install disk usage {post_install_usage:.1f}% > {USAGE_THRESHOLD_GC}%, will run gc after iteration")
+        ctx.need_gc = True
+    if post_install_usage > USAGE_THRESHOLD_RECREATE and not ctx.need_recreate:
+        log(f"Post-install disk usage {post_install_usage:.1f}% > {USAGE_THRESHOLD_RECREATE}%, will recreate env")
+        ctx.need_recreate = True
+
     # Step 4: Check install errors
     error_type, has_error, is_whitelisted = check_install_errors(result, ctx.whitelist)
     if is_whitelisted:
@@ -854,6 +864,13 @@ def run_fuzz_iteration(ctx: FuzzIterationContext) -> Tuple[str, bool]:
         log(f"Restore error detected: {error_type}")
         ctx.need_recreate = True
         return error_type, True
+
+    # Step 8: Final disk usage check after restore
+    # Restore may free space, but check if we still need gc
+    final_usage = get_tmpfs_usage_percent()
+    if final_usage > USAGE_THRESHOLD_GC:
+        log(f"Post-restore disk usage {final_usage:.1f}% > {USAGE_THRESHOLD_GC}%, will run gc")
+        ctx.need_gc = True
 
     return None, False
 
@@ -967,8 +984,10 @@ def cmd_run(os_name: str, batch_size: int, max_errors: int):
             # Refresh packages list after recreate
             packages = get_available_packages(os_name, env_name)
 
-        # Run gc at end of loop (only once)
-        run_gc_if_needed(usage, ctx.need_gc)
+        # Run gc at end of loop - re-check usage after installation/restore
+        # The disk usage may have changed significantly during the iteration
+        end_usage = get_tmpfs_usage_percent()
+        run_gc_if_needed(end_usage, ctx.need_gc)
 
         time.sleep(1)
 
