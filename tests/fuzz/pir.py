@@ -366,8 +366,17 @@ def get_installed_executables(env_name: str) -> list:
 
 
 def test_executable_help(env_name: str, exe_path: str) -> tuple[bool, str]:
-    """Test if executable can run with --help or --version."""
-    result = run_epkg(['run', '--', exe_path, '--help'], env_name)
+    """Test if executable can run with --help or --version.
+
+    Uses a short timeout (5s) to avoid hanging on broken executables.
+    Returns (success, output) tuple.
+    """
+    # Use 5 second timeout for executable tests
+    result = run_epkg(['run', '--', exe_path, '--help'], env_name, timeout=5)
+
+    # Check for timeout
+    if result.returncode == -1 and 'Timeout' in result.stderr:
+        return False, f"Timeout after 5s: {exe_path}"
 
     if result.returncode == 0:
         return True, result.stdout + result.stderr
@@ -384,7 +393,12 @@ def test_executable_help(env_name: str, exe_path: str) -> tuple[bool, str]:
         return False, output
 
     # Try --version as fallback
-    result = run_epkg(['run', '--', exe_path, '--version'], env_name)
+    result = run_epkg(['run', '--', exe_path, '--version'], env_name, timeout=5)
+
+    # Check for timeout
+    if result.returncode == -1 and 'Timeout' in result.stderr:
+        return False, f"Timeout after 5s: {exe_path} --version"
+
     output = result.stdout + result.stderr
 
     if result.returncode == 0 or any(keyword in output for keyword in ['version', 'Version', 'Copyright']):
@@ -622,6 +636,12 @@ def run_fuzz_iteration(os_name: str, env_name: str, packages: list,
     result = run_epkg(['install', '--assume-yes', '--ignore-file-conflicts'] + batch, env_name, timeout=0)
     loop_log += f"=== INSTALL ===\n{result.stdout}\n{result.stderr}\n"
 
+    # Check for timeout
+    if result.returncode == -1 and 'Timeout' in result.stderr:
+        save_bad_case(os_name, loop_commands, loop_log, "install_timeout", result.stderr)
+        log(f"Install timeout detected")
+        return "install_timeout", True
+
     install_error = result.returncode != 0
     log_errors = check_log_for_errors(result.stdout + result.stderr)
 
@@ -693,6 +713,12 @@ def run_fuzz_iteration(os_name: str, env_name: str, packages: list,
 
     result = run_epkg(['restore', '0'], env_name, timeout=0)
     loop_log += f"=== RESTORE ===\n{result.stdout}\n{result.stderr}\n"
+
+    # Check for timeout
+    if result.returncode == -1 and 'Timeout' in result.stderr:
+        save_bad_case(os_name, loop_commands, loop_log, "restore_timeout", result.stderr)
+        log(f"Restore timeout detected")
+        return "restore_timeout", True
 
     if result.returncode != 0:
         save_bad_case(os_name, loop_commands, loop_log, "restore_fail", result.stderr)
