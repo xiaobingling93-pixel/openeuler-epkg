@@ -47,11 +47,21 @@ fn try_connect_and_execute_vm(env_root: &Path, run_options: &RunOptions) -> Resu
 
     log::debug!("run: checking for existing VM session for {}", env_root.display());
 
+    // For VM mode, chdir_to_env_root means working directory should be "/" (VM root)
+    // which maps to the environment root via virtiofs
+    let cwd = if run_options.chdir_to_env_root {
+        log::debug!("run: setting cwd=/ for VM (chdir_to_env_root=true)");
+        Some("/")
+    } else {
+        None
+    };
+
     crate::libkrun::execute_via_existing_vm(
         env_root,
         &cmd_parts,
         run_options.io_mode,
         Some(&run_options.env_vars),
+        cwd,
     )
 }
 

@@ -136,6 +136,7 @@ pub fn execute_via_existing_vm(
     cmd_parts: &[String],
     io_mode: crate::models::IoMode,
     env_vars: Option<&std::collections::HashMap<String, String>>,
+    cwd: Option<&str>,
 ) -> Result<Option<i32>> {
     let stream = match connect_to_existing_vm_socket(env_root)? {
         Some(s) => s,
@@ -150,6 +151,7 @@ pub fn execute_via_existing_vm(
         None,  // vm_keep_timeout_secs
         None,  // extend_timeout_secs
         env_vars,
+        cwd,
         stream,
     )?;
 
@@ -164,6 +166,7 @@ pub fn execute_via_existing_vm(
     cmd_parts: &[String],
     io_mode: crate::models::IoMode,
     _env_vars: Option<&std::collections::HashMap<String, String>>,
+    cwd: Option<&str>,
 ) -> Result<Option<i32>> {
     let stream = match connect_to_existing_vm_socket(env_root)? {
         Some(s) => s,
@@ -177,6 +180,7 @@ pub fn execute_via_existing_vm(
         false, // not reuse_vm - just a one-shot command
         None,  // vm_keep_timeout_secs
         None,  // extend_timeout_secs
+        cwd,
         stream,
     )?;
 
@@ -1569,6 +1573,7 @@ fn try_reuse_existing_krun_session(
             log::debug!("libkrun: accepting reverse connection for reuse...");
             let stream = super::bridge::accept_reverse_connection(&listener, None)?;
             log::debug!("libkrun: Guest reconnected, sending command...");
+            let cwd = if run_options.chdir_to_env_root { Some("/") } else { None };
             let exit_code = super::stream::send_command_over_stream(
                 &config.cmd_parts,
                 run_options.io_mode,
@@ -1576,6 +1581,7 @@ fn try_reuse_existing_krun_session(
                 run_options.vm_keep_timeout,
                 None,  // extend_timeout_secs
                 Some(&run_options.env_vars),
+                cwd,
                 stream,
             )
             .map_err(|e| eyre::eyre!("Failed to send command via reverse vsock: {}", e))?;
@@ -1584,6 +1590,7 @@ fn try_reuse_existing_krun_session(
         }
 
         // Forward mode: Host connects to Guest
+        let cwd = if run_options.chdir_to_env_root { Some("/") } else { None };
         let code = super::stream::send_command_via_vsock(
             &config.cmd_parts,
             run_options.io_mode,
@@ -1592,6 +1599,7 @@ fn try_reuse_existing_krun_session(
             None,  // extend_timeout_secs
             &sock,
             Some(&run_options.env_vars),
+            cwd,
         )
         .map_err(|e| eyre::eyre!("Failed to send command via vsock bridge: {}", e))?;
         Ok(Some(code))
@@ -1618,6 +1626,7 @@ fn send_session_done_unix(sock_path: &Path) -> Result<()> {
         None,
         None,
         None,
+        None, // cwd - session done doesn't need working directory
     ))?;
     #[cfg(unix)]
     {
@@ -1870,6 +1879,9 @@ fn run_reverse_vsock_mode_inner(
     crate::debug_epkg!("[PERF] Guest connected, sending command...");
     let cmd_start = std::time::Instant::now();
 
+    // Determine working directory for VM
+    let cwd = if run_options.chdir_to_env_root { Some("/") } else { None };
+
     // Send command over the accepted connection
     // On Windows, use the named-pipe-specific function that calls FlushFileBuffers
     #[cfg(windows)]
@@ -1879,6 +1891,7 @@ fn run_reverse_vsock_mode_inner(
         run_options.reuse_vm,
         run_options.vm_keep_timeout,
         None,  // extend_timeout_secs
+        cwd,
         stream,
     ) {
         Ok(code) => {
@@ -1899,6 +1912,7 @@ fn run_reverse_vsock_mode_inner(
         run_options.vm_keep_timeout,
         None,  // extend_timeout_secs
         Some(&run_options.env_vars),
+        cwd,
         stream,
     ) {
         Ok(code) => {
@@ -2068,6 +2082,7 @@ pub fn run_command_in_krun(
         // The ready signal confirms guest vm_daemon is running and waiting.
 
         crate::debug_epkg!("libkrun: sending command via vsock...");
+        let cwd = if run_options.chdir_to_env_root { Some("/") } else { None };
         let exit_code = super::stream::send_command_via_vsock(
             &config.cmd_parts,
             run_options.io_mode,
@@ -2076,6 +2091,7 @@ pub fn run_command_in_krun(
             None,  // extend_timeout_secs
             &vsock_sock_path,
             Some(&run_options.env_vars),
+            cwd,
         )
         .map_err(|e| eyre::eyre!("Failed to send command via vsock bridge: {}", e))?;
         log::debug!("libkrun: vsock command completed with exit code {}", exit_code);
