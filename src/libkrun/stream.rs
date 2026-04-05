@@ -877,6 +877,7 @@ pub fn send_command_over_stream(
             match stream.read(&mut buf) {
                 Ok(0) => {
                     // EOF from stream
+                    log::debug!("libkrun: stream EOF received, got_exit={}", got_exit);
                     break;
                 }
                 Ok(n) => {
@@ -922,6 +923,12 @@ pub fn send_command_over_stream(
     // Restore original flags
     if original_flags >= 0 {
         unsafe { libc::fcntl(stream_fd, libc::F_SETFL, original_flags); }
+    }
+
+    // If we didn't receive an exit message, the connection was closed prematurely
+    if !got_exit {
+        log::warn!("libkrun: connection closed without exit message, command may not have executed");
+        return Err(eyre::eyre!("VM connection closed prematurely - command may not have executed"));
     }
 
     Ok(exit_code)

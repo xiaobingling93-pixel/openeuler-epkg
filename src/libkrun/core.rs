@@ -137,6 +137,7 @@ pub fn execute_via_existing_vm(
     io_mode: crate::models::IoMode,
     env_vars: Option<&std::collections::HashMap<String, String>>,
     cwd: Option<&str>,
+    reuse_vm: bool,
 ) -> Result<Option<i32>> {
     let stream = match connect_to_existing_vm_socket(env_root)? {
         Some(s) => s,
@@ -147,7 +148,7 @@ pub fn execute_via_existing_vm(
     let exit_code = super::stream::send_command_over_stream(
         cmd_parts,
         io_mode,
-        false, // not reuse_vm - just a one-shot command
+        reuse_vm,
         None,  // vm_keep_timeout_secs
         None,  // extend_timeout_secs
         env_vars,
@@ -167,6 +168,7 @@ pub fn execute_via_existing_vm(
     io_mode: crate::models::IoMode,
     _env_vars: Option<&std::collections::HashMap<String, String>>,
     cwd: Option<&str>,
+    _reuse_vm: bool,
 ) -> Result<Option<i32>> {
     let stream = match connect_to_existing_vm_socket(env_root)? {
         Some(s) => s,
@@ -177,7 +179,7 @@ pub fn execute_via_existing_vm(
     let exit_code = super::stream::send_command_over_named_pipe(
         cmd_parts,
         io_mode,
-        false, // not reuse_vm - just a one-shot command
+        _reuse_vm,
         None,  // vm_keep_timeout_secs
         None,  // extend_timeout_secs
         cwd,

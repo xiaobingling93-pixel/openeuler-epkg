@@ -1518,6 +1518,108 @@ fn run_vsock_server() -> Result<()> {
     Ok(())
 }
 
+/// Run vsock server with an existing pre-created listener.
+/// Used by reverse mode when switching to forward mode for VM reuse.
+/// The listener is already bound and listening, so we can accept immediately.
+#[cfg(target_os = "linux")]
+fn run_vsock_server_with_existing_listener(
+    listener_fd: std::os::fd::OwnedFd,
+    idle_timeout_ms: u32,
+) -> Result<()> {
+    use std::os::fd::FromRawFd;
+    use std::io::Write;
+
+    let kmsg_write = |msg: &str| {
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            let _ = write!(kmsg, "{}", msg);
+        }
+    };
+
+    kmsg_write("<6>run_vsock_server_with_existing_listener: start (using pre-created listener)\n");
+    log_process_identity("vm-daemon run_vsock_server_with_existing_listener start");
+    log::info!("vm-daemon: using pre-created listener for forward mode (race-free reuse)");
+
+    let raw_fd = listener_fd.as_raw_fd();
+
+    log::debug!("vm-daemon starting (vsock with existing listener), accepting on port 10000");
+    kmsg_write("<6>run_vsock_server_with_existing_listener: entering accept loop\n");
+
+    let mut next_idle_timeout_ms = idle_timeout_ms;
+    let mut first_accept = true;
+    loop {
+        let client_fd = if first_accept {
+            first_accept = false;
+            log::debug!("vm-daemon: calling accept() on pre-created listener...");
+            kmsg_write("<6>run_vsock_server_with_existing_listener: about to call accept (blocking)\n");
+            let fd = match socket::accept(raw_fd) {
+                Ok(fd) => {
+                    kmsg_write(&format!("<6>run_vsock_server_with_existing_listener: accept returned fd={}\n", fd));
+                    fd
+                }
+                Err(e) => {
+                    kmsg_write(&format!("<3>run_vsock_server_with_existing_listener: accept FAILED: {} (errno={})\n", e, e as i32));
+                    return Err(eyre!("vsock accept failed: {}", e));
+                }
+            };
+            fd
+        } else {
+            log::debug!(
+                "vm-daemon: waiting for next connection (reuse, {} ms)...",
+                next_idle_timeout_ms
+            );
+            match accept_vsock_with_timeout(raw_fd, next_idle_timeout_ms)? {
+                Some(fd) => fd,
+                None => {
+                    log::debug!("vm-daemon: idle timeout, powering off guest");
+                    break;
+                }
+            }
+        };
+
+        log::debug!("vm-daemon: accept() succeeded, fd={}", client_fd);
+        kmsg_write("<6>run_vsock_server_with_existing_listener: creating TcpStream from fd\n");
+        let stream = unsafe { TcpStream::from_raw_fd(client_fd) };
+        log::debug!("vm-daemon vsock: accepted connection");
+
+        kmsg_write("<6>run_vsock_server_with_existing_listener: about to call handle_connection\n");
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handle_connection(stream)
+        })) {
+            Ok(r) => {
+                kmsg_write("<6>run_vsock_server_with_existing_listener: handle_connection returned\n");
+                r
+            }
+            Err(_) => {
+                kmsg_write("<3>run_vsock_server_with_existing_listener: handle_connection PANICKED!\n");
+                Err(eyre!("handle_connection panicked"))
+            }
+        };
+        match result {
+            Ok(ConnectionDisposition::Shutdown) => {
+                kmsg_write("<6>run_vsock_server_with_existing_listener: handle_connection returned Shutdown, breaking loop\n");
+                log::debug!("vm-daemon: connection closed, powering off guest (vsock)");
+                break;
+            }
+            Ok(ConnectionDisposition::ReuseWait { idle_timeout_ms }) => {
+                next_idle_timeout_ms = idle_timeout_ms;
+                log::debug!(
+                    "vm-daemon: reuse_vm — next idle window {} ms",
+                    next_idle_timeout_ms
+                );
+                continue;
+            }
+            Err(e) => {
+                let _ = kmsg_write(&format!("<3>run_vsock_server_with_existing_listener: handle_connection ERROR: {}\n", e));
+                log::debug!("Error handling vsock connection: {}", e);
+                return Err(e);
+            }
+        }
+    }
+
+    let _ = kmsg_write("<6>run_vsock_server_with_existing_listener: loop exited normally\n");
+    Ok(())
+}
+
 pub fn run(options: VmDaemonOptions) -> Result<()> {
     // vm-daemon always uses vsock for control plane
     #[cfg(target_os = "linux")]
@@ -1548,6 +1650,11 @@ pub fn run(options: VmDaemonOptions) -> Result<()> {
 
 /// Run in reverse vsock mode: Guest connects to Host.
 /// This avoids vsock handshake timing issues on Windows/WHPX.
+///
+/// For VM reuse, pre-creates forward mode listener to avoid race condition:
+/// - Creates forward socket BEFORE reverse connection
+/// - On reuse, directly accepts on existing listener (no create/bind/listen delay)
+/// - This ensures guest is ready to accept before host tries to connect
 #[cfg(target_os = "linux")]
 fn run_reverse_vsock_client() -> Result<()> {
     use nix::sys::socket::{connect, socket, AddressFamily, SockFlag, SockType, VsockAddr};
@@ -1556,6 +1663,7 @@ fn run_reverse_vsock_client() -> Result<()> {
 
     const HOST_CID: u32 = libc::VMADDR_CID_HOST;  // CID 2 = Host
     const HOST_PORT: u32 = 10000;  // Command port (Host is listening)
+    const VSOCK_PORT: u32 = 10000; // Forward mode listener port
     const CONNECT_RETRY_MAX: u32 = 60;  // Increased from 30 for slower systems
     const CONNECT_RETRY_DELAY_MS: u64 = 50;  // Initial delay
     const CONNECT_RETRY_DELAY_MAX_MS: u64 = 500;  // Max delay with exponential backoff
@@ -1587,15 +1695,59 @@ fn run_reverse_vsock_client() -> Result<()> {
     let total_start = std::time::Instant::now();
     log::debug!("vm-daemon: reverse mode - connecting to Host...");
 
-    // Create vsock socket
+    // PRE-CREATE forward mode listener for reuse (race-free transition)
+    // This is created BEFORE the reverse connection, so when we switch to forward mode
+    // after the first command, the socket is already bound and listening.
+    // No create/bind/listen delay during mode transition!
+    let forward_fd = socket(
+        AddressFamily::Vsock,
+        SockType::Stream,
+        SockFlag::SOCK_CLOEXEC,
+        None,
+    ).map_err(|e| { log::debug!("vm-daemon: forward socket() failed: {}", e); e })?;
+    let forward_raw_fd = forward_fd.as_raw_fd();
+    let forward_addr = VsockAddr::new(libc::VMADDR_CID_ANY, VSOCK_PORT);
+
+    kmsg_write("<6>run_reverse_vsock_client: pre-creating forward listener\n");
+    debug_file_write("run_reverse_vsock_client: pre-creating forward listener (race-free reuse)\n");
+    log::debug!("vm-daemon: pre-creating forward listener on port {}", VSOCK_PORT);
+
+    match socket::bind(forward_raw_fd, &forward_addr) {
+        Ok(_) => {
+            kmsg_write("<6>run_reverse_vsock_client: forward bind ok\n");
+            debug_file_write("run_reverse_vsock_client: forward bind succeeded\n");
+            log::debug!("vm-daemon: forward bind succeeded");
+        }
+        Err(e) => {
+            kmsg_write(&format!("<3>run_reverse_vsock_client: forward bind FAILED: {}\n", e));
+            debug_file_write(&format!("run_reverse_vsock_client: forward bind FAILED: {}\n", e));
+            log::debug!("vm-daemon: forward bind failed (non-fatal, may already be in use): {}", e);
+            // Continue anyway - forward mode may not be needed
+        }
+    }
+
+    match socket::listen(&forward_fd, Backlog::new(8)?) {
+        Ok(_) => {
+            kmsg_write("<6>run_reverse_vsock_client: forward listen ok\n");
+            debug_file_write("run_reverse_vsock_client: forward listen succeeded\n");
+            log::debug!("vm-daemon: forward listen succeeded");
+        }
+        Err(e) => {
+            kmsg_write(&format!("<3>run_reverse_vsock_client: forward listen FAILED: {}\n", e));
+            debug_file_write(&format!("run_reverse_vsock_client: forward listen FAILED: {}\n", e));
+            log::debug!("vm-daemon: forward listen failed: {}", e);
+        }
+    }
+
+    // Now create reverse connection to Host
     let fd = socket(
         AddressFamily::Vsock,
         SockType::Stream,
         SockFlag::SOCK_CLOEXEC,
         None,
     ).map_err(|e| { log::debug!("vm-daemon: reverse socket() failed: {}", e); e })?;
-    kmsg_write("<6>run_reverse_vsock_client: socket created\n");
-    debug_file_write("run_reverse_vsock_client: socket created\n");
+    kmsg_write("<6>run_reverse_vsock_client: reverse socket created\n");
+    debug_file_write("run_reverse_vsock_client: reverse socket created\n");
 
     let host_addr = VsockAddr::new(HOST_CID, HOST_PORT);
 
@@ -1657,12 +1809,13 @@ fn run_reverse_vsock_client() -> Result<()> {
                     return Ok(());
                 }
                 ConnectionDisposition::ReuseWait { idle_timeout_ms } => {
-                    kmsg_write("<6>run_reverse_vsock_client: switching to forward mode for reuse\n");
-                    // Switch to forward mode for reuse: become listener, allow any host process to connect.
+                    kmsg_write("<6>run_reverse_vsock_client: switching to forward mode for reuse (using pre-created listener)\n");
+                    debug_file_write("[PERF] switching to forward mode (pre-created listener, no delay)\n");
+                    // Switch to forward mode for reuse: use the pre-created listener!
                     // This enables cross-process VM reuse - the session file points to our socket.
-                    log::info!("vm-daemon: switching to forward mode for reuse (cross-process capable)");
-                    let _ = idle_timeout_ms;
-                    run_vsock_server()
+                    // Since we pre-created the listener, we can accept immediately without delay.
+                    log::info!("vm-daemon: switching to forward mode for reuse (pre-created listener, race-free)");
+                    run_vsock_server_with_existing_listener(forward_fd, idle_timeout_ms)
                 }
             }
         }
