@@ -15,7 +15,7 @@ use crate::lfs;
 /// VM configuration parameters.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VmConfig {
-    /// Idle timeout in seconds (from last activity)
+    /// Idle timeout in seconds (0 = never timeout, keep VM alive indefinitely)
     pub timeout: u32,
     /// Seconds to extend timeout after each command
     pub extend: u32,
@@ -23,15 +23,18 @@ pub struct VmConfig {
     pub cpus: u32,
     /// Memory in MiB for VM
     pub memory_mib: u32,
+    /// VMM backend: "libkrun" or "qemu"
+    pub backend: String,
 }
 
 impl Default for VmConfig {
     fn default() -> Self {
         Self {
-            timeout: 10,
+            timeout: 0,  // 0 = never auto timeout
             extend: 10,
             cpus: 2,
             memory_mib: 1024,
+            backend: "libkrun".to_string(),
         }
     }
 }
@@ -61,7 +64,7 @@ pub struct VmSessionInfo {
 
 /// Get env_name from env_root path.
 /// Uses the same logic as main.rs env_name_from_path.
-fn env_name_from_path(env_root: &Path) -> String {
+pub fn env_name_from_path(env_root: &Path) -> String {
     let dir = env_root.display().to_string();
     // Trim trailing slashes
     let trimmed = dir.trim_matches(|c| c == '/' || c == '\\');

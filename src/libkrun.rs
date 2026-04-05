@@ -2186,6 +2186,7 @@ pub fn run_vm_daemon_mode(
         extend: timeout_secs,  // Use same value for extend
         cpus,
         memory_mib,
+        backend: "libkrun".to_string(),
     };
     crate::vm::register_vm_session(env_root, env_name, &vsock_sock_path, "libkrun", &config)?;
 

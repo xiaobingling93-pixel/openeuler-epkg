@@ -13,11 +13,17 @@ epkg vm list                          # 列出 VM
 epkg vm status <env>                  # YAML dump
 ```
 
+### 启动选项
+
+**--vmm** 指定 VMM 后端：
+- `libkrun` (默认，macOS/Windows)
+- `qemu` (Linux)
+
 ### key=value 参数
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `timeout` | 空闲超时（秒）- 从命令执行完成开始计时 | 10 |
+| `timeout` | 空闲超时（秒）- 从命令执行完成开始计时，0 = 永不超时 | 0 |
 | `extend` | 每次 run 完成后延长的时间（秒） | 10 |
 | `cpus` | VM CPU 数 | 2 |
 | `memory` | VM 内存（MiB） | 1024 |
@@ -25,8 +31,14 @@ epkg vm status <env>                  # YAML dump
 ### 使用示例
 
 ```bash
-# 启动 VM（后台运行）
+# 启动 VM（后台运行，永不超时）
+epkg vm start fuzz-alpine cpus=4 memory=2048
+
+# 启动 VM（带超时）
 epkg vm start fuzz-alpine timeout=120 cpus=4 memory=2048
+
+# 在 Linux 上使用 QEMU 后端
+epkg vm start fuzz-alpine --vmm qemu cpus=4
 
 # 查看运行中的 VM
 epkg vm list
@@ -51,15 +63,24 @@ epkg vm stop fuzz-alpine
   "socket_path": "/Users/aa/.epkg/run/vsock-fuzz-alpine.sock",
   "backend": "libkrun",
   "config": {
-    "timeout": 120,
-    "extend": 30,
+    "timeout": 0,
+    "extend": 10,
     "cpus": 4,
-    "memory_mib": 2048
+    "memory_mib": 2048,
+    "backend": "libkrun"
   },
   "created_at": 1712345678,
   "last_activity": 1712345678
 }
 ```
+
+## 平台支持
+
+| 平台 | 默认后端 | --vmm 选项 |
+|------|---------|-----------|
+| macOS | libkrun | libkrun |
+| Windows | libkrun | libkrun |
+| Linux | - | qemu |
 
 ## 架构设计
 
@@ -115,16 +136,16 @@ Process 2: epkg run --isolate=vm -- ls
 
 ## Timeout 语义
 
-- **空闲超时**：从命令执行**完成**开始计时（不是从开始运行）
+- **timeout=0（默认）**: 永不自动超时，VM 会一直运行直到手动停止
+- **timeout=N**: 空闲 N 秒后自动关闭（从命令执行**完成**开始计时，不是从开始运行）
 - **自动延长**：每次 `epkg run` 完成后延长 `extend` 秒
-- **默认值**：`timeout=10`, `extend=10` - 每次命令完成后延长 10 秒
 
 ## 与 pir.py 集成
 
 ```python
 def run_fuzz_iteration(os_name, env_name, ...):
-    # 启动 VM
-    run_epkg(['vm', 'start', env_name, 'timeout=10', 'extend=10'], 'self')
+    # 启动 VM（永不超时）
+    run_epkg(['vm', 'start', env_name], 'self')
 
     # 测试 executables（自动复用 VM）
     for exe in executables:

@@ -154,9 +154,8 @@ mod qemu;
 #[cfg(feature = "libkrun")]
 mod libkrun;
 
-#[cfg(not(target_os = "linux"))]
+// vm session management is available on all platforms for cross-process discovery
 mod vm;
-#[cfg(target_os = "linux")]
 mod vm_client;
 mod busybox;
 mod info;
@@ -1082,10 +1081,8 @@ Note: Output order may vary between runs due to parallel optimization (results s
                         .arg(arg!(<ENV> "Environment name or path"))
                         .arg(arg!(-s --set <KV> "Set VM config: key=value (timeout, extend, cpus, memory)")
                             .action(ArgAction::Append))
-                        .arg(Arg::new("internal-keeper")
-                            .long("internal-keeper")
-                            .hide(true)
-                            .action(ArgAction::SetTrue))
+                        .arg(arg!(--vmm <BACKEND> "VMM backend: libkrun or qemu")
+                            .value_parser(["libkrun", "qemu"]))
                 )
                 .subcommand(
                     Command::new("stop")
