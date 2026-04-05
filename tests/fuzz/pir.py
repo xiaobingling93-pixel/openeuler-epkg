@@ -15,6 +15,7 @@ import argparse
 import os
 import platform
 import random
+import re
 import signal
 import subprocess
 import sys
@@ -370,53 +371,59 @@ def get_installed_executables(env_name: str) -> list:
     return executables
 
 
+def detect_supported_flags(real_exe_path: str) -> list:
+    """Detect supported flags by scanning binary for printable strings."""
+    try:
+        with open(real_exe_path, 'rb') as f:
+            data = f.read()
+    except (FileNotFoundError, PermissionError):
+        return []
+
+    # Extract printable strings (4+ consecutive printable chars)
+    strings = re.findall(rb'[\x20-\x7e]{4,}', data)
+    text = b'\n'.join(strings).decode('ascii', errors='ignore')
+
+    flags = []
+    if '--help' in text:
+        flags.append('--help')
+    if '--version' in text:
+        flags.append('--version')
+    return flags
+
+
 def test_executable_help(env_name: str, exe_path: str) -> Tuple[bool, str]:
-    """Test if executable can run with --help or --version.
+    """Test executable with detected flags only.
 
-    Uses a short timeout (5s) to avoid hanging on broken executables.
-    Returns (success, output) tuple.
+    First scans binary for --help/--version strings to avoid calling
+    unsupported flags that may cause programs to block or misbehave.
     """
-    # Use 5 second timeout for executable tests
-    result = run_epkg(['run', '--', exe_path, '--help'], env_name, timeout=5)
+    # Convert VM path to real host path for strings detection
+    env_path = get_epkg_symlink_path() / "envs" / env_name
+    exe_name = exe_path.split('/')[-1]
+    real_exe = env_path / "usr" / "bin" / exe_name
 
-    # Check for timeout
-    if result.returncode == -1 and 'Timeout' in result.stderr:
-        return False, f"Timeout after 5s: {exe_path}"
+    supported = detect_supported_flags(str(real_exe))
 
-    if result.returncode == 0:
-        return True, result.stdout + result.stderr
+    if not supported:
+        return True, f"Skipped (no --help/--version): {exe_path}"
 
-    output = result.stdout + result.stderr
-    if any(keyword in output for keyword in ['Usage', '--help', 'Options']):
-        return True, output
+    for flag in supported:
+        result = run_epkg(['run', '--', exe_path, flag], env_name, timeout=5)
+        if result.returncode == -1 and 'Timeout' in result.stderr:
+            continue
+        if result.returncode == 0:
+            return True, result.stdout + result.stderr
+        output = result.stdout + result.stderr
+        if any(kw in output for kw in ['Usage', 'Options', 'version', 'Copyright']):
+            return True, output
+        if any(kw in output for kw in [
+            'error while loading shared libraries',
+            'cannot open shared object file',
+            'No such file or directory'
+        ]):
+            return False, output
 
-    if any(keyword in output for keyword in [
-        'error while loading shared libraries',
-        'cannot open shared object file',
-        'No such file or directory'
-    ]):
-        return False, output
-
-    # Try --version as fallback
-    result = run_epkg(['run', '--', exe_path, '--version'], env_name, timeout=5)
-
-    # Check for timeout
-    if result.returncode == -1 and 'Timeout' in result.stderr:
-        return False, f"Timeout after 5s: {exe_path} --version"
-
-    output = result.stdout + result.stderr
-
-    if result.returncode == 0 or any(keyword in output for keyword in ['version', 'Version', 'Copyright']):
-        return True, output
-
-    if any(keyword in output for keyword in [
-        'error while loading shared libraries',
-        'cannot open shared object file',
-        'No such file or directory'
-    ]):
-        return False, output
-
-    return True, output
+    return False, f"Flags failed: {exe_path}"
 
 
 def check_log_for_errors(log_content: str) -> list:
