@@ -654,15 +654,17 @@ def check_install_errors(result: subprocess.CompletedProcess, whitelist: list) -
 
     Returns:
         Tuple: (error_type, has_error, is_whitelisted)
+        error_type can be: None, "install_fail", "install_warn", "install_timeout",
+                           "disk_space" (special: triggers gc+recreate, not counted as error)
     """
     install_error = result.returncode != 0
     log_errors = check_log_for_errors(result.stdout + result.stderr)
     combined_output = result.stdout + result.stderr
 
-    # Check for disk space error - should exit gracefully
+    # Check for disk space error - triggers gc + env recreate
     if "Insufficient disk space" in combined_output:
-        log(f"Insufficient disk space detected")
-        return None, False, False
+        log(f"Insufficient disk space detected - will trigger gc and recreate env")
+        return "disk_space", True, False
 
     # Check for timeout
     if result.returncode == -1 and 'Timeout' in result.stderr:
@@ -822,6 +824,12 @@ def run_fuzz_iteration(ctx: FuzzIterationContext) -> Tuple[str, bool]:
     # Step 4: Check install errors
     error_type, has_error, is_whitelisted = check_install_errors(result, ctx.whitelist)
     if is_whitelisted:
+        return None, False
+
+    # Special handling for disk space: trigger gc + recreate, don't count as error
+    if error_type == "disk_space":
+        ctx.need_gc = True
+        ctx.need_recreate = True
         return None, False
 
     if has_error:
