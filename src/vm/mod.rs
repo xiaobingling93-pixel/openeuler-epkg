@@ -9,6 +9,8 @@
 //! Session management (session.rs) is available on all platforms for cross-process
 //! VM discovery. The start/stop/keeper modules are only for non-Linux (libkrun backend).
 //! On Linux, QEMU VMs are managed through vm_client directly.
+//!
+//! Guest daemon (guest_daemon.rs) runs inside the VM to handle commands from host.
 
 pub mod session;
 
@@ -18,6 +20,9 @@ mod start;
 mod stop;
 #[cfg(not(target_os = "linux"))]
 mod keeper;
+
+#[cfg(target_os = "linux")]
+pub mod guest_daemon;
 
 mod list;
 mod status;

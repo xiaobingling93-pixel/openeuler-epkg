@@ -575,13 +575,13 @@ fn exec_vm_daemon() -> Result<()> {
     // Call vm_daemon::run() directly instead of exec-ing the binary.
     log::debug!("init: starting vm-daemon directly (no exec), reverse_mode={}", reverse_mode);
     let _ = kmsg_write("<6>exec_vm_daemon: creating options\n");
-    let options = crate::busybox::vm_daemon::VmDaemonOptions {
+    let options = crate::vm::guest_daemon::VmDaemonOptions {
         reverse_mode,
         ..Default::default()
     };
     let _ = kmsg_write("<6>exec_vm_daemon: about to call vm_daemon::run\n");
-    let result = crate::busybox::vm_daemon::run(options);
-    log::debug!("init: vm_daemon::run() returned: {:?}", result);
+    let result = crate::vm::guest_daemon::run(options);
+    log::debug!("init: vm::guest_daemon::run() returned: {:?}", result);
     // vm_daemon returns after handling command; trigger immediate shutdown
     // to avoid waiting for PID 1's 1-second poll loop
     if result.is_err() {

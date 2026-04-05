@@ -11,7 +11,7 @@
 //!
 //! # Invocation
 //! **IMPORTANT:** vm-daemon is NOT invoked as a separate applet binary. Instead, it is called directly
-//! as a function from init.rs (`crate::busybox::vm_daemon::run(options)`) after the guest kernel boots.
+//! as a function from init.rs (`crate::vm::guest_daemon::run(options)`) after the guest kernel boots.
 //! The symlink `/usr/bin/vm-daemon -> epkg` exists for build system compatibility, but the init process
 //! never execs the vm-daemon binary - it calls the function directly.
 //!
@@ -1346,9 +1346,10 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
                         debug_file_write(&format!("handle_connection: command completed with exit_code={}\n", exit_code));
 
                         if request.reuse_vm {
+                            // timeout=0 means "never timeout" - use ~1 year in ms
                             let idle_ms = request
                                 .vm_keep_timeout_secs
-                                .map(|s| s.saturating_mul(1000))
+                                .map(|s| if s == 0 { u32::MAX } else { s.saturating_mul(1000) })
                                 .unwrap_or(VM_REUSE_IDLE_TIMEOUT_MS);
                             let _ = kmsg_write("<6>handle_connection: reuse_vm=true, returning ReuseWait\n");
                             return Ok(ConnectionDisposition::ReuseWait {
