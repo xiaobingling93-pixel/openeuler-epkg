@@ -76,6 +76,8 @@ pub(crate) fn build_command_request(
     cmd_parts: &[String],
     io_mode: IoMode,
     reuse_vm: bool,
+    vm_keep_timeout_secs: Option<u32>,
+    extend_timeout_secs: Option<u32>,
     env_vars: Option<&std::collections::HashMap<String, String>>,
 ) -> serde_json::Value {
     crate::debug_epkg!("build_command_request: starting");
@@ -112,6 +114,12 @@ pub(crate) fn build_command_request(
     }
     if reuse_vm {
         m.insert("reuse_vm".to_string(), serde_json::Value::Bool(true));
+        if let Some(secs) = vm_keep_timeout_secs {
+            m.insert("vm_keep_timeout_secs".to_string(), serde_json::Value::Number(secs.into()));
+        }
+        if let Some(secs) = extend_timeout_secs {
+            m.insert("extend_timeout_secs".to_string(), serde_json::Value::Number(secs.into()));
+        }
     }
     // Add environment variables if provided
     if let Some(env) = env_vars {
@@ -302,6 +310,8 @@ pub fn send_command_via_vsock(
     cmd_parts: &[String],
     io_mode: IoMode,
     reuse_vm: bool,
+    vm_keep_timeout_secs: Option<u32>,
+    extend_timeout_secs: Option<u32>,
     sock_path: &Path,
     env_vars: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<i32> {
@@ -348,7 +358,7 @@ pub fn send_command_via_vsock(
 
     log::debug!("libkrun: Unix socket connected, sending command {:?}", cmd_parts);
 
-    let request = build_command_request(cmd_parts, io_mode, reuse_vm, env_vars);
+    let request = build_command_request(cmd_parts, io_mode, reuse_vm, vm_keep_timeout_secs, extend_timeout_secs, env_vars);
     let request_json = serde_json::to_vec(&request)?;
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
@@ -480,6 +490,8 @@ pub fn send_command_via_vsock(
     cmd_parts: &[String],
     io_mode: IoMode,
     reuse_vm: bool,
+    vm_keep_timeout_secs: Option<u32>,
+    extend_timeout_secs: Option<u32>,
     sock_path: &Path,
     env_vars: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<i32> {
@@ -500,7 +512,7 @@ pub fn send_command_via_vsock(
     // We can proceed directly - handlers will skip the READY signal.
     // No additional delay needed since WaitNamedPipeA ensures the guest is ready.
     crate::debug_epkg!("libkrun_stream: connection ready, proceeding immediately");
-    let request = build_command_request(cmd_parts, io_mode, reuse_vm, env_vars);
+    let request = build_command_request(cmd_parts, io_mode, reuse_vm, vm_keep_timeout_secs, extend_timeout_secs, env_vars);
     crate::debug_epkg!("libkrun_stream: serializing to json");
     let request_json = serde_json::to_vec(&request)?;
     crate::debug_epkg!("libkrun_stream: writing {} bytes to stream", request_json.len());
@@ -762,6 +774,8 @@ pub fn send_command_over_stream(
     cmd_parts: &[String],
     io_mode: IoMode,
     reuse_vm: bool,
+    vm_keep_timeout_secs: Option<u32>,
+    extend_timeout_secs: Option<u32>,
     env_vars: Option<&std::collections::HashMap<String, String>>,
     mut stream: impl Read + Write + Send + 'static + std::os::unix::io::AsRawFd,
 ) -> Result<i32> {
@@ -773,7 +787,7 @@ pub fn send_command_over_stream(
         io_mode, is_batch, reuse_vm);
 
     // Build and send command request
-    let request = build_command_request(cmd_parts, io_mode, reuse_vm, env_vars);
+    let request = build_command_request(cmd_parts, io_mode, reuse_vm, vm_keep_timeout_secs, extend_timeout_secs, env_vars);
     let request_json = serde_json::to_vec(&request)?;
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
@@ -911,6 +925,8 @@ pub fn send_command_over_named_pipe(
     cmd_parts: &[String],
     io_mode: IoMode,
     reuse_vm: bool,
+    vm_keep_timeout_secs: Option<u32>,
+    extend_timeout_secs: Option<u32>,
     mut stream: std::fs::File,
 ) -> Result<i32> {
     crate::debug_epkg!("libkrun_stream: send_command_over_named_pipe starting");
@@ -919,7 +935,7 @@ pub fn send_command_over_named_pipe(
         io_mode, is_batch, reuse_vm);
 
     // Build and send command request
-    let request = build_command_request(cmd_parts, io_mode, reuse_vm, None);
+    let request = build_command_request(cmd_parts, io_mode, reuse_vm, vm_keep_timeout_secs, extend_timeout_secs, None);
     let request_json = serde_json::to_vec(&request)?;
     crate::debug_epkg!("libkrun_stream: [PERF] writing {} bytes to named pipe", request_json.len());
     let write_start = std::time::Instant::now();

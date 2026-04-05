@@ -67,11 +67,11 @@ fn cleanup_stale_vm_files() {
 #[allow(dead_code)]
 fn cleanup_stale_vm_files() {}
 
-/// Import vm_session functions used in this module
+/// Import vm::session functions used in this module
 #[cfg(all(feature = "libkrun", not(target_os = "linux")))]
-use crate::vm_session::{
-    discover_vm_session, register_vm_session,
-    unregister_vm_session,
+use crate::vm::{
+    discover_vm_session, register_vm_session_simple,
+    unregister_vm_session, is_vm_session_active, vm_socket_path_for_env,
 };
 
 /// Check if there's an active VM reuse session for a specific env_root.
@@ -94,7 +94,7 @@ pub fn is_vm_reuse_active_for_env(env_root: &Path) -> bool {
     }
 
     // Cross-process: check on-disk session file
-    crate::vm_session::is_vm_session_active(env_root)
+    is_vm_session_active(env_root)
 }
 
 #[cfg(all(feature = "libkrun", target_os = "linux"))]
@@ -147,6 +147,8 @@ pub fn execute_via_existing_vm(
         cmd_parts,
         io_mode,
         false, // not reuse_vm - just a one-shot command
+        None,  // vm_keep_timeout_secs
+        None,  // extend_timeout_secs
         env_vars,
         stream,
     )?;
@@ -173,6 +175,8 @@ pub fn execute_via_existing_vm(
         cmd_parts,
         io_mode,
         false, // not reuse_vm - just a one-shot command
+        None,  // vm_keep_timeout_secs
+        None,  // extend_timeout_secs
         stream,
     )?;
 
@@ -969,16 +973,28 @@ fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext, env_root: &Path, reverse:
     let run_dir = &crate::models::dirs().epkg_run;
     lfs::create_dir_all(run_dir)?;
 
-    // Use env_hash-based socket path for cross-process discovery
-    let env_hash = crate::utils::hash_env_root(env_root);
+    // Use env_name-based socket path for cross-process discovery
     #[cfg(not(target_os = "linux"))]
-    let sock_path = crate::vm_session::vm_socket_path_for_env(env_root);
+    let sock_path = vm_socket_path_for_env(env_root);
     #[cfg(target_os = "linux")]
-    let sock_path = run_dir.join(format!("vsock-{}.sock", env_hash));
+    let sock_path = {
+        let env_hash = crate::utils::hash_env_root(env_root);
+        run_dir.join(format!("vsock-{}.sock", env_hash))
+    };
     let _ = std::fs::remove_file(&sock_path);
 
-    // Ready path uses same hash pattern
-    let ready_path = run_dir.join(format!("ready-{}.sock", env_hash));
+    // Ready path uses same naming pattern
+    #[cfg(not(target_os = "linux"))]
+    let ready_path = {
+        let sock = vm_socket_path_for_env(env_root);
+        let name = sock.file_name().unwrap().to_string_lossy();
+        sock.with_file_name(name.replace("vsock-", "ready-"))
+    };
+    #[cfg(target_os = "linux")]
+    let ready_path = {
+        let env_hash = crate::utils::hash_env_root(env_root);
+        run_dir.join(format!("ready-{}.sock", env_hash))
+    };
     let _ = std::fs::remove_file(&ready_path);
 
     unsafe {
@@ -1571,6 +1587,8 @@ fn try_reuse_existing_krun_session(
                 &config.cmd_parts,
                 run_options.io_mode,
                 run_options.reuse_vm,
+                run_options.vm_keep_timeout,
+                None,  // extend_timeout_secs
                 Some(&run_options.env_vars),
                 stream,
             )
@@ -1584,6 +1602,8 @@ fn try_reuse_existing_krun_session(
             &config.cmd_parts,
             run_options.io_mode,
             run_options.reuse_vm,
+            run_options.vm_keep_timeout,
+            None,  // extend_timeout_secs
             &sock,
             Some(&run_options.env_vars),
         )
@@ -1609,6 +1629,8 @@ fn send_session_done_unix(sock_path: &Path) -> Result<()> {
         &[crate::run::VM_SESSION_DONE_CMD.to_string()],
         crate::models::IoMode::Stream,
         false,
+        None,
+        None,
         None,
     ))?;
     #[cfg(unix)]
@@ -1850,7 +1872,7 @@ fn run_reverse_vsock_mode_inner(
     // Register session file IMMEDIATELY after Guest connects for cross-process discovery.
     // This allows other processes to discover the VM while the first command is running.
     if run_options.reuse_vm {
-        let _ = register_vm_session(env_root, &vsock_sock_path);
+        let _ = register_vm_session_simple(env_root, &vsock_sock_path);
         log::info!("vm_session: registered VM session for {} (socket {})",
                    env_root.display(), vsock_sock_path.display());
     }
@@ -1865,6 +1887,8 @@ fn run_reverse_vsock_mode_inner(
         &config.cmd_parts,
         run_options.io_mode,
         run_options.reuse_vm,
+        run_options.vm_keep_timeout,
+        None,  // extend_timeout_secs
         stream,
     ) {
         Ok(code) => {
@@ -1882,6 +1906,8 @@ fn run_reverse_vsock_mode_inner(
         &config.cmd_parts,
         run_options.io_mode,
         run_options.reuse_vm,
+        run_options.vm_keep_timeout,
+        None,  // extend_timeout_secs
         Some(&run_options.env_vars),
         stream,
     ) {
@@ -2039,7 +2065,7 @@ pub fn run_command_in_krun(
         // Session registration is only needed on non-Linux platforms for cross-process discovery.
         #[cfg(not(target_os = "linux"))]
         if run_options.reuse_vm {
-            let _ = register_vm_session(env_root, &vsock_sock_path);
+            let _ = register_vm_session_simple(env_root, &vsock_sock_path);
             log::info!("vm_session: registered VM session for {} (socket {})",
                        env_root.display(), vsock_sock_path.display());
         }
@@ -2056,6 +2082,8 @@ pub fn run_command_in_krun(
             &config.cmd_parts,
             run_options.io_mode,
             run_options.reuse_vm,
+            run_options.vm_keep_timeout,
+            None,  // extend_timeout_secs
             &vsock_sock_path,
             Some(&run_options.env_vars),
         )
@@ -2097,6 +2125,85 @@ pub fn run_command_in_krun(
     let vm_thread = start_libkrun_vm(vm_ctx.ctx, start_failed_tx);
 
     krun_no_vsock_join_vm_thread_exit(vm_thread, ctx_id);
+}
+
+/// Run VM in daemon/keeper mode.
+/// Creates VM, registers session, and blocks until VM shuts down (guest idle timeout).
+/// Used by `epkg vm start` to keep a VM alive for other processes to connect.
+#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+pub fn run_vm_daemon_mode(
+    env_root: &Path,
+    env_name: &str,
+    timeout_secs: u32,
+    cpus: u32,
+    memory_mib: u32,
+) -> Result<()> {
+    log::info!("libkrun: starting VM in daemon mode for {} (timeout={}s)", env_name, timeout_secs);
+
+    // Build RunOptions for VM configuration
+    let run_options = crate::run::RunOptions {
+        vm_cpus: Some(cpus as u8),
+        vm_memory_mib: Some(memory_mib),
+        reuse_vm: true,  // Enable reuse mode
+        ..Default::default()
+    };
+
+    // Build config (no command needed for daemon mode)
+    let config = build_libkrun_config(env_root, &run_options, Path::new("/bin/true"))?;
+
+    // Create and configure VM
+    let vm_ctx = create_and_configure_vm(env_root, &run_options, &config)?;
+    let ctx_id = vm_ctx.ctx.ctx_id;
+    let vsock_sock_path = vm_ctx.vsock_sock_path.clone()
+        .ok_or_else(|| eyre::eyre!("libkrun: missing vsock socket path"))?;
+
+    log::info!("libkrun: VM configured for daemon mode (ctx_id={})", ctx_id);
+
+    // Setup ready listener
+    let env_hash = crate::utils::hash_env_root(env_root);
+    let ready_listener = libkrun_bridge::setup_vsock_ready_listener(&env_hash)?
+        .ok_or_else(|| eyre::eyre!("libkrun: missing ready listener"))?;
+
+    // Start VM thread
+    let (start_failed_tx, start_failed_rx) = std::sync::mpsc::channel();
+    let vm_thread = start_libkrun_vm(vm_ctx.ctx, start_failed_tx);
+
+    // Wait for guest ready
+    let ready_result = libkrun_bridge::wait_guest_ready_unix(&ready_listener, Some(&start_failed_rx));
+    if let Err(e) = ready_result {
+        log::error!("libkrun: VM startup failed in daemon mode: {}", e);
+        let _ = unsafe { krun_signal_shutdown(ctx_id) };
+        let _ = vm_thread.join();
+        let _ = unsafe { krun_free_ctx(ctx_id) };
+        return Err(e);
+    }
+
+    log::info!("libkrun: guest ready in daemon mode");
+
+    // Register session
+    let config = crate::vm::VmConfig {
+        timeout: timeout_secs,
+        extend: timeout_secs,  // Use same value for extend
+        cpus,
+        memory_mib,
+    };
+    crate::vm::register_vm_session(env_root, env_name, &vsock_sock_path, "libkrun", &config)?;
+
+    log::info!("libkrun: VM daemon session registered, waiting for VM shutdown...");
+
+    // Wait for VM thread to complete (guest will shut down after idle timeout)
+    let status = vm_thread.join()
+        .map_err(|_| eyre::eyre!("VM thread panicked"))?;
+
+    log::info!("libkrun: VM daemon exited with status {}", status);
+
+    // Cleanup session
+    crate::vm::unregister_vm_session(env_root)?;
+
+    // Free context
+    unsafe { krun_free_ctx(ctx_id) };
+
+    Ok(())
 }
 
 /// Setup console output logging to a file for debugging kernel boot.

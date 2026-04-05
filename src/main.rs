@@ -155,7 +155,7 @@ mod qemu;
 mod libkrun;
 
 #[cfg(not(target_os = "linux"))]
-mod vm_session;
+mod vm;
 #[cfg(target_os = "linux")]
 mod vm_client;
 mod busybox;
@@ -320,7 +320,7 @@ fn main() -> Result<()> {
 
     // Clean up stale VM session files from crashed processes (non-Linux only)
     #[cfg(not(target_os = "linux"))]
-    crate::vm_session::cleanup_stale_vm_sessions();
+    crate::vm::session::cleanup_stale_vm_sessions();
 
     // Try to route install/upgrade/remove/restore commands via existing VM session.
     // This ensures data integrity by running these operations in the same VM context.
@@ -423,6 +423,8 @@ fn main() -> Result<()> {
         Some(("busybox",    sub_matches))  =>  command_busybox(sub_matches)?,
         Some(("search",     sub_matches))  =>  command_search(sub_matches)?,
         Some(("gc",         sub_matches))  =>  command_gc(sub_matches)?,
+        #[cfg(not(target_os = "linux"))]
+        Some(("vm",         sub_matches))  =>  command_vm(sub_matches)?,
         #[cfg(unix)]
         Some(("service",    sub_matches))  =>  command_service(sub_matches)?,
         _ => {} // No subcommand or unknown subcommand
@@ -1068,6 +1070,37 @@ Note: Output order may vary between runs due to parallel optimization (results s
                 .about("Garbage collection - clean up unused cache and store files")
                 .arg(arg!(--"old-downloads" <DAYS> "Remove download files older than DAYS (0 = all files)")
                     .value_parser(clap::value_parser!(u64)))
+        )
+        .subcommand(
+            Command::new("vm")
+                .about("VM lifecycle management")
+                .subcommand_required(true)
+                .arg_required_else_help(true)
+                .subcommand(
+                    Command::new("start")
+                        .about("Start VM for environment")
+                        .arg(arg!(<ENV> "Environment name or path"))
+                        .arg(arg!(-s --set <KV> "Set VM config: key=value (timeout, extend, cpus, memory)")
+                            .action(ArgAction::Append))
+                        .arg(Arg::new("internal-keeper")
+                            .long("internal-keeper")
+                            .hide(true)
+                            .action(ArgAction::SetTrue))
+                )
+                .subcommand(
+                    Command::new("stop")
+                        .about("Stop VM")
+                        .arg(arg!(<ENV> "Environment name or path"))
+                )
+                .subcommand(
+                    Command::new("list")
+                        .about("List running VMs")
+                )
+                .subcommand(
+                    Command::new("status")
+                        .about("Show VM status (YAML)")
+                        .arg(arg!(<ENV> "Environment name or path"))
+                )
         )
 }
 
@@ -2426,7 +2459,7 @@ fn try_route_command_via_vm(matches: &clap::ArgMatches) -> Result<Option<i32>> {
 
     // Check if there's an active VM session for the current environment
     let env_root = crate::dirs::get_env_root(config().common.env_name.clone())?;
-    if !crate::vm_session::is_vm_session_active(&env_root) {
+    if !crate::vm::session::is_vm_session_active(&env_root) {
         log::debug!("main: no active VM session for {}, proceeding with normal execution", env_root.display());
         return Ok(None);
     }
@@ -2624,6 +2657,18 @@ fn command_search(_sub_matches: &clap::ArgMatches) -> Result<()> {
 fn command_gc(sub_matches: &clap::ArgMatches) -> Result<()> {
     let old_downloads_days = sub_matches.get_one::<u64>("old-downloads").copied();
     gc::gc_epkg(old_downloads_days)?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn command_vm(sub_matches: &clap::ArgMatches) -> Result<()> {
+    match sub_matches.subcommand() {
+        Some(("start", sm)) => vm::cmd_vm_start(sm)?,
+        Some(("stop", sm)) => vm::cmd_vm_stop(sm)?,
+        Some(("list", sm)) => vm::cmd_vm_list(sm)?,
+        Some(("status", sm)) => vm::cmd_vm_status(sm)?,
+        _ => {}
+    }
     Ok(())
 }
 

@@ -1302,7 +1302,14 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
     // Inherit VM settings from active VM reuse session.
     // This allows scriptlets/hooks/ldconfig to reuse the same VM that was created
     // for the main install/upgrade command, avoiding ~2-3 seconds VM boot overhead.
-    if is_vm_reuse_active_for_env(env_root) {
+    // Also check for cross-process VM sessions (from `epkg vm start`).
+    #[cfg(not(target_os = "linux"))]
+    let has_active_vm_session = is_vm_reuse_active_for_env(env_root) ||
+        crate::vm::is_vm_session_active(env_root);
+    #[cfg(target_os = "linux")]
+    let has_active_vm_session = is_vm_reuse_active_for_env(env_root);
+
+    if has_active_vm_session {
         run_options.reuse_vm = true;
         run_options.effective_sandbox.isolate_mode = Some(IsolateMode::Vm);
     }
