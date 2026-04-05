@@ -38,36 +38,6 @@ impl GcPlan {
         self.old_unpack_dirs.is_empty() &&
         self.old_aur_build_dirs.is_empty()
     }
-
-    pub fn total_size(&self) -> u64 {
-        let mut total = 0u64;
-
-        if let Some(ref downloads) = self.old_downloads {
-            for path in downloads {
-                if let Ok(metadata) = lfs::metadata_on_host(path) {
-                    total += metadata.len();
-                }
-            }
-        }
-
-        for path in &self.unused_channels {
-            total += get_dir_size(path).unwrap_or(0);
-        }
-
-        for path in &self.unused_packages {
-            total += get_dir_size(path).unwrap_or(0);
-        }
-
-        for path in &self.old_unpack_dirs {
-            total += get_dir_size(path).unwrap_or(0);
-        }
-
-        for path in &self.old_aur_build_dirs {
-            total += get_dir_size(path).unwrap_or(0);
-        }
-
-        total
-    }
 }
 
 pub fn gc_epkg(old_downloads_days: Option<u64>) -> Result<()> {
@@ -322,9 +292,7 @@ fn display_gc_plan(plan: &GcPlan, is_old_downloads: bool) -> Result<()> {
     } else {
         if !plan.unused_channels.is_empty() {
             println!("\nUnused directories to remove under: {}", dirs().epkg_channels_cache.display());
-            let total_size = plan.unused_channels.iter()
-                .map(|p| get_dir_size(p).unwrap_or(0))
-                .sum::<u64>();
+            // Skip size calculation for speed - just count directories
             let mut unused_channel_names: Vec<String> = plan.unused_channels
                 .iter()
                 .map(|dir| dir.file_name()
@@ -337,7 +305,6 @@ fn display_gc_plan(plan: &GcPlan, is_old_downloads: bool) -> Result<()> {
                 plan.unused_channels.len(),
                 unused_channel_names.join(" ")
             );
-            println!("  Total size: {}", utils::format_size(total_size));
 
             if config().common.verbose {
                 for dir in &plan.unused_channels {
@@ -348,11 +315,8 @@ fn display_gc_plan(plan: &GcPlan, is_old_downloads: bool) -> Result<()> {
 
         if !plan.unused_packages.is_empty() {
             println!("\nUnused directories to remove under: {}", dirs().epkg_store.display());
-            let total_size = plan.unused_packages.iter()
-                .map(|p| get_dir_size(p).unwrap_or(0))
-                .sum::<u64>();
+            // Skip size calculation for speed - just count directories
             println!("  Directories: {}", plan.unused_packages.len());
-            println!("  Total size: {}", utils::format_size(total_size));
 
             if config().common.verbose {
                 for dir in &plan.unused_packages {
@@ -363,11 +327,7 @@ fn display_gc_plan(plan: &GcPlan, is_old_downloads: bool) -> Result<()> {
 
         if !plan.old_unpack_dirs.is_empty() {
             println!("\nUnused directories to remove under: {}", crate::dirs::unpack_basedir().display());
-            let total_size = plan.old_unpack_dirs.iter()
-                .map(|p| get_dir_size(p).unwrap_or(0))
-                .sum::<u64>();
             println!("  Directories: {}", plan.old_unpack_dirs.len());
-            println!("  Total size: {}", utils::format_size(total_size));
 
             if config().common.verbose {
                 for dir in &plan.old_unpack_dirs {
@@ -378,11 +338,7 @@ fn display_gc_plan(plan: &GcPlan, is_old_downloads: bool) -> Result<()> {
 
         if !plan.old_aur_build_dirs.is_empty() {
             println!("\nStale files/directories to remove under: {}", dirs().user_aur_builds.display());
-            let total_size = plan.old_aur_build_dirs.iter()
-                .map(|p| get_dir_size(p).unwrap_or(0))
-                .sum::<u64>();
             println!("  Items: {}", plan.old_aur_build_dirs.len());
-            println!("  Total size: {}", utils::format_size(total_size));
 
             if config().common.verbose {
                 for item in &plan.old_aur_build_dirs {
@@ -395,7 +351,7 @@ fn display_gc_plan(plan: &GcPlan, is_old_downloads: bool) -> Result<()> {
     if plan.is_empty() {
         println!("No cleanup required.");
     } else {
-        println!("\nTotal space to be freed: {}", utils::format_size(plan.total_size()));
+        println!();
     }
 
     Ok(())
@@ -454,42 +410,5 @@ fn execute_gc_plan(plan: &GcPlan) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn get_dir_size(path: &Path) -> Result<u64> {
-    // First, handle the case where `path` itself is a file (or symlink to a file)
-    if let Ok(metadata) = fs::symlink_metadata(path) {
-        // If it's a file, return its size directly
-        if metadata.is_file() {
-            return Ok(metadata.len());
-        }
-
-        // If it's a symlink to a directory or something else, don't follow it; treat as size 0
-        if lfs::is_symlink_or_junction(path) && !metadata.is_dir() {
-            return Ok(0);
-        }
-    }
-
-    // Otherwise, treat `path` as a directory and sum sizes of contained regular files.
-    let mut total_size = 0u64;
-
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries.flatten() {
-            let entry_path = entry.path();
-            // Use symlink_metadata to avoid following symlinks
-            if let Ok(metadata) = fs::symlink_metadata(&entry_path) {
-                if metadata.is_file() {
-                    total_size += metadata.len();
-                } else if metadata.is_dir() {
-                    // Don't follow symlinks/junctions to avoid counting the same files multiple times
-                    if !lfs::is_symlink_or_junction(&entry_path) {
-                        total_size += get_dir_size(&entry_path).unwrap_or(0);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(total_size)
 }
 
