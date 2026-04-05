@@ -308,6 +308,8 @@ unsafe extern "C" {
     /// Signal the shutdown eventfd to trigger VM shutdown.
     /// This properly writes to the EventFd on all platforms.
     fn krun_signal_shutdown(ctx_id: u32) -> i32;
+    /// Dump FUSE statistics to log (for debugging).
+    fn krun_dump_fuse_stats(ctx_id: u32);
     /// Set the executable path and arguments for the guest init process.
     /// This is used for embedded_init mode to specify the init program.
     fn krun_set_exec(
@@ -983,18 +985,9 @@ fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext, env_root: &Path, reverse:
     };
     let _ = std::fs::remove_file(&sock_path);
 
-    // Ready path uses same naming pattern
-    #[cfg(not(target_os = "linux"))]
-    let ready_path = {
-        let sock = vm_socket_path_for_env(env_root);
-        let name = sock.file_name().unwrap().to_string_lossy();
-        sock.with_file_name(name.replace("vsock-", "ready-"))
-    };
-    #[cfg(target_os = "linux")]
-    let ready_path = {
-        let env_hash = crate::utils::hash_env_root(env_root);
-        run_dir.join(format!("ready-{}.sock", env_hash))
-    };
+    // Ready path uses same naming pattern as setup_vsock_ready_listener (hash-based)
+    let env_hash = crate::utils::hash_env_root(env_root);
+    let ready_path = run_dir.join(format!("ready-{}.sock", env_hash));
     let _ = std::fs::remove_file(&ready_path);
 
     unsafe {
@@ -1739,6 +1732,10 @@ fn krun_vsock_shutdown_join_free_exit(
     #[cfg(not(target_os = "linux"))]
     {
         crate::debug_epkg!("libkrun: skipping VM cleanup on non-Linux, exiting with code {}", exit_code);
+        // Dump FUSE statistics before exit (debug mode only)
+        if std::env::var("EPKG_DEBUG_LIBKRUN").is_ok() {
+            unsafe { crate::libkrun::krun_dump_fuse_stats(ctx_id) };
+        }
         // Signal shutdown to VM (best effort)
         let _ = unsafe { krun_signal_shutdown(ctx_id) };
         // Don't wait for VM thread - just exit with the correct code
