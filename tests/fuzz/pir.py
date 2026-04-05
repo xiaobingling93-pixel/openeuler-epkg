@@ -15,12 +15,16 @@ import argparse
 import os
 import platform
 import random
+import signal
 import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+# Global flag for signal handling
+_interrupted = False
 
 # Default configuration
 DEFAULT_BATCH_SIZE = 5
@@ -43,6 +47,19 @@ def log(msg: str):
     """Log message with timestamp."""
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     print(f"[{timestamp}] {msg}", flush=True)
+
+
+def signal_handler(signum, frame):
+    """Handle SIGINT (Ctrl-C) to gracefully stop the fuzz loop."""
+    global _interrupted
+    _interrupted = True
+    log(f"Received signal {signum}, stopping after current iteration...")
+
+
+def setup_signal_handlers():
+    """Set up signal handlers for graceful shutdown."""
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
 
 def get_system_memory_gb() -> float:
@@ -271,13 +288,23 @@ def find_epkg_binary() -> Path:
     raise RuntimeError("epkg binary not found. Set EPKG_BIN or build the project.")
 
 
-def run_epkg(args: list, env_name: str, capture_output: bool = True) -> subprocess.CompletedProcess:
+def run_epkg(args: list, env_name: str, capture_output: bool = True,
+              timeout: Optional[int] = None) -> subprocess.CompletedProcess:
     """
     Run epkg command with logging.
 
     Environment variables:
     - RUST_LOG=warn
     - RUST_BACKTRACE=1
+
+    Args:
+        args: epkg command arguments (e.g. ['install', 'htop'])
+        env_name: environment name
+        capture_output: if True, capture stdout/stderr
+        timeout: timeout in seconds (None = no timeout, 0 = use default)
+
+    Returns:
+        subprocess.CompletedProcess result
     """
     epkg_bin = find_epkg_binary()
     cmd = [str(epkg_bin), '-e', env_name] + args
@@ -288,10 +315,19 @@ def run_epkg(args: list, env_name: str, capture_output: bool = True) -> subproce
 
     log(f"Running: {' '.join(cmd)}")
 
-    if capture_output:
-        return subprocess.run(cmd, capture_output=True, text=True, env=env)
-    else:
-        return subprocess.run(cmd, env=env)
+    # Use default timeout for long operations if not specified
+    if timeout == 0:
+        timeout = 300  # 5 minutes default for install/restore operations
+
+    try:
+        if capture_output:
+            return subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=timeout)
+        else:
+            return subprocess.run(cmd, env=env, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        log(f"Command timed out after {timeout} seconds: {' '.join(cmd)}")
+        # Return a fake result with timeout indication
+        return subprocess.CompletedProcess(cmd, returncode=-1, stdout="", stderr=f"Timeout after {timeout}s")
 
 
 def get_available_packages(os_name: str, env_name: str) -> list:
@@ -583,7 +619,7 @@ def run_fuzz_iteration(os_name: str, env_name: str, packages: list,
     cmd_str = f"epkg -e {env_name} install --assume-yes --ignore-file-conflicts {batch_str}"
     loop_commands.append(cmd_str)
 
-    result = run_epkg(['install', '--assume-yes', '--ignore-file-conflicts'] + batch, env_name)
+    result = run_epkg(['install', '--assume-yes', '--ignore-file-conflicts'] + batch, env_name, timeout=0)
     loop_log += f"=== INSTALL ===\n{result.stdout}\n{result.stderr}\n"
 
     install_error = result.returncode != 0
@@ -655,7 +691,7 @@ def run_fuzz_iteration(os_name: str, env_name: str, packages: list,
     cmd_str = f"epkg -e {env_name} restore 0"
     loop_commands.append(cmd_str)
 
-    result = run_epkg(['restore', '0'], env_name)
+    result = run_epkg(['restore', '0'], env_name, timeout=0)
     loop_log += f"=== RESTORE ===\n{result.stdout}\n{result.stderr}\n"
 
     if result.returncode != 0:
@@ -691,10 +727,13 @@ def cmd_run(os_name: str, batch_size: int, max_errors: int):
     Loop:
     - Install random packages
     - Test executables
-    - Restore to generation 1
+    - Restore to generation 0
     - Check tmpfs usage, gc if needed
     - Save bad cases on errors
     """
+    # Set up signal handlers for graceful Ctrl-C handling
+    setup_signal_handlers()
+
     # Get CACHE_DIR from env or existing symlink
     cache_dir = None
     if CACHE_DIR:
@@ -746,6 +785,11 @@ def cmd_run(os_name: str, batch_size: int, max_errors: int):
     log(f"Starting fuzz loop: batch_size={batch_size}, max_errors={max_errors}")
 
     while error_count < max_errors:
+        # Check if user pressed Ctrl-C
+        if _interrupted:
+            log("Interrupted by user, stopping...")
+            break
+
         loop_count += 1
         log(f"=== Loop {loop_count} ===")
 
