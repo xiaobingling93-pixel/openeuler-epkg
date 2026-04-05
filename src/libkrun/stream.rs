@@ -797,7 +797,6 @@ pub fn send_command_over_stream(
 
     // Build and send command request
     let request = build_command_request(cmd_parts, io_mode, reuse_vm, vm_keep_timeout_secs, extend_timeout_secs, env_vars, cwd);
-    log::debug!("send_command_over_stream: request JSON: {}", serde_json::to_string(&request).unwrap_or_default());
     let request_json = serde_json::to_vec(&request)?;
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;

@@ -50,7 +50,6 @@ fn try_connect_and_execute_vm(env_root: &Path, run_options: &RunOptions) -> Resu
     // For VM mode, chdir_to_env_root means working directory should be "/" (VM root)
     // which maps to the environment root via virtiofs
     let cwd = if run_options.chdir_to_env_root {
-        log::debug!("run: setting cwd=/ for VM (chdir_to_env_root=true)");
         Some("/")
     } else {
         None
