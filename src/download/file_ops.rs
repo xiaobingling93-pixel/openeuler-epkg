@@ -26,7 +26,7 @@ use super::types::*;
 use super::chunk::{collect_and_sort_chunks, validate_chunks, adjust_and_create_chunks};
 use super::mirror::{validate_mirror_metadata, fetch_server_metadata};
 use super::utils::{map_io_error, send_chunk_to_channel};
-use super::validation::parse_http_date;
+use super::validation::{parse_http_date, validate_apk_gzip_integrity};
 use crate::utils;
 use crate::config;
 use crate::dirs;
@@ -684,7 +684,23 @@ fn check_immutable_file(
     let outcome = immutable_size_outcome(&task.file_type, local_size, remote_size_val);
     match outcome {
         ImmutableSizeOutcome::Match => {
-            Ok(CacheDecision::UseCache { reason: "Immutable file size matches".to_string() })
+            // For APK files, also verify gzip integrity to catch corrupted files
+            // that have correct size but damaged content
+            match validate_apk_gzip_integrity(&task.final_path) {
+                Ok(true) => {
+                    Ok(CacheDecision::UseCache { reason: "Immutable file size matches, APK gzip integrity verified".to_string() })
+                }
+                Ok(false) => {
+                    // Not an APK file, size match is sufficient
+                    Ok(CacheDecision::UseCache { reason: "Immutable file size matches".to_string() })
+                }
+                Err(e) => {
+                    log::warn!("APK gzip integrity check failed, triggering redownload: {}", e);
+                    Ok(CacheDecision::RedownloadDueTo {
+                        reason: format!("APK file corrupted (gzip integrity check failed): {}", e),
+                    })
+                }
+            }
         }
         ImmutableSizeOutcome::TooSmall => {
             if task.file_type == FileType::AppendOnly {
@@ -959,25 +975,61 @@ fn validate_immutable_file(
 
     match outcome {
         ImmutableSizeOutcome::Match => {
-            match file_type {
-                FileType::Immutable => {
-                    log::info!(
-                        "Immutable file {} already exists with correct size {}, treating as already downloaded",
-                        final_path.display(),
-                        local_size
-                    );
+            // For APK files, also verify gzip integrity to catch corrupted files
+            // that have correct size but damaged content
+            match validate_apk_gzip_integrity(final_path) {
+                Ok(true) => {
+                    match file_type {
+                        FileType::Immutable => {
+                            log::info!(
+                                "Immutable file {} already exists with correct size {}, APK gzip integrity verified",
+                                final_path.display(),
+                                local_size
+                            );
+                        }
+                        FileType::AppendOnly => {
+                            log::info!(
+                                "Append-only file {} already exists with sufficient size ({} >= {}), APK gzip integrity verified",
+                                final_path.display(),
+                                local_size,
+                                expected_size
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
+                    Ok(ValidationResult::SkipDownload("File exists with correct size, APK verified".to_string()))
                 }
-                FileType::AppendOnly => {
-                    log::info!(
-                        "Append-only file {} already exists with sufficient size ({} >= {}), treating as complete",
-                        final_path.display(),
-                        local_size,
-                        expected_size
-                    );
+                Ok(false) => {
+                    // Not an APK file, size match is sufficient
+                    match file_type {
+                        FileType::Immutable => {
+                            log::info!(
+                                "Immutable file {} already exists with correct size {}, treating as already downloaded",
+                                final_path.display(),
+                                local_size
+                            );
+                        }
+                        FileType::AppendOnly => {
+                            log::info!(
+                                "Append-only file {} already exists with sufficient size ({} >= {}), treating as complete",
+                                final_path.display(),
+                                local_size,
+                                expected_size
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
+                    Ok(ValidationResult::SkipDownload("File exists with correct size".to_string()))
                 }
-                _ => unreachable!(),
+                Err(e) => {
+                    log::warn!(
+                        "APK file {} has correct size but failed gzip integrity check: {}, will redownload",
+                        final_path.display(),
+                        e
+                    );
+                    Ok(ValidationResult::CorruptionDetected)
+                }
             }
-            Ok(ValidationResult::SkipDownload("File exists with correct size".to_string()))
         }
         ImmutableSizeOutcome::TooSmall => {
             log::info!(

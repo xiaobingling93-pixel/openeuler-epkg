@@ -21,7 +21,7 @@ use std::{
 };
 use crate::lfs;
 
-use color_eyre::eyre::{eyre, Result};
+use color_eyre::eyre::{eyre, Result, WrapErr};
 use time::{OffsetDateTime, format_description::well_known::Rfc2822};
 use ureq::http;
 
@@ -240,4 +240,49 @@ pub fn parse_http_date(date_str: &str) -> Result<SystemTime> {
     }
 
     Err(eyre!("Failed to parse HTTP date: {}", date_str))
+}
+
+/// Validate APK file gzip integrity
+///
+/// APK files are concatenated gzip streams. This function verifies that
+/// all gzip streams can be successfully decompressed, which catches
+/// truncated or corrupted files that have correct file size.
+///
+/// Returns Ok(true) if validation passes, Ok(false) if file is not an APK,
+/// or Err if validation fails due to corruption.
+pub fn validate_apk_gzip_integrity(file_path: &Path) -> Result<bool> {
+    let path_str = file_path.to_string_lossy();
+
+    // Only validate .apk files
+    if !path_str.ends_with(".apk") {
+        return Ok(false);
+    }
+
+    log::debug!("Validating APK gzip integrity for: {}", file_path.display());
+
+    use std::io::Read;
+    use flate2::read::MultiGzDecoder;
+
+    let file = std::fs::File::open(file_path)
+        .wrap_err_with(|| format!("Failed to open APK file for validation: {}", file_path.display()))?;
+
+    let mut decoder = MultiGzDecoder::new(file);
+
+    // Read entire decompressed content to verify all gzip streams
+    // This will fail if any gzip stream is truncated or corrupted
+    let mut total_bytes = 0usize;
+    let mut buffer = [0u8; 65536];
+    loop {
+        match decoder.read(&mut buffer) {
+            Ok(0) => break, // EOF - all streams read successfully
+            Ok(n) => total_bytes += n,
+            Err(e) => {
+                log::warn!("APK gzip integrity validation failed for {}: {}", file_path.display(), e);
+                return Err(eyre!("APK file is corrupted (gzip integrity check failed): {}", file_path.display()));
+            }
+        }
+    }
+
+    log::debug!("APK gzip integrity validation passed for {}: {} bytes decompressed", file_path.display(), total_bytes);
+    Ok(true)
 }
