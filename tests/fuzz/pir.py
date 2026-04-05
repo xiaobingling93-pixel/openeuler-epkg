@@ -604,18 +604,21 @@ def run_fuzz_iteration(os_name: str, env_name: str, packages: list,
     log(f"Testing {len(executables)} executables")
 
     exe_errors = []
+    failed_outputs = []  # Only record failed outputs to reduce log size
     for exe in executables:
         cmd_str = f"epkg -e {env_name} run {exe} --help"
         loop_commands.append(cmd_str)
 
         success, output = test_executable_help(env_name, exe)
-        loop_log += f"=== RUN {exe} ===\n{output}\n"
 
         if not success:
             exe_errors.append(exe)
+            failed_outputs.append(f"=== RUN {exe} (FAILED) ===\n{output}\n")
             log(f"Executable test failed: {exe}")
 
     if exe_errors:
+        # Only include failed outputs in log to reduce size
+        loop_log += "".join(failed_outputs)
         save_bad_case(os_name, loop_commands, loop_log, "exe_fail", f"Failed executables: {exe_errors}")
         log(f"Executable errors detected")
         return "exe_fail", True
