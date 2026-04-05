@@ -23,9 +23,9 @@ from pathlib import Path
 from typing import Optional
 
 # Default configuration
-DEFAULT_BATCH_SIZE = 10
-DEFAULT_MAX_ERRORS = 100
-TMPFS_SIZE_GB = 4  # Target tmpfs size, or use < half system memory
+DEFAULT_BATCH_SIZE = 5
+DEFAULT_MAX_ERRORS = 10
+TMPFS_SIZE_GB = 6  # Target tmpfs size, or use < half system memory
 
 # Environment variables
 EPKG_BIN = os.environ.get('EPKG_BIN', None)
