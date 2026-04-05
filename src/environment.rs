@@ -343,14 +343,14 @@ fn setup_hosts(env_root: &Path) -> Result<()> {
 
 fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     let generations_root = env_root.join("generations");
-    let gen_1_dir = generations_root.join("1");
+    let gen_0_dir = generations_root.join("0");
 
     // Create env_root directory first and enable case sensitivity on Windows
     // This must be done before creating any subdirectories
     lfs::create_dir_all_with_case_sensitivity(env_root)?;
 
     // Create basic directories
-    lfs::create_dir_all(&gen_1_dir)?;
+    lfs::create_dir_all(&gen_0_dir)?;
     lfs::create_dir_all(env_root.join("root"))?;
     lfs::create_dir_all(env_root.join("ebin"))?;     // for script interpreters,
                                                     // won't go to PATH
@@ -368,7 +368,7 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     lfs::create_dir_all(crate::dirs::path_join(env_root, &["opt", "epkg"]))?;
     lfs::create_dir_all(env_root_etc_epkg(env_root))?;
 
-    // Create symlinks in generation 1 (usr-merge layout)
+    // Create symlinks in generation 0 (usr-merge layout)
     // This allows brew packages (which have bin/, share/, include/ at root)
     // to work correctly with Linux namespace isolation that mounts env_root/usr -> /usr
     force_symlink_dir_for_virtiofs("usr/sbin", env_root.join("sbin"))?;
@@ -386,8 +386,8 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     // create_environment_dirs() only when pkg_format is Brew.
     // See the Brew-specific block in create_environment_dirs() for details.
 
-    // Create "current" symlink in generations directory pointing to generation 1
-    force_symlink_dir_for_virtiofs("1", generations_root.join("current"))?;
+    // Create "current" symlink in generations directory pointing to generation 0
+    force_symlink_dir_for_virtiofs("0", generations_root.join("current"))?;
 
     // Create essential mount points for VM isolation (dev, proc, sys, run, tmp)
     // These are needed for kernel to mount devtmpfs, procfs, sysfs, etc.
@@ -763,7 +763,7 @@ fn create_default_world_json(env_root: &Path, pkg_format: &PackageFormat) -> Res
     }
 
     // Write world.json
-    let world_path = crate::dirs::path_join(env_root, &["generations", "1", "world.json"]);
+    let world_path = crate::dirs::path_join(env_root, &["generations", "0", "world.json"]);
     let world_json = serde_json::to_string_pretty(&world)?;
     lfs::write(&world_path, world_json)?;
 
@@ -772,8 +772,8 @@ fn create_default_world_json(env_root: &Path, pkg_format: &PackageFormat) -> Res
 
 /// Install packages and create metadata files for the environment
 fn import_packages_and_create_metadata(env_root: &Path) -> Result<()> {
-    let gen_1_dir = crate::dirs::path_join(env_root, &["generations", "1"]);
-    let installed_packages_path = gen_1_dir.join("installed-packages.json");
+    let gen_0_dir = crate::dirs::path_join(env_root, &["generations", "0"]);
+    let installed_packages_path = gen_0_dir.join("installed-packages.json");
 
     // Read packages to install from JSON if importing (supports both object and array format)
     let packages_to_import = if config().env.import_file.is_some() {
@@ -792,7 +792,7 @@ fn import_packages_and_create_metadata(env_root: &Path) -> Result<()> {
         lfs::write(installed_packages_path, "{\n}")?;
 
         // Record the environment creation in command history
-        record_history(&gen_1_dir, None)?;
+        record_history(&gen_0_dir, None)?;
     }
 
     Ok(())

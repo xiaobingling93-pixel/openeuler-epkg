@@ -11,9 +11,10 @@ use crate::install::execute_installation_plan;
 pub fn get_current_generation_id() -> Result<u32> {
     let generations_root = crate::dirs::get_default_generations_root()?;
     let current_link = generations_root.join("current");
-    // If the "current" symlink doesn't exist yet, default to generation 1.
+    // If the "current" symlink doesn't exist yet, default to generation 0.
+    // This represents the initial empty state before any install operations.
     if !lfs::exists_on_host(&current_link) {
-        return Ok(1);
+        return Ok(0);
     }
 
     let target = fs::read_link(&current_link)
@@ -40,29 +41,24 @@ pub fn create_new_generation_with_root(generations_root: &Path) -> Result<PathBu
             format!("Failed to parse generation id from '{}'", target_name))?
     } else {
         // No current generation exists, start with generation 1
-        1
+        // (generation 0 is created by env create, so if missing, we're in a fresh state)
+        0
     };
     let current_generation = generations_root.join(current_id.to_string());
 
-    // Check if we need to create a new generation
-    let command_json = current_generation.join("command.json");
-    if !lfs::exists_on_host(&command_json) {
-        // Current generation has no command history, just return it
-        return Ok(current_generation);
-    }
-
-    // Create new generation
+    // Always create new generation for install/upgrade/remove operations
+    // This is different from env create which creates generation 0
     let new_id = current_id + 1;
     let new_generation = generations_root.join(new_id.to_string());
 
     // Create new generation directory
     lfs::create_dir_all(&new_generation)?;
 
-    // FHS directories are now at root level
-    // So only copy metadata files from current to new generation.
-    // No need copy installed-packages.json since its JSON data will be
-    // loaded from old generation dir and saved to new generation dir.
-    lfs::copy(command_json, new_generation.join("command.json"))?;
+    // Copy command.json from current generation if it exists
+    let command_json = current_generation.join("command.json");
+    if lfs::exists_on_host(&command_json) {
+        lfs::copy(command_json, new_generation.join("command.json"))?;
+    }
 
     Ok(new_generation)
 }
@@ -184,8 +180,8 @@ pub fn rollback_history(rollback_id: i32) -> Result<()> {
     // Handle negative rollback IDs (relative rollback)
     let target_id = if rollback_id < 0 {
         let abs_rollback : u32 = rollback_id.abs() as u32;
-        if abs_rollback >= current_generation_id {
-            return Err(eyre::eyre!("Cannot rollback beyond generation 1"));
+        if abs_rollback > current_generation_id {
+            return Err(eyre::eyre!("Cannot rollback beyond generation 0"));
         }
         current_generation_id - abs_rollback
     } else {
