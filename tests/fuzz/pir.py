@@ -323,7 +323,7 @@ def run_epkg(args: list, env_name: str, capture_output: bool = True,
 
     # Use default timeout for long operations if not specified
     if timeout == 0:
-        timeout = 300  # 5 minutes default for install/restore operations
+        timeout = 600  # 10 minutes default for install/restore operations (large packages can take time)
 
     try:
         if capture_output:
