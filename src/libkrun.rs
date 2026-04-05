@@ -710,40 +710,57 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
     use crate::models::dirs;
 
     let mut mounts = Vec::new();
-    let mut seen_paths: Vec<std::path::PathBuf> = Vec::new();
+    // Track canonicalized paths to avoid duplicate mounts on same filesystem location
+    let mut seen_canonical: Vec<std::path::PathBuf> = Vec::new();
 
     // Helper to add a mount if path is a directory and not already seen
     // guest_path defaults to host_path if not specified
     let mut try_add_mount = |host_path: &Path, guest_path: Option<&Path>, read_only: bool, try_only: bool| {
-        // Skip if already added, or if a parent mount already covers this path.
-        if seen_paths.iter().any(|seen| host_path == seen || host_path.starts_with(seen)) {
-            return;
-        }
         let path_str = host_path.to_string_lossy().to_string();
 
         // Skip if not a directory (virtiofs only supports directories)
-        match fs::metadata(host_path) {
-            Ok(meta) if meta.is_dir() => {
-                // Generate a unique tag from the path
-                let tag = generate_virtiofs_tag(host_path);
-                let guest = guest_path
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| path_str.clone());
-                log::debug!("libkrun: adding virtiofs mount: {} -> {} (guest: {}) ({})",
-                           host_path.display(), tag, guest, if read_only { "ro" } else { "rw" });
-                mounts.push((tag, host_path.to_string_lossy().to_string(), guest, read_only));
-                seen_paths.push(host_path.to_path_buf());
-            }
+        let meta = match fs::metadata(host_path) {
+            Ok(m) if m.is_dir() => m,
             Ok(_) => {
                 log::info!("libkrun: skipping non-directory mount: {}", host_path.display());
+                return;
             }
             Err(e) if !try_only => {
                 log::warn!("libkrun: cannot access mount path {}: {}", host_path.display(), e);
+                return;
             }
             Err(_) => {
                 // try_only=true, silently skip
+                return;
             }
+        };
+
+        // Canonicalize to resolve symlinks and detect if this exact location is already mounted.
+        // We track canonical paths to avoid mounting the same filesystem location twice,
+        // but we do NOT skip subdirectories - they may need separate mounts for symlink resolution.
+        let canonical = match host_path.canonicalize() {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("libkrun: cannot canonicalize {}: {}", host_path.display(), e);
+                return;
+            }
+        };
+
+        // Only skip if canonical path matches exactly (same filesystem location)
+        if seen_canonical.contains(&canonical) {
+            log::debug!("libkrun: skipping duplicate mount (same location): {}", host_path.display());
+            return;
         }
+
+        // Generate a unique tag from the path
+        let tag = generate_virtiofs_tag(host_path);
+        let guest = guest_path
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| path_str.clone());
+        log::debug!("libkrun: adding virtiofs mount: {} -> {} (guest: {}) ({})",
+                   host_path.display(), tag, guest, if read_only { "ro" } else { "rw" });
+        mounts.push((tag, host_path.to_string_lossy().to_string(), guest, read_only));
+        seen_canonical.push(canonical);
     };
 
     // Add epkg system directories
@@ -772,10 +789,8 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
 
     if is_host_root {
         // For host root: mount to same path in guest (host path = guest path)
-        // Mount store directory for symlinks in cross-filesystem environments
-        // Symlinks in temp directories point to store, so VM needs access
-        // IMPORTANT: Add store BEFORE home_epkg so it's not skipped by seen_paths check
-        // (store is a subdirectory of home_epkg)
+        // Mount store directory for symlinks in cross-filesystem environments.
+        // Symlinks in temp directories point to store, so VM needs access at the original path.
         try_add_mount(&dirs().epkg_store, None, true, true);
         try_add_mount(&dirs().home_epkg, None, false, true);
         try_add_mount(&dirs().home_cache, None, false, true);
@@ -795,6 +810,8 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
         //
         // self env is then at user_envs/self = /root/.epkg/envs/self which exists.
         // store is at /root/.epkg/store (mounted as part of home_epkg).
+        // Also mount store at original path for symlink resolution.
+        try_add_mount(&dirs().epkg_store, None, true, true);
         try_add_mount(&dirs().home_epkg, Some(Path::new("/root/.epkg")), false, true);
         // Mount cache separately since home_cache is outside home_epkg on macOS
         try_add_mount(&dirs().home_cache, Some(Path::new("/root/.cache")), false, true);
@@ -802,7 +819,7 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
         // For non-root host + non-root guest: mount to same paths
         // The guest user will have the same UID as the host user (via virtiofs
         // passthrough), so they can access their own files
-        // IMPORTANT: Add store first for symlinks
+        // Mount store for symlink resolution in cross-filesystem environments
         try_add_mount(&dirs().epkg_store, None, true, true);
         try_add_mount(&dirs().home_epkg, None, false, true);
         try_add_mount(&dirs().home_cache, None, false, true);
