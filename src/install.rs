@@ -265,9 +265,9 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     compute_link_type_and_reflink(&mut plan)?;
 
     // Validate transaction (disk space, conflicts, etc.)
+    // Fail early if insufficient disk space - no point continuing to inevitable ENOSPC
     if let Err(e) = crate::risks::check_disk_space_for_plan(&plan, &store_root, &download_cache) {
-        log::warn!("Transaction validation failed: {}", e);
-        // Continue anyway - validation is advisory for now
+        return Err(e);
     }
 
     // Execute installations and upgrades (also processes removals via run_transaction_batch)

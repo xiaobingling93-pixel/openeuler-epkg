@@ -32,10 +32,10 @@ DEFAULT_BATCH_SIZE = 5
 DEFAULT_MAX_ERRORS = 10
 TMPFS_SIZE_GB = 6  # Target tmpfs size, or use < half system memory
 
-# Thresholds for env cleanup/recreate
-USAGE_THRESHOLD_RECREATE = 50  # Recreate env when usage > 50%
-USAGE_THRESHOLD_SKIP = 90      # Skip iteration when usage > 90%
-USAGE_THRESHOLD_GC = 80        # Run gc when usage > 80%
+# Thresholds for env cleanup/recreate (more conservative)
+USAGE_THRESHOLD_RECREATE = 40  # Recreate env when usage > 40%
+USAGE_THRESHOLD_SKIP = 80      # Skip iteration when usage > 80%
+USAGE_THRESHOLD_GC = 60        # Run gc when usage > 60%
 
 # Environment variables
 EPKG_BIN = os.environ.get('EPKG_BIN', None)
