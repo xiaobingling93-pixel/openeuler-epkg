@@ -719,7 +719,7 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
         let path_str = host_path.to_string_lossy().to_string();
 
         // Skip if not a directory (virtiofs only supports directories)
-        let meta = match fs::metadata(host_path) {
+        let _meta = match fs::metadata(host_path) {
             Ok(m) if m.is_dir() => m,
             Ok(_) => {
                 log::info!("libkrun: skipping non-directory mount: {}", host_path.display());
@@ -1221,7 +1221,7 @@ fn create_and_configure_vm(
         {
             if std::env::var("EPKG_DEBUG_LIBKRUN").is_err() {
                 check_status("krun_disable_implicit_console",
-                    unsafe { krun_disable_implicit_console(ctx.ctx_id) })?;
+                    krun_disable_implicit_console(ctx.ctx_id))?;
                 log::debug!("libkrun: disabled implicit virtio console (hvc0)");
             }
         }
