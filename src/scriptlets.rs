@@ -7,52 +7,132 @@ use crate::lfs;
 use color_eyre::eyre::{eyre, Result};
 
 /// Convert a host path to a guest path for VM execution.
-/// On macOS/Windows with libkrun VM, home_epkg is mounted at /opt/epkg in the guest.
+/// On macOS/Windows with libkrun VM, paths are mounted according to build_virtiofs_mount_specs() logic.
 /// On Linux, paths are the same (namespace isolation).
+///
+/// Guest mount logic (from build_virtiofs_mount_specs):
+/// - host_root + guest_root: same path (host path = guest path)
+/// - host_nonroot + guest_root: home_epkg → /root/.epkg, home_cache → /root/.cache
+/// - host_nonroot + guest_nonroot: same path (UIDs match via virtiofs)
 #[cfg(not(target_os = "linux"))]
 fn host_path_to_guest_path(host_path: &std::path::Path) -> std::path::PathBuf {
-    let home_epkg = crate::models::dirs().home_epkg.clone();
+    use crate::models::dirs;
+
+    let home_epkg = dirs().home_epkg.clone();
+    let home_cache = dirs().home_cache.clone();
+
     // Canonicalize both paths to resolve symlinks (e.g., ~/.epkg -> /Volumes/epkg)
     // This ensures consistent prefix matching regardless of whether paths are resolved
     let home_epkg_resolved = std::fs::canonicalize(&home_epkg).unwrap_or_else(|_| home_epkg.clone());
+    let home_cache_resolved = std::fs::canonicalize(&home_cache).unwrap_or_else(|_| home_cache.clone());
     let host_path_resolved = std::fs::canonicalize(host_path).unwrap_or_else(|_| host_path.to_path_buf());
 
     log::debug!("host_path_to_guest_path: host_path={:?} resolved={:?} home_epkg={:?} home_epkg_resolved={:?}",
                 host_path, host_path_resolved, home_epkg, home_epkg_resolved);
 
-    // Try with resolved paths first
-    if let Ok(relative) = host_path_resolved.strip_prefix(&home_epkg_resolved) {
-        // Convert to Unix-style path and prepend /opt/epkg
-        #[cfg(windows)]
-        let relative_str = relative.to_string_lossy().replace('\\', "/");
-        #[cfg(not(windows))]
-        let relative_str = relative.to_string_lossy();
-        let result = std::path::PathBuf::from(format!("/opt/epkg/{}", relative_str.trim_start_matches('/')));
-        log::debug!("host_path_to_guest_path: result={:?}", result);
-        return result;
-    }
+    // Determine guest mount paths based on host/guest UID combination
+    // This mirrors the logic in build_virtiofs_mount_specs()
+    #[cfg(unix)]
+    let is_host_root = unsafe { libc::getuid() == 0 };
+    #[cfg(not(unix))]
+    let is_host_root = false;
 
-    // Also try with unresolved paths (in case host_path wasn't canonicalized)
-    if let Ok(relative) = host_path.strip_prefix(&home_epkg) {
-        #[cfg(windows)]
-        let relative_str = relative.to_string_lossy().replace('\\', "/");
-        #[cfg(not(windows))]
-        let relative_str = relative.to_string_lossy();
-        let result = std::path::PathBuf::from(format!("/opt/epkg/{}", relative_str.trim_start_matches('/')));
-        log::debug!("host_path_to_guest_path: result (unresolved)={:?}", result);
-        return result;
-    }
+    // Guest runs as root by default (no -u option or -u root)
+    // For scriptlets, guest always runs as root in current implementation
+    let is_guest_root = true;
 
-    // Path not under home_epkg, try to convert backslashes to forward slashes on Windows
-    #[cfg(windows)]
-    {
-        let path_str = host_path.to_string_lossy().replace('\\', "/");
-        std::path::PathBuf::from(path_str)
-    }
-    #[cfg(not(windows))]
-    {
-        log::warn!("host_path_to_guest_path: cannot convert path {:?} (not under home_epkg)", host_path);
-        host_path.to_path_buf()
+    if is_host_root {
+        // host_root + guest_root: same path (no transformation needed)
+        // Try to strip home_epkg prefix and use same path
+        if let Ok(relative) = host_path_resolved.strip_prefix(&home_epkg_resolved) {
+            #[cfg(windows)]
+            let relative_str = relative.to_string_lossy().replace('\\', "/");
+            #[cfg(not(windows))]
+            let relative_str = relative.to_string_lossy();
+            let result = std::path::PathBuf::from(format!("/{}", relative_str.trim_start_matches('/')));
+            log::debug!("host_path_to_guest_path: host_root case, result={:?}", result);
+            return result;
+        }
+        // Path not under home_epkg, use original path
+        #[cfg(windows)]
+        {
+            let path_str = host_path.to_string_lossy().replace('\\', "/");
+            std::path::PathBuf::from(path_str)
+        }
+        #[cfg(not(windows))]
+        {
+            host_path.to_path_buf()
+        }
+    } else if is_guest_root {
+        // host_nonroot + guest_root: home_epkg → /root/.epkg, home_cache → /root/.cache
+        // This is the most common case for macOS users running epkg without -u
+
+        // Check if path is under home_epkg
+        if let Ok(relative) = host_path_resolved.strip_prefix(&home_epkg_resolved) {
+            #[cfg(windows)]
+            let relative_str = relative.to_string_lossy().replace('\\', "/");
+            #[cfg(not(windows))]
+            let relative_str = relative.to_string_lossy();
+            let result = std::path::PathBuf::from(format!("/root/.epkg/{}", relative_str.trim_start_matches('/')));
+            log::debug!("host_path_to_guest_path: guest_root + home_epkg, result={:?}", result);
+            return result;
+        }
+
+        // Also try unresolved paths (in case host_path wasn't canonicalized)
+        if let Ok(relative) = host_path.strip_prefix(&home_epkg) {
+            #[cfg(windows)]
+            let relative_str = relative.to_string_lossy().replace('\\', "/");
+            #[cfg(not(windows))]
+            let relative_str = relative.to_string_lossy();
+            let result = std::path::PathBuf::from(format!("/root/.epkg/{}", relative_str.trim_start_matches('/')));
+            log::debug!("host_path_to_guest_path: guest_root + home_epkg (unresolved), result={:?}", result);
+            return result;
+        }
+
+        // Check if path is under home_cache
+        if let Ok(relative) = host_path_resolved.strip_prefix(&home_cache_resolved) {
+            #[cfg(windows)]
+            let relative_str = relative.to_string_lossy().replace('\\', "/");
+            #[cfg(not(windows))]
+            let relative_str = relative.to_string_lossy();
+            let result = std::path::PathBuf::from(format!("/root/.cache/{}", relative_str.trim_start_matches('/')));
+            log::debug!("host_path_to_guest_path: guest_root + home_cache, result={:?}", result);
+            return result;
+        }
+
+        if let Ok(relative) = host_path.strip_prefix(&home_cache) {
+            #[cfg(windows)]
+            let relative_str = relative.to_string_lossy().replace('\\', "/");
+            #[cfg(not(windows))]
+            let relative_str = relative.to_string_lossy();
+            let result = std::path::PathBuf::from(format!("/root/.cache/{}", relative_str.trim_start_matches('/')));
+            log::debug!("host_path_to_guest_path: guest_root + home_cache (unresolved), result={:?}", result);
+            return result;
+        }
+
+        // Path not under home_epkg/home_cache, use original path
+        #[cfg(windows)]
+        {
+            let path_str = host_path.to_string_lossy().replace('\\', "/");
+            std::path::PathBuf::from(path_str)
+        }
+        #[cfg(not(windows))]
+        {
+            log::warn!("host_path_to_guest_path: cannot convert path {:?} (not under home_epkg/home_cache)", host_path);
+            host_path.to_path_buf()
+        }
+    } else {
+        // host_nonroot + guest_nonroot: same path (UIDs match via virtiofs)
+        // Guest user has same UID as host, so paths work directly
+        #[cfg(windows)]
+        {
+            let path_str = host_path.to_string_lossy().replace('\\', "/");
+            std::path::PathBuf::from(path_str)
+        }
+        #[cfg(not(windows))]
+        {
+            host_path.to_path_buf()
+        }
     }
 }
 
