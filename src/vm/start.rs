@@ -63,6 +63,7 @@ fn pending_file_path(env_root: &Path) -> std::path::PathBuf {
 }
 
 /// Write pending creation file with config.
+#[cfg(windows)]
 fn write_pending_config(env_root: &Path, config: &VmConfig) -> Result<()> {
     let pending_file = pending_file_path(env_root);
     let content = serde_json::to_string_pretty(config)?;

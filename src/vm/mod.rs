@@ -6,12 +6,12 @@
 //! - `vm list` - List running VMs (all platforms)
 //! - `vm status` - Show VM status (YAML) (all platforms)
 //!
-//! Session management (session.rs) is available on all platforms for cross-process
-//! VM discovery. The start/stop/keeper modules are only for non-Linux (libkrun backend).
-//! On Linux, QEMU VMs are managed through vm_client directly.
+//! Session management (session.rs) is used by libkrun backend on non-Linux for
+//! cross-process VM discovery. On Linux, QEMU VMs are managed through vm_client directly.
 //!
 //! Guest daemon (guest_daemon.rs) runs inside the VM to handle commands from host.
 
+#[cfg(not(target_os = "linux"))]
 pub mod session;
 
 #[cfg(not(target_os = "linux"))]
@@ -20,13 +20,15 @@ mod start;
 mod stop;
 #[cfg(not(target_os = "linux"))]
 mod keeper;
+#[cfg(not(target_os = "linux"))]
+mod list;
+#[cfg(not(target_os = "linux"))]
+mod status;
 
 #[cfg(target_os = "linux")]
 pub mod guest_daemon;
 
-mod list;
-mod status;
-
+#[cfg(not(target_os = "linux"))]
 pub use session::{VmConfig, discover_vm_session, register_vm_session, register_vm_session_simple, unregister_vm_session, is_vm_session_active, vm_socket_path_for_env};
 
 #[cfg(not(target_os = "linux"))]
@@ -34,5 +36,7 @@ pub use start::cmd_vm_start;
 #[cfg(not(target_os = "linux"))]
 pub use stop::cmd_vm_stop;
 
+#[cfg(not(target_os = "linux"))]
 pub use list::cmd_vm_list;
+#[cfg(not(target_os = "linux"))]
 pub use status::cmd_vm_status;

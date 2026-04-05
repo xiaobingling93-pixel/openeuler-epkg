@@ -119,7 +119,6 @@
 #![cfg(target_os = "linux")]
 
 use crate::busybox::init::kmsg_write;
-use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use serde::Deserialize;
@@ -317,34 +316,6 @@ pub struct VmDaemonOptions {
     /// Reverse mode: Guest connects to Host instead of listening.
     /// This avoids vsock handshake timing issues on Windows/WHPX.
     pub reverse_mode: bool,
-}
-
-pub fn parse_options(matches: &clap::ArgMatches) -> Result<VmDaemonOptions> {
-    let port = matches.get_one::<u16>("port").copied().unwrap_or(10000);
-    let host = matches.get_one::<String>("host").cloned().unwrap_or_else(|| "0.0.0.0".to_string());
-
-    Ok(VmDaemonOptions { port, host, reverse_mode: false })
-}
-
-pub fn command() -> Command {
-    Command::new("vm-daemon")
-        .about("Server for VM guest command execution (TCP or vsock)")
-        .arg(
-            Arg::new("port")
-                .short('p')
-                .long("port")
-                .value_name("PORT")
-                .help("Port to listen on")
-                .default_value("10000")
-                .value_parser(clap::value_parser!(u16))
-        )
-        .arg(
-            Arg::new("host")
-                .long("host")
-                .value_name("HOST")
-                .help("Host address to bind to")
-                .default_value("0.0.0.0")
-        )
 }
 
 #[derive(Debug, Deserialize)]
