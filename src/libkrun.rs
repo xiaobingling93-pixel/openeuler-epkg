@@ -772,14 +772,14 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
 
     if is_host_root {
         // For host root: mount to same path in guest (host path = guest path)
-        try_add_mount(&dirs().home_epkg, None, false, true);
-        try_add_mount(&dirs().home_cache, None, false, true);
-        try_add_mount(&dirs().opt_epkg, None, false, true);
         // Mount store directory for symlinks in cross-filesystem environments
         // Symlinks in temp directories point to store, so VM needs access
         // IMPORTANT: Add store BEFORE home_epkg so it's not skipped by seen_paths check
         // (store is a subdirectory of home_epkg)
         try_add_mount(&dirs().epkg_store, None, true, true);
+        try_add_mount(&dirs().home_epkg, None, false, true);
+        try_add_mount(&dirs().home_cache, None, false, true);
+        try_add_mount(&dirs().opt_epkg, None, false, true);
     } else if is_guest_root {
         // For non-root host + root guest: align mount with host's shared_store setting.
         //

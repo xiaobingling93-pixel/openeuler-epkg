@@ -489,6 +489,16 @@ def run_fuzz_iteration(os_name: str, env_name: str, packages: list,
     loop_commands = []
     loop_log = ""
 
+    # Check disk space before install
+    usage = get_tmpfs_usage_percent()
+    if usage > 90:
+        log(f"Disk usage {usage:.1f}% > 90%, skipping iteration to avoid space issues")
+        # Run gc and return without error
+        result = run_epkg(['gc'], env_name='self')
+        log(f"GC output: {result.stdout[:200]}")
+        time.sleep(1)
+        return None, False
+
     # Select random packages
     batch = random.sample(packages, min(batch_size, len(packages)))
     batch_str = ' '.join(batch)
@@ -504,10 +514,18 @@ def run_fuzz_iteration(os_name: str, env_name: str, packages: list,
     install_error = result.returncode != 0
     log_errors = check_log_for_errors(result.stdout + result.stderr)
 
+    # Check for disk space error - should exit gracefully
+    if "Insufficient disk space" in result.stderr or "Insufficient disk space" in result.stdout:
+        log(f"Insufficient disk space, running gc and exiting gracefully")
+        result = run_epkg(['gc'], env_name='self')
+        log(f"GC output: {result.stdout[:200]}")
+        return None, False
+
     if install_error or log_errors:
         error_type = "install_fail" if install_error else "install_warn"
         save_bad_case(os_name, loop_commands, loop_log, error_type)
         log(f"Install error detected")
+        # Skip restore when install failed - generation may not have advanced
         return error_type, True
 
     # Test executables
