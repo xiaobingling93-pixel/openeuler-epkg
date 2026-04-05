@@ -549,7 +549,9 @@ def save_bad_case(os_name: str, commands: list, log_content: str, error_type: st
         f.write(f"$EPKG_BIN env remove $ENV_NAME 2>/dev/null  # ignore error: may fail on first run\n")
         f.write(f"$EPKG_BIN env create $ENV_NAME -c {os_name}\n\n")
         for cmd in commands:
-            f.write(f"{cmd.replace('epkg', '$EPKG_BIN')}\n")
+            # Only replace 'epkg' at the beginning of command, not in paths like /usr/bin/epkg
+            cmd_replaced = re.sub(r'^epkg', '$EPKG_BIN', cmd)
+            f.write(f"{cmd_replaced}\n")
 
     reproduce_sh.chmod(0o755)
 
