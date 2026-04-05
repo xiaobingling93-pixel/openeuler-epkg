@@ -687,6 +687,24 @@ def cmd_run(os_name: str, batch_size: int, max_errors: int):
     if not BAD_CASES_DIR.exists():
         BAD_CASES_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Archive existing bad cases to .old directory before starting new test run
+    old_dir = BAD_CASES_DIR / ".old"
+    if not old_dir.exists():
+        old_dir.mkdir(parents=True, exist_ok=True)
+
+    for item in BAD_CASES_DIR.iterdir():
+        if item.name == ".old":
+            continue
+        # Move to .old with timestamp prefix
+        import time
+        timestamp = time.strftime('%Y%m%d_%H%M%S')
+        dest = old_dir / f"{timestamp}_{item.name}"
+        try:
+            item.rename(dest)
+            log(f"Archived old bad case: {item.name} -> .old/{dest.name}")
+        except Exception as e:
+            log(f"Warning: Could not archive {item.name}: {e}")
+
     # Load whitelist for dependency resolution errors
     whitelist = load_whitelist()
 
