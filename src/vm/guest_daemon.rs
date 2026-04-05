@@ -402,6 +402,7 @@ fn spawn_child_piped(
     let mut child = StdCommand::new(&request.command[0]);
     child.args(&request.command[1..]);
     if let Some(cwd) = &request.cwd {
+        log::debug!("vm-daemon spawn_child_piped: setting cwd={}", cwd);
         child.current_dir(cwd);
     }
     let uid_gid = resolve_request_user(request.user.as_deref())?;
@@ -474,6 +475,7 @@ fn pty_run_child(request: &CommandRequest, master: OwnedFd, slave: OwnedFd) -> !
     let mut cmd = std::process::Command::new(&request.command[0]);
     cmd.args(&request.command[1..]);
     if let Some(cwd) = &request.cwd {
+        log::debug!("vm-daemon pty child: setting cwd={}", cwd);
         cmd.current_dir(cwd);
     }
     let uid_gid = match resolve_request_user(request.user.as_deref()) {
