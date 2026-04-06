@@ -248,7 +248,7 @@ fn handle_streaming_simple(stream: &mut std::os::unix::net::UnixStream, _is_batc
             revents: 0,
         }];
         let ready = unsafe { libc::poll(pfd.as_mut_ptr(), 1, 50) };
-        if ready > 0 && (pfd[0].revents & libc::POLLIN) != 0 {
+        if ready > 0 && ((pfd[0].revents & libc::POLLIN) != 0 || (pfd[0].revents & libc::POLLHUP) != 0) {
             let mut buf = [0u8; 4096];
             match std::io::stdin().read(&mut buf) {
                 Ok(0) => break, // EOF from host stdin
@@ -465,7 +465,7 @@ fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<
             revents: 0,
         }];
         let ready = unsafe { libc::poll(pfd.as_mut_ptr(), 1, 50) };
-        if ready > 0 && (pfd[0].revents & libc::POLLIN) != 0 {
+        if ready > 0 && ((pfd[0].revents & libc::POLLIN) != 0 || (pfd[0].revents & libc::POLLHUP) != 0) {
             match std::io::stdin().read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
@@ -871,8 +871,8 @@ pub fn send_command_over_stream(
             }
         }
 
-        // Check for stream output
-        if (poll_fds[1].revents & libc::POLLIN) != 0 {
+        // Check for stream output (or connection closed via POLLHUP - may still have data)
+        if (poll_fds[1].revents & libc::POLLIN) != 0 || (poll_fds[1].revents & libc::POLLHUP) != 0 {
             let mut buf = [0u8; 4096];
             match stream.read(&mut buf) {
                 Ok(0) => {
