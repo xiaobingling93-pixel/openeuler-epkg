@@ -477,8 +477,6 @@ pub fn validate_file_conflicts(
     let file_count = unique_files.len() as u64;
     let dir_count = unique_dirs.len() as u64;
 
-    log::debug!("validate_file_conflicts: {} unique files, {} unique dirs", file_count, dir_count);
-
     plan.installed_file_map = Some(Arc::new(file_map));
 
     Ok((file_count, dir_count))

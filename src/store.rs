@@ -1521,8 +1521,6 @@ pub fn fill_pkglines_in_plan(
                             plan.pkgs_in_store.insert(pkgkey.clone());
                         }
                     }
-                } else {
-                    log::trace!("fill_pkglines_in_plan: no match found for pkgkey {}", pkgkey);
                 }
             } else {
                 log::trace!("fill_pkglines_in_plan: pkgkey {} not found in plan.new_pkgs", pkgkey);
