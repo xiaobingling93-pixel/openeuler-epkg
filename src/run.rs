@@ -1301,28 +1301,29 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
         debug!("Auto-enabling VM sandbox for Linux package format: {:?}/{}",
                channel_format, distro);
         run_options.effective_sandbox.isolate_mode = Some(IsolateMode::Vm);
-        if matches!(
-            config_guard.subcommand,
-            EpkgCommand::Install | EpkgCommand::Upgrade
-        ) {
-            run_options.reuse_vm = true;
-        }
     }
 
-    // Inherit VM settings from active VM reuse session.
-    // This allows scriptlets/hooks/ldconfig to reuse the same VM that was created
-    // for the main install/upgrade command, avoiding ~2-3 seconds VM boot overhead.
-    // Also check for cross-process VM sessions (from `epkg vm start`).
+    // VM reuse is mandatory for data integrity - only ONE VM per env_root.
+    // This prevents concurrent host/guest file operations from corrupting data.
+    // Always check for existing VM session first and reuse it if available.
     #[cfg(not(target_os = "linux"))]
     let has_active_vm_session = is_vm_reuse_active_for_env(env_root) ||
         crate::vm::is_vm_session_active(env_root);
     #[cfg(target_os = "linux")]
     let has_active_vm_session = is_vm_reuse_active_for_env(env_root);
 
-    if has_active_vm_session {
+    // If VM mode is active or an existing session exists, always enable reuse.
+    // This ensures scriptlets/hooks reuse the same VM during install/upgrade.
+    // VM reuse is mandatory for data integrity - only ONE VM per env_root.
+    #[cfg(not(target_os = "linux"))]
+    if has_active_vm_session ||
+       run_options.effective_sandbox.isolate_mode == Some(IsolateMode::Vm) {
         run_options.reuse_vm = true;
-        run_options.effective_sandbox.isolate_mode = Some(IsolateMode::Vm);
     }
+
+    // Silence unused warning on Linux
+    #[cfg(target_os = "linux")]
+    let _ = has_active_vm_session;
 
     // If vm_keep_timeout is set, enable reuse_vm mode to keep the VM alive
     // after the command completes.
