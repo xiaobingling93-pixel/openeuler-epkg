@@ -679,14 +679,6 @@ pub fn untar_zst(file_path: &str, output_dir: &str, package_flag: bool) -> Resul
 /// - store_pkglines_by_pkgkey: key is pkgkey (pkgname__version__arch), value is list of matching pkglines
 /// - store_pkglines_by_pkgname: key is pkgname, value is list of matching pkglines
 fn collect_store_pkglines() -> Result<(std::collections::HashMap<String, Vec<String>>, std::collections::HashMap<String, Vec<String>>)> {
-    // Use the current env_root from config
-    let target_env_root = crate::dirs::get_default_env_root().ok();
-    collect_store_pkglines_with_env(target_env_root.as_deref())
-}
-
-/// Collect store pkglines with optional target env_root for stale detection.
-/// When env_root is provided, skips consumed stores that point to that env but have no files.
-fn collect_store_pkglines_with_env(target_env_root: Option<&Path>) -> Result<(std::collections::HashMap<String, Vec<String>>, std::collections::HashMap<String, Vec<String>>)> {
     use crate::models::dirs;
     use crate::package::{pkgline2pkgkey, parse_pkgline};
     use std::fs;
@@ -704,7 +696,6 @@ fn collect_store_pkglines_with_env(target_env_root: Option<&Path>) -> Result<(st
     log::debug!("collect_store_pkglines: scanning store directory: {:?}", store_dir);
     let mut total_pkglines = 0;
     let mut skipped_missing_fs = 0;
-    let mut skipped_stale_consumed = 0;
 
     // Collect all pkglines from the store and organize by both pkgkey and pkgname in a single pass
     if let Ok(entries) = fs::read_dir(&store_dir) {
@@ -712,60 +703,20 @@ fn collect_store_pkglines_with_env(target_env_root: Option<&Path>) -> Result<(st
             let package_path = entry.path();
             if package_path.is_dir() {
                 let fs_dir = package_path.join("fs");
-                // Check if fs directory exists and has actual files
-                // (for Move link type, files are moved to env leaving empty fs)
+                // Check if fs directory exists
+                // (for Move link type, files are moved to env but fs/ still exists)
                 if !lfs::exists_on_host(&fs_dir) {
                     log::debug!("Skipping package {} - 'fs' directory does not exist", package_path.display());
                     skipped_missing_fs += 1;
                     continue;
                 }
 
-                // Check if fs directory has any regular files (not just empty dirs)
-                let has_files = walkdir::WalkDir::new(&fs_dir)
-                    .into_iter()
-                    .filter_map(|e| e.ok())
-                    .any(|e| e.file_type().is_file());
-
-                // For Move link type, fs/ is empty but info/consumed.json exists
-                // We still need to track these pkglines for exposure operations
-                let is_consumed = package_path.join("info/consumed.json").exists();
-
-                if !has_files && !is_consumed {
-                    log::debug!("Skipping package {} - 'fs' directory is empty", package_path.display());
+                // Skip consumed packages (Move link type - files moved to another env)
+                let consumed_marker = package_path.join("info/consumed.json");
+                if consumed_marker.exists() {
+                    log::debug!("Skipping consumed package {}", package_path.display());
                     skipped_missing_fs += 1;
                     continue;
-                }
-
-                if !has_files && is_consumed {
-                    // Check if this is a stale consumed store (consumed by target env but files don't exist)
-                    let mut is_stale = false;
-                    if let Some(env_root) = target_env_root {
-                        let consumed_marker = package_path.join("info/consumed.json");
-                        if let Ok(content) = std::fs::read_to_string(&consumed_marker) {
-                            if let Ok(marker) = serde_json::from_str::<serde_json::Value>(&content) {
-                                if let Some(consumed_env) = marker.get("env_root").and_then(|v| v.as_str()) {
-                                    let consumed_env_path = std::path::Path::new(consumed_env);
-                                    // Check if consumed env matches target env
-                                    if consumed_env_path == env_root {
-                                        // Check if files actually exist in the env
-                                        let env_has_files = check_env_has_package_files(env_root, &package_path);
-                                        if !env_has_files {
-                                            log::debug!("Skipping stale consumed store {} - consumed by target env {} but files don't exist",
-                                                       package_path.display(), consumed_env);
-                                            skipped_stale_consumed += 1;
-                                            is_stale = true;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if !is_stale {
-                        log::debug!("Package {} has empty fs/ but is consumed (Move link type), including in pkglines", package_path.display());
-                    } else {
-                        continue;  // Skip this stale consumed store
-                    }
                 }
 
                 if let Some(pkgline) = package_path.file_name().and_then(|name| name.to_str()) {
@@ -793,43 +744,10 @@ fn collect_store_pkglines_with_env(target_env_root: Option<&Path>) -> Result<(st
         }
     }
 
-    log::debug!("collect_store_pkglines: found {} pkglines ({} skipped due to missing fs, {} stale consumed), organized into {} pkgkey entries, {} pkgname entries",
-        total_pkglines, skipped_missing_fs, skipped_stale_consumed,
+    log::debug!("collect_store_pkglines: found {} pkglines ({} skipped), organized into {} pkgkey entries, {} pkgname entries",
+        total_pkglines, skipped_missing_fs,
         store_pkglines_by_pkgkey.len(), store_pkglines_by_pkgname.len());
     Ok((store_pkglines_by_pkgkey, store_pkglines_by_pkgname))
-}
-
-/// Check if an environment has files from a package by reading the package's filelist
-/// and checking if at least one file exists in the env.
-fn check_env_has_package_files(env_root: &Path, package_path: &Path) -> bool {
-    let filelist_path = package_path.join("info/filelist.txt");
-    if !filelist_path.exists() {
-        return false;
-    }
-
-    // Read filelist and check if at least one file exists in env
-    if let Ok(content) = std::fs::read_to_string(&filelist_path) {
-        for line in content.lines().take(20) {  // Check first 20 files
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.is_empty() {
-                continue;
-            }
-            let path = parts[0];
-            // Skip directories
-            if path.ends_with('/') {
-                continue;
-            }
-            // Build the env path
-            let rel_path = path.trim_start_matches('/');
-            let env_file = env_root.join(rel_path);
-            if lfs::exists_on_host(&env_file) {
-                log::trace!("Found file in env: {}", env_file.display());
-                return true;
-            }
-        }
-    }
-
-    false
 }
 
 /// Match a package from repodata with packages in the store by comparing Package fields
