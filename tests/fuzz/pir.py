@@ -37,6 +37,8 @@ USAGE_THRESHOLD_RECREATE = 40  # Recreate env when usage > 40%
 USAGE_THRESHOLD_SKIP = 80      # Skip iteration when usage > 80%
 USAGE_THRESHOLD_GC = 60        # Run gc when usage > 60%
 
+ESTIMATION_ERROR_PERCENT = 10  # Warn threshold for disk space estimation error
+
 # Environment variables
 EPKG_BIN = os.environ.get('EPKG_BIN', None)
 CACHE_DIR = os.environ.get('CACHE_DIR', None)
@@ -449,8 +451,12 @@ def check_log_for_errors(log_content: str) -> list:
     return errors
 
 
-def get_tmpfs_usage_percent() -> float:
-    """Get current tmpfs usage percentage."""
+def get_tmpfs_usage_bytes() -> Tuple[int, int]:
+    """Get current tmpfs usage and total in bytes.
+
+    Returns:
+        Tuple: (used_bytes, total_bytes)
+    """
     tmpfs_path = get_tmpfs_path()
 
     result = subprocess.run(['df', '-k', str(tmpfs_path)], capture_output=True, text=True)
@@ -458,11 +464,107 @@ def get_tmpfs_usage_percent() -> float:
         if str(tmpfs_path) in line or 'epkg' in line:
             parts = line.split()
             if len(parts) >= 5:
-                used = int(parts[2])
-                total = int(parts[1])
-                if total > 0:
-                    return (used / total) * 100
+                # df -k output: Filesystem, 1K-blocks, Used, Available, Use%, Mounted on
+                # When filtering by path, the line format is same
+                total_kb = int(parts[1])
+                used_kb = int(parts[2])
+                return used_kb * 1024, total_kb * 1024
 
+    return 0, 0
+
+
+def parse_epkg_estimated_space(output: str) -> Optional[int]:
+    """Parse epkg output to extract estimated disk space usage.
+
+    Parses lines like:
+    - "After this operation, 2.5 GB of additional disk space will be used."
+    - "After this operation, 1.2 MB of additional disk space will be used (50 MB available)."
+
+    Returns:
+        Estimated space in bytes, or None if not found
+    """
+    # Pattern: "After this operation, <size> of additional disk space will be used"
+    pattern = r"After this operation, ([\d.]+)\s*(KB|MB|GB|TB)? of additional disk space will be used"
+    match = re.search(pattern, output, re.IGNORECASE)
+    if not match:
+        return None
+
+    size_str = match.group(1)
+    unit = match.group(2) or 'B'
+
+    try:
+        size = float(size_str)
+    except ValueError:
+        return None
+
+    # Convert to bytes
+    unit_multipliers = {
+        'B': 1,
+        'KB': 1024,
+        'MB': 1024 * 1024,
+        'GB': 1024 * 1024 * 1024,
+        'TB': 1024 * 1024 * 1024 * 1024,
+    }
+    multiplier = unit_multipliers.get(unit.upper(), 1)
+
+    return int(size * multiplier)
+
+
+def format_size(bytes_val: int) -> str:
+    """Format bytes to human readable size string."""
+    if bytes_val >= 1024 * 1024 * 1024:
+        return f"{bytes_val / (1024 * 1024 * 1024):.2f} GB"
+    elif bytes_val >= 1024 * 1024:
+        return f"{bytes_val / (1024 * 1024):.2f} MB"
+    elif bytes_val >= 1024:
+        return f"{bytes_val / 1024:.2f} KB"
+    else:
+        return f"{bytes_val} B"
+
+
+def compare_disk_space_estimate(
+    before_bytes: int,
+    after_bytes: int,
+    estimated_bytes: Optional[int],
+    batch: list
+) -> None:
+    """Compare actual disk space change with epkg estimate and log results.
+
+    Args:
+        before_bytes: Disk usage before install (bytes)
+        after_bytes: Disk usage after install (bytes)
+        estimated_bytes: Epkg estimated space usage (bytes), or None
+        batch: List of package names installed
+    """
+    actual_delta = after_bytes - before_bytes
+
+    log(f"Disk space comparison for batch: {' '.join(batch)}")
+    log(f"  Before:     {format_size(before_bytes)}")
+    log(f"  After:      {format_size(after_bytes)}")
+    log(f"  Actual Δ:   {format_size(actual_delta)} ({actual_delta} bytes)")
+
+    if estimated_bytes is not None:
+        # Calculate error
+        if estimated_bytes == 0:
+            error_pct = 0.0 if actual_delta == 0 else float('inf')
+        else:
+            error_pct = ((actual_delta - estimated_bytes) / estimated_bytes) * 100
+
+        log(f"  Estimated:  {format_size(estimated_bytes)} ({estimated_bytes} bytes)")
+        log(f"  Error:      {format_size(actual_delta - estimated_bytes)} ({error_pct:+.1f}%)")
+
+        # Warning for significant over/under estimation
+        if abs(error_pct) > ESTIMATION_ERROR_PERCENT:
+            log(f"  WARNING: Estimation error too large!")
+    else:
+        log(f"  Estimated:  (not found in epkg output)")
+
+
+def get_tmpfs_usage_percent() -> float:
+    """Get current tmpfs usage percentage."""
+    used_bytes, total_bytes = get_tmpfs_usage_bytes()
+    if total_bytes > 0:
+        return (used_bytes / total_bytes) * 100
     return 0.0
 
 
@@ -642,19 +744,22 @@ def select_random_packages(packages: list, batch_size: int) -> list:
     return batch
 
 
-def install_packages_batch(env_name: str, batch: list) -> Tuple[subprocess.CompletedProcess, str, str]:
+def install_packages_batch(env_name: str, batch: list) -> Tuple[subprocess.CompletedProcess, str, str, int]:
     """Install a batch of packages and return results.
 
     Returns:
-        Tuple: (result, cmd_str, log_output)
+        Tuple: (result, cmd_str, log_output, before_bytes)
     """
     batch_str = ' '.join(batch)
     cmd_str = f"epkg -e {env_name} install --assume-yes --ignore-file-conflicts {batch_str}"
 
+    # Record disk usage before install
+    before_bytes, _ = get_tmpfs_usage_bytes()
+
     result = run_epkg(['install', '--assume-yes', '--ignore-file-conflicts'] + batch, env_name, timeout=0)
     log_output = f"=== INSTALL ===\n{result.stdout}\n{result.stderr}\n"
 
-    return result, cmd_str, log_output
+    return result, cmd_str, log_output, before_bytes
 
 
 def check_install_errors(result: subprocess.CompletedProcess, whitelist: list) -> Tuple[str, bool, bool]:
@@ -815,12 +920,13 @@ def run_fuzz_iteration(ctx: FuzzIterationContext) -> Tuple[str, bool]:
 
     # Step 3: Select and install packages
     ctx.batch = select_random_packages(ctx.packages, ctx.batch_size)
-    result, cmd_str, log_output = install_packages_batch(ctx.env_name, ctx.batch)
+    result, cmd_str, log_output, before_bytes = install_packages_batch(ctx.env_name, ctx.batch)
     ctx.loop_commands.append(cmd_str)
     ctx.loop_log += log_output
 
     # Step 3.5: Re-check disk usage after installation
     # Installation may have consumed significant space, trigger gc if needed
+    after_bytes, _ = get_tmpfs_usage_bytes()
     post_install_usage = get_tmpfs_usage_percent()
     if post_install_usage > USAGE_THRESHOLD_GC:
         log(f"Post-install disk usage {post_install_usage:.1f}% > {USAGE_THRESHOLD_GC}%, will run gc after iteration")
@@ -848,6 +954,12 @@ def run_fuzz_iteration(ctx: FuzzIterationContext) -> Tuple[str, bool]:
         # Even on error, we should try to clean up
         ctx.need_recreate = True
         return error_type, True
+
+    # Step 4.5: Compare actual vs estimated disk space
+    # Parse epkg output for estimated space and compare with actual delta
+    combined_output = result.stdout + result.stderr
+    estimated_bytes = parse_epkg_estimated_space(combined_output)
+    compare_disk_space_estimate(before_bytes, after_bytes, estimated_bytes, ctx.batch)
 
     # Step 5: Test executables
     exe_errors, exe_commands, exe_log = test_executables_batch(ctx.env_name)
