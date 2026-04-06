@@ -114,6 +114,7 @@ pub struct InstallationPlan {
 
     pub total_download: u64,
     pub total_install: u64,
+    pub total_inodes_needed: u64, // Number of files (inodes) after validate_file_conflicts
 
     pub store_root_fs:      FilesystemInfo,
     pub env_root_fs:        FilesystemInfo,
@@ -219,6 +220,7 @@ impl Default for InstallationPlan {
             can_symlink: false,
             total_download: 0,
             total_install: 0,
+            total_inodes_needed: 0,
             store_root_fs: FilesystemInfo::default(),
             env_root_fs: FilesystemInfo::default(),
             download_cache_fs: FilesystemInfo::default(),

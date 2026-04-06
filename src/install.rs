@@ -328,8 +328,16 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
         crate::risks::validate_before_linking(plan)
             .with_context(|| "Risk check failed - aborting before any linking to keep environment clean")?;
 
-        // Re-check store disk space after block alignment overhead is added to total_install
+        // Display updated disk space estimate after block alignment overhead is added
         // (validate_before_linking adds nr_files * block_size/2 overhead)
+        log::info!(
+            "After block alignment: {} packages, {} files, need {} disk space",
+            plan.batch.new_pkgkeys.len(),
+            plan.total_inodes_needed,
+            crate::utils::format_size(plan.total_install)
+        );
+
+        // Re-check store disk space after block alignment overhead is added to total_install
         let store_root = &plan.store_root;
         crate::risks::check_space(&plan.store_root_fs, plan.total_install, store_root)
             .with_context(|| "Insufficient disk space for store (after block alignment overhead)")?;

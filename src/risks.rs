@@ -99,6 +99,10 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
             info.fsid = (statvfs_buf.f_fsid as u64) | ((statvfs_buf.f_fsid as u64) << 32);
         }
 
+        // Use f_frsize (fragment/block allocation size) for actual block size.
+        // On macOS APFS, f_bsize is "optimal transfer size" (2MB) which is wrong for
+        // block alignment calculations. f_frsize is the actual allocation unit.
+        let frsize = statvfs_buf.f_frsize as u64;
         let bsize = statvfs_buf.f_bsize as u64;
         let bavail = if (statvfs_buf.f_flag & libc::ST_RDONLY) != 0 {
             0
@@ -107,7 +111,7 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
         };
 
         info.free_space = bavail * bsize;
-        info.block_size = bsize;
+        info.block_size = frsize; // Use frsize for allocation unit
 
         // Handle filesystems without inodes (FAT, etc.)
         info.free_inodes = if statvfs_buf.f_ffree == 0 && statvfs_buf.f_files == 0 {
@@ -327,6 +331,7 @@ pub fn build_installed_file_map_from_plan(plan: &InstallationPlan) -> Result<Has
 #[allow(dead_code)]
 pub fn validate_before_linking(plan: &mut crate::plan::InstallationPlan) -> Result<()> {
     let total_inodes_needed = validate_file_conflicts(plan)?;
+    plan.total_inodes_needed = total_inodes_needed;
 
     // Add block alignment overhead to total_install.
     // APK installedSize only counts file content, not filesystem overhead.
