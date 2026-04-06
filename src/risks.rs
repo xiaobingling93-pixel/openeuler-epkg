@@ -388,6 +388,11 @@ pub fn validate_before_linking(plan: &mut crate::plan::InstallationPlan) -> Resu
     let dir_overhead = dir_count * block_size;
     plan.total_install += dir_overhead;
 
+    log::trace!(
+        "validate_before_linking: file_count={}, dir_count={}, block_size={}, file_block_overhead={}, dir_overhead={}, total_install before info={}",
+        file_count, dir_count, block_size, file_block_overhead, dir_overhead, plan.total_install
+    );
+
     // Add info/ directory overhead for each NEW package (not already in store).
     // Each package has an info/ directory with metadata files (~16 KB).
     // Only count packages that need to be newly extracted (not already in store).
@@ -399,6 +404,11 @@ pub fn validate_before_linking(plan: &mut crate::plan::InstallationPlan) -> Resu
     const INFO_DIR_OVERHEAD: u64 = 16 * 1024; // 16 KB per package
     let info_overhead = new_pkg_count * INFO_DIR_OVERHEAD;
     plan.total_install += info_overhead;
+
+    log::trace!(
+        "validate_before_linking: new_pkg_count={}, info_overhead={}, total_install={}",
+        new_pkg_count, info_overhead, plan.total_install
+    );
 
     validate_inode_space(plan, file_count)?;
     Ok(())
@@ -574,13 +584,27 @@ pub fn compare_disk_space_estimate(
     // Use combined label when store and env are on the same filesystem
     let label = if env_same_fs { "Store/Env" } else { "Store" };
 
-    if store_actual > 0 && estimated_install > 0 {
-        let diff = if estimated_install > store_actual {
-            estimated_install.saturating_sub(store_actual)
+    // When download cache is on the same filesystem as store, the actual delta
+    // includes BOTH downloaded files AND installed files. Add estimated_download
+    // to estimated_install for accurate comparison.
+    let estimated_total = if download_same_fs {
+        estimated_download + estimated_install
+    } else {
+        estimated_install
+    };
+
+    log::trace!(
+        "compare_disk_space_estimate: download_same_fs={}, estimated_download={}, estimated_install={}, estimated_total={}, store_actual={}",
+        download_same_fs, estimated_download, estimated_install, estimated_total, store_actual
+    );
+
+    if store_actual > 0 && estimated_total > 0 {
+        let diff = if estimated_total > store_actual {
+            estimated_total.saturating_sub(store_actual)
         } else {
-            store_actual.saturating_sub(estimated_install)
+            store_actual.saturating_sub(estimated_total)
         };
-        let sign = if estimated_install >= store_actual { "+" } else { "-" };
+        let sign = if estimated_total >= store_actual { "+" } else { "-" };
         let error_pct = format!("{}{:.1}%", sign, (diff as f64 / store_actual as f64) * 100.0);
 
         // Use println! so pir.py can see it even with RUST_LOG=warn
@@ -590,17 +614,17 @@ pub fn compare_disk_space_estimate(
             crate::utils::format_size(store_actual),
             crate::utils::format_size(store_before.free_space),
             crate::utils::format_size(store_after.free_space),
-            crate::utils::format_size(estimated_install),
+            crate::utils::format_size(estimated_total),
             error_pct
         );
-    } else if estimated_install > 0 && store_actual == 0 {
+    } else if estimated_total > 0 && store_actual == 0 {
         // Estimated > 0 but actual = 0: hardlinks were used (packages already in store)
         // This happens when reinstalling packages that exist in store
         println!(
             "{} disk space: actual Δ {} (hardlink reuse), estimated {} (over-estimated)",
             label,
             crate::utils::format_size(store_actual),
-            crate::utils::format_size(estimated_install)
+            crate::utils::format_size(estimated_total)
         );
     }
 
