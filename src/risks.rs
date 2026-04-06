@@ -110,6 +110,8 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
             // On macOS, use f_fsid as part of the filesystem ID
             // f_fsid is actually u32 on macOS, combine with f_fsid for uniqueness
             info.fsid = (statvfs_buf.f_fsid as u64) | ((statvfs_buf.f_fsid as u64) << 32);
+            log::trace!("get_filesystem_info: {} f_fsid={} computed_fsid={}",
+                       mount_point.display(), statvfs_buf.f_fsid, info.fsid);
         }
 
         // Use f_frsize (fragment/block allocation size) for actual block size.
@@ -265,6 +267,10 @@ pub fn check_disk_space_for_plan(
         &plan.download_cache_fs,
         &plan.store_root_fs,
     );
+    log::debug!("check_disk_space_for_plan: download_cache={} (fsid={}), store_root={} (fsid={}), download_same_fs={}",
+               download_cache.display(), plan.download_cache_fs.fsid,
+               store_root.display(), plan.store_root_fs.fsid,
+               download_same_fs);
 
     if download_same_fs {
         // Both on same filesystem - check total requirement
@@ -370,9 +376,10 @@ pub fn validate_before_linking(plan: &mut crate::plan::InstallationPlan) -> Resu
 
     // Add block alignment overhead to total_install.
     // APK installedSize only counts file content, not filesystem overhead.
-    // Each file wastes ~block_size/2 on average due to block alignment.
+    // Each file wastes ~block_size * 0.75 on average due to block alignment.
+    // Using 0.75 instead of 0.5 to be more conservative and avoid underestimation.
     let block_size = plan.store_root_fs.block_size.max(4096);
-    let block_alignment_overhead = total_inodes_needed * block_size / 2;
+    let block_alignment_overhead = total_inodes_needed * block_size * 3 / 4;
     plan.total_install += block_alignment_overhead;
 
     validate_inode_space(plan, total_inodes_needed)?;

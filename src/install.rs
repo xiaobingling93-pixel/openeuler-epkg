@@ -337,7 +337,7 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
             .with_context(|| "Risk check failed - aborting before any linking to keep environment clean")?;
 
         // Display updated disk space estimate after block alignment overhead is added
-        // (validate_before_linking adds nr_files * block_size/2 overhead)
+        // (validate_before_linking adds nr_files * block_size * 0.75 overhead)
         log::info!(
             "After block alignment: {} packages, {} files, need {} disk space",
             plan.batch.new_pkgkeys.len(),
