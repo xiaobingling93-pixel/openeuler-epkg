@@ -327,6 +327,12 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
     {
         crate::risks::validate_before_linking(plan)
             .with_context(|| "Risk check failed - aborting before any linking to keep environment clean")?;
+
+        // Re-check store disk space after block alignment overhead is added to total_install
+        // (validate_before_linking adds nr_files * block_size/2 overhead)
+        let store_root = &plan.store_root;
+        crate::risks::check_space(&plan.store_root_fs, plan.total_install, store_root)
+            .with_context(|| "Insufficient disk space for store (after block alignment overhead)")?;
     }
 
     // Step 2b: Link all packages (after risk checks pass)

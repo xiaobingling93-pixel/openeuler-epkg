@@ -188,7 +188,7 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
 /// Helper function to check disk space with safety margin
 /// Returns error if insufficient space available
 /// Safety margin: 5% of required space or 100MB minimum, whichever is larger
-fn check_space(fs_info: &FilesystemInfo, required: u64, location: &Path) -> Result<()> {
+pub fn check_space(fs_info: &FilesystemInfo, required: u64, location: &Path) -> Result<()> {
     // Calculate safety margin: 5% of required or 100MB minimum
     let safety_margin_5pct = required / 20; // 5% = 1/20
     const MIN_SAFETY_MARGIN: u64 = 100 * 1024 * 1024; // 100MB
@@ -323,9 +323,18 @@ pub fn build_installed_file_map_from_plan(plan: &InstallationPlan) -> Result<Has
 /// Check risks for all packages at once (inode space, file conflicts)
 /// This is called before linking any packages to keep the environment clean
 /// Validate packages before linking - check inodes and file conflicts
+/// Also adds block alignment overhead to total_install for accurate space estimation
 #[allow(dead_code)]
 pub fn validate_before_linking(plan: &mut crate::plan::InstallationPlan) -> Result<()> {
     let total_inodes_needed = validate_file_conflicts(plan)?;
+
+    // Add block alignment overhead to total_install.
+    // APK installedSize only counts file content, not filesystem overhead.
+    // Each file wastes ~block_size/2 on average due to block alignment.
+    let block_size = plan.store_root_fs.block_size.max(4096);
+    let block_alignment_overhead = total_inodes_needed * block_size / 2;
+    plan.total_install += block_alignment_overhead;
+
     validate_inode_space(plan, total_inodes_needed)?;
     Ok(())
 }
