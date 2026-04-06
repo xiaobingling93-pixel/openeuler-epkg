@@ -1206,6 +1206,11 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
         if remaining_ms <= 0 {
             let _ = kmsg_write(&format!("<6>handle_connection: poll timeout after {}ms\n", elapsed_ms));
             debug_file_write(&format!("handle_connection: poll TIMEOUT after {}ms\n", elapsed_ms));
+            // Send error response to client before closing
+            let _ = write_stream_message(&mut stream, &StreamMessage::Error {
+                message: format!("timeout waiting for request after {}ms", elapsed_ms)
+            });
+            let _ = stream.flush();
             return Ok(ConnectionDisposition::Shutdown);
         }
 
@@ -1221,8 +1226,13 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
         match poll_result {
             0 => {
                 // Poll timeout
-                let _ = kmsg_write(&format!("<6>handle_connection: poll timeout\n"));
+                let _ = kmsg_write("<6>handle_connection: poll timeout\n");
                 debug_file_write("handle_connection: poll timeout\n");
+                // Send error response to client before closing
+                let _ = write_stream_message(&mut stream, &StreamMessage::Error {
+                    message: "poll timeout waiting for data".to_string()
+                });
+                let _ = stream.flush();
                 return Ok(ConnectionDisposition::Shutdown);
             }
             n if n < 0 => {
@@ -1232,6 +1242,11 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
                     continue;
                 }
                 let _ = kmsg_write(&format!("<3>handle_connection: poll error: {}\n", errno));
+                // Send error response to client before closing
+                let _ = write_stream_message(&mut stream, &StreamMessage::Error {
+                    message: format!("poll error: {}", errno)
+                });
+                let _ = stream.flush();
                 return Err(eyre!("Poll error: {}", errno));
             }
             _ => {
@@ -1273,11 +1288,18 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
                         debug_file_write(&format!("handle_connection: parsing JSON: {:?}\n", input));
 
                         // Parse JSON request (no plain text fallback)
-                        let request: CommandRequest = serde_json::from_str(&input)
-                            .map_err(|e| {
+                        let request: CommandRequest = match serde_json::from_str(&input) {
+                            Ok(r) => r,
+                            Err(e) => {
                                 debug_file_write(&format!("handle_connection: JSON parse FAILED: {}\n", e));
-                                eyre!("JSON parse failed: {} (input: {:?})", e, input)
-                            })?;
+                                // Send error response to client
+                                let _ = write_stream_message(&mut stream, &StreamMessage::Error {
+                                    message: format!("JSON parse failed: {}", e)
+                                });
+                                let _ = stream.flush();
+                                return Err(eyre!("JSON parse failed: {} (input: {:?})", e, input));
+                            }
+                        };
                         log::debug!("[vm_daemon] Command received: {:?}", request.command);
                         debug_file_write(&format!("handle_connection: parsed command: {:?}, batch={}\n", request.command, request.batch));
 
@@ -1289,6 +1311,11 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
                         }
 
                         if request.command.is_empty() {
+                            // Send error response to client
+                            let _ = write_stream_message(&mut stream, &StreamMessage::Error {
+                                message: format!("empty command (send command [\"{}\"] to end reuse session)", VM_SESSION_DONE_CMD)
+                            });
+                            let _ = stream.flush();
                             return Err(eyre!(
                                 "empty command (send command [\"{0}\"] to end reuse session)",
                                 VM_SESSION_DONE_CMD

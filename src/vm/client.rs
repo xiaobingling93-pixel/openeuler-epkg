@@ -69,6 +69,8 @@ pub enum StreamMessage {
     Heartbeat,
     #[serde(rename = "exit")]
     Exit { code: i32 },
+    #[serde(rename = "error")]
+    Error { message: String },
 }
 
 /// Connect to guest TCP server with retry logic.
