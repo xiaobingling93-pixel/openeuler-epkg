@@ -352,9 +352,6 @@ pub fn validate_file_conflicts(
 ) -> color_eyre::Result<u64> {
     let store_root = &plan.store_root;
 
-    // Count total files (inodes) needed across all packages
-    let mut total_inodes_needed: u64 = 0;
-
     // Build file map from installed packages (excluding those being removed or upgraded)
     // This map will also track files from new packages to detect all conflicts
     let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
@@ -367,10 +364,11 @@ pub fn validate_file_conflicts(
     drop(installed);
 
     // Process each package
+    let mut unique_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     for pkgkey in plan.batch.new_pkgkeys.iter() {
         if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
             let file_list = map_pkgline2filelist(store_root, &package_info.pkgline)?;
-            total_inodes_needed += file_list.len() as u64;
 
             // Count files (inodes) needed and check conflicts
             for file_path in &file_list {
@@ -378,6 +376,9 @@ pub fn validate_file_conflicts(
                 if file_path.ends_with('/') {
                     continue;
                 }
+
+                // Track unique files for accurate inode count
+                unique_files.insert(file_path.clone());
 
                 // Check for file conflicts at insertion time
                 if let Some(existing_pkgkey) = file_map.insert(file_path.clone(), pkgkey.clone()) {
@@ -417,6 +418,9 @@ pub fn validate_file_conflicts(
             }
         }
     }
+
+    // Count unique files for accurate inode estimation
+    let total_inodes_needed = unique_files.len() as u64;
 
     plan.installed_file_map = Some(Arc::new(file_map));
 
