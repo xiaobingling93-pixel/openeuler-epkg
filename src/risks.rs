@@ -473,111 +473,52 @@ pub fn validate_inode_space(
     Ok(())
 }
 
-/// Compare estimated vs actual disk space usage and display the error
-/// Measures actual disk usage by traversing new package directories.
-/// For Move link type, files are moved to env, so measure env directory.
-/// For other link types, files stay in store, so measure store fs directory.
+/// Compare estimated vs actual disk space usage and display the error.
+/// Uses filesystem-level free_space change measurement (NOT file-by-file traverse).
 ///
-/// estimated: the pre-installation estimate (total_install with block alignment overhead)
+/// IMPORTANT: File-by-file traversal is FORBIDDEN due to performance cost.
+/// Must use filesystem-level df-style measurement via free_space delta.
+///
+/// Parameters:
+/// - before: filesystem info captured BEFORE installation started
+/// - estimated: the pre-installation estimate (total_install with block alignment overhead)
+///
+/// Note: filesystem-level measurement may be affected by other processes writing to
+/// the same filesystem during installation. For short installations, this interference
+/// is usually minimal and acceptable for estimation validation purposes.
 pub fn compare_disk_space_estimate(
-    plan: &crate::plan::InstallationPlan,
+    before: &FilesystemInfo,
     estimated: u64,
 ) {
-    let store_root = &plan.store_root;
-    let env_root = &plan.env_root;
-    let new_pkgkeys = &plan.batch.new_pkgkeys;
-    let link_type = plan.link;
+    // Re-query filesystem info AFTER installation to get actual free_space
+    let after = get_filesystem_info(&before.path);
 
-    // Measure actual disk usage by traversing package directories
-    let mut actual_total: u64 = 0;
-    let mut measured_count: u64 = 0;
+    // Calculate actual delta using free_space reduction
+    // free_space decrease = actual disk usage by installation
+    let actual_delta = before.free_space.saturating_sub(after.free_space);
 
-    for pkgkey in new_pkgkeys.iter() {
-        // Get pkgline from package info
-        if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
-            let pkgline = &package_info.pkgline;
-
-            // For Move link type, files are moved to env directory
-            // For other link types, files stay in store fs directory
-            if link_type == crate::models::LinkType::Move {
-                // For Move link type, find files belonging to this package
-                // by checking filelist.txt and looking for them in env
-                if let Ok(filelist) = crate::package_cache::map_pkgline2filelist(store_root, pkgline) {
-                    for file_path in &filelist {
-                        // Skip directories (they end with /)
-                        if file_path.ends_with('/') {
-                            continue;
-                        }
-                        // File path in env
-                        let env_file = env_root.join(file_path);
-                        if env_file.exists() && env_file.is_file() {
-                            if let Ok(meta) = std::fs::metadata(&env_file) {
-                                actual_total += meta.len();
-                                measured_count += 1;
-                            }
-                        }
-                    }
-                }
-            } else {
-                // For other link types, measure store fs directory
-                let pkg_fs_dir = store_root.join(pkgline).join("fs");
-                if pkg_fs_dir.exists() {
-                    if let Ok(size) = measure_directory_size(&pkg_fs_dir) {
-                        actual_total += size;
-                        measured_count += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    if measured_count == 0 {
-        log::info!("Disk space: no new packages to measure");
+    if actual_delta == 0 {
+        log::info!("Disk space: no change detected (possible interference or no new packages)");
         return;
     }
 
     // Calculate estimation error percentage
     // error = (estimated - actual) / actual * 100
-    let error_pct = if actual_total > 0 {
-        let diff = if estimated > actual_total {
-            estimated.saturating_sub(actual_total)
-        } else {
-            actual_total.saturating_sub(estimated)
-        };
-        // Show over-estimate as positive, under-estimate as negative
-        let sign = if estimated >= actual_total { "+" } else { "-" };
-        format!("{}{:.1}%", sign, (diff as f64 / actual_total as f64) * 100.0)
+    let diff = if estimated > actual_delta {
+        estimated.saturating_sub(actual_delta)
     } else {
-        "N/A".to_string()
+        actual_delta.saturating_sub(estimated)
     };
+    // Show over-estimate as positive (+), under-estimate as negative (-)
+    let sign = if estimated >= actual_delta { "+" } else { "-" };
+    let error_pct = format!("{}{:.1}%", sign, (diff as f64 / actual_delta as f64) * 100.0);
 
     log::info!(
-        "Disk space: actual {} ({} files), estimated {}, error {}",
-        crate::utils::format_size(actual_total),
-        measured_count,
+        "Disk space: actual Δ {} (free: {} -> {}), estimated {}, error {}",
+        crate::utils::format_size(actual_delta),
+        crate::utils::format_size(before.free_space),
+        crate::utils::format_size(after.free_space),
         crate::utils::format_size(estimated),
         error_pct
     );
-}
-
-/// Measure total size of a directory by traversing all files
-fn measure_directory_size(dir: &Path) -> color_eyre::Result<u64> {
-    let mut total: u64 = 0;
-
-    if !dir.exists() {
-        return Ok(0);
-    }
-
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.is_file() {
-            total += entry.metadata()?.len();
-        } else if path.is_dir() {
-            total += measure_directory_size(&path)?;
-        }
-    }
-
-    Ok(total)
 }
