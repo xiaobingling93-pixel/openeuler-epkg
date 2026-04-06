@@ -59,6 +59,8 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
             path: mount_point.to_path_buf(),
             fsid: 0,
             free_space: u64::MAX,
+            total_space: 0,
+            used_space: 0,
             free_inodes: u64::MAX, // Assume unlimited by default
             block_size: 4096,      // Default block size
         };
@@ -104,13 +106,26 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
         // block alignment calculations. f_frsize is the actual allocation unit.
         let frsize = statvfs_buf.f_frsize as u64;
         let bsize = statvfs_buf.f_bsize as u64;
+        let blocks = statvfs_buf.f_blocks as u64;  // Total blocks
         let bavail = if (statvfs_buf.f_flag & libc::ST_RDONLY) != 0 {
             0
         } else {
             statvfs_buf.f_bavail as u64
         };
 
-        info.free_space = bavail * bsize;
+        // Calculate total and used space
+        // f_blocks: total blocks
+        // f_bavail: blocks available to non-root user
+        // f_bfree: blocks free (including reserved for root)
+        let total_space = blocks * bsize;
+        let free_space = bavail * bsize;
+        // Used space: total - free to non-root
+        // Note: This includes reserved blocks for root
+        let used_space = total_space.saturating_sub(statvfs_buf.f_bfree as u64 * bsize);
+
+        info.free_space = free_space;
+        info.total_space = total_space;
+        info.used_space = used_space;
         info.block_size = frsize; // Use frsize for allocation unit
 
         // Handle filesystems without inodes (FAT, etc.)
@@ -133,6 +148,8 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
             path: mount_point.to_path_buf(),
             fsid: 0,
             free_space: u64::MAX,
+            total_space: 0,
+            used_space: 0,
             free_inodes: u64::MAX,
             block_size: 4096,
         };
@@ -170,7 +187,10 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
                 Some(&mut free_clusters as *mut u64 as *mut u32),
                 Some(&mut total_clusters as *mut u64 as *mut u32),
             ).is_ok() {
-                info.free_space = sectors_per_cluster as u64 * bytes_per_sector as u64 * free_clusters;
+                let bytes_per_cluster = sectors_per_cluster as u64 * bytes_per_sector as u64;
+                info.free_space = bytes_per_cluster * free_clusters;
+                info.total_space = bytes_per_cluster * total_clusters;
+                info.used_space = info.total_space.saturating_sub(info.free_space);
             }
         }
 
@@ -183,6 +203,8 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
             path: mount_point.to_path_buf(),
             fsid: 0,
             free_space: u64::MAX,
+            total_space: 0,
+            used_space: 0,
             free_inodes: u64::MAX,
             block_size: 4096,
         }
@@ -449,4 +471,113 @@ pub fn validate_inode_space(
         ));
     }
     Ok(())
+}
+
+/// Compare estimated vs actual disk space usage and display the error
+/// Measures actual disk usage by traversing new package directories.
+/// For Move link type, files are moved to env, so measure env directory.
+/// For other link types, files stay in store, so measure store fs directory.
+///
+/// estimated: the pre-installation estimate (total_install with block alignment overhead)
+pub fn compare_disk_space_estimate(
+    plan: &crate::plan::InstallationPlan,
+    estimated: u64,
+) {
+    let store_root = &plan.store_root;
+    let env_root = &plan.env_root;
+    let new_pkgkeys = &plan.batch.new_pkgkeys;
+    let link_type = plan.link;
+
+    // Measure actual disk usage by traversing package directories
+    let mut actual_total: u64 = 0;
+    let mut measured_count: u64 = 0;
+
+    for pkgkey in new_pkgkeys.iter() {
+        // Get pkgline from package info
+        if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
+            let pkgline = &package_info.pkgline;
+
+            // For Move link type, files are moved to env directory
+            // For other link types, files stay in store fs directory
+            if link_type == crate::models::LinkType::Move {
+                // For Move link type, find files belonging to this package
+                // by checking filelist.txt and looking for them in env
+                if let Ok(filelist) = crate::package_cache::map_pkgline2filelist(store_root, pkgline) {
+                    for file_path in &filelist {
+                        // Skip directories (they end with /)
+                        if file_path.ends_with('/') {
+                            continue;
+                        }
+                        // File path in env
+                        let env_file = env_root.join(file_path);
+                        if env_file.exists() && env_file.is_file() {
+                            if let Ok(meta) = std::fs::metadata(&env_file) {
+                                actual_total += meta.len();
+                                measured_count += 1;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // For other link types, measure store fs directory
+                let pkg_fs_dir = store_root.join(pkgline).join("fs");
+                if pkg_fs_dir.exists() {
+                    if let Ok(size) = measure_directory_size(&pkg_fs_dir) {
+                        actual_total += size;
+                        measured_count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if measured_count == 0 {
+        log::info!("Disk space: no new packages to measure");
+        return;
+    }
+
+    // Calculate estimation error percentage
+    // error = (estimated - actual) / actual * 100
+    let error_pct = if actual_total > 0 {
+        let diff = if estimated > actual_total {
+            estimated.saturating_sub(actual_total)
+        } else {
+            actual_total.saturating_sub(estimated)
+        };
+        // Show over-estimate as positive, under-estimate as negative
+        let sign = if estimated >= actual_total { "+" } else { "-" };
+        format!("{}{:.1}%", sign, (diff as f64 / actual_total as f64) * 100.0)
+    } else {
+        "N/A".to_string()
+    };
+
+    log::info!(
+        "Disk space: actual {} ({} files), estimated {}, error {}",
+        crate::utils::format_size(actual_total),
+        measured_count,
+        crate::utils::format_size(estimated),
+        error_pct
+    );
+}
+
+/// Measure total size of a directory by traversing all files
+fn measure_directory_size(dir: &Path) -> color_eyre::Result<u64> {
+    let mut total: u64 = 0;
+
+    if !dir.exists() {
+        return Ok(0);
+    }
+
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_file() {
+            total += entry.metadata()?.len();
+        } else if path.is_dir() {
+            total += measure_directory_size(&path)?;
+        }
+    }
+
+    Ok(total)
 }

@@ -97,6 +97,10 @@ pub struct FilesystemInfo {
     #[cfg_attr(not(unix), allow(dead_code))]
     pub free_space: u64,    // Free space (Unix: from statvfs; used by risks module)
     #[cfg_attr(not(unix), allow(dead_code))]
+    pub total_space: u64,   // Total space (for disk usage comparison)
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub used_space: u64,    // Used space (total - free)
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub free_inodes: u64,   // Free inodes (Unix)
     #[cfg_attr(not(unix), allow(dead_code))]
     pub block_size: u64,    // Filesystem block size (for estimating symlink space)

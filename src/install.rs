@@ -273,6 +273,10 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     // Execute installations and upgrades (also processes removals via run_transaction_batch)
     execute_installations(&mut plan)?;
 
+    // Compare estimated vs actual disk space usage by measuring new package directories
+    #[cfg(unix)]
+    crate::risks::compare_disk_space_estimate(&plan, plan.total_install);
+
     // Update metadata for skipped reinstalls (uses plan.skipped_reinstalls as the source
     // of session_info).
     update_skipped_reinstalls_metadata(&plan)?;
