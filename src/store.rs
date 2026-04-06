@@ -1507,10 +1507,17 @@ pub fn fill_pkglines_in_plan(
                     matched_count += 1;
                     log::trace!("fill_pkglines_in_plan: matched pkgkey {} -> pkgline {}", pkgkey, package_info.pkgline);
 
-                    // Check if package actually exists in store with files
+                    // Check if package is available in store (not consumed by another env).
+                    //
+                    // For Move link type, files are moved to env and fs/ becomes empty,
+                    // but info/consumed.json is created to track which env consumed it.
+                    // Checking empty fs/ is not reliable (timing issues), but consumed.json is reliable.
+                    //
+                    // Package is "in store" (available for reuse) if consumed.json doesn't exist.
+                    // Package is NOT "in store" (needs re-download) if consumed.json exists.
                     if !package_info.pkgline.is_empty() {
-                        let pkg_fs_dir = store_root.join(&package_info.pkgline).join("fs");
-                        if pkg_fs_dir.exists() {
+                        let consumed_marker = store_root.join(&package_info.pkgline).join("info/consumed.json");
+                        if !consumed_marker.exists() {
                             plan.pkgs_in_store.insert(pkgkey.clone());
                         }
                     }
