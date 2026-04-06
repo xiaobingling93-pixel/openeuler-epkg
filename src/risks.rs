@@ -105,7 +105,6 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
         // On macOS APFS, f_bsize is "optimal transfer size" (2MB) which is wrong for
         // block alignment calculations. f_frsize is the actual allocation unit.
         let frsize = statvfs_buf.f_frsize as u64;
-        let bsize = statvfs_buf.f_bsize as u64;
         let blocks = statvfs_buf.f_blocks as u64;  // Total blocks
         let bavail = if (statvfs_buf.f_flag & libc::ST_RDONLY) != 0 {
             0
@@ -117,11 +116,14 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
         // f_blocks: total blocks
         // f_bavail: blocks available to non-root user
         // f_bfree: blocks free (including reserved for root)
-        let total_space = blocks * bsize;
-        let free_space = bavail * bsize;
+        // Use frsize (fragment/block allocation size) for all calculations.
+        // On macOS APFS, f_bsize is "optimal transfer size" (2MB) which is wrong.
+        // f_frsize is the actual allocation unit (typically 4KB).
+        let total_space = blocks * frsize;
+        let free_space = bavail * frsize;
         // Used space: total - free to non-root
         // Note: This includes reserved blocks for root
-        let used_space = total_space.saturating_sub(statvfs_buf.f_bfree as u64 * bsize);
+        let used_space = total_space.saturating_sub(statvfs_buf.f_bfree as u64 * frsize);
 
         info.free_space = free_space;
         info.total_space = total_space;
