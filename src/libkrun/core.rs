@@ -13,60 +13,6 @@ use color_eyre::Result;
 use crate::lfs;
 use crate::run::RunOptions;
 
-/// Clean up stale VM-related files in run_dir.
-/// Called at VM startup to remove orphan socket/lock files from crashed processes.
-#[cfg(all(feature = "libkrun", target_os = "macos"))]
-fn cleanup_stale_vm_files() {
-    use std::os::unix::net::UnixStream;
-
-    let run_dir = &crate::models::dirs().epkg_run;
-    if !run_dir.exists() {
-        return;
-    }
-
-    // Clean up stale vsock socket files
-    // Try to connect - if connection fails, the socket is orphaned
-    if let Ok(entries) = std::fs::read_dir(run_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.starts_with("vsock-") && name_str.ends_with(".sock") {
-                let path = entry.path();
-                // Try to connect - if fails, socket is stale
-                if UnixStream::connect(&path).is_err() {
-                    let _ = std::fs::remove_file(&path);
-                    log::debug!("libkrun: cleaned stale socket {}", path.display());
-                }
-            }
-        }
-    }
-
-    // Clean up stale vm-create.lock file
-    // Try non-blocking lock - if succeeds, no other process holds it
-    let lock_path = run_dir.join("vm-create.lock");
-    if lock_path.exists() {
-        if let Ok(file) = std::fs::File::open(&lock_path) {
-            // Try non-blocking exclusive lock
-            let lock_result = nix::fcntl::Flock::lock(
-                file,
-                nix::fcntl::FlockArg::LockExclusiveNonblock,
-            );
-            if let Ok(lock) = lock_result {
-                // Successfully acquired lock means no other process holds it
-                // Explicitly unlock and delete the file
-                if lock.unlock().is_ok() {
-                    let _ = std::fs::remove_file(&lock_path);
-                    log::debug!("libkrun: cleaned stale VM lock {}", lock_path.display());
-                }
-            }
-        }
-    }
-}
-
-#[cfg(all(feature = "libkrun", not(target_os = "macos")))]
-#[allow(dead_code)]
-fn cleanup_stale_vm_files() {}
-
 /// Import vm::session functions used in this module
 #[cfg(all(feature = "libkrun", not(target_os = "linux")))]
 use crate::vm::{
@@ -187,41 +133,6 @@ pub fn execute_via_existing_vm(
     )?;
 
     Ok(Some(exit_code))
-}
-
-/// Cross-process file lock for VM creation on macOS.
-/// Prevents concurrent hv_vm_create() calls that cause HV_DENIED errors on macOS HVF.
-/// The lock is held during VM context creation and released immediately after.
-/// Lock file: {epkg_run}/vm-create.lock
-/// Note: Windows uses a different synchronization mechanism (not needed for WHPX).
-#[cfg(all(feature = "libkrun", target_os = "macos"))]
-struct VmCreateLock {
-    _lock: nix::fcntl::Flock<std::fs::File>,
-}
-
-#[cfg(all(feature = "libkrun", target_os = "macos"))]
-impl VmCreateLock {
-    /// Acquire exclusive lock on vm-create.lock file.
-    /// Blocks until lock is available (no non-blocking mode).
-    /// Also cleans up stale files from crashed processes.
-    fn acquire() -> Result<Self> {
-        // Clean up stale files before acquiring lock
-        cleanup_stale_vm_files();
-
-        let run_dir = &crate::models::dirs().epkg_run;
-        lfs::create_dir_all(run_dir)?;
-        let lock_path = run_dir.join("vm-create.lock");
-
-        // Create lock file and acquire exclusive flock (RAII - auto unlock on drop)
-        let file = std::fs::File::create(&lock_path)
-            .map_err(|e| eyre::eyre!("Failed to create VM lock file {}: {}", lock_path.display(), e))?;
-
-        let lock = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive)
-            .map_err(|(_, e)| eyre::eyre!("Failed to acquire VM lock: {}", e))?;
-
-        log::debug!("libkrun: VM create lock acquired");
-        Ok(Self { _lock: lock })
-    }
 }
 
 // CRITICAL: Windows guest init path is CARVED IN STONE as /usr/bin/init.
@@ -1067,19 +978,12 @@ fn create_and_configure_vm(
 
     ensure_libkrun_linked();
 
-    // On macOS, acquire cross-process lock before VM creation.
-    // macOS HVF returns HV_DENIED when multiple processes try to create VMs simultaneously.
-    // The lock is released after VM context creation completes (before VM starts).
-    #[cfg(all(feature = "libkrun", target_os = "macos"))]
-    let vm_lock = VmCreateLock::acquire()?;
+    // Note: HVF VM creation lock is now handled internally by libkrun's setup_vm()
+    // in git/libkrun/src/vmm/src/builder.rs. The lock protects hv_vm_create() calls
+    // which happen during krun_start_enter() -> build_microvm() -> setup_vm() -> Vm::new().
+    // No need for external lock here.
 
     let ctx = unsafe { KrunContext::create()? };
-
-    // Release lock immediately after VM context creation.
-    // The HV_DENIED only happens during hv_vm_create() call inside KrunContext::create().
-    // Multiple VMs can run concurrently after creation succeeds.
-    #[cfg(all(feature = "libkrun", target_os = "macos"))]
-    drop(vm_lock);
 
     let cpus = crate::run::resolve_vm_cpus(run_options);
     let requested_mib = crate::run::resolve_vm_memory_mib(run_options);
