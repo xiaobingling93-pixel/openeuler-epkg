@@ -981,9 +981,9 @@ pub fn format_size(bytes: u64) -> String {
 
     match bytes {
         0..KB => format!("{} B", bytes),
-        KB..MB => format!("{:.1} KB", bytes as f64 / KB as f64),
-        MB..GB => format!("{:.1} MB", bytes as f64 / MB as f64),
-        _ => format!("{:.1} GB", bytes as f64 / GB as f64),
+        KB..MB => format!("{:.2} KB", bytes as f64 / KB as f64),
+        MB..GB => format!("{:.2} MB", bytes as f64 / MB as f64),
+        _ => format!("{:.2} GB", bytes as f64 / GB as f64),
     }
 }
 
