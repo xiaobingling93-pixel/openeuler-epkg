@@ -260,7 +260,11 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
 
     // Save before state for disk space comparison (free_space will decrease after install)
     #[cfg(unix)]
-    let store_fs_before = plan.store_root_fs.clone();
+    let (download_fs_before, store_fs_before, env_fs_before) = (
+        plan.download_cache_fs.clone(),
+        plan.store_root_fs.clone(),
+        plan.env_root_fs.clone()
+    );
 
     // Copy link type from EnvConfig to InstallationPlan
     // Downgrade hardlink to symlink if store and env are on different filesystems
@@ -279,7 +283,13 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
 
     // Compare estimated vs actual disk space usage using filesystem free_space delta
     #[cfg(unix)]
-    crate::risks::compare_disk_space_estimate(&store_fs_before, plan.total_install);
+    crate::risks::compare_disk_space_estimate(
+        &download_fs_before,
+        &store_fs_before,
+        &env_fs_before,
+        plan.total_download,
+        plan.total_install,
+    );
 
     // Update metadata for skipped reinstalls (uses plan.skipped_reinstalls as the source
     // of session_info).

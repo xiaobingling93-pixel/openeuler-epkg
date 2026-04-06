@@ -490,45 +490,95 @@ pub fn validate_inode_space(
 /// Must use filesystem-level df-style measurement via free_space delta.
 ///
 /// Parameters:
-/// - before: filesystem info captured BEFORE installation started
-/// - estimated: the pre-installation estimate (total_install with block alignment overhead)
+/// - download_before: download cache filesystem info captured BEFORE installation
+/// - store_before: store filesystem info captured BEFORE installation
+/// - env_before: env filesystem info captured BEFORE installation
+/// - estimated_download: the pre-installation download size estimate
+/// - estimated_install: the pre-installation install size estimate (with block alignment overhead)
+///
+/// Calculates separate errors for download cache and store.
+/// Store and env are typically on the same filesystem.
 ///
 /// Note: filesystem-level measurement may be affected by other processes writing to
 /// the same filesystem during installation. For short installations, this interference
 /// is usually minimal and acceptable for estimation validation purposes.
 pub fn compare_disk_space_estimate(
-    before: &FilesystemInfo,
-    estimated: u64,
+    download_before: &FilesystemInfo,
+    store_before: &FilesystemInfo,
+    env_before: &FilesystemInfo,
+    estimated_download: u64,
+    estimated_install: u64,
 ) {
-    // Re-query filesystem info AFTER installation to get actual free_space
-    let after = get_filesystem_info(&before.path);
+    // Check if download cache is on different filesystem from store
+    let download_same_fs = download_before.fsid != 0
+        && download_before.fsid == store_before.fsid;
 
-    // Calculate actual delta using free_space reduction
-    // free_space decrease = actual disk usage by installation
-    let actual_delta = before.free_space.saturating_sub(after.free_space);
+    // Check if store and env are on the same filesystem
+    let env_same_fs = store_before.fsid != 0
+        && store_before.fsid == env_before.fsid;
 
-    if actual_delta == 0 {
-        log::info!("Disk space: no change detected (possible interference or no new packages)");
-        return;
+    // Query after states
+    let download_after = get_filesystem_info(&download_before.path);
+    let store_after = get_filesystem_info(&store_before.path);
+
+    // Calculate download cache delta
+    let download_actual = download_before.free_space.saturating_sub(download_after.free_space);
+
+    // Calculate store delta (env is typically on same fs as store)
+    let store_actual = store_before.free_space.saturating_sub(store_after.free_space);
+
+    // Report download cache error (only if download was needed and on different fs)
+    if !download_same_fs && estimated_download > 0 && download_actual > 0 {
+        let diff = if estimated_download > download_actual {
+            estimated_download.saturating_sub(download_actual)
+        } else {
+            download_actual.saturating_sub(estimated_download)
+        };
+        let sign = if estimated_download >= download_actual { "+" } else { "-" };
+        let error_pct = format!("{}{:.1}%", sign, (diff as f64 / download_actual as f64) * 100.0);
+
+        log::info!(
+            "Download cache disk space: actual Δ {} (free: {} -> {}), estimated {}, error {}",
+            crate::utils::format_size(download_actual),
+            crate::utils::format_size(download_before.free_space),
+            crate::utils::format_size(download_after.free_space),
+            crate::utils::format_size(estimated_download),
+            error_pct
+        );
     }
 
-    // Calculate estimation error percentage
-    // error = (estimated - actual) / actual * 100
-    let diff = if estimated > actual_delta {
-        estimated.saturating_sub(actual_delta)
-    } else {
-        actual_delta.saturating_sub(estimated)
-    };
-    // Show over-estimate as positive (+), under-estimate as negative (-)
-    let sign = if estimated >= actual_delta { "+" } else { "-" };
-    let error_pct = format!("{}{:.1}%", sign, (diff as f64 / actual_delta as f64) * 100.0);
+    // Report store error
+    if store_actual > 0 && estimated_install > 0 {
+        let diff = if estimated_install > store_actual {
+            estimated_install.saturating_sub(store_actual)
+        } else {
+            store_actual.saturating_sub(estimated_install)
+        };
+        let sign = if estimated_install >= store_actual { "+" } else { "-" };
+        let error_pct = format!("{}{:.1}%", sign, (diff as f64 / store_actual as f64) * 100.0);
 
-    log::info!(
-        "Disk space: actual Δ {} (free: {} -> {}), estimated {}, error {}",
-        crate::utils::format_size(actual_delta),
-        crate::utils::format_size(before.free_space),
-        crate::utils::format_size(after.free_space),
-        crate::utils::format_size(estimated),
-        error_pct
-    );
+        log::info!(
+            "Store disk space: actual Δ {} (free: {} -> {}), estimated {}, error {}",
+            crate::utils::format_size(store_actual),
+            crate::utils::format_size(store_before.free_space),
+            crate::utils::format_size(store_after.free_space),
+            crate::utils::format_size(estimated_install),
+            error_pct
+        );
+    }
+
+    // Report env delta if on different filesystem
+    if !env_same_fs {
+        let env_after = get_filesystem_info(&env_before.path);
+        let env_actual = env_before.free_space.saturating_sub(env_after.free_space);
+
+        if env_actual > 0 {
+            log::info!(
+                "Env disk space: actual Δ {} (free: {} -> {})",
+                crate::utils::format_size(env_actual),
+                crate::utils::format_size(env_before.free_space),
+                crate::utils::format_size(env_after.free_space)
+            );
+        }
+    }
 }
