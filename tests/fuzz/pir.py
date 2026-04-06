@@ -979,9 +979,7 @@ def run_fuzz_iteration(ctx: FuzzIterationContext) -> Tuple[str, bool]:
         return None, False
 
     current_gen = get_current_generation(ctx.env_name)
-    if current_gen == 0:
-        log(f"Current generation is 0, skipping restore")
-        return None, False
+    assert current_gen > 0, f"BUG: generation is 0 after successful install of {ctx.batch}"
 
     result, cmd_str, log_output = restore_to_generation_zero(ctx.env_name)
     ctx.loop_commands.append(cmd_str)
