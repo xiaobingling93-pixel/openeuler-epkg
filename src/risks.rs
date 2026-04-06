@@ -28,12 +28,24 @@ pub fn installed_path_is_directory_in_map(map: &HashMap<String, String>, rel_pat
 }
 
 /// Calculate total download and install sizes for the installation plan
+/// Uses identify_pkgs_in_store to skip packages already in store
 #[allow(dead_code)]
 pub fn calculate_plan_sizes(plan: &mut InstallationPlan) -> Result<()> {
+    // Identify packages already in store
+    let pkgs_in_store = identify_pkgs_in_store(plan);
+    if !pkgs_in_store.is_empty() {
+        log::debug!("calculate_plan_sizes: {} packages already in store, skipping size calculation", pkgs_in_store.len());
+    }
+
     let mut total_download: u64 = 0;
     let mut total_install: u64 = 0;
 
     for pkgkey in plan.fresh_installs.iter().chain(plan.upgrades_new.iter()) {
+        // Skip packages already in store
+        if pkgs_in_store.contains(pkgkey) {
+            continue;
+        }
+
         if let Ok(pkginfo) = crate::package_cache::load_package_info(pkgkey) {
             total_download += pkginfo.size as u64;
             total_install += pkginfo.installed_size as u64;
@@ -368,8 +380,31 @@ pub fn validate_before_linking(plan: &mut crate::plan::InstallationPlan) -> Resu
     Ok(())
 }
 
+/// Identify packages already in store (have non-empty pkgline with existing fs directory)
+/// Returns a set of pkgkeys that are already in store and don't need new disk space
+pub fn identify_pkgs_in_store(
+    plan: &crate::plan::InstallationPlan,
+) -> std::collections::HashSet<String> {
+    let store_root = &plan.store_root;
+    let mut pkgs_in_store: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for pkgkey in plan.batch.new_pkgkeys.iter() {
+        if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
+            if !package_info.pkgline.is_empty() {
+                let pkg_fs_dir = store_root.join(&package_info.pkgline).join("fs");
+                if pkg_fs_dir.exists() {
+                    pkgs_in_store.insert(pkgkey.clone());
+                }
+            }
+        }
+    }
+
+    pkgs_in_store
+}
+
 /// Validate file conflicts for all packages before linking
 /// Returns total number of inodes (files) needed across all packages
+/// Skips packages that already exist in store (have non-empty pkgline with files)
 #[allow(dead_code)]
 pub fn validate_file_conflicts(
     plan: &mut crate::plan::InstallationPlan,
@@ -377,7 +412,6 @@ pub fn validate_file_conflicts(
     let store_root = &plan.store_root;
 
     // Build file map from installed packages (excluding those being removed or upgraded)
-    // This map will also track files from new packages to detect all conflicts
     let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
     let mut file_map = build_installed_file_map(
         &installed,
@@ -387,6 +421,12 @@ pub fn validate_file_conflicts(
     )?;
     drop(installed);
 
+    // Identify packages already in store (their files don't need new disk space)
+    let pkgs_in_store = identify_pkgs_in_store(plan);
+    if !pkgs_in_store.is_empty() {
+        log::debug!("validate_file_conflicts: {} packages already in store, skipping inode count", pkgs_in_store.len());
+    }
+
     // Process each package
     let mut unique_files: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -394,49 +434,33 @@ pub fn validate_file_conflicts(
         if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
             let file_list = map_pkgline2filelist(store_root, &package_info.pkgline)?;
 
-            // Count files (inodes) needed and check conflicts
             for file_path in &file_list {
-                // Skip directories for conflict checking (they end with /)
+                // Skip directories (they end with /)
                 if file_path.ends_with('/') {
                     continue;
                 }
 
-                // Track unique files for accurate inode count
-                unique_files.insert(file_path.clone());
+                // Only count files for packages NOT already in store
+                if !pkgs_in_store.contains(pkgkey) {
+                    unique_files.insert(file_path.clone());
+                }
 
-                // Check for file conflicts at insertion time
+                // Check for file conflicts (needed for all packages)
                 if let Some(existing_pkgkey) = file_map.insert(file_path.clone(), pkgkey.clone()) {
-                    // File already exists in map - conflict detected
-                    // Check if conflict is with another new package (transaction conflict) or installed package
                     if plan.batch.new_pkgkeys.contains(&existing_pkgkey) {
-                        // Transaction conflict: file provided by multiple new packages.
-                        // Downgrade transaction-time conflicts to warnings so that package
-                        // sets that legitimately share some files can still be installed.
                         log::warn!(
                             "Transaction file conflict: {} is provided by multiple packages: {} and {}",
                             file_path,
                             existing_pkgkey,
                             pkgkey
                         );
-                        continue;
-                    } else {
-                        // Conflict with installed package
-                        if config().install.ignore_file_conflicts {
-                            log::warn!(
-                                "File conflict IGNORED: {} (from package {}) conflicts with installed file from package {} (--ignore-file-conflicts)",
-                                file_path,
-                                pkgkey,
-                                existing_pkgkey
-                            );
-                            continue;
-                        } else {
-                            return Err(eyre!(
-                                "File conflict: {} (from package {}) conflicts with installed file from package {}",
-                                file_path,
-                                pkgkey,
-                                existing_pkgkey
-                            ));
-                        }
+                    } else if !config().install.ignore_file_conflicts {
+                        return Err(eyre!(
+                            "File conflict: {} (from package {}) conflicts with installed file from package {}",
+                            file_path,
+                            pkgkey,
+                            existing_pkgkey
+                        ));
                     }
                 }
             }
