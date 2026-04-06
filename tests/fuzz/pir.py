@@ -1130,6 +1130,33 @@ def cmd_run(os_name: str, batch_size: int, max_errors: int):
 
     log(f"Fuzz test completed: {loop_count} loops, {error_count} errors")
 
+    # Show AI agent prompt for error analysis when max errors reached
+    if error_count >= max_errors and BAD_CASES_DIR:
+        prompt = f"""
+================================================================================
+AI Agent Prompt for Error Analysis
+================================================================================
+
+请分类合并 {BAD_CASES_DIR}/* 里暴露的问题（ignore .old/）：
+
+1. 先做简单分类（不做分析！）：
+   - 列出各组的问题清单作为 todos
+
+2. 然后逐个处理：
+   - 深入分析：问题的性质、本质、以及妥善处理方法
+   - do proper fix（正确修复，不要临时方案）
+   - commit
+   - 处完一个再下一个
+
+关键原则：
+   - 一个个分析，深入分析，别一起看
+   - 别根据走马观花的浅层分析来指导后续 fix
+   - no fix for sake of fix（不要为了修而修）
+   - 反虚假声明：不要根据猜测来决定fix，而要步步为营，根据事实和证据链一步步推导，没验证就不要假想搞定了
+================================================================================
+"""
+        print(prompt)
+
 
 def main():
     parser = argparse.ArgumentParser(
