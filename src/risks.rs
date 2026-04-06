@@ -382,6 +382,14 @@ pub fn validate_before_linking(plan: &mut crate::plan::InstallationPlan) -> Resu
     let block_alignment_overhead = total_inodes_needed * block_size * 3 / 4;
     plan.total_install += block_alignment_overhead;
 
+    // Add info/ directory overhead for each package.
+    // Each package has an info/ directory with metadata files (~16 KB).
+    // Count packages that need to be newly extracted (not already in store).
+    let new_pkg_count = plan.batch.new_pkgkeys.len() as u64;
+    const INFO_DIR_OVERHEAD: u64 = 16 * 1024; // 16 KB per package
+    let info_overhead = new_pkg_count * INFO_DIR_OVERHEAD;
+    plan.total_install += info_overhead;
+
     validate_inode_space(plan, total_inodes_needed)?;
     Ok(())
 }

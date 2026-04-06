@@ -346,8 +346,8 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
         crate::risks::validate_before_linking(plan)
             .with_context(|| "Risk check failed - aborting before any linking to keep environment clean")?;
 
-        // Display updated disk space estimate after block alignment overhead is added
-        // (validate_before_linking adds nr_files * block_size * 0.75 overhead)
+        // Display updated disk space estimate after overhead is added
+        // (validate_before_linking adds block alignment + info/ dir overhead)
         log::info!(
             "After block alignment: {} packages, {} files, need {} disk space",
             plan.batch.new_pkgkeys.len(),
