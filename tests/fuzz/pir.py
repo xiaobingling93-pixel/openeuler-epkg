@@ -846,8 +846,16 @@ def test_executables_batch(env_name: str) -> Tuple[list, list, str]:
     failed_outputs = []
 
     for exe in executables:
-        cmd_str = f"epkg -e {env_name} run {exe} --help"
-        commands.append(cmd_str)
+        # Detect actual supported flags before generating commands
+        env_path = get_epkg_symlink_path() / "envs" / env_name
+        exe_name = exe.split('/')[-1]
+        real_exe = env_path / "usr" / "bin" / exe_name
+        supported = detect_supported_flags(str(real_exe))
+
+        # Generate commands with actual detected flags
+        for flag in supported:
+            cmd_str = f"epkg -e {env_name} run {exe} {flag}"
+            commands.append(cmd_str)
 
         success, output = test_executable_help(env_name, exe)
 
