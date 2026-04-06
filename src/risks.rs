@@ -565,7 +565,8 @@ pub fn compare_disk_space_estimate(
         let sign = if estimated_install >= store_actual { "+" } else { "-" };
         let error_pct = format!("{}{:.1}%", sign, (diff as f64 / store_actual as f64) * 100.0);
 
-        log::info!(
+        // Use println! so pir.py can see it even with RUST_LOG=warn
+        println!(
             "Store disk space: actual Δ {} (free: {} -> {}), estimated {}, error {}",
             crate::utils::format_size(store_actual),
             crate::utils::format_size(store_before.free_space),

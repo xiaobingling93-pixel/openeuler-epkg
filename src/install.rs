@@ -348,7 +348,8 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
 
         // Display updated disk space estimate after overhead is added
         // (validate_before_linking adds block alignment + info/ dir overhead)
-        log::info!(
+        // Use println! so pir.py can parse it even with RUST_LOG=warn
+        println!(
             "After block alignment: {} packages, {} files, need {} disk space",
             plan.batch.new_pkgkeys.len(),
             plan.total_inodes_needed,
