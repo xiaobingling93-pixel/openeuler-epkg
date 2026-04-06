@@ -60,6 +60,7 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
             fsid: 0,
             free_space: u64::MAX,
             free_inodes: u64::MAX, // Assume unlimited by default
+            block_size: 4096,      // Default block size
         };
 
         // Try to convert path to C string
@@ -106,6 +107,7 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
         };
 
         info.free_space = bavail * bsize;
+        info.block_size = bsize;
 
         // Handle filesystems without inodes (FAT, etc.)
         info.free_inodes = if statvfs_buf.f_ffree == 0 && statvfs_buf.f_files == 0 {
@@ -128,6 +130,7 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
             fsid: 0,
             free_space: u64::MAX,
             free_inodes: u64::MAX,
+            block_size: 4096,
         };
 
         // Get the root path (e.g., "C:\")
@@ -177,6 +180,7 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
             fsid: 0,
             free_space: u64::MAX,
             free_inodes: u64::MAX,
+            block_size: 4096,
         }
     }
 }
@@ -209,6 +213,7 @@ fn check_space(fs_info: &FilesystemInfo, required: u64, location: &Path) -> Resu
 /// Check disk space for installation plan
 /// - plan.total_download needs space on download cache filesystem
 /// - plan.total_install needs space on store filesystem
+/// - env_root needs space for inodes (symlinks) or files (copies)
 /// These may be on the same or different devices
 /// If both are on the same filesystem (same fsid), check total size requirement
 pub fn check_disk_space_for_plan(
@@ -217,12 +222,12 @@ pub fn check_disk_space_for_plan(
     download_cache: &Path,
 ) -> Result<()> {
     // Check if download_cache_fs and store_root_fs are on the same filesystem
-    let same_fs = crate::link::same_filesystem(
+    let download_same_fs = crate::link::same_filesystem(
         &plan.download_cache_fs,
         &plan.store_root_fs,
     );
 
-    if same_fs {
+    if download_same_fs {
         // Both on same filesystem - check total requirement
         let total_required = plan.total_download + plan.total_install;
         check_space(
@@ -234,6 +239,43 @@ pub fn check_disk_space_for_plan(
         // Different filesystems - check separately
         check_space(&plan.download_cache_fs, plan.total_download, download_cache)?;
         check_space(&plan.store_root_fs, plan.total_install, store_root)?;
+    }
+
+    // Check env_root space/inodes if on different filesystem from store
+    let env_same_fs = crate::link::same_filesystem(
+        &plan.store_root_fs,
+        &plan.env_root_fs,
+    );
+
+    if !env_same_fs && plan.total_install > 0 {
+        // Env is on different filesystem from store
+        // Need space for inodes (symlinks) - estimate 1 inode per KB of installed size
+        // This is a rough heuristic; actual inode count varies by file size distribution
+        let estimated_inodes = (plan.total_install / 1024).max(1000); // At least 1000 inodes
+        let env_root = &plan.env_root;
+
+        // Check inode availability
+        let available_inodes = plan.env_root_fs.free_inodes;
+        let safety_margin = estimated_inodes / 20; // 5% safety margin
+        let total_inodes_needed = estimated_inodes + safety_margin;
+
+        if available_inodes < total_inodes_needed {
+            let shortage = total_inodes_needed.saturating_sub(available_inodes);
+            return Err(eyre!(
+                "Insufficient inodes on {} for symlinks: need ~{} inodes, available {} inodes (shortage: {} inodes)",
+                env_root.display(),
+                total_inodes_needed,
+                available_inodes,
+                shortage
+            ));
+        }
+
+        // Check disk space for symlink directory entries
+        // Each symlink's directory entry takes one filesystem block
+        // Use block_size / 2 as average (some entries share blocks)
+        let block_size = plan.env_root_fs.block_size.max(4096);
+        let min_env_space = total_inodes_needed * block_size / 2;
+        check_space(&plan.env_root_fs, min_env_space, env_root)?;
     }
 
     Ok(())

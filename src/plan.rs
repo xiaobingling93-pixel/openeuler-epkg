@@ -98,6 +98,8 @@ pub struct FilesystemInfo {
     pub free_space: u64,    // Free space (Unix: from statvfs; used by risks module)
     #[cfg_attr(not(unix), allow(dead_code))]
     pub free_inodes: u64,   // Free inodes (Unix)
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub block_size: u64,    // Filesystem block size (for estimating symlink space)
 }
 
 #[derive(Debug, Clone)]
@@ -906,10 +908,36 @@ fn print_download_requirements(plan: &InstallationPlan) -> Result<()> {
             "Need to get {} archives.",
             crate::utils::format_size(plan.total_download)
         );
-        println!(
-            "After this operation, {} of additional disk space will be used.",
-            crate::utils::format_size(plan.total_install)
-        );
+
+        // Check if store and env are on the same filesystem
+        let same_fs = plan.store_root_fs.fsid != 0
+            && plan.store_root_fs.fsid == plan.env_root_fs.fsid;
+
+        if same_fs {
+            // Same filesystem - show combined requirement and available space
+            let total_needed = plan.total_download + plan.total_install;
+            let free_space = plan.store_root_fs.free_space;
+            println!(
+                "After this operation, {} of additional disk space will be used ({} available).",
+                crate::utils::format_size(total_needed),
+                crate::utils::format_size(free_space)
+            );
+        } else {
+            // Different filesystems - show separate requirements
+            println!(
+                "After this operation, {} of additional disk space will be used.",
+                crate::utils::format_size(plan.total_install)
+            );
+            println!(
+                "  Store: {} needed, {} available",
+                crate::utils::format_size(plan.total_install),
+                crate::utils::format_size(plan.store_root_fs.free_space)
+            );
+            println!(
+                "  Env:   {} available",
+                crate::utils::format_size(plan.env_root_fs.free_space)
+            );
+        }
     }
 
     Ok(())

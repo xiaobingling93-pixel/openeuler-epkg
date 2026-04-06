@@ -436,6 +436,9 @@ def check_log_for_errors(log_content: str) -> list:
         if 'WARN' in line and any(keyword in line for keyword in [
             'failed', 'error', 'cannot', 'missing', 'broken'
         ]):
+            # Ignore file conflict warnings (expected with --ignore-file-conflicts)
+            if 'Transaction file conflict' in line:
+                continue
             errors.append(f"WARN: {line}")
 
         if 'panic' in line.lower() or 'thread panicked' in line.lower():
