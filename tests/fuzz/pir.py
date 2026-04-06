@@ -407,6 +407,7 @@ def test_executable_help(env_name: str, exe_path: str) -> Tuple[bool, str]:
     if not supported:
         return True, f"Skipped (no --help/--version): {exe_path}"
 
+    last_output = ""
     for flag in supported:
         result = run_epkg(['run', '--', exe_path, flag], env_name, timeout=5)
         if result.returncode == -1 and 'Timeout' in result.stderr:
@@ -414,6 +415,7 @@ def test_executable_help(env_name: str, exe_path: str) -> Tuple[bool, str]:
         if result.returncode == 0:
             return True, result.stdout + result.stderr
         output = result.stdout + result.stderr
+        last_output = output
         if any(kw in output for kw in ['Usage', 'Options', 'version', 'Copyright']):
             return True, output
         if any(kw in output for kw in [
@@ -423,7 +425,7 @@ def test_executable_help(env_name: str, exe_path: str) -> Tuple[bool, str]:
         ]):
             return False, output
 
-    return False, f"Flags failed: {exe_path}"
+    return False, f"Flags failed: {exe_path}\nOutput:\n{last_output}"
 
 
 def check_log_for_errors(log_content: str) -> list:
