@@ -1477,27 +1477,57 @@ fn try_reuse_existing_krun_session(
         if has_reverse_listener {
             let listener = reverse_listener_opt.unwrap()?;
             log::debug!("libkrun: accepting reverse connection for reuse...");
-            let stream = super::bridge::accept_reverse_connection(&listener, None)?;
-            log::debug!("libkrun: Guest reconnected, sending command...");
-            let cwd = if run_options.chdir_to_env_root { Some("/") } else { None };
-            let exit_code = super::stream::send_command_over_stream(
-                &config.cmd_parts,
-                run_options.io_mode,
-                run_options.reuse_vm,
-                run_options.vm_keep_timeout,
-                None,  // extend_timeout_secs
-                Some(&run_options.env_vars),
-                cwd,
-                stream,
-            )
-            .map_err(|e| eyre::eyre!("Failed to send command via reverse vsock: {}", e))?;
-            log::debug!("libkrun: reverse reuse command completed with exit code {}", exit_code);
-            return Ok(Some(exit_code));
+            match super::bridge::accept_reverse_connection(&listener, None) {
+                Ok(stream) => {
+                    log::debug!("libkrun: Guest reconnected, sending command...");
+                    let cwd = if run_options.chdir_to_env_root { Some("/") } else { None };
+                    match super::stream::send_command_over_stream(
+                        &config.cmd_parts,
+                        run_options.io_mode,
+                        run_options.reuse_vm,
+                        run_options.vm_keep_timeout,
+                        None,  // extend_timeout_secs
+                        Some(&run_options.env_vars),
+                        cwd,
+                        stream,
+                    ) {
+                        Ok(exit_code) => {
+                            log::debug!("libkrun: reverse reuse command completed with exit code {}", exit_code);
+                            return Ok(Some(exit_code));
+                        }
+                        Err(e) => {
+                            // Connection failed - clear the stale session
+                            log::warn!("libkrun: reverse VM connection failed, clearing stale session: {}", e);
+                            let mut guard = VM_REUSE_SESSION.lock().unwrap();
+                            if let Some(session) = guard.take() {
+                                let _ = unregister_vm_session(&session.env_root);
+                                let _ = unsafe { krun_signal_shutdown(session.ctx_id) };
+                                let _ = session.vm_thread.join();
+                                let _ = unsafe { krun_free_ctx(session.ctx_id) };
+                            }
+                            drop(guard);
+                            return Err(eyre::eyre!("VM connection failed (session cleared): {}", e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("libkrun: accept_reverse_connection failed, clearing stale session: {}", e);
+                    let mut guard = VM_REUSE_SESSION.lock().unwrap();
+                    if let Some(session) = guard.take() {
+                        let _ = unregister_vm_session(&session.env_root);
+                        let _ = unsafe { krun_signal_shutdown(session.ctx_id) };
+                        let _ = session.vm_thread.join();
+                        let _ = unsafe { krun_free_ctx(session.ctx_id) };
+                    }
+                    drop(guard);
+                    return Err(eyre::eyre!("VM accept failed (session cleared): {}", e));
+                }
+            }
         }
 
         // Forward mode: Host connects to Guest
         let cwd = if run_options.chdir_to_env_root { Some("/") } else { None };
-        let code = super::stream::send_command_via_vsock(
+        match super::stream::send_command_via_vsock(
             &config.cmd_parts,
             run_options.io_mode,
             run_options.reuse_vm,
@@ -1506,9 +1536,23 @@ fn try_reuse_existing_krun_session(
             &sock,
             Some(&run_options.env_vars),
             cwd,
-        )
-        .map_err(|e| eyre::eyre!("Failed to send command via vsock bridge: {}", e))?;
-        Ok(Some(code))
+        ) {
+            Ok(code) => Ok(Some(code)),
+            Err(e) => {
+                // Connection failed - clear the stale session so a new VM can be created
+                log::warn!("libkrun: VM connection failed, clearing stale session: {}", e);
+                let mut guard = VM_REUSE_SESSION.lock().unwrap();
+                if let Some(session) = guard.take() {
+                    // Attempt to clean up the dead VM
+                    let _ = unregister_vm_session(&session.env_root);
+                    let _ = unsafe { krun_signal_shutdown(session.ctx_id) };
+                    let _ = session.vm_thread.join();
+                    let _ = unsafe { krun_free_ctx(session.ctx_id) };
+                }
+                drop(guard);
+                Err(eyre::eyre!("VM connection failed (session cleared): {}", e))
+            }
+        }
     } else {
         Ok(None)
     }
@@ -1558,7 +1602,11 @@ fn shutdown_krun_session_impl(session: VmReuseSession) -> Result<()> {
     // Unregister session file first
     let _ = unregister_vm_session(&session.env_root);
 
-    send_session_done_unix(&session.vsock_sock_path)?;
+    // Try to send session done message, but ignore errors if VM already shut down
+    // This can happen when hooks/triggers fail and cause VM to exit prematurely
+    if let Err(e) = send_session_done_unix(&session.vsock_sock_path) {
+        log::warn!("libkrun: failed to send session done (VM may have already shut down): {}", e);
+    }
     let result = unsafe { krun_signal_shutdown(session.ctx_id) };
     if result < 0 {
         log::warn!("libkrun: krun_signal_shutdown failed with status {}", result);
