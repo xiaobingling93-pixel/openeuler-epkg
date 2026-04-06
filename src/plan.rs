@@ -154,6 +154,11 @@ pub struct InstallationPlan {
     pub store_root: PathBuf,
     pub package_format: PackageFormat,
 
+    // Packages already in store (filled by fill_pkglines_in_plan)
+    // These packages have non-empty pkgline with existing fs directory
+    // and don't need new disk space
+    pub pkgs_in_store: HashSet<String>,
+
     // Batch maps (stored in build_completed_maps)
     pub batch: InstallBatch,
 
@@ -240,6 +245,7 @@ impl Default for InstallationPlan {
             env_root: PathBuf::new(),
             store_root: PathBuf::new(),
             package_format: PackageFormat::default(),
+            pkgs_in_store: HashSet::new(),
             batch: InstallBatch::default(),
             hooks_by_when: HashMap::new(),
             hooks_by_pkgkey: HashMap::new(),

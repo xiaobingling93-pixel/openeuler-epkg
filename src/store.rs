@@ -1478,6 +1478,7 @@ fn try_match_and_fill_pkgline(
 }
 
 /// Fill pkglines in the installation plan by matching packages with existing store packages
+/// Also populates plan.pkgs_in_store with packages that already exist in store
 /// Returns the number of packages that were matched and filled
 pub fn fill_pkglines_in_plan(
     plan: &mut crate::plan::InstallationPlan,
@@ -1493,6 +1494,7 @@ pub fn fill_pkglines_in_plan(
 
     let mut matched_count = 0;
     let mut processed_count = 0;
+    let store_root = plan.store_root.clone();
 
     // Process new packages (fresh installs and upgrades)
     for op in &mut plan.ordered_operations {
@@ -1504,6 +1506,14 @@ pub fn fill_pkglines_in_plan(
                 if try_match_and_fill_pkgline(pkgkey, Arc::make_mut(package_info), &store_pkglines_by_pkgkey)? {
                     matched_count += 1;
                     log::trace!("fill_pkglines_in_plan: matched pkgkey {} -> pkgline {}", pkgkey, package_info.pkgline);
+
+                    // Check if package actually exists in store with files
+                    if !package_info.pkgline.is_empty() {
+                        let pkg_fs_dir = store_root.join(&package_info.pkgline).join("fs");
+                        if pkg_fs_dir.exists() {
+                            plan.pkgs_in_store.insert(pkgkey.clone());
+                        }
+                    }
                 } else {
                     log::trace!("fill_pkglines_in_plan: no match found for pkgkey {}", pkgkey);
                 }

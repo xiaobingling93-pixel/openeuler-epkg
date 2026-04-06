@@ -28,11 +28,10 @@ pub fn installed_path_is_directory_in_map(map: &HashMap<String, String>, rel_pat
 }
 
 /// Calculate total download and install sizes for the installation plan
-/// Uses identify_pkgs_in_store to skip packages already in store
+/// Skips packages already in store (plan.pkgs_in_store)
 #[allow(dead_code)]
 pub fn calculate_plan_sizes(plan: &mut InstallationPlan) -> Result<()> {
-    // Identify packages already in store
-    let pkgs_in_store = identify_pkgs_in_store(plan);
+    let pkgs_in_store = &plan.pkgs_in_store;
     if !pkgs_in_store.is_empty() {
         log::debug!("calculate_plan_sizes: {} packages already in store, skipping size calculation", pkgs_in_store.len());
     }
@@ -380,31 +379,9 @@ pub fn validate_before_linking(plan: &mut crate::plan::InstallationPlan) -> Resu
     Ok(())
 }
 
-/// Identify packages already in store (have non-empty pkgline with existing fs directory)
-/// Returns a set of pkgkeys that are already in store and don't need new disk space
-pub fn identify_pkgs_in_store(
-    plan: &crate::plan::InstallationPlan,
-) -> std::collections::HashSet<String> {
-    let store_root = &plan.store_root;
-    let mut pkgs_in_store: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    for pkgkey in plan.batch.new_pkgkeys.iter() {
-        if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
-            if !package_info.pkgline.is_empty() {
-                let pkg_fs_dir = store_root.join(&package_info.pkgline).join("fs");
-                if pkg_fs_dir.exists() {
-                    pkgs_in_store.insert(pkgkey.clone());
-                }
-            }
-        }
-    }
-
-    pkgs_in_store
-}
-
 /// Validate file conflicts for all packages before linking
 /// Returns total number of inodes (files) needed across all packages
-/// Skips packages that already exist in store (have non-empty pkgline with files)
+/// Skips packages that already exist in store (plan.pkgs_in_store)
 #[allow(dead_code)]
 pub fn validate_file_conflicts(
     plan: &mut crate::plan::InstallationPlan,
@@ -421,8 +398,8 @@ pub fn validate_file_conflicts(
     )?;
     drop(installed);
 
-    // Identify packages already in store (their files don't need new disk space)
-    let pkgs_in_store = identify_pkgs_in_store(plan);
+    // Packages already in store don't need new disk space
+    let pkgs_in_store = &plan.pkgs_in_store;
     if !pkgs_in_store.is_empty() {
         log::debug!("validate_file_conflicts: {} packages already in store, skipping inode count", pkgs_in_store.len());
     }
