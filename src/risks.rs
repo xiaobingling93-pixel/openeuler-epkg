@@ -382,10 +382,14 @@ pub fn validate_before_linking(plan: &mut crate::plan::InstallationPlan) -> Resu
     let block_alignment_overhead = total_inodes_needed * block_size * 3 / 4;
     plan.total_install += block_alignment_overhead;
 
-    // Add info/ directory overhead for each package.
+    // Add info/ directory overhead for each NEW package (not already in store).
     // Each package has an info/ directory with metadata files (~16 KB).
-    // Count packages that need to be newly extracted (not already in store).
-    let new_pkg_count = plan.batch.new_pkgkeys.len() as u64;
+    // Only count packages that need to be newly extracted (not already in store).
+    // Packages in pkgs_in_store can reuse existing info/ directory.
+    let pkgs_in_store = &plan.pkgs_in_store;
+    let new_pkg_count = plan.batch.new_pkgkeys.iter()
+        .filter(|pkgkey| !pkgs_in_store.contains(*pkgkey))
+        .count() as u64;
     const INFO_DIR_OVERHEAD: u64 = 16 * 1024; // 16 KB per package
     let info_overhead = new_pkg_count * INFO_DIR_OVERHEAD;
     plan.total_install += info_overhead;
@@ -555,7 +559,10 @@ pub fn compare_disk_space_estimate(
         );
     }
 
-    // Report store error
+    // Report store/env error
+    // Use combined label when store and env are on the same filesystem
+    let label = if env_same_fs { "Store/Env" } else { "Store" };
+
     if store_actual > 0 && estimated_install > 0 {
         let diff = if estimated_install > store_actual {
             estimated_install.saturating_sub(store_actual)
@@ -567,12 +574,22 @@ pub fn compare_disk_space_estimate(
 
         // Use println! so pir.py can see it even with RUST_LOG=warn
         println!(
-            "Store disk space: actual Δ {} (free: {} -> {}), estimated {}, error {}",
+            "{} disk space: actual Δ {} (free: {} -> {}), estimated {}, error {}",
+            label,
             crate::utils::format_size(store_actual),
             crate::utils::format_size(store_before.free_space),
             crate::utils::format_size(store_after.free_space),
             crate::utils::format_size(estimated_install),
             error_pct
+        );
+    } else if estimated_install > 0 && store_actual == 0 {
+        // Estimated > 0 but actual = 0: hardlinks were used (packages already in store)
+        // This happens when reinstalling packages that exist in store
+        println!(
+            "{} disk space: actual Δ {} (hardlink reuse), estimated {} (over-estimated)",
+            label,
+            crate::utils::format_size(store_actual),
+            crate::utils::format_size(estimated_install)
         );
     }
 

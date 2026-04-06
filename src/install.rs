@@ -212,6 +212,25 @@ fn process_local_package_files(local_files: Vec<String>) -> Result<Vec<String>> 
 /// If config().common.dry_run is true, will return the plan without executing it.
 /// The target environment is determined by config().common.env_name.
 pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<InstallationPlan> {
+    if models::config().common.env_name.is_empty() {
+        return Err(eyre::eyre!("Environment name not specified for installation plan"));
+    }
+
+    let env_root = plan.env_root.clone();
+    let store_root = plan.store_root.clone();
+    let download_cache = dirs().epkg_downloads_cache.clone();
+
+    // Ensure store and download cache exist so statvfs can report correct fsid/space
+    lfs::create_dir_all_with_case_sensitivity(&store_root)?;
+    lfs::create_dir_all(&download_cache)?;
+
+    // Get filesystem info for all mount points and store in plan
+    // IMPORTANT: Do this BEFORE calculate_plan_sizes and prompt, so free_space is available
+    // for print_download_requirements to show accurate "available" values
+    plan.env_root_fs = crate::risks::get_filesystem_info(&env_root);
+    plan.store_root_fs = crate::risks::get_filesystem_info(&store_root);
+    plan.download_cache_fs = crate::risks::get_filesystem_info(&download_cache);
+
     // Calculate download requirements and store in plan before prompting
     #[cfg(unix)]
     {
@@ -240,23 +259,6 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
         }
         return Ok(plan);
     }
-
-    if models::config().common.env_name.is_empty() {
-        return Err(eyre::eyre!("Environment name not specified for installation plan"));
-    }
-
-    let env_root = plan.env_root.clone();
-    let store_root = plan.store_root.clone();
-    let download_cache = dirs().epkg_downloads_cache.clone();
-
-    // Ensure store and download cache exist so statvfs can report correct fsid/space
-    lfs::create_dir_all_with_case_sensitivity(&store_root)?;
-    lfs::create_dir_all(&download_cache)?;
-
-    // Get filesystem info for all mount points and store in plan
-    plan.env_root_fs = crate::risks::get_filesystem_info(&env_root);
-    plan.store_root_fs = crate::risks::get_filesystem_info(&store_root);
-    plan.download_cache_fs = crate::risks::get_filesystem_info(&download_cache);
 
     // Save before state for disk space comparison (free_space will decrease after install)
     #[cfg(unix)]
