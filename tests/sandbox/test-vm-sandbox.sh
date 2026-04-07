@@ -804,7 +804,7 @@ log "Test VM-8: PASSED"
 
 # Test VM-9: vm start with parameters
 log "Test VM-9: vm start with custom parameters"
-run_with_timeout "$EPKG_BIN" vm start "$ENV_NAME" cpus=4 memory=2048 timeout=60
+run_with_timeout "$EPKG_BIN" vm start "$ENV_NAME" -s cpus=4 -s memory=2048 -s timeout=60
 if ! wait_for_vm_session "$ENV_NAME"; then
     error "Test VM-9 failed: VM session not active after vm start"
 fi
@@ -839,7 +839,7 @@ log "Test VM-10: PASSED"
 log "Test VM-11: vm start with timeout=0 (never auto-shutdown)"
 run_with_timeout "$EPKG_BIN" vm stop "$ENV_NAME" 2>/dev/null || true
 wait_for_vm_session_stop "$ENV_NAME" || true
-run_with_timeout "$EPKG_BIN" vm start "$ENV_NAME" timeout=0
+run_with_timeout "$EPKG_BIN" vm start "$ENV_NAME" -s timeout=0
 if ! wait_for_vm_session "$ENV_NAME"; then
     error "Test VM-11 failed: VM session not active"
 fi
