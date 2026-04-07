@@ -435,6 +435,11 @@ def check_log_for_errors(log_content: str) -> list:
     errors = []
     for line in log_content.splitlines():
         if 'ERROR' in line:
+            # Ignore download retry errors (epkg has retry mechanism)
+            if 'read_chunk_from_stream: Read error' in line:
+                continue
+            if 'Peer disconnected' in line:
+                continue
             errors.append(f"ERROR: {line}")
 
         if 'WARN' in line and any(keyword in line for keyword in [
