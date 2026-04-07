@@ -2487,7 +2487,6 @@ fn try_route_command_via_vm(matches: &clap::ArgMatches) -> Result<Option<i32>> {
         return Ok(None);
     }
 
-    let env_root = crate::dirs::get_env_root(config().common.env_name.clone())?;
     log::info!("main: routing '{}' command through existing VM session for {}",
                subcommand_name, env_name);
 
@@ -2512,6 +2511,7 @@ fn try_route_command_via_vm(matches: &clap::ArgMatches) -> Result<Option<i32>> {
     // Execute via existing VM
     #[cfg(feature = "libkrun")]
     {
+        let env_root = crate::dirs::get_env_root(config().common.env_name.clone())?;
         // Build environment variables to pass
         let env_vars: HashMap<String, String> = std::env::vars()
             .filter(|(k, _)| k.starts_with("EPKG_") || k.starts_with("RUST_LOG") || k == "HOME")

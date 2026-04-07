@@ -2041,11 +2041,13 @@ pub fn run_command_in_krun(
         if run_options.reuse_vm {
             #[cfg(not(target_os = "linux"))]
             {
+                let env_name = crate::models::config().common.env_name.clone();
                 *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
                     ctx_id,
                     vsock_sock_path,
                     vm_thread,
                     env_root: env_root.to_path_buf(),
+                    env_name,
                     #[cfg(unix)]
                     reverse_listener: None,  // Forward mode: no reverse listener
                 });
