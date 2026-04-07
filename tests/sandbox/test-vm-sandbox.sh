@@ -622,16 +622,21 @@ log "Test 18: PASSED"
 # Tests for: epkg vm start, vm stop, vm list, vm status
 # Reuses the same ENV_NAME environment from previous tests
 
+# Helper: get epkg run directory (XDG_RUNTIME_DIR based)
+get_epkg_run_dir() {
+    echo "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/epkg"
+}
+
 # Helper: get session file path for an env
 get_session_file() {
     local env_name="$1"
-    echo "$HOME/.epkg/run/vm-sessions/${env_name}.json"
+    echo "$(get_epkg_run_dir)/vm-sessions/${env_name}.json"
 }
 
 # Helper: get socket path for an env
 get_socket_path() {
     local env_name="$1"
-    echo "$HOME/.epkg/run/vsock-${env_name}.sock"
+    echo "$(get_epkg_run_dir)/vsock-${env_name}.sock"
 }
 
 # Helper: check if VM session is active (via session file)
@@ -695,8 +700,7 @@ wait_for_vm_session_stop() {
 log "Test VM-1: vm start basic functionality"
 # Ensure no stale VM session from previous tests
 "$EPKG_BIN" vm stop "$ENV_NAME" 2>/dev/null || true
-ENV_ROOT="${HOME}/.epkg/envs/${ENV_NAME}"
-run_with_timeout "$EPKG_BIN" vm start "$ENV_ROOT"
+run_with_timeout "$EPKG_BIN" vm start "$ENV_NAME"
 # Verify session exists
 if ! is_vm_session_active "$ENV_NAME"; then
     error "Test VM-1 failed: VM session not active after vm start"
@@ -746,7 +750,7 @@ log "Test VM-4: PASSED"
 # Test VM-5: vm start rejects duplicate
 log "Test VM-5: vm start rejects duplicate session"
 set +e
-output=$("$EPKG_BIN" vm start "$ENV_ROOT" 2>&1)
+output=$("$EPKG_BIN" vm start "$ENV_NAME" 2>&1)
 exit_code=$?
 set -e
 if [ "$exit_code" = "0" ]; then
@@ -759,7 +763,7 @@ log "Test VM-5: PASSED"
 
 # Test VM-6: vm stop
 log "Test VM-6: vm stop functionality"
-run_with_timeout "$EPKG_BIN" vm stop "$ENV_ROOT"
+run_with_timeout "$EPKG_BIN" vm stop "$ENV_NAME"
 if ! wait_for_vm_session_stop "$ENV_NAME"; then
     error "Test VM-6 failed: VM session should be stopped"
 fi
@@ -773,7 +777,7 @@ log "Test VM-6: PASSED"
 # Test VM-7: vm stop on non-existent VM fails
 log "Test VM-7: vm stop on non-existent VM fails"
 set +e
-output=$("$EPKG_BIN" vm stop "$ENV_ROOT" 2>&1)
+output=$("$EPKG_BIN" vm stop "$ENV_NAME" 2>&1)
 exit_code=$?
 set -e
 if [ "$exit_code" = "0" ]; then
@@ -800,7 +804,7 @@ log "Test VM-8: PASSED"
 
 # Test VM-9: vm start with parameters
 log "Test VM-9: vm start with custom parameters"
-run_with_timeout "$EPKG_BIN" vm start "$ENV_ROOT" cpus=4 memory=2048 timeout=60
+run_with_timeout "$EPKG_BIN" vm start "$ENV_NAME" cpus=4 memory=2048 timeout=60
 if ! wait_for_vm_session "$ENV_NAME"; then
     error "Test VM-9 failed: VM session not active after vm start"
 fi
@@ -819,9 +823,9 @@ log "Test VM-9: PASSED"
 
 # Test VM-10: vm start with --vmm option
 log "Test VM-10: vm start with --vmm option"
-run_with_timeout "$EPKG_BIN" vm stop "$ENV_ROOT" 2>/dev/null || true
+run_with_timeout "$EPKG_BIN" vm stop "$ENV_NAME" 2>/dev/null || true
 wait_for_vm_session_stop "$ENV_NAME" || true
-run_with_timeout "$EPKG_BIN" vm start "$ENV_ROOT" --vmm="$VMM_BACKEND"
+run_with_timeout "$EPKG_BIN" vm start "$ENV_NAME" --vmm="$VMM_BACKEND"
 if ! wait_for_vm_session "$ENV_NAME"; then
     error "Test VM-10 failed: VM session not active after vm start --vmm"
 fi
@@ -833,9 +837,9 @@ log "Test VM-10: PASSED"
 
 # Test VM-11: vm start timeout=0 (never timeout)
 log "Test VM-11: vm start with timeout=0 (never auto-shutdown)"
-run_with_timeout "$EPKG_BIN" vm stop "$ENV_ROOT" 2>/dev/null || true
+run_with_timeout "$EPKG_BIN" vm stop "$ENV_NAME" 2>/dev/null || true
 wait_for_vm_session_stop "$ENV_NAME" || true
-run_with_timeout "$EPKG_BIN" vm start "$ENV_ROOT" timeout=0
+run_with_timeout "$EPKG_BIN" vm start "$ENV_NAME" timeout=0
 if ! wait_for_vm_session "$ENV_NAME"; then
     error "Test VM-11 failed: VM session not active"
 fi
@@ -1010,7 +1014,7 @@ log "Test VM-23: PASSED"
 
 # Cleanup VM session (keep env for debugging)
 log "Stopping VM session"
-run_with_timeout "$EPKG_BIN" vm stop "$ENV_ROOT" 2>/dev/null || true
+run_with_timeout "$EPKG_BIN" vm stop "$ENV_NAME" 2>/dev/null || true
 
 log "============================================"
 log "VM lifecycle subcommand tests completed!"
