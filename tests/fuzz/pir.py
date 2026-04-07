@@ -479,14 +479,14 @@ def parse_epkg_estimated_space(output: str) -> Optional[int]:
     Parses lines like:
     - "After this operation, 2.5 GB of additional disk space will be used."
     - "After this operation, 1.2 MB of additional disk space will be used (50 MB available)."
-    - "After block alignment: 5 packages, 1234 files, need 2.5 MB disk space" (second estimate, more accurate)
+    - "After block alignment: 5 packages, 1234 entries, need 2.5 MB disk space" (second estimate, more accurate)
 
     Returns:
         Estimated space in bytes, or None if not found
     """
     # Pattern 1: Second estimate (after block alignment) - more accurate
-    # Format: "After block alignment: 5 packages, 1234 files, need 2.5 MB disk space"
-    pattern2 = r"After block alignment: \d+ packages, \d+ files, need ([\d.]+)\s*(KB|MB|GB|TB)? disk space"
+    # Format: "After block alignment: 5 packages, 1234 entries, need 2.5 MB disk space"
+    pattern2 = r"After block alignment: \d+ packages, \d+ (?:files|entries), need ([\d.]+)\s*(KB|MB|GB|TB)? disk space"
     match = re.search(pattern2, output, re.IGNORECASE)
     if match:
         size_str = match.group(1)

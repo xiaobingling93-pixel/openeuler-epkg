@@ -239,3 +239,23 @@ pub fn map_pkgline2filelist(
 
     Ok(file_list)
 }
+
+/// Get file list with type information for a package from store.
+/// Returns Vec<MtreeFileInfo> with file type (file/dir/link) for accurate disk space estimation.
+pub fn map_pkgline2filelist_with_info(
+    store_root: &std::path::Path,
+    pkgline: &str,
+) -> color_eyre::Result<Vec<crate::mtree::MtreeFileInfo>> {
+    use color_eyre::eyre::Context;
+
+    let store_fs_dir = store_root.join(pkgline).join("fs");
+    if !crate::lfs::exists_on_host(&store_fs_dir) {
+        return Ok(Vec::new());
+    }
+
+    let file_infos = crate::utils::list_package_files_with_info(store_fs_dir.to_str()
+        .ok_or_else(|| color_eyre::eyre::eyre!("Invalid store fs path"))?)
+        .with_context(|| format!("Failed to get filelist for {}/{}/info/filelist.txt", store_root.display(), pkgline))?;
+
+    Ok(file_infos)
+}

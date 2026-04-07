@@ -352,7 +352,7 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
         // (validate_before_linking adds block alignment + info/ dir overhead)
         // Use println! so pir.py can parse it even with RUST_LOG=warn
         println!(
-            "After block alignment: {} packages, {} files, need {} disk space",
+            "After block alignment: {} packages, {} entries, need {} disk space",
             plan.batch.new_pkgkeys.len(),
             plan.total_inodes_needed,
             crate::utils::format_size(plan.total_install)

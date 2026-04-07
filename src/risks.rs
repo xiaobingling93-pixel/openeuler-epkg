@@ -371,15 +371,18 @@ pub fn build_installed_file_map_from_plan(plan: &InstallationPlan) -> Result<Has
 /// Also adds block alignment overhead to total_install for accurate space estimation
 #[allow(dead_code)]
 pub fn validate_before_linking(plan: &mut crate::plan::InstallationPlan) -> Result<()> {
-    let (file_count, dir_count) = validate_file_conflicts(plan)?;
-    plan.total_inodes_needed = file_count;
+    let (file_count, dir_count, link_count) = validate_file_conflicts(plan)?;
+    // total_inodes_needed includes all filesystem entries (files + dirs + links)
+    // Each entry needs one inode in the environment
+    plan.total_inodes_needed = file_count + dir_count + link_count;
 
     let block_size = plan.store_root_fs.block_size.max(4096);
 
-    // Add block alignment overhead for files.
+    // Add block alignment overhead for regular files only.
     // APK installedSize only counts file content, not filesystem overhead.
     // Each file wastes ~block_size * 0.75 on average due to block alignment.
     // Using 0.75 instead of 0.5 to be more conservative and avoid underestimation.
+    // Note: Symlinks are NOT counted here - they don't occupy data blocks.
     let file_block_overhead = file_count * block_size * 3 / 4;
     plan.total_install += file_block_overhead;
 
@@ -388,39 +391,57 @@ pub fn validate_before_linking(plan: &mut crate::plan::InstallationPlan) -> Resu
     let dir_overhead = dir_count * block_size;
     plan.total_install += dir_overhead;
 
+    // Symlinks don't need data block overhead - they only occupy directory entries
+    // which is negligible compared to file/directory overhead.
+
     log::trace!(
-        "validate_before_linking: file_count={}, dir_count={}, block_size={}, file_block_overhead={}, dir_overhead={}, total_install before info={}",
-        file_count, dir_count, block_size, file_block_overhead, dir_overhead, plan.total_install
+        "validate_before_linking: file_count={}, dir_count={}, link_count={}, block_size={}, file_block_overhead={}, dir_overhead={}, total_install before info={}",
+        file_count, dir_count, link_count, block_size, file_block_overhead, dir_overhead, plan.total_install
     );
 
     // Add info/ directory overhead for each NEW package (not already in store).
-    // Each package has an info/ directory with metadata files (~16 KB).
-    // Only count packages that need to be newly extracted (not already in store).
-    // Packages in pkgs_in_store can reuse existing info/ directory.
+    // The info/ directory contains:
+    // - filelist.txt: one line per file/dir/link (~60-100 bytes each)
+    // - package.txt: ~1 KB
+    // - Other metadata: ~1-5 KB
+    //
+    // For packages with many files (e.g., breeze-icons with 40K entries),
+    // filelist.txt alone can be several MB. Estimate based on entry count.
     let pkgs_in_store = &plan.pkgs_in_store;
     let new_pkg_count = plan.batch.new_pkgkeys.iter()
         .filter(|pkgkey| !pkgs_in_store.contains(*pkgkey))
         .count() as u64;
-    const INFO_DIR_OVERHEAD: u64 = 16 * 1024; // 16 KB per package
-    let info_overhead = new_pkg_count * INFO_DIR_OVERHEAD;
+
+    // Base overhead: package.txt and other small files (~2 KB)
+    const INFO_BASE_OVERHEAD: u64 = 2 * 1024;
+    // filelist.txt overhead: ~80 bytes per entry (path + type + metadata)
+    const FILELIST_BYTES_PER_ENTRY: u64 = 80;
+
+    // Calculate info overhead based on number of filesystem entries
+    let total_entries = file_count + dir_count + link_count;
+    let info_overhead = new_pkg_count * INFO_BASE_OVERHEAD
+        + total_entries.saturating_mul(FILELIST_BYTES_PER_ENTRY);
     plan.total_install += info_overhead;
 
     log::trace!(
-        "validate_before_linking: new_pkg_count={}, info_overhead={}, total_install={}",
-        new_pkg_count, info_overhead, plan.total_install
+        "validate_before_linking: new_pkg_count={}, total_entries={}, info_overhead={}, total_install={}",
+        new_pkg_count, total_entries, info_overhead, plan.total_install
     );
 
-    validate_inode_space(plan, file_count)?;
+    validate_inode_space(plan, plan.total_inodes_needed)?;
     Ok(())
 }
 
 /// Validate file conflicts for all packages before linking
-/// Returns (file_count, dir_count) for disk space estimation
+/// Returns (file_count, dir_count, link_count) for disk space estimation
+/// - file_count: regular files (need block alignment overhead)
+/// - dir_count: directories (need 1 block each for metadata)
+/// - link_count: symlinks (no data block overhead, only directory entry)
 /// Skips packages that already exist in store (plan.pkgs_in_store)
 #[allow(dead_code)]
 pub fn validate_file_conflicts(
     plan: &mut crate::plan::InstallationPlan,
-) -> color_eyre::Result<(u64, u64)> {
+) -> color_eyre::Result<(u64, u64, u64)> {
     let store_root = &plan.store_root;
 
     // Build file map from installed packages (excluding those being removed or upgraded)
@@ -440,39 +461,43 @@ pub fn validate_file_conflicts(
     }
 
     // Process each package
-    // Track files and directories separately for disk space estimation
+    // Track files, directories, and symlinks separately for disk space estimation
     let mut unique_files: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut unique_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut unique_links: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for pkgkey in plan.batch.new_pkgkeys.iter() {
         if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
-            let file_list = map_pkgline2filelist(store_root, &package_info.pkgline)?;
+            // Use file list with type info to distinguish files/dirs/links
+            let file_infos = crate::package_cache::map_pkgline2filelist_with_info(store_root, &package_info.pkgline)?;
 
-            for file_path in &file_list {
-                // Only count files/dirs for packages NOT already in store
+            for file_info in &file_infos {
+                // Only count for packages NOT already in store
                 if !pkgs_in_store.contains(pkgkey) {
-                    if file_path.ends_with('/') {
-                        unique_dirs.insert(file_path.clone());
+                    if file_info.is_dir() {
+                        unique_dirs.insert(file_info.path.clone());
+                    } else if file_info.is_link() {
+                        unique_links.insert(file_info.path.clone());
                     } else {
-                        unique_files.insert(file_path.clone());
+                        unique_files.insert(file_info.path.clone());
                     }
                 }
 
-                // Check for file conflicts (only for files, not directories)
+                // Check for file conflicts (only for files and links, not directories)
                 // Multiple packages can share the same directory
-                if !file_path.ends_with('/') {
-                    if let Some(existing_pkgkey) = file_map.insert(file_path.clone(), pkgkey.clone()) {
+                if !file_info.is_dir() {
+                    if let Some(existing_pkgkey) = file_map.insert(file_info.path.clone(), pkgkey.clone()) {
                         if plan.batch.new_pkgkeys.contains(&existing_pkgkey) {
                             log::warn!(
                                 "Transaction file conflict: {} is provided by multiple packages: {} and {}",
-                                file_path,
+                                file_info.path,
                                 existing_pkgkey,
                                 pkgkey
                             );
                         } else if !config().install.ignore_file_conflicts {
                             return Err(eyre!(
                                 "File conflict: {} (from package {}) conflicts with installed file from package {}",
-                                file_path,
+                                file_info.path,
                                 pkgkey,
                                 existing_pkgkey
                             ));
@@ -483,13 +508,14 @@ pub fn validate_file_conflicts(
         }
     }
 
-    // Count unique files and directories for disk space estimation
+    // Count unique files, directories, and links for disk space estimation
     let file_count = unique_files.len() as u64;
     let dir_count = unique_dirs.len() as u64;
+    let link_count = unique_links.len() as u64;
 
     plan.installed_file_map = Some(Arc::new(file_map));
 
-    Ok((file_count, dir_count))
+    Ok((file_count, dir_count, link_count))
 }
 
 /// Validate inode space for installation plan
