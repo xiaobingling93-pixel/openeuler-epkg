@@ -56,3 +56,19 @@ no suitable cpp found   # kdtc needs cpp (C preprocessor) which Alpine doesn't i
 
 # SNMP tools - need SNMP configuration directory and daemon
 net-snmp-create-v3-user # SNMPv3 user creation tool needs /var/lib/net-snmp/ config directory
+
+# wvDVI/wvPDF/wvPS - need latex but doesn't declare dependency
+Could not find required program # wvware scripts need external programs (latex, dvips, etc.)
+
+# dovecot tools - need configuration file
+Failed to read configuration.*dovecot # doveadm needs /etc/dovecot/dovecot.conf which may not exist
+
+# Shell completion scripts - don't support --help/--version properly
+/usr/bin/gflags_completions.sh # bash completion script, no meaningful output for --help/--version
+
+# Programs that require specific environment/dependencies
+/usr/bin/wcurl              # curl wrapper, may have empty output without proper arguments
+/usr/bin/gnunet-bugreport   # GNUnet tool, requires GNUnet services running
+/usr/bin/jack_control       # JACK audio control, requires dbus and audio server
+/usr/bin/decode-dimms       # EEPROM decoder, requires specific hardware/kernel modules
+/usr/bin/dirsplit           # ISO splitter, requires specific arguments

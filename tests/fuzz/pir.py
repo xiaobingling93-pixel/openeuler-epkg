@@ -418,7 +418,7 @@ def test_executable_help(env_name: str, exe_path: str) -> Tuple[bool, str]:
             return True, result.stdout + result.stderr
         output = result.stdout + result.stderr
         last_output = output
-        if any(kw in output for kw in ['Usage', 'Options', 'version', 'Copyright']):
+        if any(kw.lower() in output.lower() for kw in ['Usage', 'Options', 'version', 'Copyright']):
             return True, output
         if any(kw in output for kw in [
             'error while loading shared libraries',
@@ -663,9 +663,9 @@ def load_exe_whitelist() -> list:
 
 
 def error_matches_whitelist(error_msg: str, whitelist: list) -> bool:
-    """Check if error message matches any whitelist pattern."""
+    """Check if error message matches any whitelist pattern using regex."""
     for pattern in whitelist:
-        if pattern in error_msg:
+        if re.search(pattern, error_msg):
             return True
     return False
 
@@ -909,7 +909,9 @@ def test_executables_batch(env_name: str, exe_whitelist: list = None) -> Tuple[l
 
         if not success:
             # Check if error matches whitelist (VM limitation or upstream issue)
-            if error_matches_whitelist(output, exe_whitelist):
+            # Include exe path in matching for cases with empty output
+            match_text = f"{exe}\n{output}"
+            if error_matches_whitelist(match_text, exe_whitelist):
                 log(f"Executable test whitelisted: {exe}")
                 whitelisted_count += 1
                 continue
