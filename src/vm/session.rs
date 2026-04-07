@@ -10,6 +10,7 @@
 
 use std::path::Path;
 use color_eyre::Result;
+#[cfg(feature = "libkrun")]
 use crate::lfs;
 
 /// VM configuration parameters.
@@ -89,6 +90,7 @@ pub fn vm_session_file_path(env_root: &Path) -> std::path::PathBuf {
 
 /// Get the vsock socket path for an env_root.
 /// Pattern: {epkg_run}/vsock-{env_name}.sock
+#[cfg(feature = "libkrun")]
 pub fn vm_socket_path_for_env(env_root: &Path) -> std::path::PathBuf {
     let env_name = env_name_from_path(env_root);
     crate::models::dirs().epkg_run.join(format!("vsock-{}.sock", env_name))
@@ -186,6 +188,7 @@ pub fn cleanup_vm_session_files(session_file: &Path, socket_path: &Path) {
 
 /// Register a new VM session to the on-disk session file.
 /// Must be called after VM starts successfully.
+#[cfg(feature = "libkrun")]
 pub fn register_vm_session(
     env_root: &Path,
     env_name: &str,
@@ -223,6 +226,7 @@ pub fn register_vm_session(
 
 /// Simple registration for libkrun's existing path.
 /// Uses default config and derives env_name from path.
+#[cfg(feature = "libkrun")]
 pub fn register_vm_session_simple(env_root: &Path, socket_path: &Path) -> Result<()> {
     let env_name = env_name_from_path(env_root);
     let config = VmConfig::default();
@@ -230,6 +234,7 @@ pub fn register_vm_session_simple(env_root: &Path, socket_path: &Path) -> Result
 }
 
 /// Unregister a VM session (called when VM shuts down).
+#[cfg(feature = "libkrun")]
 pub fn unregister_vm_session(env_root: &Path) -> Result<()> {
     let session_file = vm_session_file_path(env_root);
     if session_file.exists() {

@@ -2440,6 +2440,7 @@ fn command_info(sub_matches: &clap::ArgMatches) -> Result<()> {
 /// Returns Some(exit_code) if command was routed through VM, None if no VM exists.
 /// This ensures data integrity by running install/upgrade/remove in the same VM context.
 fn try_route_command_via_vm(matches: &clap::ArgMatches) -> Result<Option<i32>> {
+    #[cfg(feature = "libkrun")]
     use std::collections::HashMap;
 
     // Commands that should be routed through existing VM
@@ -2479,14 +2480,14 @@ fn try_route_command_via_vm(matches: &clap::ArgMatches) -> Result<Option<i32>> {
     // Add --yes flag for non-interactive mode in VM
     cmd_parts.push("--yes".to_string());
 
-    // Build environment variables to pass
-    let env_vars: HashMap<String, String> = std::env::vars()
-        .filter(|(k, _)| k.starts_with("EPKG_") || k.starts_with("RUST_LOG") || k == "HOME")
-        .collect();
-
     // Execute via existing VM
     #[cfg(feature = "libkrun")]
     {
+        // Build environment variables to pass
+        let env_vars: HashMap<String, String> = std::env::vars()
+            .filter(|(k, _)| k.starts_with("EPKG_") || k.starts_with("RUST_LOG") || k == "HOME")
+            .collect();
+
         crate::libkrun::execute_via_existing_vm(
             &env_root,
             &cmd_parts,

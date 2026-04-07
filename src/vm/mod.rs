@@ -25,7 +25,16 @@ pub mod guest_daemon;
 #[cfg(target_os = "linux")]
 pub mod client;
 
-pub use session::{VmConfig, discover_vm_session, register_vm_session, register_vm_session_simple, unregister_vm_session, is_vm_session_active, vm_socket_path_for_env};
+// Re-export session functions used by libkrun backend
+#[cfg(feature = "libkrun")]
+pub use session::{
+    VmConfig, discover_vm_session, register_vm_session,
+    register_vm_session_simple, unregister_vm_session, vm_socket_path_for_env,
+};
+
+// is_vm_session_active is also used by run.rs on non-Linux platforms
+#[cfg(any(feature = "libkrun", not(target_os = "linux")))]
+pub use session::is_vm_session_active;
 
 pub use start::cmd_vm_start;
 pub use stop::cmd_vm_stop;
