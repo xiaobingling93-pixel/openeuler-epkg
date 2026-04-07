@@ -601,7 +601,7 @@ def get_tmpfs_usage_percent() -> float:
 
 
 def load_whitelist() -> list:
-    """Load error whitelist from tests/fuzz/whitelist.txt."""
+    """Load dependency resolution whitelist from tests/fuzz/whitelist.txt."""
     script_dir = Path(__file__).parent
     whitelist_file = script_dir / "whitelist.txt"
 
@@ -614,7 +614,25 @@ def load_whitelist() -> list:
                 if line and not line.startswith('#'):
                     patterns.append(line)
 
-    log(f"Loaded {len(patterns)} whitelist patterns")
+    log(f"Loaded {len(patterns)} dependency whitelist patterns")
+    return patterns
+
+
+def load_exe_whitelist() -> list:
+    """Load executable test whitelist from tests/fuzz/exe_whitelist.txt."""
+    script_dir = Path(__file__).parent
+    whitelist_file = script_dir / "exe_whitelist.txt"
+
+    patterns = []
+    if whitelist_file.exists():
+        with open(whitelist_file) as f:
+            for line in f:
+                line = line.strip()
+                # Skip comments and empty lines
+                if line and not line.startswith('#'):
+                    patterns.append(line)
+
+    log(f"Loaded {len(patterns)} executable whitelist patterns")
     return patterns
 
 
@@ -832,18 +850,22 @@ def check_install_errors(result: subprocess.CompletedProcess, whitelist: list) -
     return None, False, False
 
 
-def test_executables_batch(env_name: str) -> Tuple[list, list, str]:
+def test_executables_batch(env_name: str, exe_whitelist: list = None) -> Tuple[list, list, str]:
     """Test installed executables.
 
     Returns:
         Tuple: (exe_errors, commands, log_output)
     """
+    if exe_whitelist is None:
+        exe_whitelist = []
+
     executables = get_installed_executables(env_name)
     log(f"Testing {len(executables)} executables")
 
     exe_errors = []
     commands = []
     failed_outputs = []
+    whitelisted_count = 0
 
     for exe in executables:
         # Detect actual supported flags before generating commands
@@ -860,9 +882,18 @@ def test_executables_batch(env_name: str) -> Tuple[list, list, str]:
         success, output = test_executable_help(env_name, exe)
 
         if not success:
+            # Check if error matches whitelist (VM limitation or upstream issue)
+            if error_matches_whitelist(output, exe_whitelist):
+                log(f"Executable test whitelisted: {exe}")
+                whitelisted_count += 1
+                continue
+
             exe_errors.append(exe)
             failed_outputs.append(f"=== RUN {exe} (FAILED) ===\n{output}\n")
             log(f"Executable test failed: {exe}")
+
+    if whitelisted_count > 0:
+        log(f"Whitelisted {whitelisted_count} executable failures (VM/upstream issues)")
 
     return exe_errors, commands, "".join(failed_outputs)
 
@@ -912,12 +943,13 @@ def run_gc_if_needed(usage: float, force_gc: bool = False) -> None:
 class FuzzIterationContext:
     """Context for a single fuzz iteration."""
     def __init__(self, os_name: str, env_name: str, packages: list,
-                 batch_size: int, whitelist: list, usage: float):
+                 batch_size: int, whitelist: list, exe_whitelist: list, usage: float):
         self.os_name = os_name
         self.env_name = env_name
         self.packages = packages
         self.batch_size = batch_size
         self.whitelist = whitelist
+        self.exe_whitelist = exe_whitelist
         self.usage = usage
 
         self.loop_commands = []
@@ -1002,7 +1034,7 @@ def run_fuzz_iteration(ctx: FuzzIterationContext) -> Tuple[str, bool]:
     compare_disk_space_estimate(before_bytes, after_bytes, estimated_bytes, ctx.batch)
 
     # Step 5: Test executables
-    exe_errors, exe_commands, exe_log = test_executables_batch(ctx.env_name)
+    exe_errors, exe_commands, exe_log = test_executables_batch(ctx.env_name, ctx.exe_whitelist)
     ctx.loop_commands.extend(exe_commands)
     ctx.loop_log += exe_log
 
@@ -1102,6 +1134,7 @@ def cmd_run(os_name: str, batch_size: int, max_errors: int):
 
     # Load whitelist for dependency resolution errors
     whitelist = load_whitelist()
+    exe_whitelist = load_exe_whitelist()
 
     env_name = create_environment(os_name)
     packages = get_available_packages(os_name, env_name)
@@ -1135,6 +1168,7 @@ def cmd_run(os_name: str, batch_size: int, max_errors: int):
             packages=packages,
             batch_size=batch_size,
             whitelist=whitelist,
+            exe_whitelist=exe_whitelist,
             usage=usage
         )
 

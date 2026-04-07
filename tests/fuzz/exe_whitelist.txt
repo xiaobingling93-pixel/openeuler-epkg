@@ -1,0 +1,38 @@
+# Executable whitelist for pir.py fuzz test
+# Each line contains: pattern # reason
+# If an executable test error matches any pattern, the test will continue instead of failing.
+# Lines starting with # are comments and will be ignored.
+# Empty lines are also ignored.
+
+# =============================================================================
+# VM Environment Limitations (not epkg bugs)
+# =============================================================================
+
+# Audio devices - VM environment has no sound hardware
+/dev/snd/seq         # ALSA sequencer device not available in VM (no audio hardware)
+Cannot open sequencer # ALSA sequencer not available in VM
+
+# User/Group management - VM environment has limited user database
+gpasswd: Cannot determine your user name # VM environment lacks full user database
+
+# =============================================================================
+# Upstream Package Issues (not epkg bugs)
+# =============================================================================
+
+# rsync-ssl - needs bash but Alpine doesn't include bash by default
+cannot execute 'bash' # rsync-ssl requires bash, Alpine doesn't include it by default
+
+# jack_control - needs py3-dbus dependency
+import dbus           # jack_control needs py3-dbus which is not a dependency in Alpine
+
+# =============================================================================
+# Program Bugs (not epkg bugs)
+# =============================================================================
+
+basic_string: construction from null # C++ program bug (null string construction)
+
+# =============================================================================
+# Package Dependency Issues (not epkg bugs)
+# =============================================================================
+
+ocamlc.*No such file or directory # ocamlmktop.opt depends on ocamlc not being installed
