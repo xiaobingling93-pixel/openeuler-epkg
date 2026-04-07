@@ -47,10 +47,10 @@ Reverse mode（Guest 连接到 Host）不支持跨进程 reuse：
 ### 架构图
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                              Host                            │
+┌────────────────────────────────────────────────────────────┐
+│                              Host                          │
 │  ┌─────────────────┐      ┌─────────────────────────────┐  │
-│  │   epkg (main)   │      │        libkrun/QEMU          │  │
+│  │   epkg (main)   │      │        libkrun/QEMU         │  │
 │  │                 │      │                             │  │
 │  │  setup_ready    │◄────►│  1. Create listen socket    │  │
 │  │  _listener()    │      │     (Unix socket /          │  │
@@ -58,28 +58,28 @@ Reverse mode（Guest 连接到 Host）不支持跨进程 reuse：
 │  │  wait_guest     │◄────►│  2. Wait for Guest connect  │  │
 │  │  _ready()       │      │     on ready port 10001     │  │
 │  └─────────────────┘      └─────────────────────────────┘  │
-│           │                                               │
-│           │ vsock 桥接 (Unix socket / Named Pipe)         │
-│           ▼                                               │
-│  ┌─────────────────────────────────────────────────────┐  │
+│           │                                                │
+│           │ vsock 桥接 (Unix socket / Named Pipe)          │
+│           ▼                                                │
+│  ┌──────────────────────────────────────────────────────┐  │
 │  │              Guest (Linux VM)                        │  │
-│  │  ┌─────────────┐    ┌─────────────────────────────┐ │  │
-│  │  │    init     │───►│  3. Start vm_daemon          │ │  │
-│  │  └─────────────┘    └─────────────────────────────┘ │  │
-│  │         │                                           │  │
-│  │         ▼                                           │  │
-│  │  ┌─────────────┐    ┌─────────────────────────────┐ │  │
-│  │  │  vm-daemon  │───►│  4. bind/listen port 10000   │ │  │
-│  │  │             │    │     (forward mode server)    │ │  │
-│  │  └─────────────┘    └─────────────────────────────┘ │  │
-│  │         │                                           │  │
-│  │         ▼                                           │  │
-│  │  ┌─────────────┐    ┌─────────────────────────────┐ │  │
-│  │  │  ready notif│───►│  5. Connect to ready socket │ │  │
-│  │  │ (port 10001)│    │     (Unix socket / pipe)    │ │  │
-│  │  └─────────────┘    └─────────────────────────────┘ │  │
-│  └─────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
+│  │  ┌─────────────┐    ┌─────────────────────────────┐  │  │
+│  │  │    init     │───►│  3. Start vm_daemon         │  │  │
+│  │  └─────────────┘    └─────────────────────────────┘  │  │
+│  │         │                                            │  │
+│  │         ▼                                            │  │
+│  │  ┌─────────────┐    ┌─────────────────────────────┐  │  │
+│  │  │  vm-daemon  │───►│  4. bind/listen port 10000  │  │  │
+│  │  │             │    │     (forward mode server)   │  │  │
+│  │  └─────────────┘    └─────────────────────────────┘  │  │
+│  │         │                                            │  │
+│  │         ▼                                            │  │
+│  │  ┌─────────────┐    ┌─────────────────────────────┐  │  │
+│  │  │  ready notif│───►│  5. Connect to ready socket │  │  │
+│  │  │ (port 10001)│    │     (Unix socket / pipe)    │  │  │
+│  │  └─────────────┘    └─────────────────────────────┘  │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────┘
 ```
 
 ### 平台实现差异
@@ -183,20 +183,20 @@ epkg vm stop fuzz-alpine
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  epkg vm start fuzz-alpine timeout=120                                  │
 │                                                                         │
-│  主进程:                                                                 │
-│  1. 检查 session → 不存在                                                │
+│  主进程:                                                                │
+│  1. 检查 session → 不存在                                               │
 │  2. Unix: fork() / Windows: spawn DETACHED_PROCESS                      │
-│  3. 子进程执行 keeper 逻辑                                               │
-│  4. 主进程等待 session ready (最多 30s)                                  │
-│  5. 主进程退出                                                           │
+│  3. 子进程执行 keeper 逻辑                                              │
+│  4. 主进程等待 session ready (最多 30s)                                 │
+│  5. 主进程退出                                                          │
 │                                                                         │
-│  子进程 (keeper):                                                        │
-│  1. 创建 VM (forward mode)                                               │
-│  2. 等待 Guest ready                                                     │
-│  3. 注册 session file                                                    │
-│  4. krun_start_enter() 阻塞                                              │
-│  5. 空闲 120s 后 VM 关闭（或 timeout=0 永不关闭）                         │
-│  6. 清理 session file，退出                                              │
+│  子进程 (keeper):                                                       │
+│  1. 创建 VM (forward mode)                                              │
+│  2. 等待 Guest ready                                                    │
+│  3. 注册 session file                                                   │
+│  4. krun_start_enter() 阻塞                                             │
+│  5. 空闲 120s 后 VM 关闭（或 timeout=0 永不关闭）                       │
+│  6. 清理 session file，退出                                             │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -206,13 +206,13 @@ epkg vm stop fuzz-alpine
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  epkg run --isolate=vm -- ls                                            │
 │                                                                         │
-│  1. VM 模式 → 自动检测 session                                           │
-│  2. 发现 session → 自动设置 reuse_vm=true                                │
-│  3. 验证 daemon_pid alive                                                │
-│  4. 验证 socket connectable                                              │
-│  5. 连接 vsock socket                                                    │
-│  6. 发送命令                                                             │
-│  7. Guest 执行完成后，空闲计时开始                                        │
+│  1. VM 模式 → 自动检测 session                                          │
+│  2. 发现 session → 自动设置 reuse_vm=true                               │
+│  3. 验证 daemon_pid alive                                               │
+│  4. 验证 socket connectable                                             │
+│  5. 连接 vsock socket                                                   │
+│  6. 发送命令                                                            │
+│  7. Guest 执行完成后，空闲计时开始                                      │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -285,6 +285,197 @@ def run_fuzz_iteration(os_name, env_name, ...):
 | `src/vm/client.rs` | QEMU TCP/vsock client |
 | `src/qemu.rs` | QEMU backend |
 | `src/run.rs` | 自动复用机制 |
+
+## VM-Host 通信协议
+
+### StreamMessage 消息格式
+
+Host 和 Guest 之间通过 vsock 传递 JSON 格式的 StreamMessage：
+
+```rust
+enum StreamMessage {
+    // Guest → Host: 命令输出
+    Stdout { data: String, seq: u64 },   // base64 编码的 stdout
+    Stderr { data: String, seq: u64 },   // base64 编码的 stderr
+    
+    // Guest → Host: 执行结果
+    Exit { code: i32 },                   // 命令退出码
+    
+    // 双向: 错误通知
+    Error { message: String },            // 错误消息（替代 Exit）
+    
+    // Host → Guest: 输入转发（PTY/交互模式）
+    Stdin { data: String, seq: u64 },     // base64 编码的 stdin
+    StdinEof { seq: u64 },                // stdin EOF
+    Signal { signal: String },            // 信号转发 (INT/TERM/HUP/QUIT/KILL/WINCH)
+    Resize { rows: u16, cols: u16 },      // 终端大小变化
+}
+```
+
+### 消息流程
+
+```
+Host                              Guest
+  │                                 │
+  │──── CommandRequest (JSON) ─────►│  命令 + 环境 + cwd
+  │                                 │
+  │◄──── Stdout/Stderr ────────────│  实时输出流
+  │◄──── Stdout/Stderr ────────────│  (base64 编码)
+  │        ...                      │
+  │                                 │
+  │◄──── Exit/Error ───────────────│  执行结果
+  │                                 │
+```
+
+### 错误处理原则
+
+**关键规则**：Guest 必须在任何退出场景发送 `Exit` 或 `Error` 消息。
+
+Guest daemon 错误路径必须发送消息的场景：
+1. `execute_without_pty` / `execute_with_pty` / `execute_batch` 内部错误
+2. `handle_connection` 中的 poll 错误、read 错误、JSON 解析错误
+3. 超时、进程 spawn 失败等
+
+Host 端处理：
+```rust
+// src/libkrun/stream.rs
+StreamMessage::Exit { code } => { got_exit = true; exit_code = code; }
+StreamMessage::Error { message } => { got_exit = true; exit_code = -1; }
+
+// 如果收到 EOF 但没有 Exit/Error，说明 VM 异常关闭
+if !got_exit {
+    return Err("VM connection closed prematurely");
+}
+```
+
+## Install/Upgrade 期间的 VM 复用
+
+### 事务流程中的 VM 生命周期
+
+```
+epkg install package1 package2 ...
+
+  1. 开始事务，检测/创建 VM session
+     │
+     ▼
+  2. 安装包文件（复用 VM）
+     │
+     ▼
+  3. 运行 PostTransaction hooks（复用 VM）
+     │  - glib-compile-schemas
+     │  - gtk-update-icon-cache
+     │  - 其他 trigger hooks
+     ▼
+  4. 事务结束，关闭 VM session
+     shutdown_vm_reuse_session_if_active()
+```
+
+### Hooks 的 VM 复用
+
+Hooks 执行时自动继承活跃的 VM session：
+
+```rust
+// src/hooks.rs
+let run_options = RunOptions {
+    command,
+    args,
+    no_exit: !hook.action.abort_on_fail,  // 重要：不退出进程
+    ..Default::default()
+};
+
+// prepare_run_options_for_command() 自动检测 VM session
+// 并设置 reuse_vm=true
+fork_and_execute(env_root, &run_options)?;
+```
+
+### 自动 VM 复用检测
+
+```rust
+// src/run.rs: prepare_run_options_for_command()
+#[cfg(not(target_os = "linux"))]
+let has_active_vm_session = is_vm_reuse_active_for_env(env_root) ||
+    crate::vm::is_vm_session_active(env_root);
+
+if has_active_vm_session {
+    run_options.reuse_vm = true;
+}
+```
+
+两种检测方式：
+1. **进程内检测** (`is_vm_reuse_active_for_env`)：检查当前进程的 `VM_REUSE_SESSION` 全局变量
+2. **跨进程检测** (`is_vm_session_active`)：检查磁盘上的 session 文件
+
+## Session 发现与验证
+
+### 发现流程
+
+```rust
+// src/vm/session.rs: discover_vm_session()
+1. 检查 session 文件是否存在
+2. 解析 JSON 内容
+3. 验证 env_root 匹配
+4. 检查 daemon_pid 是否存活（kill(pid, 0)）
+5. 尝试连接 socket（验证 VM 真正可用）
+```
+
+### Session 文件位置
+
+```
+{epkg_run}/vm-sessions/{env_name}.json
+{epkg_run}/vsock-{env_name}.sock
+```
+
+env_name 由 env_root 路径转换而来：
+```
+/Users/aa/.epkg/envs/main → Users__aa__.epkg__envs__main
+```
+
+### Stale Session 清理
+
+Session 文件可能因进程崩溃而残留。清理条件：
+1. daemon_pid 不存活
+2. socket 不可连接
+
+```rust
+if !is_process_alive(info.daemon_pid) {
+    cleanup_vm_session_files(&session_file, &socket_path);
+}
+```
+
+## 常见问题与解决
+
+### "connection closed without exit message"
+
+**现象**：Host 收到 EOF 但没有收到 `Exit` 或 `Error` 消息。
+
+**原因**：
+1. Guest 进程崩溃
+2. VM 资源不足（OOM）
+3. vsock 连接中断
+4. Guest daemon 错误路径未发送消息（已修复）
+
+**修复**：
+- 确保所有 guest daemon 错误路径发送 `Error` 消息
+- Host 端将 `Error` 视为有效的终止响应
+
+### VM 意外关闭
+
+**可能原因**：
+1. VM 内存不足 → 增加 `--vm-memory`
+2. 执行命令导致 guest panic → 检查命令本身
+3. virtiofs 超时 → 检查主机 IO 负载
+
+**调试方法**：
+```bash
+# 启用详细日志
+RUST_LOG=trace epkg run --isolate=vm -- ls
+
+# 查看 VM console 输出
+EPKG_DEBUG_LIBKRUN=1 epkg run --isolate=vm -- ls
+
+# 检查 guest debug log
+cat /opt/epkg/guest-debug.log  # 在 VM 内
+```
 
 ## 验证步骤
 
