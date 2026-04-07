@@ -129,7 +129,18 @@ fn get_env_vars_dir() -> Result<PathBuf> {
 /// Creates:
 /// - ~/.config/epkg/tool/env_vars -> $EPKG_SRC/assets/tool/env_vars
 /// - ~/.config/epkg/tool/my_region -> cn/eu/us/etc.
-pub fn setup_tool_config_symlinks() -> Result<()> {
+/// Setup tool config symlinks for mirror acceleration.
+/// Creates:
+/// - ~/.config/epkg/tool/env_vars -> $EPKG_SRC/assets/tool/env_vars
+/// - ~/.config/epkg/tool/my_region -> cn/eu/us/etc.
+/// This function is idempotent and handles errors internally.
+pub fn setup_tool_config_symlinks() {
+    if let Err(e) = setup_tool_config_symlinks_inner() {
+        log::warn!("Failed to setup tool config symlinks: {}", e);
+    }
+}
+
+fn setup_tool_config_symlinks_inner() -> Result<()> {
     let config_dir = get_tool_config_dir()?;
     lfs::create_dir_all(&config_dir)?;
 
@@ -138,32 +149,32 @@ pub fn setup_tool_config_symlinks() -> Result<()> {
     let env_vars_target = get_env_vars_dir()?;
 
     if lfs::exists_on_host(&env_vars_target) {
-        // Use exists_no_follow to check if link file itself exists (including broken symlinks)
-        if lfs::exists_no_follow(&env_vars_link) {
-            lfs::remove_file(&env_vars_link)?;
+        // Skip if symlink already exists and points to correct target
+        if !is_symlink_to(&env_vars_link, &env_vars_target) {
+            if lfs::exists_no_follow(&env_vars_link) {
+                lfs::remove_file(&env_vars_link)?;
+            }
+            lfs::symlink_dir_for_native(&env_vars_target, &env_vars_link)?;
+            log::info!("Created symlink: {} -> {}", env_vars_link.display(), env_vars_target.display());
         }
-        // Use symlink_dir_for_native because env_vars_target is a directory
-        // and these symlinks need to be readable from Windows host
-        lfs::symlink_dir_for_native(&env_vars_target, &env_vars_link)?;
-        log::info!("Created symlink: {} -> {}", env_vars_link.display(), env_vars_target.display());
     }
 
     // Create my_region symlink based on region
     let iploc_link = config_dir.join("my_region");
 
-    // Remove existing link - use exists_no_follow to catch broken symlinks too
-    if lfs::exists_no_follow(&iploc_link) {
-        lfs::remove_file(&iploc_link)?;
-    }
-
     // Get region and create symlink
     if let Some(region) = get_region_code() {
         let iploc_target = config_dir.join("env_vars").join(&region);
         if lfs::exists_on_host(&iploc_target) {
-            // Use symlink_dir_for_native because iploc_target is a directory
-            lfs::symlink_dir_for_native(&iploc_target, &iploc_link)?;
-            log::info!("Created my_region symlink: {} -> {} (region: {})",
-                      iploc_link.display(), iploc_target.display(), region);
+            // Skip if symlink already exists and points to correct target
+            if !is_symlink_to(&iploc_link, &iploc_target) {
+                if lfs::exists_no_follow(&iploc_link) {
+                    lfs::remove_file(&iploc_link)?;
+                }
+                lfs::symlink_dir_for_native(&iploc_target, &iploc_link)?;
+                log::info!("Created my_region symlink: {} -> {} (region: {})",
+                          iploc_link.display(), iploc_target.display(), region);
+            }
         } else {
             log::debug!("Region config dir {} does not exist, skipping my_region symlink", iploc_target.display());
         }
@@ -172,6 +183,15 @@ pub fn setup_tool_config_symlinks() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Check if path is a symlink pointing to target
+fn is_symlink_to(link: &Path, target: &Path) -> bool {
+    if let Ok(resolved) = std::fs::read_link(link) {
+        resolved == target
+    } else {
+        false
+    }
 }
 
 /// Check if any env var for the tool is already set
@@ -465,6 +485,9 @@ pub fn setup_tool_wrappers(plan: &InstallationPlan) -> Result<()> {
         log::debug!("setup_tool_wrappers: new_file = {}", f.display());
     }
     let env_root = PathBuf::from(&plan.env_root);
+
+    // Ensure tool config symlinks exist (for mirror env vars)
+    setup_tool_config_symlinks();
 
     // Detect newly installed tools
     let tools = detect_installed_tools(plan);

@@ -4,8 +4,8 @@
 . "$(dirname "$0")/../common.sh"
 
 # Install one of go/golang/gcc-go (Alpine has conflict between go and gcc-go if both requested)
-run_install go
-check_cmd go version || { run_install golang; check_cmd go version || { run_install gcc-go; check_cmd go version || lang_skip "no go package for OS=$OS"; }; }
+run_install go ca-certificates-bundle
+check_cmd go version || { run_install golang ca-certificates-bundle; check_cmd go version || { run_install gcc-go ca-certificates-bundle; check_cmd go version || lang_skip "no go package for OS=$OS"; }; }
 
 run_ebin_if go version
 

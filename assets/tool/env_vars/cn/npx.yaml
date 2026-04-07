@@ -1,0 +1,4 @@
+# npx mirror env vars for China
+npm_config_registry: https://registry.npmmirror.com
+# Node.js needs explicit CA cert path on Alpine
+NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-certificates.crt

@@ -103,6 +103,9 @@ pub fn try_light_init() -> Result<()> {
         light_init()?;
     }
 
+    // Setup tool config symlinks for mirror acceleration
+    crate::tool_wrapper::setup_tool_config_symlinks();
+
     Ok(())
 }
 
@@ -113,6 +116,9 @@ pub fn light_init() -> Result<()> {
     // Load the environment config that was just created and register it
     let env_config = crate::io::deserialize_env_config_for(MAIN_ENV.to_string())?;
     register_environment_for(MAIN_ENV, env_config)?;
+
+    // Setup tool config symlinks for mirror acceleration
+    crate::tool_wrapper::setup_tool_config_symlinks();
 
     update_shell_profile().unwrap_or_else(|e| {
         log::warn!("Could not update shell profile: {}", e);
@@ -195,10 +201,7 @@ pub fn install_epkg_with_force(force: bool) -> Result<()> {
     }
 
     // Setup tool config symlinks for mirror acceleration
-    crate::tool_wrapper::setup_tool_config_symlinks()
-        .unwrap_or_else(|e| {
-            log::warn!("Failed to setup tool config symlinks: {}", e);
-        });
+    crate::tool_wrapper::setup_tool_config_symlinks();
 
     println!("Installation complete!");
 
