@@ -3,8 +3,8 @@
 
 . "$(dirname "$0")/../common.sh"
 
-# Note: Arch Linux uses jdk-openjdk, Debian/Ubuntu uses openjdk-17-jdk, Alpine uses openjdk17
-run_install openjdk-17-jdk default-jdk java-openjdk openjdk17-jre openjdk17 openjdk-17 openjdk jdk-openjdk jdk17-openjdk
+# Note: Arch Linux uses jdk-openjdk, Debian/Ubuntu uses openjdk-17-jdk, Alpine uses openjdk17, openEuler uses java-11-openjdk-devel
+run_install openjdk-17-jdk default-jdk java-openjdk openjdk17-jre openjdk17 openjdk-17 openjdk jdk-openjdk jdk17-openjdk java-11-openjdk-devel
 check_cmd javac -version || lang_skip "no java for OS=$OS"
 
 run_ebin javac -version
