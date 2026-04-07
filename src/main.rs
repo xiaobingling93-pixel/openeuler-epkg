@@ -156,6 +156,8 @@ mod libkrun;
 
 // vm session management is available on all platforms for cross-process discovery
 mod vm;
+// VMM backend selection - cross-platform (libkrun/qemu)
+mod vmm;
 mod busybox;
 mod info;
 mod list;

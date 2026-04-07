@@ -73,12 +73,12 @@ fn send_shutdown_to_guest(socket_path: &Path) -> Result<()> {
 #[cfg(all(windows, feature = "libkrun"))]
 fn send_shutdown_to_guest(socket_path: &Path) -> Result<()> {
     // Windows: use named pipe
-    use std::io::Write;
+    // TODO: implement Windows named pipe communication for vm_daemon shutdown
 
-    let stream = crate::libkrun::bridge::connect_vsock_bridge(socket_path, 5)?;
+    let _stream = crate::libkrun::bridge::connect_vsock_bridge(socket_path, 5)?;
 
     // Send session_done command
-    let request = serde_json::json!({
+    let _request = serde_json::json!({
         "type": "session_done"
     });
 

@@ -620,116 +620,16 @@ fn setup_fs_sandbox(context: &mut UnifiedChildContext) -> Result<()> {
 
 fn setup_vm_sandbox(context: &UnifiedChildContext) -> Result<()> {
     let guest_command = convert_host_path_to_guest_path(&context.command, &context.env_root);
-    let order          = determine_vmm_backend_order(&context.run_options.vmm_order);
-    try_vmm_backends(&order, context, &guest_command)
-}
-
-fn determine_vmm_backend_order(vmm_order: &[String]) -> Vec<String> {
-    let mut order: Vec<String> = if !vmm_order.is_empty() {
-        vmm_order.to_vec()
-    } else {
-        let mut default_order = Vec::new();
-        #[cfg(feature = "libkrun")]
-        {
-            default_order.push("libkrun".to_string());
-        }
-        default_order.push("qemu".to_string());
-        default_order
-    };
-    order.dedup();
-    order
-}
-
-fn try_vmm_backends(order: &[String], context: &UnifiedChildContext, guest_command: &Path) -> Result<()> {
-    let _ = crate::qemu::ensure_vmm_log_dir();
-
-    let order: Vec<String> = if context.run_options.vm_reuse_connect {
-        vec!["qemu".to_string()]
-    } else {
-        order.to_vec()
-    };
-
-    let mut last_err: Option<eyre::Report> = None;
-
-    for backend in &order {
-        match backend.as_str() {
-            "libkrun" => {
-                if let Err(e) = try_krun_backend(context, guest_command) {
-                    log::warn!("libkrun backend failed, will try next VMM if any: {}", e);
-                    last_err = Some(e);
-                    continue;
-                }
-            }
-            "qemu" => {
-                if let Err(e) = try_qemu_backend(context, guest_command) {
-                    log::warn!("qemu backend failed, will try next VMM if any: {}", e);
-                    last_err = Some(e);
-                    continue;
-                }
-            }
-            other => {
-                log::warn!("Unknown VMM backend '{}' in --vmm list, skipping", other);
-            }
-        }
-    }
-
-    if let Some(e) = last_err {
-        return Err(eyre::eyre!(
-            "All requested VMM backends failed (order: {:?}); last error: {}",
-            order,
-            e
-        ));
-    }
-
-    Err(eyre::eyre!(
-        "No usable VMM backend found for order {:?}. \
-         Specify --vmm=libkrun,qemu or --vmm=qemu and ensure dependencies are installed.",
-        order
-    ))
-}
-
-fn try_krun_backend(context: &UnifiedChildContext, guest_command: &Path) -> Result<()> {
-    #[cfg(feature = "libkrun")]
-    {
-        log::debug!("Trying VMM backend: libkrun");
-        match crate::libkrun::run_command_in_krun(
-            &context.env_root,
-            &context.run_options,
-            guest_command,
-        ) {
-            Ok(()) => unreachable!("run_command_in_krun never returns on success"),
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("HostAddressNotAvailable") || msg.contains("GuestMemoryMmap") {
-                    return Err(eyre::eyre!(
-                        "{}. Hint: host address-space layout can cause this; try --memory 4096 or EPKG_VM_MEMORY=4096, or use --vmm=qemu.",
-                        msg
-                    ));
-                }
-                Err(e)
-            }
-        }
-    }
-    #[cfg(not(feature = "libkrun"))]
-    {
-        let _ = (context, guest_command);
-        log::debug!("VMM backend 'libkrun' requested but libkrun feature is disabled; skipping");
-        Err(eyre::eyre!("libkrun feature disabled"))
-    }
-}
-
-fn try_qemu_backend(context: &UnifiedChildContext, guest_command: &Path) -> Result<()> {
-    log::debug!("Trying VMM backend: qemu");
-    match crate::qemu::run_command_in_qemu(
+    crate::vmm::try_vmm_backends(
         &context.env_root,
         &context.run_options,
-        guest_command,
+        &guest_command,
         context.vm_socket_path.as_deref(),
-    ) {
-        Ok(()) => unreachable!("run_command_in_qemu never returns on success"),
-        Err(e) => Err(e),
-    }
+        &context.run_options.vmm_order,
+        context.run_options.vm_reuse_connect,
+    )
 }
+
 
 // Helper function for Fs mode setup
 fn perform_fs_sandbox_tasks(context: &UnifiedChildContext) -> Result<()> {
