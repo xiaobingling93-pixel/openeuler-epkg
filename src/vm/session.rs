@@ -136,16 +136,19 @@ pub fn discover_vm_session(env_name: &str) -> Result<Option<VmSessionInfo>> {
         return Ok(None);
     }
 
-    // Verify socket exists and is connectable
+    // Verify socket file exists (for libkrun with listen=true, the socket is created by UnixAcceptorProxy)
+    // Note: We do NOT connect to verify because that would trigger OP_REQUEST to guest,
+    // which would cause the guest daemon to accept and then see connection close,
+    // leading to guest shutdown.
     #[cfg(all(unix, feature = "libkrun"))]
-    let socket_connectable = std::os::unix::net::UnixStream::connect(&info.socket_path).is_ok();
+    let socket_exists = info.socket_path.exists();
     #[cfg(all(windows, feature = "libkrun"))]
-    let socket_connectable = crate::libkrun::bridge::connect_vsock_bridge(&info.socket_path, 1).is_ok();
+    let socket_exists = true;  // Windows named pipes don't have a file to check
     #[cfg(not(feature = "libkrun"))]
-    let socket_connectable = false;
+    let socket_exists = false;
 
-    if !socket_connectable {
-        log::debug!("vm_session: session socket {} is not connectable, cleaning up", info.socket_path.display());
+    if !socket_exists {
+        log::debug!("vm_session: session socket {} does not exist, cleaning up", info.socket_path.display());
         cleanup_vm_session_files(&session_file, &info.socket_path);
         return Ok(None);
     }

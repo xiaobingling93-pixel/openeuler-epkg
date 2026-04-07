@@ -728,8 +728,8 @@ for field in "env_name:" "env_root:" "daemon_pid:" "socket_path:" "backend:" "co
         error "Test VM-3 failed: YAML output missing $field, got: $output"
     fi
 done
-# Verify env_name matches
-if ! echo "$output" | grep -q "env_name: \"$ENV_NAME\""; then
+# Verify env_name matches (serde_yaml doesn't quote simple string values)
+if ! echo "$output" | grep -qE "env_name: +$ENV_NAME"; then
     error "Test VM-3 failed: env_name should be $ENV_NAME, got: $output"
 fi
 log "Test VM-3: PASSED"
@@ -830,7 +830,7 @@ if ! wait_for_vm_session "$ENV_NAME"; then
     error "Test VM-10 failed: VM session not active after vm start --vmm"
 fi
 output=$(capture_with_timeout "$EPKG_BIN" vm status "$ENV_NAME")
-if ! echo "$output" | grep -q "backend: \"$VMM_BACKEND\""; then
+if ! echo "$output" | grep -qE "backend: +$VMM_BACKEND"; then
     error "Test VM-10 failed: Expected backend: $VMM_BACKEND in status, got: $output"
 fi
 log "Test VM-10: PASSED"

@@ -17,6 +17,7 @@ use crate::run::RunOptions;
 use crate::vm::{
     discover_vm_session, register_vm_session_simple,
     unregister_vm_session, is_vm_session_active, vm_socket_path_for_env,
+    VmSessionInfo,
 };
 
 /// Check if there's an active VM reuse session for a specific env_root.
@@ -44,9 +45,9 @@ pub fn is_vm_reuse_active_for_env(env_root: &Path) -> bool {
 }
 
 /// Connect to an existing VM session for the given env_root.
-/// Returns a connected stream if successful, None if no session exists.
+/// Returns a connected stream and session info if successful, None if no session exists.
 #[cfg(all(feature = "libkrun", unix))]
-fn connect_to_existing_vm_socket(_env_root: &Path) -> Result<Option<std::os::unix::net::UnixStream>> {
+fn connect_to_existing_vm_socket(_env_root: &Path) -> Result<Option<(std::os::unix::net::UnixStream, crate::vm::VmSessionInfo)>> {
     let env_name = &crate::models::config().common.env_name;
     let info = match discover_vm_session(env_name)? {
         Some(i) => i,
@@ -55,11 +56,11 @@ fn connect_to_existing_vm_socket(_env_root: &Path) -> Result<Option<std::os::uni
 
     let stream = std::os::unix::net::UnixStream::connect(&info.socket_path)?;
     log::info!("libkrun: connected to existing VM socket: {}", info.socket_path.display());
-    Ok(Some(stream))
+    Ok(Some((stream, info)))
 }
 
 #[cfg(all(feature = "libkrun", windows))]
-fn connect_to_existing_vm_socket(_env_root: &Path) -> Result<Option<std::fs::File>> {
+fn connect_to_existing_vm_socket(_env_root: &Path) -> Result<Option<(std::fs::File, crate::vm::VmSessionInfo)>> {
     let env_name = &crate::models::config().common.env_name;
     let info = match discover_vm_session(env_name)? {
         Some(i) => i,
@@ -68,11 +69,14 @@ fn connect_to_existing_vm_socket(_env_root: &Path) -> Result<Option<std::fs::Fil
 
     let stream = super::bridge::connect_vsock_bridge(&info.socket_path, 5)?;
     log::info!("libkrun: connected to existing VM pipe: {}", info.socket_path.display());
-    Ok(Some(stream))
+    Ok(Some((stream, info)))
 }
 
 /// Execute a command via an existing VM session.
 /// Used by install/upgrade/remove to run operations in the guest.
+///
+/// When a VM session exists (started via `epkg vm start`), we automatically
+/// set reuse_vm=true and use the session's configured timeout to keep the VM alive.
 #[cfg(all(feature = "libkrun", unix))]
 pub fn execute_via_existing_vm(
     env_root: &Path,
@@ -80,19 +84,29 @@ pub fn execute_via_existing_vm(
     io_mode: crate::models::IoMode,
     env_vars: Option<&std::collections::HashMap<String, String>>,
     cwd: Option<&str>,
-    reuse_vm: bool,
+    _reuse_vm: bool,
 ) -> Result<Option<i32>> {
-    let stream = match connect_to_existing_vm_socket(env_root)? {
+    let (stream, session_info) = match connect_to_existing_vm_socket(env_root)? {
         Some(s) => s,
         None => return Ok(None),
     };
 
     log::info!("libkrun: executing command via existing VM: {:?}", cmd_parts);
+
+    // For existing VM sessions (daemon mode), always use reuse_vm=true
+    // and pass the session's configured timeout to keep the VM alive.
+    let reuse_vm = true;
+    let vm_keep_timeout_secs = if session_info.config.timeout == 0 {
+        None  // 0 means never timeout, let guest use its default
+    } else {
+        Some(session_info.config.timeout)
+    };
+
     let exit_code = super::stream::send_command_over_stream(
         cmd_parts,
         io_mode,
         reuse_vm,
-        None,  // vm_keep_timeout_secs
+        vm_keep_timeout_secs,
         None,  // extend_timeout_secs
         env_vars,
         cwd,
@@ -104,26 +118,39 @@ pub fn execute_via_existing_vm(
 
 /// Execute a command via an existing VM session (Windows version).
 /// Uses named pipes instead of Unix sockets.
+///
+/// When a VM session exists (started via `epkg vm start`), we automatically
+/// set reuse_vm=true and use the session's configured timeout to keep the VM alive.
 #[cfg(all(feature = "libkrun", windows))]
 pub fn execute_via_existing_vm(
     env_root: &Path,
     cmd_parts: &[String],
     io_mode: crate::models::IoMode,
-    _env_vars: Option<&std::collections::HashMap<String, String>>,
+    env_vars: Option<&std::collections::HashMap<String, String>>,
     cwd: Option<&str>,
     _reuse_vm: bool,
 ) -> Result<Option<i32>> {
-    let stream = match connect_to_existing_vm_socket(env_root)? {
+    let (stream, session_info) = match connect_to_existing_vm_socket(env_root)? {
         Some(s) => s,
         None => return Ok(None),
     };
 
     log::info!("libkrun: executing command via existing VM: {:?}", cmd_parts);
+
+    // For existing VM sessions (daemon mode), always use reuse_vm=true
+    // and pass the session's configured timeout to keep the VM alive.
+    let reuse_vm = true;
+    let vm_keep_timeout_secs = if session_info.config.timeout == 0 {
+        None  // 0 means never timeout, let guest use its default
+    } else {
+        Some(session_info.config.timeout)
+    };
+
     let exit_code = super::stream::send_command_over_named_pipe(
         cmd_parts,
         io_mode,
-        _reuse_vm,
-        None,  // vm_keep_timeout_secs
+        reuse_vm,
+        vm_keep_timeout_secs,
         None,  // extend_timeout_secs
         cwd,
         stream,
@@ -873,8 +900,19 @@ struct VmContext {
 
 /// Configure vsock ports 10000 (command) and optionally 10001 (ready).
 ///
-/// In forward mode (reverse=false): Port 10000 listen=true (Guest listens), 10001 listen=false (Host listens for ready)
-/// In reverse mode (reverse=true): Port 10000 listen=false (Host listens), no ready port needed
+/// libkrun's krun_add_vsock_port2(ctx, port, path, listen):
+/// - listen=true: Host creates Unix socket listener at `path`. When host connects, libkrun
+///   sends OP_REQUEST to guest's vsock port. Guest daemon must be listening on the vsock port.
+/// - listen=false: Guest connects to vsock port, libkrun connects to Unix socket at `path`.
+///   Used for reverse mode where guest initiates connection.
+///
+/// For forward mode (VM reuse), we use listen=true so:
+/// 1. libkrun creates Unix socket listener at `sock_path`
+/// 2. Host processes connect to this Unix socket
+/// 3. libkrun sends OP_REQUEST to guest's vsock port 10000
+/// 4. Guest daemon (listening on vsock 10000) accepts and handles command
+///
+/// The ready port (10001) uses listen=false: guest connects to signal readiness.
 ///
 /// Returns host path for the command socket/pipe.
 #[cfg(feature = "libkrun")]
@@ -903,9 +941,10 @@ fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext, env_root: &Path, env_name
         check_status("krun_add_vsock", krun_add_vsock(ctx.ctx_id, tsi_features))?;
 
         // Port 10000: Command port
-        // In reverse mode: listen=false, Host creates listener, Guest connects
-        // In forward mode: listen=true, Guest creates listener, Host connects
-        let listen_10000 = !reverse;
+        // Use listen=true so libkrun creates Unix socket listener.
+        // When host connects, libkrun sends OP_REQUEST to guest's vsock port 10000.
+        // Guest daemon (run_vsock_server) is listening on vsock port 10000.
+        let listen_10000 = true;
 
         #[cfg(unix)]
         {
@@ -949,10 +988,9 @@ fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext, env_root: &Path, env_name
             }
             log::debug!("libkrun: ready port 10001 mapped to {}", ready_path.display());
         }
+        log::debug!("libkrun: vsock port 10000 mapped to {} (listen=true, reverse={})",
+                   sock_path.display(), reverse);
     }
-
-    log::debug!("libkrun: vsock port 10000 mapped to {} (listen={}, reverse={})",
-               sock_path.display(), !reverse, reverse);
 
     Ok(sock_path)
 }
@@ -2133,15 +2171,15 @@ pub fn run_vm_daemon_mode(
 
     log::info!("libkrun: guest ready in daemon mode");
 
-    // Register session
-    let config = crate::vm::VmConfig {
+    // Register session so other processes can discover the VM
+    let vm_config = crate::vm::VmConfig {
         timeout: timeout_secs,
         extend: timeout_secs,  // Use same value for extend
         cpus,
         memory_mib,
         backend: "libkrun".to_string(),
     };
-    crate::vm::register_vm_session(env_root, env_name, &vsock_sock_path, "libkrun", &config)?;
+    crate::vm::register_vm_session(env_root, env_name, &vsock_sock_path, "libkrun", &vm_config)?;
 
     log::info!("libkrun: VM daemon session registered, waiting for VM shutdown...");
 

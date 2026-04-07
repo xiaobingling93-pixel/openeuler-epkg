@@ -28,7 +28,7 @@ pub mod client;
 // Re-export session functions used by libkrun backend
 #[cfg(feature = "libkrun")]
 pub use session::{
-    VmConfig, discover_vm_session, register_vm_session,
+    VmConfig, VmSessionInfo, discover_vm_session, register_vm_session,
     register_vm_session_simple, unregister_vm_session, vm_socket_path_for_env,
 };
 
