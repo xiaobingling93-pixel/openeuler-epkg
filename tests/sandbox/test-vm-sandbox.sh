@@ -400,9 +400,9 @@ case "$VMM_BACKEND" in
 esac
 
 # Build the isolate option for epkg run
-ISOLATE_OPTSS="--isolate=vm --vmm=$VMM_BACKEND"
+ISOLATE_OPTS="--isolate=vm --vmm=$VMM_BACKEND"
 
-log "Isolate options: $ISOLATE_OPTSS"
+log "Isolate options: $ISOLATE_OPTS"
 
 ENV_NAME="test-vm-sandbox"
 
@@ -595,6 +595,406 @@ if ! echo "$output" | grep -q "MemTotal"; then
     error "Test 18 failed: Expected MemTotal in output"
 fi
 log "Test 18: PASSED"
+
+# ============================================
+# Test Suite: VM Lifecycle Subcommands
+# ============================================
+# Tests for: epkg vm start, vm stop, vm list, vm status
+# Reuses the same ENV_NAME environment from previous tests
+
+# Helper: get session file path for an env
+get_session_file() {
+    local env_name="$1"
+    echo "$HOME/.epkg/run/vm-sessions/${env_name}.json"
+}
+
+# Helper: get socket path for an env
+get_socket_path() {
+    local env_name="$1"
+    echo "$HOME/.epkg/run/vsock-${env_name}.sock"
+}
+
+# Helper: check if VM session is active (via session file)
+is_vm_session_active() {
+    local env_name="$1"
+    local session_file
+    session_file=$(get_session_file "$env_name")
+    if [ ! -f "$session_file" ]; then
+        return 1
+    fi
+    # Check if daemon_pid is alive
+    local daemon_pid
+    daemon_pid=$(grep -o '"daemon_pid": [0-9]*' "$session_file" | grep -o '[0-9]*')
+    if [ -z "$daemon_pid" ]; then
+        return 1
+    fi
+    # Check if process is alive
+    if ! kill -0 "$daemon_pid" 2>/dev/null; then
+        return 1
+    fi
+    # Check if socket is connectable
+    local socket_path
+    socket_path=$(get_socket_path "$env_name")
+    if [ -S "$socket_path" ] && [ -w "$socket_path" ]; then
+        return 0
+    fi
+    return 1
+}
+
+# Helper: wait for VM session to appear
+wait_for_vm_session() {
+    local env_name="$1"
+    local max_wait=30
+    local waited=0
+    while [ $waited -lt $max_wait ]; do
+        if is_vm_session_active "$env_name"; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    return 1
+}
+
+# Helper: wait for VM session to disappear
+wait_for_vm_session_stop() {
+    local env_name="$1"
+    local max_wait=15
+    local waited=0
+    while [ $waited -lt $max_wait ]; do
+        if ! is_vm_session_active "$env_name"; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    return 1
+}
+
+# Test VM-1: vm start basic
+log "Test VM-1: vm start basic functionality"
+# Ensure no stale VM session from previous tests
+"$EPKG_BIN" vm stop "$ENV_NAME" 2>/dev/null || true
+ENV_ROOT="${HOME}/.epkg/envs/${ENV_NAME}"
+run_with_timeout "$EPKG_BIN" vm start "$ENV_ROOT"
+# Verify session exists
+if ! is_vm_session_active "$ENV_NAME"; then
+    error "Test VM-1 failed: VM session not active after vm start"
+fi
+log "Test VM-1: PASSED"
+
+# Test VM-2: vm list shows running VM
+log "Test VM-2: vm list shows running VM"
+output=$(capture_with_timeout "$EPKG_BIN" vm list)
+if ! echo "$output" | grep -q "$ENV_NAME"; then
+    error "Test VM-2 failed: vm list should show $ENV_NAME, got: $output"
+fi
+# Verify status column shows 'running'
+if ! echo "$output" | grep -E "$ENV_NAME.*running"; then
+    error "Test VM-2 failed: VM status should be 'running', got: $output"
+fi
+log "Test VM-2: PASSED"
+
+# Test VM-3: vm status shows YAML output
+log "Test VM-3: vm status shows YAML output"
+output=$(capture_with_timeout "$EPKG_BIN" vm status "$ENV_NAME")
+# Check YAML format fields
+for field in "env_name:" "env_root:" "daemon_pid:" "socket_path:" "backend:" "config:"; do
+    if ! echo "$output" | grep -q "$field"; then
+        error "Test VM-3 failed: YAML output missing $field, got: $output"
+    fi
+done
+# Verify env_name matches
+if ! echo "$output" | grep -q "env_name: \"$ENV_NAME\""; then
+    error "Test VM-3 failed: env_name should be $ENV_NAME, got: $output"
+fi
+log "Test VM-3: PASSED"
+
+# Test VM-4: VM reuse - run command in existing VM
+log "Test VM-4: VM reuse - run command in existing VM session"
+output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch echo "reuse test")
+output=$(echo "$output" | grep -v '^\[' | grep -v '^$' | tail -1)
+if [ "$output" != "reuse test" ]; then
+    error "Test VM-4 failed: Expected 'reuse test', got '$output'"
+fi
+# Verify VM is still running after reuse
+if ! is_vm_session_active "$ENV_NAME"; then
+    error "Test VM-4 failed: VM should still be active after reuse"
+fi
+log "Test VM-4: PASSED"
+
+# Test VM-5: vm start rejects duplicate
+log "Test VM-5: vm start rejects duplicate session"
+set +e
+output=$("$EPKG_BIN" vm start "$ENV_ROOT" 2>&1)
+exit_code=$?
+set -e
+if [ "$exit_code" = "0" ]; then
+    error "Test VM-5 failed: vm start should fail when VM already running"
+fi
+if ! echo "$output" | grep -q "already running"; then
+    error "Test VM-5 failed: Expected 'already running' error, got: $output"
+fi
+log "Test VM-5: PASSED"
+
+# Test VM-6: vm stop
+log "Test VM-6: vm stop functionality"
+run_with_timeout "$EPKG_BIN" vm stop "$ENV_ROOT"
+if ! wait_for_vm_session_stop "$ENV_NAME"; then
+    error "Test VM-6 failed: VM session should be stopped"
+fi
+# Verify vm list shows no VMs (or doesn't show this env)
+output=$(capture_with_timeout "$EPKG_BIN" vm list)
+if echo "$output" | grep -q "$ENV_NAME"; then
+    error "Test VM-6 failed: vm list should not show stopped VM $ENV_NAME, got: $output"
+fi
+log "Test VM-6: PASSED"
+
+# Test VM-7: vm stop on non-existent VM fails
+log "Test VM-7: vm stop on non-existent VM fails"
+set +e
+output=$("$EPKG_BIN" vm stop "$ENV_ROOT" 2>&1)
+exit_code=$?
+set -e
+if [ "$exit_code" = "0" ]; then
+    error "Test VM-7 failed: vm stop should fail when no VM running"
+fi
+if ! echo "$output" | grep -q "No VM running"; then
+    error "Test VM-7 failed: Expected 'No VM running' error, got: $output"
+fi
+log "Test VM-7: PASSED"
+
+# Test VM-8: vm status on non-existent VM fails
+log "Test VM-8: vm status on non-existent VM fails"
+set +e
+output=$("$EPKG_BIN" vm status "$ENV_NAME" 2>&1)
+exit_code=$?
+set -e
+if [ "$exit_code" = "0" ]; then
+    error "Test VM-8 failed: vm status should fail when no VM running"
+fi
+if ! echo "$output" | grep -q "No VM running"; then
+    error "Test VM-8 failed: Expected 'No VM running' error, got: $output"
+fi
+log "Test VM-8: PASSED"
+
+# Test VM-9: vm start with parameters
+log "Test VM-9: vm start with custom parameters"
+run_with_timeout "$EPKG_BIN" vm start "$ENV_ROOT" cpus=4 memory=2048 timeout=60
+if ! wait_for_vm_session "$ENV_NAME"; then
+    error "Test VM-9 failed: VM session not active after vm start"
+fi
+# Verify parameters in vm status
+output=$(capture_with_timeout "$EPKG_BIN" vm status "$ENV_NAME")
+if ! echo "$output" | grep -q "cpus: 4"; then
+    error "Test VM-9 failed: Expected cpus: 4 in status, got: $output"
+fi
+if ! echo "$output" | grep -q "memory_mib: 2048"; then
+    error "Test VM-9 failed: Expected memory_mib: 2048 in status, got: $output"
+fi
+if ! echo "$output" | grep -q "timeout: 60"; then
+    error "Test VM-9 failed: Expected timeout: 60 in status, got: $output"
+fi
+log "Test VM-9: PASSED"
+
+# Test VM-10: vm start with --vmm option
+log "Test VM-10: vm start with --vmm option"
+run_with_timeout "$EPKG_BIN" vm stop "$ENV_ROOT" 2>/dev/null || true
+wait_for_vm_session_stop "$ENV_NAME" || true
+run_with_timeout "$EPKG_BIN" vm start "$ENV_ROOT" --vmm="$VMM_BACKEND"
+if ! wait_for_vm_session "$ENV_NAME"; then
+    error "Test VM-10 failed: VM session not active after vm start --vmm"
+fi
+output=$(capture_with_timeout "$EPKG_BIN" vm status "$ENV_NAME")
+if ! echo "$output" | grep -q "backend: \"$VMM_BACKEND\""; then
+    error "Test VM-10 failed: Expected backend: $VMM_BACKEND in status, got: $output"
+fi
+log "Test VM-10: PASSED"
+
+# Test VM-11: vm start timeout=0 (never timeout)
+log "Test VM-11: vm start with timeout=0 (never auto-shutdown)"
+run_with_timeout "$EPKG_BIN" vm stop "$ENV_ROOT" 2>/dev/null || true
+wait_for_vm_session_stop "$ENV_NAME" || true
+run_with_timeout "$EPKG_BIN" vm start "$ENV_ROOT" timeout=0
+if ! wait_for_vm_session "$ENV_NAME"; then
+    error "Test VM-11 failed: VM session not active"
+fi
+output=$(capture_with_timeout "$EPKG_BIN" vm status "$ENV_NAME")
+if ! echo "$output" | grep -q "timeout: 0"; then
+    error "Test VM-11 failed: Expected timeout: 0 in status, got: $output"
+fi
+log "Test VM-11: PASSED"
+
+# Test VM-12: VM auto-reuse detection
+log "Test VM-12: VM auto-reuse detection (no --reuse needed)"
+# Run a command - should auto-detect existing session
+output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch hostname)
+if [ -z "$output" ]; then
+    error "Test VM-12 failed: hostname should return non-empty"
+fi
+log "Test VM-12: PASSED (hostname=$output)"
+
+# Test VM-13: whoami in VM
+log "Test VM-13: whoami in VM session"
+output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch whoami)
+output=$(echo "$output" | grep -v '^\[' | grep -v '^$' | tail -1)
+if [ "$output" != "root" ]; then
+    error "Test VM-13 failed: whoami should return 'root', got '$output'"
+fi
+log "Test VM-13: PASSED"
+
+# Test VM-14: date comparison with host
+log "Test VM-14: date sync between VM and host"
+host_date=$(date +%Y-%m-%d)
+vm_date=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch date +%Y-%m-%d)
+vm_date=$(echo "$vm_date" | grep -v '^\[' | grep -v '^$' | tail -1)
+if [ "$host_date" != "$vm_date" ]; then
+    error "Test VM-14 failed: VM date '$vm_date' differs from host '$host_date'"
+fi
+# Check time is roughly synced (within 60 seconds tolerance)
+host_epoch=$(date +%s)
+vm_epoch=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch date +%s)
+vm_epoch=$(echo "$vm_epoch" | grep -v '^\[' | grep -v '^$' | tail -1)
+diff=$((host_epoch - vm_epoch))
+if [ ${diff#-} -gt 60 ]; then
+    error "Test VM-14 failed: VM time drift > 60s: host=$host_epoch, vm=$vm_epoch, diff=$diff"
+fi
+log "Test VM-14: PASSED (date synced, diff=$diff seconds)"
+
+# Test VM-15: kernel version in VM
+log "Test VM-15: /proc/version in VM"
+output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch cat /proc/version)
+if [ -z "$output" ]; then
+    error "Test VM-15 failed: /proc/version should return non-empty"
+fi
+# Check it contains Linux version string
+if ! echo "$output" | grep -q "Linux version"; then
+    error "Test VM-15 failed: Expected 'Linux version' in output, got '$output'"
+fi
+log "Test VM-15: PASSED"
+
+# Test VM-16: filesystem isolation checks
+log "Test VM-16: filesystem isolation checks"
+# Check /proc is virtualized (not host's /proc)
+vm_proc_self=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch readlink /proc/self)
+vm_proc_self=$(echo "$vm_proc_self" | grep -v '^\[' | grep -v '^$' | tail -1)
+if [ -z "$vm_proc_self" ]; then
+    error "Test VM-16 failed: /proc/self should exist"
+fi
+# Check /sys is virtualized
+output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch ls /sys/class)
+if [ -z "$output" ]; then
+    error "Test VM-16 failed: /sys/class should be non-empty"
+fi
+# Check mount points
+output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch cat /proc/mounts)
+if ! echo "$output" | grep -q "virtiofs"; then
+    error "Test VM-16 failed: Expected virtiofs mount in /proc/mounts"
+fi
+log "Test VM-16: PASSED"
+
+# Test VM-17: environment variables in VM
+log "Test VM-17: environment variables in VM"
+output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch sh -c 'echo "HOME=$HOME PATH=$PATH"')
+output=$(echo "$output" | grep -v '^\[' | grep -v '^$' | tail -1)
+if ! echo "$output" | grep -q "HOME=/root"; then
+    error "Test VM-17 failed: HOME should be /root, got '$output'"
+fi
+if ! echo "$output" | grep -q "PATH="; then
+    error "Test VM-17 failed: PATH should be set, got '$output'"
+fi
+log "Test VM-17: PASSED"
+
+# ============================================
+# Test Suite: epkg commands in VM session
+# ============================================
+
+# Test VM-18: epkg list in VM
+log "Test VM-18: epkg list in VM session"
+output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch epkg list)
+# Should show at least bash and coreutils (installed earlier)
+if ! echo "$output" | grep -q "bash"; then
+    error "Test VM-18 failed: epkg list should show bash, got '$output'"
+fi
+if ! echo "$output" | grep -q "coreutils"; then
+    error "Test VM-18 failed: epkg list should show coreutils, got '$output'"
+fi
+log "Test VM-18: PASSED"
+
+# Test VM-19: epkg info in VM
+log "Test VM-19: epkg info in VM session"
+output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch epkg info bash)
+if [ -z "$output" ]; then
+    error "Test VM-19 failed: epkg info bash should return non-empty"
+fi
+# Should contain package info fields
+if ! echo "$output" | grep -qE "name|version|description"; then
+    error "Test VM-19 failed: epkg info should show package fields, got '$output'"
+fi
+log "Test VM-19: PASSED"
+
+# Test VM-20: epkg search in VM
+log "Test VM-20: epkg search in VM session"
+output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch epkg search curl)
+if [ -z "$output" ]; then
+    error "Test VM-20 failed: epkg search curl should return non-empty"
+fi
+# Should find curl package
+if ! echo "$output" | grep -q "curl"; then
+    error "Test VM-20 failed: epkg search should find curl, got '$output'"
+fi
+log "Test VM-20: PASSED"
+
+# Test VM-21: epkg install in VM
+log "Test VM-21: epkg install in VM session"
+output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch epkg --assume-yes install curl)
+if ! echo "$output" | grep -qE "Installing|installed"; then
+    error "Test VM-21 failed: epkg install should show progress, got '$output'"
+fi
+# Verify curl is installed
+output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch epkg list)
+if ! echo "$output" | grep -q "curl"; then
+    error "Test VM-21 failed: curl should be in list after install"
+fi
+# Test curl binary works
+output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch curl --version)
+if ! echo "$output" | grep -q "curl"; then
+    error "Test VM-21 failed: curl --version should work"
+fi
+log "Test VM-21: PASSED"
+
+# Test VM-22: epkg remove in VM
+log "Test VM-22: epkg remove in VM session"
+output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch epkg --assume-yes remove curl)
+# Verify curl is removed
+output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch epkg list)
+if echo "$output" | grep -q "^curl"; then
+    error "Test VM-22 failed: curl should not be in list after remove"
+fi
+log "Test VM-22: PASSED"
+
+# Test VM-23: multiple commands reuse same VM
+log "Test VM-23: multiple commands reuse same VM session"
+for i in 1 2 3; do
+    output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch echo "iteration $i")
+    output=$(echo "$output" | grep -v '^\[' | grep -v '^$' | tail -1)
+    if [ "$output" != "iteration $i" ]; then
+        error "Test VM-23 failed: iteration $i got '$output'"
+    fi
+done
+# VM should still be active after multiple runs
+if ! is_vm_session_active "$ENV_NAME"; then
+    error "Test VM-23 failed: VM should still be active after multiple runs"
+fi
+log "Test VM-23: PASSED"
+
+# Cleanup VM session (keep env for debugging)
+log "Stopping VM session"
+run_with_timeout "$EPKG_BIN" vm stop "$ENV_ROOT" 2>/dev/null || true
+
+log "============================================"
+log "VM lifecycle subcommand tests completed!"
+log "============================================"
 
 log "============================================"
 log "All VM sandbox tests completed successfully!"
