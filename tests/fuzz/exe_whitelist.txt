@@ -44,7 +44,12 @@ basic_string: construction from null # C++ program bug (null string construction
 # Package Dependency Issues (not epkg bugs)
 # =============================================================================
 
-ocamlc.*No such file or directory # ocamlmktop.opt depends on ocamlc not being installed
+# ocamlmktop.opt - needs /bin/sh for subprocess execution
+# Alpine's ocaml package doesn't depend on a shell provider (busybox, bash, etc.)
+# When epkg installs ocaml without a shell package, ocamlmktop.opt fails with
+# "Sys_error: '/usr/bin/ocamlc' ... No such file or directory" because Unix.system
+# requires /bin/sh to spawn subprocesses.
+ocamlc.*No such file or directory # ocamlmktop.opt needs /bin/sh to spawn ocamlc subprocess
 
 # raspberrypi-utils-kdtc - needs cpp but doesn't declare dependency
 no suitable cpp found   # kdtc needs cpp (C preprocessor) which Alpine doesn't include by default
