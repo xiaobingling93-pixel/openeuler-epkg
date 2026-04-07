@@ -15,6 +15,13 @@ Cannot open sequencer # ALSA sequencer not available in VM
 # User/Group management - VM environment has limited user database
 gpasswd: Cannot determine your user name # VM environment lacks full user database
 
+# Graphics/Display - VM environment has no display server
+Failed to open display # GUI programs need X11/Wayland display which VM lacks
+cannot open display   # GUI programs need X11/Wayland display which VM lacks
+
+# GSettings - needs schema packages which may not be installed in random package selection
+No schemas installed  # gsettings needs gsettings-desktop-schemas or similar schema packages
+
 # =============================================================================
 # Upstream Package Issues (not epkg bugs)
 # =============================================================================
@@ -36,3 +43,6 @@ basic_string: construction from null # C++ program bug (null string construction
 # =============================================================================
 
 ocamlc.*No such file or directory # ocamlmktop.opt depends on ocamlc not being installed
+
+# SNMP tools - need SNMP configuration directory and daemon
+net-snmp-create-v3-user # SNMPv3 user creation tool needs /var/lib/net-snmp/ config directory
