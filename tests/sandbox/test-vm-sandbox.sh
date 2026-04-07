@@ -423,6 +423,22 @@ if [ -d "$ENV_ROOT" ] && [ -f "$ENV_ROOT/etc/passwd" ] && ! grep -q "^root:" "$E
     mv "$ENV_ROOT/etc/passwd.new" "$ENV_ROOT/etc/passwd"
 fi
 
+# Create init symlink for VM mode (epkg acts as init in VM)
+# Note: epkg binary must be copied (not symlinked) because VM cannot access host paths
+if [ ! -e "$ENV_ROOT/usr/bin/init" ]; then
+    # Remove symlink if exists, copy actual binary
+    if [ -L "$ENV_ROOT/usr/bin/epkg" ]; then
+        log "Copying epkg binary for VM mode (replacing symlink)"
+        epkg_src=$(readlink -f "$ENV_ROOT/usr/bin/epkg")
+        rm "$ENV_ROOT/usr/bin/epkg"
+        cp "$epkg_src" "$ENV_ROOT/usr/bin/epkg"
+    fi
+    if [ -e "$ENV_ROOT/usr/bin/epkg" ]; then
+        log "Creating init symlink for VM mode"
+        ln -sf epkg "$ENV_ROOT/usr/bin/init"
+    fi
+fi
+
 # ============================================
 # Test Suite: VM Sandbox
 # ============================================
