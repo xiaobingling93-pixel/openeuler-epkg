@@ -39,14 +39,16 @@ pub fn is_vm_reuse_active_for_env(env_root: &Path) -> bool {
     }
 
     // Cross-process: check on-disk session file
-    is_vm_session_active(env_root)
+    let env_name = &crate::models::config().common.env_name;
+    is_vm_session_active(env_name)
 }
 
 /// Connect to an existing VM session for the given env_root.
 /// Returns a connected stream if successful, None if no session exists.
 #[cfg(all(feature = "libkrun", unix))]
-fn connect_to_existing_vm_socket(env_root: &Path) -> Result<Option<std::os::unix::net::UnixStream>> {
-    let info = match discover_vm_session(env_root)? {
+fn connect_to_existing_vm_socket(_env_root: &Path) -> Result<Option<std::os::unix::net::UnixStream>> {
+    let env_name = &crate::models::config().common.env_name;
+    let info = match discover_vm_session(env_name)? {
         Some(i) => i,
         None => return Ok(None),
     };
@@ -57,8 +59,9 @@ fn connect_to_existing_vm_socket(env_root: &Path) -> Result<Option<std::os::unix
 }
 
 #[cfg(all(feature = "libkrun", windows))]
-fn connect_to_existing_vm_socket(env_root: &Path) -> Result<Option<std::fs::File>> {
-    let info = match discover_vm_session(env_root)? {
+fn connect_to_existing_vm_socket(_env_root: &Path) -> Result<Option<std::fs::File>> {
+    let env_name = &crate::models::config().common.env_name;
+    let info = match discover_vm_session(env_name)? {
         Some(i) => i,
         None => return Ok(None),
     };
@@ -875,12 +878,12 @@ struct VmContext {
 ///
 /// Returns host path for the command socket/pipe.
 #[cfg(feature = "libkrun")]
-fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext, env_root: &Path, reverse: bool) -> Result<std::path::PathBuf> {
+fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext, env_root: &Path, env_name: &str, reverse: bool) -> Result<std::path::PathBuf> {
     let run_dir = &crate::models::dirs().epkg_run;
     lfs::create_dir_all(run_dir)?;
 
     // Use env_name-based socket path for cross-process discovery
-    let sock_path = vm_socket_path_for_env(env_root);
+    let sock_path = vm_socket_path_for_env(env_name);
     let _ = std::fs::remove_file(&sock_path);
 
     // Ready path uses same naming pattern as setup_vsock_ready_listener (hash-based)
@@ -1197,7 +1200,8 @@ fn create_and_configure_vm(
         }
 
         if config.use_vsock {
-            let sock_path = setup_libkrun_vsock_host_sockets(&ctx, env_root, config.use_reverse_vsock)?;
+            let env_name = &crate::models::config().common.env_name;
+            let sock_path = setup_libkrun_vsock_host_sockets(&ctx, env_root, env_name, config.use_reverse_vsock)?;
             let vsock_sock_path = Some(sock_path);
             return Ok(VmContext { ctx, vsock_sock_path });
         }
@@ -1407,6 +1411,7 @@ struct VmReuseSession {
     vsock_sock_path:   std::path::PathBuf,
     vm_thread:         thread::JoinHandle<i32>,
     env_root:          std::path::PathBuf,
+    env_name:          String,
     /// Unix socket listener for reverse mode reuse.
     /// Guest connects to this for each subsequent command.
     /// None for forward mode (Host connects to Guest).
@@ -1488,7 +1493,7 @@ fn try_reuse_existing_krun_session(
                             log::warn!("libkrun: reverse VM connection failed, clearing stale session: {}", e);
                             let mut guard = VM_REUSE_SESSION.lock().unwrap();
                             if let Some(session) = guard.take() {
-                                let _ = unregister_vm_session(&session.env_root);
+                                let _ = unregister_vm_session(&session.env_name);
                                 let _ = unsafe { krun_signal_shutdown(session.ctx_id) };
                                 let _ = session.vm_thread.join();
                                 let _ = unsafe { krun_free_ctx(session.ctx_id) };
@@ -1502,7 +1507,7 @@ fn try_reuse_existing_krun_session(
                     log::warn!("libkrun: accept_reverse_connection failed, clearing stale session: {}", e);
                     let mut guard = VM_REUSE_SESSION.lock().unwrap();
                     if let Some(session) = guard.take() {
-                        let _ = unregister_vm_session(&session.env_root);
+                        let _ = unregister_vm_session(&session.env_name);
                         let _ = unsafe { krun_signal_shutdown(session.ctx_id) };
                         let _ = session.vm_thread.join();
                         let _ = unsafe { krun_free_ctx(session.ctx_id) };
@@ -1532,7 +1537,7 @@ fn try_reuse_existing_krun_session(
                 let mut guard = VM_REUSE_SESSION.lock().unwrap();
                 if let Some(session) = guard.take() {
                     // Attempt to clean up the dead VM
-                    let _ = unregister_vm_session(&session.env_root);
+                    let _ = unregister_vm_session(&session.env_name);
                     let _ = unsafe { krun_signal_shutdown(session.ctx_id) };
                     let _ = session.vm_thread.join();
                     let _ = unsafe { krun_free_ctx(session.ctx_id) };
@@ -1579,7 +1584,7 @@ fn shutdown_krun_session_impl(session: VmReuseSession) -> Result<()> {
     log::debug!("libkrun: shutting down reuse VM session");
 
     // Unregister session file first
-    let _ = unregister_vm_session(&session.env_root);
+    let _ = unregister_vm_session(&session.env_name);
 
     // Try to send session done message, but ignore errors if VM already shut down
     // This can happen when hooks/triggers fail and cause VM to exit prematurely
@@ -1744,6 +1749,7 @@ fn run_reverse_vsock_mode_inner(
 ) -> Result<()> {
     crate::debug_epkg!("[PERF] === REVERSE_VSOCK_MODE START ===");
     let total_start = std::time::Instant::now();
+    let env_name = crate::models::config().common.env_name.clone();
 
     // Create VM with reverse mode (port 10000 listen=false, Host listens)
     let vm_create_start = std::time::Instant::now();
@@ -1811,7 +1817,7 @@ fn run_reverse_vsock_mode_inner(
     // Register session file IMMEDIATELY after Guest connects for cross-process discovery.
     // This allows other processes to discover the VM while the first command is running.
     if run_options.reuse_vm {
-        let _ = register_vm_session_simple(env_root, &vsock_sock_path);
+        let _ = register_vm_session_simple(env_root, &env_name, &vsock_sock_path);
         log::info!("vm_session: registered VM session for {} (socket {})",
                    env_root.display(), vsock_sock_path.display());
     }
@@ -1881,6 +1887,7 @@ fn run_reverse_vsock_mode_inner(
                 vsock_sock_path: vsock_sock_path.clone(),
                 vm_thread,
                 env_root: env_root.to_path_buf(),
+                env_name: env_name.clone(),
                 reverse_listener: None,  // Forward mode: no reverse listener
             });
             log::info!("libkrun: VM session kept alive for reuse (switched to forward mode, socket {})",
@@ -2007,7 +2014,8 @@ pub fn run_command_in_krun(
         // Register session IMMEDIATELY after Guest is ready (before sending command).
         // This allows other processes to discover the VM while the first command is running.
         if run_options.reuse_vm {
-            let _ = register_vm_session_simple(env_root, &vsock_sock_path);
+            let env_name = &crate::models::config().common.env_name;
+            let _ = register_vm_session_simple(env_root, env_name, &vsock_sock_path);
             log::info!("vm_session: registered VM session for {} (socket {})",
                        env_root.display(), vsock_sock_path.display());
         }
@@ -2142,7 +2150,7 @@ pub fn run_vm_daemon_mode(
     log::info!("libkrun: VM daemon exited with status {}", status);
 
     // Cleanup session
-    crate::vm::unregister_vm_session(env_root)?;
+    crate::vm::unregister_vm_session(env_name)?;
 
     // Free context
     unsafe { krun_free_ctx(ctx_id) };

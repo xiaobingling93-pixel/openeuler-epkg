@@ -63,36 +63,18 @@ pub struct VmSessionInfo {
     pub last_activity: u64,
 }
 
-/// Get env_name from env_root path.
-/// Uses the same logic as main.rs env_name_from_path.
-pub fn env_name_from_path(env_root: &Path) -> String {
-    let dir = env_root.display().to_string();
-    // Trim trailing slashes
-    let trimmed = dir.trim_matches(|c| c == '/' || c == '\\');
-    if trimmed.is_empty() {
-        return "sysroot".to_string();
-    }
-    // Replace path separators with "__"
-    trimmed
-        .replace('/', "__")
-        .replace('\\', "__")
-        .replace(':', "_")
-}
-
-/// Get the VM session file path for an env_root.
+/// Get the VM session file path for an env_name.
 /// Location: {epkg_run}/vm-sessions/{env_name}.json
-pub fn vm_session_file_path(env_root: &Path) -> std::path::PathBuf {
-    let env_name = env_name_from_path(env_root);
+pub fn vm_session_file_path(env_name: &str) -> std::path::PathBuf {
     crate::models::dirs().epkg_run
         .join("vm-sessions")
         .join(format!("{}.json", env_name))
 }
 
-/// Get the vsock socket path for an env_root.
+/// Get the vsock socket path for an env_name.
 /// Pattern: {epkg_run}/vsock-{env_name}.sock
 #[cfg(feature = "libkrun")]
-pub fn vm_socket_path_for_env(env_root: &Path) -> std::path::PathBuf {
-    let env_name = env_name_from_path(env_root);
+pub fn vm_socket_path_for_env(env_name: &str) -> std::path::PathBuf {
     crate::models::dirs().epkg_run.join(format!("vsock-{}.sock", env_name))
 }
 
@@ -120,10 +102,10 @@ pub fn is_process_alive(pid: u32) -> bool {
     }
 }
 
-/// Discover an existing VM session for the given env_root.
+/// Discover an existing VM session for the given env_name.
 /// Returns session info if a live VM exists, None otherwise.
-pub fn discover_vm_session(env_root: &Path) -> Result<Option<VmSessionInfo>> {
-    let session_file = vm_session_file_path(env_root);
+pub fn discover_vm_session(env_name: &str) -> Result<Option<VmSessionInfo>> {
+    let session_file = vm_session_file_path(env_name);
 
     if !session_file.exists() {
         return Ok(None);
@@ -147,12 +129,6 @@ pub fn discover_vm_session(env_root: &Path) -> Result<Option<VmSessionInfo>> {
         }
     };
 
-    // Verify env_root matches
-    if info.env_root != env_root {
-        log::debug!("vm_session: session file env_root mismatch: {} vs {}", info.env_root.display(), env_root.display());
-        return Ok(None);
-    }
-
     // Check if daemon process is still alive
     if !is_process_alive(info.daemon_pid) {
         log::debug!("vm_session: daemon process {} is dead, cleaning up", info.daemon_pid);
@@ -175,7 +151,7 @@ pub fn discover_vm_session(env_root: &Path) -> Result<Option<VmSessionInfo>> {
     }
 
     log::info!("vm_session: discovered active VM session for {} (PID {}, socket {})",
-               env_root.display(), info.daemon_pid, info.socket_path.display());
+               env_name, info.daemon_pid, info.socket_path.display());
     Ok(Some(info))
 }
 
@@ -216,7 +192,7 @@ pub fn register_vm_session(
         last_activity: now,
     };
 
-    let session_file = vm_session_file_path(env_root);
+    let session_file = vm_session_file_path(env_name);
     let content = serde_json::to_string_pretty(&session_info)?;
     std::fs::write(&session_file, content)?;
 
@@ -225,18 +201,17 @@ pub fn register_vm_session(
 }
 
 /// Simple registration for libkrun's existing path.
-/// Uses default config and derives env_name from path.
+/// Uses default config and takes env_name as parameter.
 #[cfg(feature = "libkrun")]
-pub fn register_vm_session_simple(env_root: &Path, socket_path: &Path) -> Result<()> {
-    let env_name = env_name_from_path(env_root);
+pub fn register_vm_session_simple(env_root: &Path, env_name: &str, socket_path: &Path) -> Result<()> {
     let config = VmConfig::default();
-    register_vm_session(env_root, &env_name, socket_path, "libkrun", &config)
+    register_vm_session(env_root, env_name, socket_path, "libkrun", &config)
 }
 
 /// Unregister a VM session (called when VM shuts down).
 #[cfg(feature = "libkrun")]
-pub fn unregister_vm_session(env_root: &Path) -> Result<()> {
-    let session_file = vm_session_file_path(env_root);
+pub fn unregister_vm_session(env_name: &str) -> Result<()> {
+    let session_file = vm_session_file_path(env_name);
     if session_file.exists() {
         // Read socket path before removing session file
         if let Ok(content) = std::fs::read_to_string(&session_file) {
@@ -279,10 +254,10 @@ pub fn cleanup_stale_vm_sessions() {
     }
 }
 
-/// Check if there's an active VM session for the given env_root.
+/// Check if there's an active VM session for the given env_name.
 /// This is the primary entry point for cross-process VM detection.
-pub fn is_vm_session_active(env_root: &Path) -> bool {
-    discover_vm_session(env_root).ok().flatten().is_some()
+pub fn is_vm_session_active(env_name: &str) -> bool {
+    discover_vm_session(env_name).ok().flatten().is_some()
 }
 
 /// Load session info for an env by name.

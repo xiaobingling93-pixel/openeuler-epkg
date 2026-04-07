@@ -7,18 +7,17 @@ use clap::ArgMatches;
 use super::session::{discover_vm_session, is_process_alive, cleanup_vm_session_files, vm_session_file_path};
 
 /// Entry point for `epkg vm stop` command.
-pub fn cmd_vm_stop(args: &ArgMatches) -> Result<()> {
-    let env_root: std::path::PathBuf = args.get_one::<String>("env")
-        .expect("env is required")
-        .into();
-
-    let env_name = env_root
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+pub fn cmd_vm_stop(_args: &ArgMatches) -> Result<()> {
+    let cfg = crate::models::config();
+    let env_name = cfg.common.env_name.clone();
+    let _env_root = if cfg.common.env_root.is_empty() {
+        crate::dirs::get_env_root(env_name.clone())?
+    } else {
+        std::path::PathBuf::from(&cfg.common.env_root)
+    };
 
     // Check if VM is running
-    let session = discover_vm_session(&env_root)?
+    let session = discover_vm_session(&env_name)?
         .ok_or_else(|| eyre::eyre!("No VM running for {}", env_name))?;
 
     log::info!("Stopping VM for {} (PID {})", env_name, session.daemon_pid);
@@ -43,7 +42,7 @@ pub fn cmd_vm_stop(args: &ArgMatches) -> Result<()> {
     // Force cleanup if process is still alive
     if is_process_alive(session.daemon_pid) {
         log::warn!("VM daemon process {} did not exit gracefully, cleaning up", session.daemon_pid);
-        let session_file = vm_session_file_path(&env_root);
+        let session_file = vm_session_file_path(&env_name);
         cleanup_vm_session_files(&session_file, &session.socket_path);
     }
 

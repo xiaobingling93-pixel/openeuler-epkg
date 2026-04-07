@@ -4,7 +4,7 @@ use std::path::Path;
 use color_eyre::{Result, eyre};
 use clap::ArgMatches;
 
-use super::session::{VmConfig, discover_vm_session, env_name_from_path};
+use super::session::{VmConfig, discover_vm_session};
 use super::keeper::run_vm_keeper;
 
 /// Parse key=value arguments into VmConfig.
@@ -55,25 +55,24 @@ fn parse_kv_args(args: Option<clap::parser::ValuesRef<String>>, vmm: Option<&str
     config
 }
 
-/// Get the pending creation file path for an env.
+/// Get the pending creation file path for an env_name.
 /// This is used to coordinate between parent and child processes on Windows.
-fn pending_file_path(env_root: &Path) -> std::path::PathBuf {
-    let env_name = env_name_from_path(env_root);
+fn pending_file_path(env_name: &str) -> std::path::PathBuf {
     crate::models::dirs().epkg_run.join(format!("vm-pending-{}.json", env_name))
 }
 
 /// Write pending creation file with config.
 #[cfg(windows)]
-fn write_pending_config(env_root: &Path, config: &VmConfig) -> Result<()> {
-    let pending_file = pending_file_path(env_root);
+fn write_pending_config(env_name: &str, config: &VmConfig) -> Result<()> {
+    let pending_file = pending_file_path(env_name);
     let content = serde_json::to_string_pretty(config)?;
     std::fs::write(&pending_file, content)?;
     Ok(())
 }
 
 /// Read and delete pending creation file.
-fn read_and_delete_pending_config(env_root: &Path) -> Result<Option<VmConfig>> {
-    let pending_file = pending_file_path(env_root);
+fn read_and_delete_pending_config(env_name: &str) -> Result<Option<VmConfig>> {
+    let pending_file = pending_file_path(env_name);
     if !pending_file.exists() {
         return Ok(None);
     }
@@ -84,19 +83,19 @@ fn read_and_delete_pending_config(env_root: &Path) -> Result<Option<VmConfig>> {
 }
 
 /// Wait for VM session to be ready.
-fn wait_for_session_ready(env_root: &Path, timeout_secs: u32) -> Result<()> {
+fn wait_for_session_ready(_env_root: &Path, env_name: &str, timeout_secs: u32) -> Result<()> {
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(timeout_secs as u64);
 
     while start.elapsed() < timeout {
-        if discover_vm_session(env_root)?.is_some() {
+        if discover_vm_session(env_name)?.is_some() {
             return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
     // Cleanup pending file on timeout
-    let _ = std::fs::remove_file(&pending_file_path(env_root));
+    let _ = std::fs::remove_file(&pending_file_path(env_name));
     Err(eyre::eyre!("Timeout waiting for VM session to be ready"))
 }
 
@@ -118,7 +117,7 @@ fn vm_start_unix(env_root: &Path, env_name: &str, config: VmConfig) -> Result<()
         }
         pid if pid > 0 => {
             // Parent process: wait for session ready
-            wait_for_session_ready(env_root, 30)?;
+            wait_for_session_ready(env_root, env_name, 30)?;
         }
         _ => {
             return Err(eyre::eyre!("fork() failed"));
@@ -130,11 +129,11 @@ fn vm_start_unix(env_root: &Path, env_name: &str, config: VmConfig) -> Result<()
 
 /// Start VM keeper on Windows using spawn.
 #[cfg(windows)]
-fn vm_start_windows(env_root: &Path, _env_name: &str, config: VmConfig) -> Result<()> {
+fn vm_start_windows(env_root: &Path, env_name: &str, config: VmConfig) -> Result<()> {
     use std::os::windows::process::CommandExt;
 
     // Write pending file for child process to detect
-    write_pending_config(env_root, &config)?;
+    write_pending_config(env_name, &config)?;
 
     let exe = std::env::current_exe()?;
     let env_root_str = env_root.display().to_string();
@@ -148,28 +147,29 @@ fn vm_start_windows(env_root: &Path, _env_name: &str, config: VmConfig) -> Resul
         .spawn()?;
 
     // Parent: wait for session ready
-    wait_for_session_ready(env_root, 30)?;
+    wait_for_session_ready(env_root, env_name, 30)?;
 
     Ok(())
 }
 
 /// Entry point for `epkg vm start` command.
 pub fn cmd_vm_start(args: &ArgMatches) -> Result<()> {
-    let env_root: std::path::PathBuf = args.get_one::<String>("env")
-        .expect("env is required")
-        .into();
-
-    // Get env_name from path
-    let env_name = env_name_from_path(&env_root);
+    let cfg = crate::models::config();
+    let env_name = cfg.common.env_name.clone();
+    let env_root = if cfg.common.env_root.is_empty() {
+        crate::dirs::get_env_root(env_name.clone())?
+    } else {
+        std::path::PathBuf::from(&cfg.common.env_root)
+    };
 
     // Check for pending creation file (Windows child process path)
     // This indicates we're the spawned keeper process
-    if let Some(config) = read_and_delete_pending_config(&env_root)? {
+    if let Some(config) = read_and_delete_pending_config(&env_name)? {
         return run_vm_keeper(&env_root, &env_name, config);
     }
 
     // Normal mode: check if VM already running
-    if discover_vm_session(&env_root)?.is_some() {
+    if discover_vm_session(&env_name)?.is_some() {
         return Err(eyre::eyre!("VM already running for {}", env_name));
     }
 

@@ -6,11 +6,11 @@ use clap::ArgMatches;
 use super::session::{load_session_by_name, is_process_alive};
 
 /// Entry point for `epkg vm status` command.
-pub fn cmd_vm_status(args: &ArgMatches) -> Result<()> {
-    let env_name = args.get_one::<String>("env")
-        .expect("env is required");
+pub fn cmd_vm_status(_args: &ArgMatches) -> Result<()> {
+    let cfg = crate::models::config();
+    let env_name = cfg.common.env_name.clone();
 
-    let session = load_session_by_name(env_name)?
+    let session = load_session_by_name(&env_name)?
         .ok_or_else(|| eyre::eyre!("No VM running for {}", env_name))?;
 
     // Check if daemon is alive

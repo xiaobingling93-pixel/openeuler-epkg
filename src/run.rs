@@ -1260,9 +1260,10 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
     // VM reuse is mandatory for data integrity - only ONE VM per env_root.
     // This prevents concurrent host/guest file operations from corrupting data.
     // Always check for existing VM session first and reuse it if available.
+    let _env_name = &config().common.env_name;
     #[cfg(not(target_os = "linux"))]
     let has_active_vm_session = is_vm_reuse_active_for_env(env_root) ||
-        crate::vm::is_vm_session_active(env_root);
+        crate::vm::is_vm_session_active(_env_name);
     #[cfg(target_os = "linux")]
     let has_active_vm_session = is_vm_reuse_active_for_env(env_root);
 

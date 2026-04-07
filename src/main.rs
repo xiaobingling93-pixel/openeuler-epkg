@@ -1076,7 +1076,7 @@ Note: Output order may vary between runs due to parallel optimization (results s
                 .subcommand(
                     Command::new("start")
                         .about("Start VM for environment")
-                        .arg(arg!(<ENV> "Environment name or path"))
+                        .arg(arg!([ENV] "Environment name (or use --root)"))
                         .arg(arg!(-s --set <KV> "Set VM config: key=value (timeout, extend, cpus, memory)")
                             .action(ArgAction::Append))
                         .arg(arg!(--vmm <BACKEND> "VMM backend: libkrun or qemu")
@@ -1085,7 +1085,7 @@ Note: Output order may vary between runs due to parallel optimization (results s
                 .subcommand(
                     Command::new("stop")
                         .about("Stop VM")
-                        .arg(arg!(<ENV> "Environment name or path"))
+                        .arg(arg!([ENV] "Environment name (or use --root)"))
                 )
                 .subcommand(
                     Command::new("list")
@@ -1094,7 +1094,7 @@ Note: Output order may vary between runs due to parallel optimization (results s
                 .subcommand(
                     Command::new("status")
                         .about("Show VM status (YAML)")
-                        .arg(arg!(<ENV> "Environment name or path"))
+                        .arg(arg!([ENV] "Environment name (or use --root)"))
                 )
         )
 }
@@ -2075,6 +2075,7 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
         Some(("run",        sub_matches))  =>  crate::run::parse_options_run(&mut config, sub_matches).expect("Failed to parse run options"),
         Some(("search",     sub_matches))  =>  parse_options_search(&mut config, sub_matches).expect("Failed to parse search options"),
         Some(("service",    sub_matches))  =>  parse_options_service(&mut config, sub_matches).expect("Failed to parse service options"),
+        Some(("vm",         sub_matches))  =>  parse_options_vm(&mut config, sub_matches).expect("Failed to parse vm options"),
         _ => {} // No subcommand or unknown subcommand
     }
     determine_environment_final(&mut config)?;
@@ -2348,6 +2349,33 @@ fn parse_options_service(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches
     Ok(())
 }
 
+fn parse_options_vm(config: &mut EPKGConfig, matches: &clap::ArgMatches) -> Result<()> {
+    if let Some((subcommand_name, sub_matches)) = matches.subcommand() {
+        // Common logic for vm subcommands that have ENV_NAME argument
+        if matches!(subcommand_name, "start" | "stop" | "status") {
+            if let Some(env_name) = sub_matches.get_one::<String>("ENV") {
+                // ENV must be a name, not a path (same semantic as -e)
+                config.common.env_name = env_name.to_string();
+                config.common.env_explicit = true;
+                config.common.env_name_explicit = true;
+            } else if !config.common.env_root.is_empty() &&
+                config.common.env_name.is_empty() {
+                // No ENV arg but --root is set: derive env_name from root
+                config.common.env_name = env_name_from_path(&config.common.env_root);
+                config.common.env_explicit = true;
+            }
+
+            if !config.common.env_explicit {
+                eprintln!("error: environment name required");
+                eprintln!("usage: epkg vm {} [ENV_NAME | --root DIR]", subcommand_name);
+                eprintln!("For more information, try 'epkg vm {} --help'", subcommand_name);
+                exit(2);
+            }
+        }
+    }
+    Ok(())
+}
+
 
 fn command_env(sub_matches: &clap::ArgMatches) -> Result<()> {
     let name = &config().common.env_name;
@@ -2453,14 +2481,15 @@ fn try_route_command_via_vm(matches: &clap::ArgMatches) -> Result<Option<i32>> {
     };
 
     // Check if there's an active VM session for the current environment
-    let env_root = crate::dirs::get_env_root(config().common.env_name.clone())?;
-    if !crate::vm::session::is_vm_session_active(&env_root) {
-        log::debug!("main: no active VM session for {}, proceeding with normal execution", env_root.display());
+    let env_name = &config().common.env_name;
+    if !crate::vm::session::is_vm_session_active(env_name) {
+        log::debug!("main: no active VM session for {}, proceeding with normal execution", env_name);
         return Ok(None);
     }
 
+    let env_root = crate::dirs::get_env_root(config().common.env_name.clone())?;
     log::info!("main: routing '{}' command through existing VM session for {}",
-               subcommand_name, env_root.display());
+               subcommand_name, env_name);
 
     // Build command to send to VM
     let mut cmd_parts = vec![
