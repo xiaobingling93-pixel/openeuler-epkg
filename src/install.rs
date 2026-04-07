@@ -282,6 +282,7 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
 
     // Execute installations and upgrades (also processes removals via run_transaction_batch)
     execute_installations(&mut plan)?;
+    log::debug!("execute_installation_plan: execute_installations returned");
 
     // Compare estimated vs actual disk space usage using filesystem free_space delta
     #[cfg(unix)]
@@ -296,8 +297,10 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     // Update metadata for skipped reinstalls (uses plan.skipped_reinstalls as the source
     // of session_info).
     update_skipped_reinstalls_metadata(&plan)?;
+    log::debug!("execute_installation_plan: update_skipped_reinstalls_metadata completed");
 
     let generations_root = dirs::get_default_generations_root()?;
+    log::debug!("execute_installation_plan: creating new generation at {:?}", generations_root);
     let new_generation = create_new_generation_with_root(&generations_root)?;
     record_history(&new_generation, Some(&plan))?;
     save_installed_packages(&new_generation)?;
@@ -402,9 +405,11 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
     // On Windows/macOS with native formats (conda/brew/msys2), skip_namespace_isolation
     // is set, allowing direct execution.
     run_transaction_batch(plan)?;
+    log::debug!("execute_installations: run_transaction_batch completed");
 
     // Clean up pending packages after transaction completes
     remove_pending_packages()?;
+    log::debug!("execute_installations: remove_pending_packages completed");
 
     // Step 4: Build and install AUR packages (build with makepkg)
     #[cfg(target_os = "linux")]

@@ -337,6 +337,7 @@ pub fn run_transaction_batch(
     // Follow-up batches will see is_first=false
     plan.batch.is_first = false;
 
+    log::debug!("run_transaction_batch: completed successfully");
     Ok(())
 }
 
