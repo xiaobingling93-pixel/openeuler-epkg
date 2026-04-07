@@ -3,6 +3,10 @@
 
 . "$(dirname "$0")/../common.sh"
 
+# openEuler has xorg-x11-fonts packaging conflict, need --ignore-file-conflicts
+if [ "$OS" = "openeuler" ]; then
+    $EPKG_BIN -e "$ENV_NAME" --assume-yes install --ignore-missing --ignore-file-conflicts scala || true
+fi
 run_install scala openjdk-17-jdk default-jdk java-openjdk
 check_cmd scala -e 'println(1)' || lang_skip "no scala for OS=$OS"
 
