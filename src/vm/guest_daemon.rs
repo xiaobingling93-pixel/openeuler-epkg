@@ -818,16 +818,30 @@ fn pty_poll_loop(
 fn execute_with_pty(request: &CommandRequest, stream: &mut TcpStream, initial_data: Option<Vec<u8>>) -> Result<i32> {
     log::debug!("execute_with_pty: starting");
 
-    let (mut master_file, child) = setup_pty_and_fork(request)?;
-    let child_status = pty_poll_loop(child, &mut master_file, stream, initial_data)?;
+    let result = (|| {
+        let (mut master_file, child) = setup_pty_and_fork(request)?;
+        let child_status = pty_poll_loop(child, &mut master_file, stream, initial_data)?;
 
-    let status = match child_status {
-        Some(s) => s,
-        None    => waitpid(child, None)?,
-    };
-    let exit_code = exit_code_from_wait_status(status);
-    log::debug!("execute_with_pty: sending exit message code={}", exit_code);
-    send_exit_and_flush(stream, exit_code)
+        let status = match child_status {
+            Some(s) => s,
+            None    => waitpid(child, None)?,
+        };
+        let exit_code = exit_code_from_wait_status(status);
+        log::debug!("execute_with_pty: sending exit message code={}", exit_code);
+        Ok(exit_code)
+    })();
+
+    match result {
+        Ok(exit_code) => send_exit_and_flush(stream, exit_code),
+        Err(e) => {
+            log::debug!("execute_with_pty: error {}, sending error message", e);
+            let _ = write_stream_message(stream, &StreamMessage::Error {
+                message: format!("execute_with_pty error: {}", e)
+            });
+            let _ = stream.flush();
+            Err(e)
+        }
+    }
 }
 
 /// Handle stdout pipe events: read and send data, return true on EOF.
@@ -1000,67 +1014,80 @@ fn nonpty_poll_loop<W: std::io::Write>(
 fn execute_without_pty(request: &CommandRequest, stream: &mut TcpStream, initial_data: Option<Vec<u8>>) -> Result<i32> {
     log::debug!("execute_without_pty: starting");
 
-    match spawn_child_piped(request)? {
-        SpawnOutcome::SpawnFailed { error_msg } => {
-            // Send error as stderr chunk and exit message
-            send_stderr_chunk(stream, error_msg.as_bytes(), &mut 0)?;
-            send_exit_and_flush(stream, -1)?;
-            Ok(-1)
-        }
-        SpawnOutcome::Spawned(child, stdin_pipe, stdout_pipe, stderr_pipe) => {
-            let mut stdin_file  = Some(stdin_pipe);
-            let mut stdout_file = stdout_pipe;
-            let mut stderr_file = stderr_pipe;
-
-            // Write request.stdin field if provided
-            if !request.stdin.is_empty() {
-                if let Some(ref mut stdin) = stdin_file {
-                    stdin.write_all(request.stdin.as_bytes())?;
-                }
+    let result = (|| {
+        match spawn_child_piped(request)? {
+            SpawnOutcome::SpawnFailed { error_msg } => {
+                // Send error as stderr chunk and exit message
+                send_stderr_chunk(stream, error_msg.as_bytes(), &mut 0)?;
+                return Ok(-1);
             }
+            SpawnOutcome::Spawned(child, stdin_pipe, stdout_pipe, stderr_pipe) => {
+                let mut stdin_file  = Some(stdin_pipe);
+                let mut stdout_file = stdout_pipe;
+                let mut stderr_file = stderr_pipe;
 
-            // Process initial data (leftover bytes from request parsing) as JSON messages
-            // These may contain stdin messages that need to be decoded and forwarded
-            if let Some(data) = initial_data {
-                if !data.is_empty() {
-                    log::debug!("execute_without_pty: processing initial data ({} bytes)", data.len());
-                    let mut tcp_buf = [0u8; TCP_LINE_BUF_SIZE];
-                    let len = data.len().min(tcp_buf.len());
-                    tcp_buf[..len].copy_from_slice(&data[..len]);
-                    let mut tcp_buf_pos = len;
+                // Write request.stdin field if provided
+                if !request.stdin.is_empty() {
+                    if let Some(ref mut stdin) = stdin_file {
+                        stdin.write_all(request.stdin.as_bytes())?;
+                    }
+                }
 
-                    // Process stdin messages in the initial data
-                    process_tcp_line_buffer(&mut tcp_buf, &mut tcp_buf_pos, |msg| {
-                        match msg {
-                            StreamMessage::Stdin { data, .. } => {
-                                if let Some(ref mut stdin) = stdin_file {
-                                    let bytes = STANDARD.decode(&data)?;
-                                    stdin.write_all(&bytes)?;
-                                    log::debug!("execute_without_pty: wrote {} bytes to stdin from initial_data", bytes.len());
+                // Process initial data (leftover bytes from request parsing) as JSON messages
+                // These may contain stdin messages that need to be decoded and forwarded
+                if let Some(data) = initial_data {
+                    if !data.is_empty() {
+                        log::debug!("execute_without_pty: processing initial data ({} bytes)", data.len());
+                        let mut tcp_buf = [0u8; TCP_LINE_BUF_SIZE];
+                        let len = data.len().min(tcp_buf.len());
+                        tcp_buf[..len].copy_from_slice(&data[..len]);
+                        let mut tcp_buf_pos = len;
+
+                        // Process stdin messages in the initial data
+                        process_tcp_line_buffer(&mut tcp_buf, &mut tcp_buf_pos, |msg| {
+                            match msg {
+                                StreamMessage::Stdin { data, .. } => {
+                                    if let Some(ref mut stdin) = stdin_file {
+                                        let bytes = STANDARD.decode(&data)?;
+                                        stdin.write_all(&bytes)?;
+                                        log::debug!("execute_without_pty: wrote {} bytes to stdin from initial_data", bytes.len());
+                                    }
+                                    Ok(())
                                 }
-                                Ok(())
+                                StreamMessage::StdinEof { .. } => {
+                                    log::debug!("execute_without_pty: stdin EOF in initial_data, closing stdin pipe");
+                                    stdin_file = None;
+                                    Ok(())
+                                }
+                                _ => Ok(())
                             }
-                            StreamMessage::StdinEof { .. } => {
-                                log::debug!("execute_without_pty: stdin EOF in initial_data, closing stdin pipe");
-                                stdin_file = None;
-                                Ok(())
-                            }
-                            _ => Ok(())
-                        }
-                    })?;
+                        })?;
+                    }
                 }
+
+                let child_pid    = Pid::from_raw(child.id() as i32);
+                let child_status = nonpty_poll_loop(child_pid, &mut stdout_file, &mut stderr_file, stdin_file, stream, None)?;
+
+                let status = match child_status {
+                    Some(s) => s,
+                    None    => waitpid(Some(child_pid), None)?,
+                };
+                let exit_code = exit_code_from_wait_status(status);
+                log::debug!("execute_without_pty: sending exit message code={}", exit_code);
+                return Ok(exit_code);
             }
+        }
+    })();
 
-            let child_pid    = Pid::from_raw(child.id() as i32);
-            let child_status = nonpty_poll_loop(child_pid, &mut stdout_file, &mut stderr_file, stdin_file, stream, None)?;
-
-            let status = match child_status {
-                Some(s) => s,
-                None    => waitpid(Some(child_pid), None)?,
-            };
-            let exit_code = exit_code_from_wait_status(status);
-            log::debug!("execute_without_pty: sending exit message code={}", exit_code);
-            send_exit_and_flush(stream, exit_code)
+    match result {
+        Ok(exit_code) => send_exit_and_flush(stream, exit_code),
+        Err(e) => {
+            log::debug!("execute_without_pty: error {}, sending error message", e);
+            let _ = write_stream_message(stream, &StreamMessage::Error {
+                message: format!("execute_without_pty error: {}", e)
+            });
+            let _ = stream.flush();
+            Err(e)
         }
     }
 }
@@ -1079,87 +1106,110 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
 
     debug_file_write(&format!("execute_batch: starting, command={:?}\n", request.command));
 
-    match spawn_child_piped(request)? {
-        SpawnOutcome::SpawnFailed { error_msg } => {
-            debug_file_write(&format!("execute_batch: spawn FAILED: {}\n", error_msg));
-            log::debug!("execute_batch: spawn failed: {}", error_msg);
+    let result = (|| {
+        match spawn_child_piped(request)? {
+            SpawnOutcome::SpawnFailed { error_msg } => {
+                debug_file_write(&format!("execute_batch: spawn FAILED: {}\n", error_msg));
+                log::debug!("execute_batch: spawn failed: {}", error_msg);
 
+                // Send batch response with error
+                let response = serde_json::json!({
+                    "exit_code": -1,
+                    "stdout": "",
+                    "stderr": STANDARD.encode(error_msg.as_bytes()),
+                });
+                let json = serde_json::to_string(&response)?;
+                debug_file_write(&format!("execute_batch: error response JSON size={} bytes\n", json.len()));
+                stream.write_all(json.as_bytes())?;
+                stream.write_all(b"\n")?;
+                stream.flush()?;
+                debug_file_write("execute_batch: error response written and flushed\n");
+
+                // Shutdown the write side to signal EOF to host
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+                debug_file_write("execute_batch: done (error case)\n");
+                Ok(-1)
+            }
+            SpawnOutcome::Spawned(child, stdin_pipe, stdout_pipe, stderr_pipe) => {
+                debug_file_write(&format!("execute_batch: child spawned, pid={}\n", child.id()));
+
+                // Write stdin if provided, then close it
+                if !request.stdin.is_empty() {
+                    use std::io::Write;
+                    let mut stdin_ref = &stdin_pipe;
+                    stdin_ref.write_all(request.stdin.as_bytes())?;
+                }
+                drop(stdin_pipe);
+
+                // Wait for child to complete
+                let child_pid = Pid::from_raw(child.id() as i32);
+                debug_file_write("execute_batch: waiting for child to complete\n");
+                let status = waitpid(child_pid, None)?;
+                let exit_code = exit_code_from_wait_status(status);
+
+                debug_file_write(&format!("execute_batch: child exited with code={}, collecting output\n", exit_code));
+
+                // Collect all output
+                use std::io::Read;
+                let mut stdout_data = Vec::new();
+                let mut stderr_data = Vec::new();
+                let mut stdout_pipe = stdout_pipe;
+                let mut stderr_pipe = stderr_pipe;
+                stdout_pipe.read_to_end(&mut stdout_data)?;
+                stderr_pipe.read_to_end(&mut stderr_data)?;
+
+                log::debug!("execute_batch: exit_code={}, stdout={} bytes, stderr={} bytes",
+                            exit_code, stdout_data.len(), stderr_data.len());
+                debug_file_write(&format!("execute_batch: stdout={} bytes, stderr={} bytes\n", stdout_data.len(), stderr_data.len()));
+
+                log::debug!("execute_batch: sending response (exit_code={})", exit_code);
+                let _ = kmsg_write(&format!("<6>execute_batch: sending response (exit_code={})\n", exit_code));
+                debug_file_write("execute_batch: sending response JSON\n");
+
+                // Send batch response
+                let response = serde_json::json!({
+                    "exit_code": exit_code,
+                    "stdout": STANDARD.encode(&stdout_data),
+                    "stderr": STANDARD.encode(&stderr_data),
+                });
+                let json = serde_json::to_string(&response)?;
+                debug_file_write(&format!("execute_batch: response JSON size={} bytes\n", json.len()));
+                stream.write_all(json.as_bytes())?;
+                stream.write_all(b"\n")?;
+                stream.flush()?;
+                debug_file_write("execute_batch: response written and flushed\n");
+
+                // CRITICAL: Shutdown the write side to signal EOF to host
+                // This ensures the host's read_to_string() returns
+                let _ = kmsg_write("<6>execute_batch: shutting down stream write side\n");
+                debug_file_write("execute_batch: shutting down stream write side\n");
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+
+                let _ = kmsg_write("<6>execute_batch: response sent, returning\n");
+                debug_file_write("execute_batch: done\n");
+                Ok(exit_code)
+            }
+        }
+    })();
+
+    match result {
+        Ok(exit_code) => Ok(exit_code),
+        Err(e) => {
+            log::debug!("execute_batch: error {}, sending error response", e);
+            debug_file_write(&format!("execute_batch: error {}, sending error response\n", e));
             // Send batch response with error
             let response = serde_json::json!({
                 "exit_code": -1,
                 "stdout": "",
-                "stderr": STANDARD.encode(error_msg.as_bytes()),
+                "stderr": STANDARD.encode(format!("execute_batch error: {}", e).as_bytes()),
             });
-            let json = serde_json::to_string(&response)?;
-            debug_file_write(&format!("execute_batch: error response JSON size={} bytes\n", json.len()));
-            stream.write_all(json.as_bytes())?;
-            stream.write_all(b"\n")?;
-            stream.flush()?;
-            debug_file_write("execute_batch: error response written and flushed\n");
-
-            // Shutdown the write side to signal EOF to host
-            let _ = stream.shutdown(std::net::Shutdown::Write);
-            debug_file_write("execute_batch: done (error case)\n");
-            Ok(-1)
-        }
-        SpawnOutcome::Spawned(child, stdin_pipe, stdout_pipe, stderr_pipe) => {
-            debug_file_write(&format!("execute_batch: child spawned, pid={}\n", child.id()));
-
-            // Write stdin if provided, then close it
-            if !request.stdin.is_empty() {
-                use std::io::Write;
-                let mut stdin_ref = &stdin_pipe;
-                stdin_ref.write_all(request.stdin.as_bytes())?;
+            if let Ok(json) = serde_json::to_string(&response) {
+                let _ = stream.write_all(json.as_bytes());
+                let _ = stream.write_all(b"\n");
+                let _ = stream.flush();
             }
-            drop(stdin_pipe);
-
-            // Wait for child to complete
-            let child_pid = Pid::from_raw(child.id() as i32);
-            debug_file_write("execute_batch: waiting for child to complete\n");
-            let status = waitpid(child_pid, None)?;
-            let exit_code = exit_code_from_wait_status(status);
-
-            debug_file_write(&format!("execute_batch: child exited with code={}, collecting output\n", exit_code));
-
-            // Collect all output
-            use std::io::Read;
-            let mut stdout_data = Vec::new();
-            let mut stderr_data = Vec::new();
-            let mut stdout_pipe = stdout_pipe;
-            let mut stderr_pipe = stderr_pipe;
-            stdout_pipe.read_to_end(&mut stdout_data)?;
-            stderr_pipe.read_to_end(&mut stderr_data)?;
-
-            log::debug!("execute_batch: exit_code={}, stdout={} bytes, stderr={} bytes",
-                        exit_code, stdout_data.len(), stderr_data.len());
-            debug_file_write(&format!("execute_batch: stdout={} bytes, stderr={} bytes\n", stdout_data.len(), stderr_data.len()));
-
-            log::debug!("execute_batch: sending response (exit_code={})", exit_code);
-            let _ = kmsg_write(&format!("<6>execute_batch: sending response (exit_code={})\n", exit_code));
-            debug_file_write("execute_batch: sending response JSON\n");
-
-            // Send batch response
-            let response = serde_json::json!({
-                "exit_code": exit_code,
-                "stdout": STANDARD.encode(&stdout_data),
-                "stderr": STANDARD.encode(&stderr_data),
-            });
-            let json = serde_json::to_string(&response)?;
-            debug_file_write(&format!("execute_batch: response JSON size={} bytes\n", json.len()));
-            stream.write_all(json.as_bytes())?;
-            stream.write_all(b"\n")?;
-            stream.flush()?;
-            debug_file_write("execute_batch: response written and flushed\n");
-
-            // CRITICAL: Shutdown the write side to signal EOF to host
-            // This ensures the host's read_to_string() returns
-            let _ = kmsg_write("<6>execute_batch: shutting down stream write side\n");
-            debug_file_write("execute_batch: shutting down stream write side\n");
             let _ = stream.shutdown(std::net::Shutdown::Write);
-
-            let _ = kmsg_write("<6>execute_batch: response sent, returning\n");
-            debug_file_write("execute_batch: done\n");
-            Ok(exit_code)
+            Err(e)
         }
     }
 }
