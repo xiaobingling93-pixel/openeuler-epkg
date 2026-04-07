@@ -1586,10 +1586,12 @@ fn shutdown_krun_session_impl(session: VmReuseSession) -> Result<()> {
     if let Err(e) = send_session_done_unix(&session.vsock_sock_path) {
         log::warn!("libkrun: failed to send session done (VM may have already shut down): {}", e);
     }
+    log::debug!("libkrun: sending krun_signal_shutdown");
     let result = unsafe { krun_signal_shutdown(session.ctx_id) };
     if result < 0 {
         log::warn!("libkrun: krun_signal_shutdown failed with status {}", result);
     }
+    log::debug!("libkrun: waiting for VM thread to join");
     match session.vm_thread.join() {
         Ok(vm_status) => {
             log::debug!("libkrun: VM thread finished with status {}", vm_status);
@@ -1598,12 +1600,13 @@ fn shutdown_krun_session_impl(session: VmReuseSession) -> Result<()> {
             log::error!("libkrun: VM thread join failed: {:?}", e);
         }
     }
+    log::debug!("libkrun: freeing VM context");
     unsafe {
         let _ = krun_free_ctx(session.ctx_id);
     }
     // Clean up socket files
     let _ = std::fs::remove_file(&session.vsock_sock_path);
-    log::trace!("libkrun: cleaned up socket {}", session.vsock_sock_path.display());
+    log::debug!("libkrun: shutdown_krun_session_impl completed, returning Ok(())");
     Ok(())
 }
 
@@ -1612,12 +1615,16 @@ fn shutdown_krun_session_impl(session: VmReuseSession) -> Result<()> {
 pub fn shutdown_vm_reuse_session_if_active() -> Result<()> {
     #[cfg(not(target_os = "linux"))]
     {
+        log::debug!("libkrun: shutdown_vm_reuse_session_if_active called");
         let mut guard = VM_REUSE_SESSION.lock().unwrap();
         let Some(session) = guard.take() else {
+            log::debug!("libkrun: no active VM session to shutdown");
             return Ok(());
         };
         drop(guard);
-        shutdown_krun_session_impl(session)
+        let result = shutdown_krun_session_impl(session);
+        log::debug!("libkrun: shutdown_vm_reuse_session_if_active returning");
+        result
     }
     #[cfg(target_os = "linux")]
     {
