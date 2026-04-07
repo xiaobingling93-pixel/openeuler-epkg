@@ -131,7 +131,7 @@ fn vm_start_unix(env_root: &Path, env_name: &str, config: VmConfig) -> Result<()
 /// Start VM keeper on Windows using spawn.
 #[cfg(windows)]
 fn vm_start_windows(env_root: &Path, _env_name: &str, config: VmConfig) -> Result<()> {
-    use std::os::windows::process::CreationFlags;
+    use std::os::windows::process::CommandExt;
 
     // Write pending file for child process to detect
     write_pending_config(env_root, &config)?;

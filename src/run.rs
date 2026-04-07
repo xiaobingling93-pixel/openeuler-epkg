@@ -39,7 +39,7 @@ pub fn is_vm_reuse_active_for_env(_env_root: &Path) -> bool {
 /// Try to connect to an existing VM session and execute the command.
 /// Returns Some(exit_code) if successfully connected and executed.
 /// Returns None if no existing VM session exists.
-#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+#[cfg(feature = "libkrun")]
 fn try_connect_and_execute_vm(env_root: &Path, run_options: &RunOptions) -> Result<Option<i32>> {
     // Build command parts
     let mut cmd_parts = vec![run_options.command.clone()];
@@ -63,13 +63,6 @@ fn try_connect_and_execute_vm(env_root: &Path, run_options: &RunOptions) -> Resu
         cwd,
         run_options.reuse_vm,
     )
-}
-
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
-#[allow(dead_code)]
-fn try_connect_and_execute_vm(_env_root: &Path, _run_options: &RunOptions) -> Result<Option<i32>> {
-    // On Linux, VM mode runs natively without needing cross-process VM reuse
-    Ok(None)
 }
 
 #[cfg(target_os = "linux")]
@@ -700,30 +693,11 @@ fn prepare_and_create_process(
 /// Returns:
 /// - Ok(Some(pid)) for background processes (run_options.background = true)
 /// - Ok(None) for foreground processes (waits for completion)
-#[cfg(target_os = "linux")]
 pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Option<i32>> {
     // Clone run_options to allow preparation
     let mut prepared_opts = run_options.clone();
     prepare_run_options_for_command(env_root, &mut prepared_opts);
 
-    // For conda/homebrew/msys2 packages, they work like portable apps
-    // with their own library paths (RPATH), so we can run them directly
-    // from the host OS without namespace isolation
-    if prepared_opts.skip_namespace_isolation {
-        fork_and_execute_direct(env_root, &prepared_opts)
-    } else {
-        // Execute with prepared options (handles both Clone and Unshare strategies)
-        fork_and_execute_raw(env_root, &prepared_opts)
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Option<i32>> {
-    // Prepare options (merge sandbox settings)
-    let mut prepared_opts = run_options.clone();
-    prepare_run_options_for_command(env_root, &mut prepared_opts);
-
-    // Non-Linux platforms only support VM sandbox mode
     let isolate_mode = prepared_opts.effective_sandbox.isolate_mode
         .unwrap_or(IsolateMode::Env);
 
@@ -732,11 +706,10 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
             // VM sandbox mode - supported via libkrun
             #[cfg(feature = "libkrun")]
             {
-                crate::debug_epkg!("fork_and_execute: starting for non-Linux platform");
+                crate::debug_epkg!("fork_and_execute: starting for VM mode");
                 crate::debug_epkg!("fork_and_execute: options prepared, isolate_mode={:?}", prepared_opts.effective_sandbox.isolate_mode);
                 crate::debug_epkg!("fork_and_execute: VM mode selected");
                 // Check for existing VM session to reuse (cross-process discovery)
-                #[cfg(not(target_os = "linux"))]
                 if let Some(exit_code) = try_connect_and_execute_vm(env_root, &prepared_opts)? {
                     log::info!("run: reused existing VM session, exit_code={}", exit_code);
                     // For foreground processes, return Ok(None) on success, or error on failure
@@ -774,18 +747,7 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
 
                 // Convert host path to guest path (strip env_root prefix if inside)
                 let guest_cmd_path = if let Ok(stripped) = cmd_path.strip_prefix(env_root) {
-                    // On Windows, stripped path may have backslashes.
-                    // Convert to forward slashes for Linux VM guest.
-                    #[cfg(windows)]
-                    {
-                        let stripped_str = stripped.to_string_lossy();
-                        let guest_path = format!("/{}", stripped_str.replace('\\', "/").trim_start_matches('/'));
-                        PathBuf::from(guest_path)
-                    }
-                    #[cfg(not(windows))]
-                    {
-                        Path::new("/").join(stripped)
-                    }
+                    Path::new("/").join(stripped)
                 } else {
                     cmd_path.clone()
                 };
@@ -812,16 +774,8 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
             if prepared_opts.skip_namespace_isolation {
                 fork_and_execute_direct(env_root, &prepared_opts)
             } else {
-                Err(eyre::eyre!(
-                    "Isolate mode '{}' is not supported on this platform. \
-                     Only --isolate=vm is available on macOS. \
-                     Use Linux for other sandbox modes.",
-                    match isolate_mode {
-                        IsolateMode::Env => "env",
-                        IsolateMode::Fs => "fs",
-                        _ => unreachable!(),
-                    }
-                ))
+                // Execute with prepared options (handles both Clone and Unshare strategies)
+                fork_and_execute_raw(env_root, &prepared_opts)
             }
         }
     }

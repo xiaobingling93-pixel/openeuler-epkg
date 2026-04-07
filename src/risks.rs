@@ -535,6 +535,7 @@ pub fn validate_inode_space(
 /// Note: filesystem-level measurement may be affected by other processes writing to
 /// the same filesystem during installation. For short installations, this interference
 /// is usually minimal and acceptable for estimation validation purposes.
+#[cfg(unix)]
 pub fn compare_disk_space_estimate(
     download_before: &FilesystemInfo,
     store_before: &FilesystemInfo,

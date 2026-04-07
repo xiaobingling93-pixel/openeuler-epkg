@@ -316,13 +316,11 @@ fn main() -> Result<()> {
 
     attach_session_log_under_epkg_cache();
 
-    // Clean up stale VM session files from crashed processes (non-Linux only)
-    #[cfg(not(target_os = "linux"))]
+    // Clean up stale VM session files from crashed processes
     crate::vm::session::cleanup_stale_vm_sessions();
 
     // Try to route install/upgrade/remove/restore commands via existing VM session.
     // This ensures data integrity by running these operations in the same VM context.
-    #[cfg(not(target_os = "linux"))]
     {
         if let Some(exit_code) = try_route_command_via_vm(crate::models::clap_matches())? {
             std::process::exit(exit_code);
@@ -421,7 +419,6 @@ fn main() -> Result<()> {
         Some(("busybox",    sub_matches))  =>  command_busybox(sub_matches)?,
         Some(("search",     sub_matches))  =>  command_search(sub_matches)?,
         Some(("gc",         sub_matches))  =>  command_gc(sub_matches)?,
-        #[cfg(not(target_os = "linux"))]
         Some(("vm",         sub_matches))  =>  command_vm(sub_matches)?,
         #[cfg(unix)]
         Some(("service",    sub_matches))  =>  command_service(sub_matches)?,
@@ -2440,7 +2437,6 @@ fn command_info(sub_matches: &clap::ArgMatches) -> Result<()> {
 /// Try to route a command via an existing VM session.
 /// Returns Some(exit_code) if command was routed through VM, None if no VM exists.
 /// This ensures data integrity by running install/upgrade/remove in the same VM context.
-#[cfg(not(target_os = "linux"))]
 fn try_route_command_via_vm(matches: &clap::ArgMatches) -> Result<Option<i32>> {
     use std::collections::HashMap;
 
@@ -2658,7 +2654,6 @@ fn command_gc(sub_matches: &clap::ArgMatches) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
 fn command_vm(sub_matches: &clap::ArgMatches) -> Result<()> {
     match sub_matches.subcommand() {
         Some(("start", sm)) => vm::cmd_vm_start(sm)?,

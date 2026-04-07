@@ -1,5 +1,4 @@
 use std::ffi::CString;
-#[cfg(not(target_os = "linux"))]
 use std::io::Write;
 use std::path::Path;
 use std::ptr;
@@ -14,7 +13,7 @@ use crate::lfs;
 use crate::run::RunOptions;
 
 /// Import vm::session functions used in this module
-#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+#[cfg(feature = "libkrun")]
 use crate::vm::{
     discover_vm_session, register_vm_session_simple,
     unregister_vm_session, is_vm_session_active, vm_socket_path_for_env,
@@ -27,7 +26,7 @@ use crate::vm::{
 /// Checks both:
 /// 1. In-memory session (fast path for same-process)
 /// 2. On-disk session file (cross-process discovery)
-#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+#[cfg(feature = "libkrun")]
 pub fn is_vm_reuse_active_for_env(env_root: &Path) -> bool {
     // Fast path: check in-memory session first
     {
@@ -43,14 +42,9 @@ pub fn is_vm_reuse_active_for_env(env_root: &Path) -> bool {
     is_vm_session_active(env_root)
 }
 
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
-pub fn is_vm_reuse_active_for_env(_env_root: &Path) -> bool {
-    false
-}
-
 /// Connect to an existing VM session for the given env_root.
 /// Returns a connected stream if successful, None if no session exists.
-#[cfg(all(feature = "libkrun", unix, not(target_os = "linux")))]
+#[cfg(all(feature = "libkrun", unix))]
 fn connect_to_existing_vm_socket(env_root: &Path) -> Result<Option<std::os::unix::net::UnixStream>> {
     let info = match discover_vm_session(env_root)? {
         Some(i) => i,
@@ -75,8 +69,8 @@ fn connect_to_existing_vm_socket(env_root: &Path) -> Result<Option<std::fs::File
 }
 
 /// Execute a command via an existing VM session.
-/// Used by install/upgrade/remove on non-Linux to run operations in the guest.
-#[cfg(all(feature = "libkrun", not(target_os = "linux"), unix))]
+/// Used by install/upgrade/remove to run operations in the guest.
+#[cfg(all(feature = "libkrun", unix))]
 pub fn execute_via_existing_vm(
     env_root: &Path,
     cmd_parts: &[String],
@@ -886,13 +880,7 @@ fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext, env_root: &Path, reverse:
     lfs::create_dir_all(run_dir)?;
 
     // Use env_name-based socket path for cross-process discovery
-    #[cfg(not(target_os = "linux"))]
     let sock_path = vm_socket_path_for_env(env_root);
-    #[cfg(target_os = "linux")]
-    let sock_path = {
-        let env_hash = crate::utils::hash_env_root(env_root);
-        run_dir.join(format!("vsock-{}.sock", env_hash))
-    };
     let _ = std::fs::remove_file(&sock_path);
 
     // Ready path uses same naming pattern as setup_vsock_ready_listener (hash-based)
@@ -1447,7 +1435,7 @@ fn apply_krun_exit_policy(exit_code: i32, run_options: &RunOptions) -> Result<()
     Ok(())
 }
 
-#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+#[cfg(feature = "libkrun")]
 fn try_reuse_existing_krun_session(
     env_root: &Path,
     config: &LibkrunConfig,
@@ -1558,16 +1546,7 @@ fn try_reuse_existing_krun_session(
     }
 }
 
-#[cfg(all(feature = "libkrun", target_os = "linux"))]
-fn try_reuse_existing_krun_session(
-    _env_root: &Path,
-    _config: &LibkrunConfig,
-    _run_options: &RunOptions,
-) -> Result<Option<i32>> {
-    Ok(None)
-}
-
-#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+#[cfg(feature = "libkrun")]
 fn send_session_done_unix(sock_path: &Path) -> Result<()> {
     let req = serde_json::to_vec(&super::stream::build_command_request(
         &[crate::run::VM_SESSION_DONE_CMD.to_string()],
@@ -1595,7 +1574,7 @@ fn send_session_done_unix(sock_path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+#[cfg(feature = "libkrun")]
 fn shutdown_krun_session_impl(session: VmReuseSession) -> Result<()> {
     log::debug!("libkrun: shutting down reuse VM session");
 
@@ -2020,16 +1999,10 @@ pub fn run_command_in_krun(
 
         // Register session IMMEDIATELY after Guest is ready (before sending command).
         // This allows other processes to discover the VM while the first command is running.
-        // Session registration is only needed on non-Linux platforms for cross-process discovery.
-        #[cfg(not(target_os = "linux"))]
         if run_options.reuse_vm {
             let _ = register_vm_session_simple(env_root, &vsock_sock_path);
             log::info!("vm_session: registered VM session for {} (socket {})",
                        env_root.display(), vsock_sock_path.display());
-        }
-        #[cfg(target_os = "linux")]
-        if run_options.reuse_vm {
-            log::debug!("libkrun: VM session reuse on Linux uses in-memory tracking");
         }
 
         // Guest is ready - proceed directly to send command.
@@ -2090,7 +2063,7 @@ pub fn run_command_in_krun(
 /// Run VM in daemon/keeper mode.
 /// Creates VM, registers session, and blocks until VM shuts down (guest idle timeout).
 /// Used by `epkg vm start` to keep a VM alive for other processes to connect.
-#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+#[cfg(feature = "libkrun")]
 pub fn run_vm_daemon_mode(
     env_root: &Path,
     env_name: &str,
@@ -2128,8 +2101,11 @@ pub fn run_vm_daemon_mode(
     let (start_failed_tx, start_failed_rx) = std::sync::mpsc::channel();
     let vm_thread = start_libkrun_vm(vm_ctx.ctx, start_failed_tx);
 
-    // Wait for guest ready
+    // Wait for guest ready (platform-specific)
+    #[cfg(unix)]
     let ready_result = super::bridge::wait_guest_ready_unix(&ready_listener, Some(&start_failed_rx));
+    #[cfg(windows)]
+    let ready_result = super::bridge::wait_guest_ready_windows(&ready_listener, Some(&start_failed_rx));
     if let Err(e) = ready_result {
         log::error!("libkrun: VM startup failed in daemon mode: {}", e);
         let _ = unsafe { krun_signal_shutdown(ctx_id) };

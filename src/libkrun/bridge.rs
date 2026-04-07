@@ -1,4 +1,8 @@
 //! Host↔guest vsock bridge: Unix domain sockets (macOS/Linux) vs named pipes (Windows WHPX).
+//!
+//! ## Platform Transport
+//! - Unix (Linux/macOS): Unix domain sockets
+//! - Windows: Named pipes (WHPX requires this for vsock emulation)
 
 use color_eyre::eyre;
 use color_eyre::Result;
@@ -92,7 +96,7 @@ pub fn wait_guest_ready_unix(
     }
 }
 
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(unix)]
 pub fn connect_vsock_bridge(sock_path: &Path, max_retries: u32) -> Result<std::os::unix::net::UnixStream> {
     use std::os::unix::net::UnixStream;
 

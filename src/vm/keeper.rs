@@ -29,7 +29,7 @@ pub fn run_vm_keeper(env_root: &Path, env_name: &str, config: VmConfig) -> Resul
 }
 
 /// libkrun keeper implementation.
-#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+#[cfg(feature = "libkrun")]
 fn run_libkrun_keeper(env_root: &Path, env_name: &str, config: &VmConfig) -> Result<()> {
     crate::libkrun::run_vm_daemon_mode(
         env_root,
@@ -40,7 +40,7 @@ fn run_libkrun_keeper(env_root: &Path, env_name: &str, config: &VmConfig) -> Res
     )
 }
 
-#[cfg(not(all(feature = "libkrun", not(target_os = "linux"))))]
+#[cfg(not(feature = "libkrun"))]
 fn run_libkrun_keeper(_env_root: &Path, _env_name: &str, _config: &VmConfig) -> Result<()> {
     Err(eyre!("libkrun backend not available on this platform"))
 }
