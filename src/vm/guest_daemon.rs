@@ -1418,6 +1418,11 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
                     }
                     Err(e) => {
                         let _ = kmsg_write(&format!("<3>handle_connection: read error: {}\n", e));
+                        // Send error response to client before closing
+                        let _ = write_stream_message(&mut stream, &StreamMessage::Error {
+                            message: format!("read error: {}", e)
+                        });
+                        let _ = stream.flush();
                         return Err(e.into());
                     }
                 }
