@@ -739,7 +739,7 @@ pub(crate) fn mount_opt_epkg_isolation(euid: Uid, uid: Uid, env_root: &Path) -> 
     // Mount environment /opt directory
     let src = env_root.join("opt");
     let _host_path = Path::new("/opt");
-    if lfs::exists_in_env(&src) {
+    if lfs::exists_or_any_symlink(&src) {
         trace!(
             "Generating mount spec for @/opt -> /opt"
         );
