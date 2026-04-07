@@ -223,6 +223,9 @@ fn handle_streaming_simple(stream: &mut std::os::unix::net::UnixStream, _is_batc
                         }
                         StreamMessage::Error { message } => {
                             log::debug!("VM error: {}", message);
+                            // Error message is also a valid response - treat like exit with code -1
+                            *exit_code_clone.lock().unwrap() = Some(-1);
+                            break;
                         }
                         _ => {}
                     }
@@ -432,6 +435,12 @@ fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<
                             }
                             StreamMessage::Exit { code } => {
                                 *exit_code_clone.lock().unwrap() = Some(code);
+                                break;
+                            }
+                            StreamMessage::Error { message } => {
+                                log::debug!("VM error: {}", message);
+                                // Error message is also a valid response - treat like exit with code -1
+                                *exit_code_clone.lock().unwrap() = Some(-1);
                                 break;
                             }
                             _ => {}
@@ -905,6 +914,12 @@ pub fn send_command_over_stream(
                                         StreamMessage::Exit { code } => {
                                             exit_code = code;
                                             got_exit = true;
+                                        }
+                                        StreamMessage::Error { message } => {
+                                            log::debug!("VM error: {}", message);
+                                            // Error message is also a valid response - treat like exit
+                                            got_exit = true;
+                                            exit_code = -1;
                                         }
                                         _ => {}
                                     }
