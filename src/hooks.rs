@@ -648,6 +648,12 @@ fn build_hook_indices(plan: &mut InstallationPlan) {
                 .push(Arc::clone(hook_arc));
         }
     }
+
+    log::debug!("build_hook_indices: {} hooks_by_name entries, {} hooks_by_when entries",
+        plan.hooks_by_name.len(), plan.hooks_by_when.len());
+    for (when, hooks) in &plan.hooks_by_when {
+        log::debug!("  hooks_by_when[{:?}]: {} hooks", when, hooks.len());
+    }
 }
 
 /// Process a single hook file path and save it to plan structures
@@ -1081,6 +1087,9 @@ fn match_path_trigger(
     if trigger.positive_targets.is_empty() {
         return Ok((false, Vec::new()));
     }
+
+    log::debug!("match_path_trigger: targets={:?}, fresh_installs={}, installed={}, pkgkey_filter={:?}",
+        trigger.positive_targets, plan.batch.fresh_installs.len(), plan.installed.len(), pkgkey_filter);
 
     let mut matched_targets = Vec::new();
 
@@ -1673,6 +1682,9 @@ fn find_triggered_hooks<'a>(
 ) -> Result<Vec<(&'a Arc<Hook>, Vec<String>)>> {
     let mut triggered_hooks = Vec::new();
 
+    log::debug!("find_triggered_hooks: checking {} hooks, fresh_installs={}, installed={}",
+        relevant_hooks.len(), plan.batch.fresh_installs.len(), plan.installed.len());
+
     for hook in relevant_hooks {
         // Special case: triggerless hooks are never triggered
         if hook.triggers.is_empty() {
@@ -1689,6 +1701,9 @@ fn find_triggered_hooks<'a>(
                 hook.action.needs_targets,
                 pkgkey_filter,
             )?;
+
+            log::trace!("find_triggered_hooks: hook={}, trigger={:?}, matched={}, targets={:?}",
+                hook.hook_name, trigger.positive_targets, matched, matched_targets);
 
             if matched {
                 hook_matched = true;
@@ -1750,6 +1765,8 @@ pub fn run_hooks(
     plan: &InstallationPlan,
     when: HookWhen,
 ) -> Result<()> {
+    log::debug!("run_hooks: when={:?}, is_first={}, new_pkgkeys={}, hooks_by_when entries={}",
+        when, plan.batch.is_first, plan.batch.new_pkgkeys.len(), plan.hooks_by_when.len());
     if plan.batch.is_first {
         run_trans_hooks(plan, when)?;
     } else {
@@ -1769,12 +1786,17 @@ fn run_trans_hooks(
     // Get hooks for this When timing
     let relevant_hooks = match plan.hooks_by_when.get(&when) {
         Some(hooks) => hooks,
-        None => return Ok(()),
+        None => {
+            log::debug!("run_trans_hooks: no hooks for when={:?}", when);
+            return Ok(());
+        }
     };
+    log::debug!("run_trans_hooks: when={:?}, {} hooks available", when, relevant_hooks.len());
 
     // Find triggered hooks (reference: _alpm_hook_triggered)
     // Sorting is done inside find_triggered_hooks on triggered hooks only
     let triggered_hooks = find_triggered_hooks(relevant_hooks, plan, None)?;
+    log::debug!("run_trans_hooks: {} hooks triggered", triggered_hooks.len());
 
     // Execute triggered hooks (reference: executes in order)
     execute_triggered_hooks(triggered_hooks, plan, &when)?;

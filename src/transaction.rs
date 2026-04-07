@@ -312,10 +312,14 @@ pub fn run_transaction_batch(
     run_hooks(plan, HookWhen::PreTransaction)?;
 
     // Process each package operation in order (rpmtsProcess style)
+    log::debug!("run_transaction_batch: starting process_package_operations");
     process_package_operations(plan)?;
+    log::debug!("run_transaction_batch: process_package_operations completed, now running PostTransaction hooks");
 
     // Run PostTransaction hooks
+    log::debug!("run_transaction_batch: about to run PostTransaction hooks");
     run_hooks(plan, HookWhen::PostTransaction)?;
+    log::debug!("run_transaction_batch: PostTransaction hooks completed");
 
     // Run ldconfig if needed (after all package operations complete) - Unix only
     #[cfg(unix)]
@@ -354,6 +358,7 @@ fn process_package_operations(
         // Level 1: Process package pair operation
         process_package_operation(plan, op)?;
     }
+    log::debug!("process_package_operations: completed {} operations", operations.len());
     Ok(())
 }
 
