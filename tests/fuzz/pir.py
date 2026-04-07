@@ -629,7 +629,10 @@ def load_whitelist() -> list:
 
 
 def load_exe_whitelist() -> list:
-    """Load executable test whitelist from tests/fuzz/exe_whitelist.txt."""
+    """Load executable test whitelist from tests/fuzz/exe_whitelist.txt.
+
+    File format: pattern # reason (inline comment after #)
+    """
     script_dir = Path(__file__).parent
     whitelist_file = script_dir / "exe_whitelist.txt"
 
@@ -638,9 +641,17 @@ def load_exe_whitelist() -> list:
         with open(whitelist_file) as f:
             for line in f:
                 line = line.strip()
-                # Skip comments and empty lines
-                if line and not line.startswith('#'):
-                    patterns.append(line)
+                # Skip empty lines and full-line comments
+                if not line or line.startswith('#'):
+                    continue
+                # Extract pattern before inline comment
+                # Format: "pattern # reason"
+                if '#' in line:
+                    pattern = line.split('#')[0].strip()
+                else:
+                    pattern = line
+                if pattern:
+                    patterns.append(pattern)
 
     log(f"Loaded {len(patterns)} executable whitelist patterns")
     return patterns
