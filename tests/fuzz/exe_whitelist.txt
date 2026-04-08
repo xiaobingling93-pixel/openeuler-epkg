@@ -72,3 +72,36 @@ Failed to read configuration.*dovecot # doveadm needs /etc/dovecot/dovecot.conf 
 /usr/bin/jack_control       # JACK audio control, requires dbus and audio server
 /usr/bin/decode-dimms       # EEPROM decoder, requires specific hardware/kernel modules
 /usr/bin/dirsplit           # ISO splitter, requires specific arguments
+
+# =============================================================================
+# VM Environment Missing Components (not epkg bugs)
+# =============================================================================
+
+# Shell not available in VM context (random package selection may not include shell)
+Can't exec.*"/bin/sh"       # Shell required for subprocess execution
+
+# XDG_RUNTIME_DIR not set - VM environment lacks this runtime directory
+\$XDG_RUNTIME_DIR is not set  # Many modern Linux programs need this for runtime files
+
+# Perl modules missing - Alpine packages may have incomplete dependencies
+Can't locate.*\.pm in @INC  # Perl module not installed (package dependency issue)
+
+# Sxmo scripts require hook files that are part of sxmo ecosystem
+sxmo_hook_icons.sh.*was not found in \$PATH  # Sxmo hook dependency
+
+# Tcl/Tk interpreter missing
+exec: no such command `wish'  # Tk interpreter not installed
+
+# VM lacks physical hardware /sys entries
+Failed to read /sys/devices/system/memory  # chmem needs physical memory sysfs
+
+# =============================================================================
+# Program Design Issues (not epkg bugs)
+# =============================================================================
+
+# Programs that don't support standard --help/--version flags
+radacct-rotate: invalid option: --  # freeradius tool doesn't support --help
+invalid option: --           # Generic pattern for tools without --help support
+
+# Empty output (some tools output nothing with --help/--version)
+# These are detected when Flags failed shows empty output

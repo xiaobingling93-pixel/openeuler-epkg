@@ -4,6 +4,21 @@
 # Lines starting with # are comments and will be ignored.
 # Empty lines are also ignored.
 
+# =============================================================================
+# Network/Download Errors (environment issues)
+# =============================================================================
+read_chunk_from_stream: Read error  # HTTP download timeout/disconnect
+Peer disconnected           # Network connection issues
+
+# =============================================================================
+# VM Resource Limits (not epkg bugs)
+# =============================================================================
+hv_vm_create failed         # macOS Hypervisor Framework VM creation failed (resource limit)
+VM startup failed           # VM failed to start due to system resource constraints
+
+# =============================================================================
+# Package Dependency Issues (not epkg bugs)
+# =============================================================================
 /usr/lib/ocf/resource.d
 airflow 1.10
 airflow-with-slack 1.10
