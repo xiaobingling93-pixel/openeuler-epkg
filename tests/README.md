@@ -58,7 +58,10 @@ Test scripts shall follow below common principles:
 ├── busybox/                # Busybox-specific tests
 ├── lua/                    # Lua-specific tests
 ├── osroot/                 # OS root filesystem tests
-└── cross-platform/         # Cross-platform tests
+├── cross-platform/         # Cross-platform tests
+└── in-windows/             # Windows native tests (run from WSL2)
+    ├── run-tests.cmd       # Windows test runner (native Windows)
+    └── run-tests.sh        # WSL2 entry point for running Windows tests
 ```
 
 ## Running Tests
@@ -107,6 +110,29 @@ E2E_VMM=qemu E2E_VM_MEMORY=8G ./e2e-combo.sh cases/install-remove-upgrade.sh
 # Build-from-source
 ./test-dev.sh
 ```
+
+### Windows Native Tests (from WSL2)
+
+Run Windows-native batch tests from WSL2 using the shell entry point:
+
+```bash
+cd /c/epkg/tests/in-windows
+./run-tests.sh                           # Run all tests
+./run-tests.sh export-import             # Run single test
+./run-tests.sh -dd install-remove-upgrade # Run with debug logging
+EPKG_BIN=dist/epkg.exe ./run-tests.sh    # Use specific binary
+```
+
+Available test names: `env-path-auto-discovery`, `export-import`, `history-restore`,
+`install-remove-upgrade` (or `iur`), `all`
+
+This script copies the tests and binary to a Windows-accessible location
+(`C:\temp_epkg_test_*`) and runs them via `cmd.exe`, because Windows
+cmd.exe cannot work with WSL UNC paths (`\\wsl.localhost\...`).
+
+Requirements:
+- WSL2 with Windows C: drive mounted at `/mnt/c`
+- Windows epkg.exe binary (built via `make cross-windows`)
 
 ## Debug Flags
 
