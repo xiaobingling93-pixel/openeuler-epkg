@@ -283,16 +283,19 @@ fn execute_newidmap_for_pid(
 }
 
 /// Execute simple ID mapping for the target process (no subuid/subgid).
+/// Maps UID/GID range 0-65535 if possible, falling back to single ID mapping.
 fn execute_simple_idmap_for_pid(
     target_pid: Pid,
     uid_raw: u32,
     gid_raw: u32,
     allow_setgroups: bool,
 ) -> Result<()> {
-    let uid_map = format!("0 {} 1", uid_raw);
-    let gid_map = format!("0 {} 1", gid_raw);
-
-    debug!("Setting simple ID map for PID {}: uid='{}', gid='{}'", target_pid, uid_map, gid_map);
+    // Try to map a range of IDs (0-65535) to allow chown to system UIDs/GIDs
+    // Format: ID-inside-ns ID-outside-ns LENGTH
+    // First line: map ns root (0) to current user
+    // Second line: map ns IDs 1-65535 to host IDs 1-65535
+    let uid_map_full = format!("0 {} 1\n1 1 65535", uid_raw);
+    let gid_map_full = format!("0 {} 1\n1 1 65535", gid_raw);
 
     let setgroups_path = format!("/proc/{}/setgroups", target_pid.as_raw());
     let setgroups_val = if allow_setgroups { "allow" } else { "deny" };
@@ -300,11 +303,26 @@ fn execute_simple_idmap_for_pid(
         .map_err(|e| eyre::eyre!("Failed to write {}: {}", setgroups_path, e))?;
 
     let uid_map_path = format!("/proc/{}/uid_map", target_pid.as_raw());
-    fs::write(&uid_map_path, &uid_map)
-        .map_err(|e| eyre::eyre!("Failed to write {}: {}", uid_map_path, e))?;
-
     let gid_map_path = format!("/proc/{}/gid_map", target_pid.as_raw());
-    fs::write(&gid_map_path, &gid_map)
+
+    // Try full range mapping first
+    debug!("Attempting full ID range map for PID {}: uid='{}', gid='{}'", target_pid, uid_map_full.trim(), gid_map_full.trim());
+
+    if fs::write(&uid_map_path, &uid_map_full).is_ok() && fs::write(&gid_map_path, &gid_map_full).is_ok() {
+        debug!("Successfully mapped full ID range 0-65535");
+        return Ok(());
+    }
+
+    // Fall back to single ID mapping
+    let uid_map_single = format!("0 {} 1", uid_raw);
+    let gid_map_single = format!("0 {} 1", gid_raw);
+
+    warn!("Full ID range mapping failed, falling back to single ID mapping");
+    debug!("Setting simple ID map for PID {}: uid='{}', gid='{}'", target_pid, uid_map_single, gid_map_single);
+
+    fs::write(&uid_map_path, &uid_map_single)
+        .map_err(|e| eyre::eyre!("Failed to write {}: {}", uid_map_path, e))?;
+    fs::write(&gid_map_path, &gid_map_single)
         .map_err(|e| eyre::eyre!("Failed to write {}: {}", gid_map_path, e))?;
 
     Ok(())
