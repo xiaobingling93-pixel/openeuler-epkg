@@ -8,7 +8,7 @@
 if [ "$OS" = "openeuler" ]; then
     $EPKG_BIN -e "$ENV_NAME" --assume-yes install --ignore-missing --ignore-file-conflicts java-1.8.0-openjdk-devel || true
 fi
-run_install java-1.8.0-openjdk-devel openjdk-17-jdk default-jdk java-openjdk openjdk17-jre openjdk17 openjdk-17 openjdk jdk-openjdk jdk17-openjdk java-11-openjdk-devel
+run_install java-1.8.0-openjdk-devel openjdk-17-jdk default-jdk java-openjdk openjdk17-jre openjdk17 openjdk-17 openjdk jdk-openjdk jdk17-openjdk java-11-openjdk-devel java-25-openjdk-devel
 check_cmd javac -version || lang_skip "no java for OS=$OS"
 
 run_ebin javac -version

@@ -45,6 +45,8 @@ _check_log_and_fail() {
         | grep -v 'ensure_mount_propagation_private: failed with EPERM' \
         | grep -v -E 'Error::[A-Z]' \
         | grep -v 'useradd: Warning:' \
+        | grep -v 'Dependency resolution failed' \
+        | grep -v -E '^Error: $' \
         | grep -q .; then
         echo "" >&2
         echo "Reproduce command: $cmd_display" >&2
