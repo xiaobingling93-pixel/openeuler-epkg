@@ -16,6 +16,7 @@ Cannot open sequencer # ALSA sequencer not available in VM
 gpasswd: Cannot determine your user name # VM environment lacks full user database
 lookup userid           # singularity/containers need full user database, VM lacks it
 user: unknown userid    # singularity/containers need full user database, VM lacks it
+You don't exist        # fetchmail checks user exists in /etc/passwd, VM lacks host user
 
 # Graphics/Display - VM environment has no display server
 Failed to open display # GUI programs need X11/Wayland display which VM lacks
