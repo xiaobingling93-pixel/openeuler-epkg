@@ -41,7 +41,27 @@ pub fn cmd_vm_stop(_args: &ArgMatches) -> Result<()> {
 
     // Force cleanup if process is still alive
     if is_process_alive(session.daemon_pid) {
-        log::warn!("VM daemon process {} did not exit gracefully, cleaning up", session.daemon_pid);
+        log::warn!("VM daemon process {} did not exit gracefully, forcing termination", session.daemon_pid);
+
+        // Send SIGKILL to force termination of the keeper process
+        #[cfg(unix)]
+        {
+            use nix::sys::signal::{kill, Signal};
+            let pid = nix::unistd::Pid::from_raw(session.daemon_pid as i32);
+            if let Err(e) = kill(pid, Signal::SIGKILL) {
+                log::warn!("Failed to kill daemon process {}: {}", session.daemon_pid, e);
+            } else {
+                // Wait a moment for process to actually die
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+        #[cfg(windows)]
+        {
+            // On Windows, we'd need to use TerminateProcess, but for now just log
+            log::warn!("Windows: cannot force kill daemon process {}", session.daemon_pid);
+        }
+
+        // Clean up session and socket files
         let session_file = vm_session_file_path(&env_name);
         cleanup_vm_session_files(&session_file, &session.socket_path);
     }
