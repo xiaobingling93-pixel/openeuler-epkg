@@ -2070,12 +2070,12 @@ cross-windows() {
     deploy_release_binary "target/$target/$build_dir/${BINARY_NAME}.exe" "epkg-windows-${arch}.exe"
 
     # Deploy Windows binary to native Windows self environment (best-effort, handles "file in use")
-    deploy_to_windows_self "target/$target/$build_dir/${BINARY_NAME}.exe" "epkg.exe"
+    deploy_to_windows_self "target/$target/$build_dir/${BINARY_NAME}.exe" "epkg.exe" || true
     # Also deploy the locally built Linux ELF to dist/
     if [[ -f "$linux_epkg" ]]; then
         deploy_release_binary "$linux_epkg" "epkg-linux-${arch}"
         # Deploy Linux ELF to Windows self environment (for VM guest init)
-        deploy_to_windows_self "$linux_epkg" "epkg-linux-${arch}"
+        deploy_to_windows_self "$linux_epkg" "epkg-linux-${arch}" || true
     else
         echo "[WARN] Linux epkg not found at $linux_epkg - run 'make' first for full VM support"
     fi
