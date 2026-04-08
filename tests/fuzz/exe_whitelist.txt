@@ -21,6 +21,7 @@ You don't exist        # fetchmail checks user exists in /etc/passwd, VM lacks h
 # Graphics/Display - VM environment has no display server
 Failed to open display # GUI programs need X11/Wayland display which VM lacks
 cannot open display   # GUI programs need X11/Wayland display which VM lacks
+could not connect to display # Qt GUI programs need X11/Wayland display which VM lacks
 
 # GSettings - needs schema packages which may not be installed in random package selection
 No schemas installed  # gsettings needs gsettings-desktop-schemas or similar schema packages
@@ -28,6 +29,9 @@ No schemas installed  # gsettings needs gsettings-desktop-schemas or similar sch
 # =============================================================================
 # Upstream Package Issues (not epkg bugs)
 # =============================================================================
+
+# mate-autogen - needs autoconf/autoreconf but doesn't declare dependency
+You must have autoreconf # mate-autogen needs autoconf which may not be installed
 
 # rsync-ssl - needs bash but Alpine doesn't include bash by default
 cannot execute 'bash' # rsync-ssl requires bash, Alpine doesn't include it by default
@@ -107,3 +111,13 @@ invalid option: --           # Generic pattern for tools without --help support
 
 # Empty output (some tools output nothing with --help/--version)
 # These are detected when Flags failed shows empty output
+/usr/bin/git-flow          # git-flow subcommands output nothing without proper git repo context
+/usr/bin/git-flow-bugfix   # git-flow subcommand wrapper
+/usr/bin/git-flow-config   # git-flow subcommand wrapper
+/usr/bin/git-flow-feature  # git-flow subcommand wrapper
+/usr/bin/git-flow-hotfix   # git-flow subcommand wrapper
+/usr/bin/git-flow-init     # git-flow subcommand wrapper
+/usr/bin/git-flow-release  # git-flow subcommand wrapper
+/usr/bin/git-flow-support  # git-flow subcommand wrapper
+/usr/bin/git-flow-version  # git-flow subcommand wrapper
+/usr/bin/gitflow-shFlags   # git-flow internal script
