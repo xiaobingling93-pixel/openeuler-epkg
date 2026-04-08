@@ -27,6 +27,7 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<AddUserCmd> {
     let home = matches.get_one::<String>("home").cloned();
     let shell = matches.get_one::<String>("shell").cloned();
     let gecos = matches.get_one::<String>("gecos").cloned();
+    let uid = matches.get_one::<String>("uid").cloned();
     // Primary group from --ingroup or -G (busybox semantics)
     let primary_group = matches.get_one::<String>("ingroup").cloned();
 
@@ -58,6 +59,7 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<AddUserCmd> {
         gecos,
         primary_group,
         lock_password: disabled_password,
+        uid,
         username,
         ..Default::default()
     };
@@ -178,6 +180,11 @@ pub fn command() -> Command {
             .long("ingroup")
             .value_name("GROUP")
             .help("Primary group"),
+        Arg::new("uid")
+            .short('u')
+            .long("uid")
+            .value_name("UID")
+            .help("User id"),
         Arg::new("allow_bad_names")
             .long("allow-bad-names")
             .visible_alias("force-badname")

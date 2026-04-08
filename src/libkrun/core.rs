@@ -1627,7 +1627,7 @@ fn shutdown_krun_session_impl(session: VmReuseSession) -> Result<()> {
     // Try to send session done message, but ignore errors if VM already shut down
     // This can happen when hooks/triggers fail and cause VM to exit prematurely
     if let Err(e) = send_session_done_unix(&session.vsock_sock_path) {
-        log::warn!("libkrun: failed to send session done (VM may have already shut down): {}", e);
+        log::debug!("libkrun: failed to send session done (VM may have already shut down): {}", e);
     }
     log::debug!("libkrun: sending krun_signal_shutdown");
     let result = unsafe { krun_signal_shutdown(session.ctx_id) };
