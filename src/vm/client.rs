@@ -191,7 +191,7 @@ fn connect_vsock_once(port: u32) -> std::io::Result<TcpStream> {
 }
 
 /// Build JSON command request for guest execution.
-fn build_command_request(
+pub fn build_command_request(
     cmd_parts: &[String],
     io_mode: IoMode,
     reuse_session: bool,

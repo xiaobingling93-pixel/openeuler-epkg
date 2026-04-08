@@ -657,7 +657,17 @@ is_vm_session_active() {
     if ! kill -0 "$daemon_pid" 2>/dev/null; then
         return 1
     fi
-    # Check if socket is connectable
+    # Check socket: Unix socket or vsock
+    # First check session file's socket_path field
+    local session_socket_path
+    session_socket_path=$(grep -o '"socket_path": *"[^"]*"' "$session_file" | sed 's/"socket_path": *"\([^"]*\)"/\1/')
+    if [ -n "$session_socket_path" ]; then
+        # vsock addresses (QEMU): "vsock:3" - no file to check, consider active if daemon is alive
+        if echo "$session_socket_path" | grep -q '^vsock:'; then
+            return 0
+        fi
+    fi
+    # Check if Unix socket is connectable
     local socket_path
     socket_path=$(get_socket_path "$env_name")
     if [ -S "$socket_path" ] && [ -w "$socket_path" ]; then

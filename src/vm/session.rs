@@ -10,8 +10,6 @@
 
 use std::path::Path;
 use color_eyre::Result;
-#[cfg(feature = "libkrun")]
-use crate::lfs;
 
 /// VM configuration parameters.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -140,12 +138,17 @@ pub fn discover_vm_session(env_name: &str) -> Result<Option<VmSessionInfo>> {
     // Note: We do NOT connect to verify because that would trigger OP_REQUEST to guest,
     // which would cause the guest daemon to accept and then see connection close,
     // leading to guest shutdown.
-    #[cfg(all(unix, feature = "libkrun"))]
-    let socket_exists = info.socket_path.exists();
-    #[cfg(all(windows, feature = "libkrun"))]
-    let socket_exists = true;  // Windows named pipes don't have a file to check
-    #[cfg(not(feature = "libkrun"))]
-    let socket_exists = false;
+    // For QEMU backend with vsock, socket_path is "vsock:3" which is not a real file.
+    let socket_exists = if info.socket_path.to_string_lossy().starts_with("vsock:") {
+        true  // vsock addresses are virtual, always considered "exists"
+    } else {
+        #[cfg(all(unix, feature = "libkrun"))]
+        { info.socket_path.exists() }
+        #[cfg(all(windows, feature = "libkrun"))]
+        { true }  // Windows named pipes don't have a file to check
+        #[cfg(not(feature = "libkrun"))]
+        { false }
+    };
 
     if !socket_exists {
         log::debug!("vm_session: session socket {} does not exist, cleaning up", info.socket_path.display());
@@ -167,7 +170,6 @@ pub fn cleanup_vm_session_files(session_file: &Path, socket_path: &Path) {
 
 /// Register a new VM session to the on-disk session file.
 /// Must be called after VM starts successfully.
-#[cfg(feature = "libkrun")]
 pub fn register_vm_session(
     env_root: &Path,
     env_name: &str,
@@ -176,7 +178,7 @@ pub fn register_vm_session(
     config: &VmConfig,
 ) -> Result<()> {
     let session_dir = crate::models::dirs().epkg_run.join("vm-sessions");
-    lfs::create_dir_all(&session_dir)?;
+    std::fs::create_dir_all(&session_dir)?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -212,14 +214,17 @@ pub fn register_vm_session_simple(env_root: &Path, env_name: &str, socket_path: 
 }
 
 /// Unregister a VM session (called when VM shuts down).
-#[cfg(feature = "libkrun")]
 pub fn unregister_vm_session(env_name: &str) -> Result<()> {
     let session_file = vm_session_file_path(env_name);
     if session_file.exists() {
         // Read socket path before removing session file
         if let Ok(content) = std::fs::read_to_string(&session_file) {
             if let Ok(info) = serde_json::from_str::<VmSessionInfo>(&content) {
-                let _ = std::fs::remove_file(&info.socket_path);
+                // Only remove socket file for libkrun (Unix socket)
+                // QEMU uses vsock:3 which is not a real file
+                if !info.socket_path.to_string_lossy().starts_with("vsock:") {
+                    let _ = std::fs::remove_file(&info.socket_path);
+                }
             }
         }
         let _ = std::fs::remove_file(&session_file);

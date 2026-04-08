@@ -20,11 +20,11 @@ pub fn cmd_vm_stop(_args: &ArgMatches) -> Result<()> {
     let session = discover_vm_session(&env_name)?
         .ok_or_else(|| eyre::eyre!("No VM running for {}", env_name))?;
 
-    log::info!("Stopping VM for {} (PID {})", env_name, session.daemon_pid);
+    log::info!("Stopping VM for {} (PID {}, backend={})", env_name, session.daemon_pid, session.backend);
 
-    // Send shutdown signal to guest vm_daemon via vsock
+    // Send shutdown signal to guest vm_daemon via vsock or Unix socket
     // The guest will close connections and VM will shut down
-    if let Err(e) = send_shutdown_to_guest(&session.socket_path) {
+    if let Err(e) = send_shutdown_to_guest(&session.socket_path, &session.backend) {
         log::warn!("Failed to send shutdown to guest: {}", e);
     }
 
@@ -50,44 +50,104 @@ pub fn cmd_vm_stop(_args: &ArgMatches) -> Result<()> {
     Ok(())
 }
 
-/// Send shutdown signal to guest vm_daemon via vsock.
-#[cfg(all(unix, feature = "libkrun"))]
-fn send_shutdown_to_guest(socket_path: &Path) -> Result<()> {
+/// Send shutdown signal to guest vm_daemon.
+/// For QEMU: uses vsock (socket_path format: "vsock:3")
+/// For libkrun: uses Unix socket
+fn send_shutdown_to_guest(socket_path: &Path, _backend: &str) -> Result<()> {
+    let socket_str = socket_path.to_string_lossy();
+
+    // Check if this is a vsock address (QEMU backend)
+    if socket_str.starts_with("vsock:") {
+        send_shutdown_via_vsock(&socket_str)?;
+        return Ok(());
+    }
+
+    // libkrun uses Unix socket
+    #[cfg(all(unix, feature = "libkrun"))]
+    {
+        use std::io::Write;
+
+        let mut stream = std::os::unix::net::UnixStream::connect(socket_path)?;
+
+        let request = serde_json::json!({
+            "type": "session_done"
+        });
+        writeln!(stream, "{}", request)?;
+
+        log::debug!("Sent session_done to guest vm_daemon via Unix socket");
+        Ok(())
+    }
+
+    #[cfg(all(windows, feature = "libkrun"))]
+    {
+        let _stream = crate::libkrun::bridge::connect_vsock_bridge(socket_path, 5)?;
+        log::debug!("Would send session_done to guest vm_daemon via named pipe");
+        Ok(())
+    }
+
+    #[cfg(not(feature = "libkrun"))]
+    {
+        // Non-libkrun backend but not vsock - should not happen
+        log::warn!("Unknown socket type for shutdown: {}", socket_str);
+        Ok(())
+    }
+}
+
+/// Send shutdown signal to guest via vsock.
+/// Format: "vsock:3" -> connects to CID 3, port 10000 (vm_daemon control port)
+#[cfg(target_os = "linux")]
+fn send_shutdown_via_vsock(socket_str: &str) -> Result<()> {
+    use nix::sys::socket::{socket, connect, AddressFamily, SockType, SockFlag, VsockAddr};
+    use std::os::fd::{IntoRawFd, FromRawFd};
+
+    // Parse "vsock:3" -> CID 3
+    let cid: u32 = socket_str
+        .strip_prefix("vsock:")
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| eyre::eyre!("Invalid vsock address: {}", socket_str))?;
+
+    // vm_daemon control port is 10000
+    const VM_DAEMON_PORT: u32 = 10000;
+
+    log::debug!("Sending shutdown via vsock to CID {} port {}", cid, VM_DAEMON_PORT);
+
+    let fd = socket(
+        AddressFamily::Vsock,
+        SockType::Stream,
+        SockFlag::SOCK_CLOEXEC,
+        None,
+    ).map_err(|e| eyre::eyre!("Failed to create vsock socket: {}", e))?;
+
+    let raw_fd = fd.into_raw_fd();
+    // Connect from host to guest CID (guest-cid=3 in QEMU config)
+    let addr = VsockAddr::new(cid, VM_DAEMON_PORT);
+    connect(raw_fd, &addr)
+        .map_err(|e| eyre::eyre!("Failed to connect to vsock CID {} port {}: {}", cid, VM_DAEMON_PORT, e))?;
+
+    // Send session_done command using proper JSON request format
+    // The guest daemon expects: {"command": ["__epkg_vm_session_done__"], ...}
     use std::io::Write;
+    let mut stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(raw_fd) };
 
-    // Connect to vm_daemon
-    let mut stream = std::os::unix::net::UnixStream::connect(socket_path)?;
+    let request = super::client::build_command_request(
+        &[crate::run::VM_SESSION_DONE_CMD.to_string()],
+        crate::models::IoMode::Stream,
+        false,
+        None,
+        None,
+    );
+    let request_json = serde_json::Value::Object(request);
+    writeln!(stream, "{}", request_json)?;
 
-    // Send session_done command
-    // The vm_daemon will recognize this and initiate shutdown
-    let request = serde_json::json!({
-        "type": "session_done"
-    });
-    writeln!(stream, "{}", request)?;
+    log::debug!("Sent {} to guest vm_daemon via vsock", crate::run::VM_SESSION_DONE_CMD);
 
-    log::debug!("Sent session_done to guest vm_daemon");
+    // Close the stream (this will also close the fd)
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+
     Ok(())
 }
 
-#[cfg(all(windows, feature = "libkrun"))]
-fn send_shutdown_to_guest(socket_path: &Path) -> Result<()> {
-    // Windows: use named pipe
-    // TODO: implement Windows named pipe communication for vm_daemon shutdown
-
-    let _stream = crate::libkrun::bridge::connect_vsock_bridge(socket_path, 5)?;
-
-    // Send session_done command
-    let _request = serde_json::json!({
-        "type": "session_done"
-    });
-
-    // Windows pipe handling would go here
-    // For now, just log the intent
-    log::debug!("Would send session_done to guest vm_daemon via named pipe");
-    Ok(())
-}
-
-#[cfg(not(feature = "libkrun"))]
-fn send_shutdown_to_guest(_socket_path: &Path) -> Result<()> {
-    Ok(())
+#[cfg(not(target_os = "linux"))]
+fn send_shutdown_via_vsock(_socket_str: &str) -> Result<()> {
+    Err(eyre::eyre!("vsock not supported on this platform"))
 }

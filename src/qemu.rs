@@ -860,6 +860,61 @@ fn cleanup_rootfs(rootfs_mode: RootFsMode) {
     }
 }
 
+/// Common VM setup result containing all resources needed for both daemon and command modes.
+struct VmSetup {
+    kernel: String,
+    initrd: Option<String>,
+    qemu_bin: String,
+    extra_qemu_args: String,
+    rootfs_mode: RootFsMode,
+    mount_tag: String,
+    qemu_log_path: std::path::PathBuf,
+}
+
+/// Perform common VM setup: parse config, setup logs, start virtiofsd, etc.
+/// Used by both `run_command_in_qemu` and `run_qemu_daemon_mode`.
+fn setup_qemu_vm(
+    env_root: &Path,
+    run_options: &RunOptions,
+    existing_socket_path: Option<&Path>,
+) -> Result<VmSetup> {
+    crate::run::ensure_linux_kvm_ready_for_vm()?;
+    let (kernel, initrd, qemu_bin, virtiofsd_bin, extra_qemu_args) = parse_vmm_config(run_options)?;
+    let (qemu_log_path, virtiofsd_log_path) = setup_vmm_logs()?;
+
+    let host_uid = users::get_current_uid();
+    let host_gid = users::get_current_gid();
+
+    let (auto_uid, auto_gid) = if crate::auto_idmap::should_auto_map(host_uid) {
+        crate::auto_idmap::auto_idmap_specs(host_uid, host_gid, run_options.user.as_deref())
+    } else {
+        (vec![], vec![])
+    };
+
+    let translate_uid = crate::auto_idmap::merge_idmap_specs(auto_uid, run_options.translate_uid.clone());
+    let translate_gid = crate::auto_idmap::merge_idmap_specs(auto_gid, run_options.translate_gid.clone());
+
+    let rootfs_mode = setup_rootfs_mode(
+        env_root,
+        existing_socket_path,
+        virtiofsd_bin.as_ref(),
+        &virtiofsd_log_path,
+        host_uid == 0,
+        &translate_uid,
+        &translate_gid,
+    )?;
+
+    Ok(VmSetup {
+        kernel,
+        initrd,
+        qemu_bin,
+        extra_qemu_args,
+        rootfs_mode,
+        mount_tag: "epkg_env".to_string(),
+        qemu_log_path,
+    })
+}
+
 /// Start a QEMU-based VMM sandbox using virtiofs or 9p to share env_root into the guest.
 /// This function never returns normally; it exits the process with the guest's exit code.
 ///
@@ -882,70 +937,28 @@ pub fn run_command_in_qemu(
         std::process::exit(code);
     }
 
-    crate::run::ensure_linux_kvm_ready_for_vm()?;
-    let (kernel, initrd, qemu_bin, virtiofsd_bin, extra_qemu_args) = parse_vmm_config(run_options)?;
+    let setup = setup_qemu_vm(env_root, run_options, existing_socket_path)?;
 
     let (cmd_parts, init_cmd) = build_guest_command(&guest_cmd_path, &run_options.args)?;
-    // Cmdline mode: init runs command from kernel cmdline; no vm-daemon. Set EPKG_VM_NO_DAEMON=1.
     let use_cmdline_mode = std::env::var("EPKG_VM_NO_DAEMON").is_ok();
-    let use_vsock = !use_cmdline_mode; // default vsock mode (TCP mode removed)
-    let use_control_channel = false; // TCP mode no longer supported
+    let use_vsock = !use_cmdline_mode;
+    let use_control_channel = false;
     let vm_cpus = crate::run::resolve_vm_cpus(run_options);
     let vm_memory_mb = crate::run::resolve_vm_memory_mib(run_options);
-    let (qemu_log_path, virtiofsd_log_path) = setup_vmm_logs()?;
 
-    // Get host UID/GID for auto-mapping policy
-    let host_uid = users::get_current_uid();
-    let host_gid = users::get_current_gid();
+    let init_cmd_append = if use_cmdline_mode { Some(init_cmd.as_str()) } else { None };
+    let init_user_append = if use_cmdline_mode { run_options.user.as_deref() } else { None };
 
-    // Apply auto-mapping policy for non-root users
-    let (auto_uid, auto_gid) = if crate::auto_idmap::should_auto_map(host_uid) {
-        crate::auto_idmap::auto_idmap_specs(host_uid, host_gid, run_options.user.as_deref())
-    } else {
-        (vec![], vec![])
-    };
-
-    // Merge with user-specified mappings
-    let translate_uid = crate::auto_idmap::merge_idmap_specs(
-        auto_uid,
-        run_options.translate_uid.clone(),
-    );
-    let translate_gid = crate::auto_idmap::merge_idmap_specs(
-        auto_gid,
-        run_options.translate_gid.clone(),
-    );
-
-    let rootfs_mode = setup_rootfs_mode(
-        env_root,
-        existing_socket_path,
-        virtiofsd_bin.as_ref(),
-        &virtiofsd_log_path,
-        host_uid == 0,
-        &translate_uid,
-        &translate_gid,
-    )?;
-
-    let mount_tag = "epkg_env";
-    let init_cmd_append = if use_cmdline_mode {
-        Some(init_cmd.as_str())
-    } else {
-        None
-    };
-    let init_user_append = if use_cmdline_mode {
-        run_options.user.as_deref()
-    } else {
-        None
-    };
     let mut qemu_child = spawn_qemu(
-        &kernel,
-        &initrd,
-        &qemu_bin,
-        &rootfs_mode,
+        &setup.kernel,
+        &setup.initrd,
+        &setup.qemu_bin,
+        &setup.rootfs_mode,
         env_root,
-        mount_tag,
+        &setup.mount_tag,
         use_vsock,
-        &extra_qemu_args,
-        &qemu_log_path,
+        &setup.extra_qemu_args,
+        &setup.qemu_log_path,
         vm_cpus,
         vm_memory_mb,
         init_cmd_append,
@@ -958,14 +971,182 @@ pub fn run_command_in_qemu(
         use_vsock,
         &cmd_parts,
         run_options.io_mode,
-        &qemu_log_path,
+        &setup.qemu_log_path,
         run_options.vm_keep_timeout,
         run_options.user.as_deref(),
     )?;
 
-    cleanup_rootfs(rootfs_mode);
+    cleanup_rootfs(setup.rootfs_mode);
 
     std::process::exit(exit_code);
+}
+
+/// Run QEMU in daemon/keeper mode.
+/// Creates QEMU process, registers session, and blocks until VM shuts down (guest idle timeout).
+/// Used by `epkg vm start` to keep a VM alive for other processes to connect.
+pub fn run_qemu_daemon_mode(
+    env_root: &Path,
+    env_name: &str,
+    timeout_secs: u32,
+    cpus: u32,
+    memory_mib: u32,
+) -> Result<()> {
+    log::info!("qemu: starting VM in daemon mode for {} (timeout={}s)", env_name, timeout_secs);
+
+    let run_options = RunOptions {
+        vm_cpus: Some(cpus as u8),
+        vm_memory_mib: Some(memory_mib),
+        reuse_vm: true,
+        ..Default::default()
+    };
+    let setup = setup_qemu_vm(env_root, &run_options, None)?;
+
+    let mut qemu_child = spawn_qemu(
+        &setup.kernel,
+        &setup.initrd,
+        &setup.qemu_bin,
+        &setup.rootfs_mode,
+        env_root,
+        &setup.mount_tag,
+        true, // use_vsock
+        &setup.extra_qemu_args,
+        &setup.qemu_log_path,
+        cpus as u8,
+        memory_mib,
+        None,  // no init_cmd for daemon mode
+        None,  // no init_user
+    )?;
+
+    log::info!("qemu: VM process spawned (pid={}), waiting for guest ready...", qemu_child.id());
+
+    // Wait for guest ready on vsock port 10001
+    let qemu_stderr_path = setup.qemu_log_path.with_extension("stderr.log");
+    let ready_result = wait_guest_ready_vsock(&mut qemu_child, &qemu_stderr_path);
+
+    if let Err(e) = ready_result {
+        log::error!("qemu: VM startup failed in daemon mode: {}", e);
+        let _ = qemu_child.kill();
+        let _ = qemu_child.wait();
+        cleanup_rootfs(setup.rootfs_mode);
+        return Err(e);
+    }
+
+    log::info!("qemu: guest ready in daemon mode");
+
+    // Register VM session (use vsock address format)
+    let socket_path = std::path::PathBuf::from("vsock:3");
+    let vm_config = crate::vm::VmConfig {
+        timeout: timeout_secs,
+        extend: timeout_secs,
+        cpus,
+        memory_mib,
+        backend: "qemu".to_string(),
+    };
+    crate::vm::register_vm_session(env_root, env_name, &socket_path, "qemu", &vm_config)?;
+
+    log::info!("qemu: VM daemon session registered, waiting for VM shutdown...");
+
+    // Wait for QEMU process to complete
+    let status = qemu_child.wait()
+        .map_err(|e| eyre::eyre!("Failed to wait for QEMU process: {}", e))?;
+
+    log::info!("qemu: VM daemon exited with status {:?}", status);
+
+    // Cleanup
+    crate::vm::unregister_vm_session(env_name)?;
+    cleanup_rootfs(setup.rootfs_mode);
+
+    Ok(())
+}
+
+/// Wait for QEMU guest to signal ready on vsock port 10001.
+fn wait_guest_ready_vsock(
+    qemu_child: &mut std::process::Child,
+    qemu_stderr_path: &std::path::Path,
+) -> Result<()> {
+    use nix::sys::socket::{socket, bind, listen, accept, AddressFamily, SockType, SockFlag, VsockAddr};
+    use std::os::fd::IntoRawFd;
+
+    const READY_PORT: u32 = 10001;
+    const POLL_TIMEOUT_MS: u32 = 100;
+    const MAX_WAIT_MS: u32 = 60000;
+
+    log::debug!("qemu_daemon: creating AF_VSOCK listener on ready port {}", READY_PORT);
+
+    let ready_fd = socket(
+        AddressFamily::Vsock,
+        SockType::Stream,
+        SockFlag::SOCK_CLOEXEC,
+        None,
+    ).map_err(|e| eyre::eyre!("Failed to create ready vsock socket: {}", e))?;
+
+    let ready_addr = VsockAddr::new(libc::VMADDR_CID_ANY, READY_PORT);
+    let raw_fd = ready_fd.into_raw_fd();
+    bind(raw_fd, &ready_addr)
+        .map_err(|e| eyre::eyre!("Failed to bind ready vsock port: {}", e))?;
+    listen(unsafe { &std::os::fd::BorrowedFd::borrow_raw(raw_fd) }, nix::sys::socket::Backlog::new(1)?)
+        .map_err(|e| eyre::eyre!("Failed to listen on ready vsock port: {}", e))?;
+
+    log::debug!("qemu_daemon: waiting for guest to connect to ready port {}...", READY_PORT);
+
+    let mut total_waited_ms: u32 = 0;
+
+    // Use libc poll directly (same pattern as vm/client.rs)
+    let client_fd = loop {
+        // Check if QEMU has exited prematurely
+        match qemu_child.try_wait() {
+            Ok(Some(status)) => {
+                let error_msg = std::fs::read_to_string(qemu_stderr_path).unwrap_or_default();
+                let exit_info = status.code()
+                    .map(|c| format!("exit code {}", c))
+                    .unwrap_or_else(|| "killed by signal".to_string());
+                return Err(eyre::eyre!("QEMU exited prematurely with {}: {}", exit_info, error_msg));
+            }
+            Ok(None) => {} // Still running
+            Err(e) => {
+                log::warn!("Failed to check QEMU status: {}", e);
+            }
+        }
+
+        // Use libc::poll directly
+        let mut pfd = [libc::pollfd {
+            fd: raw_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        let ready = unsafe { libc::poll(pfd.as_mut_ptr(), 1, POLL_TIMEOUT_MS as i32) };
+
+        total_waited_ms += POLL_TIMEOUT_MS;
+        if total_waited_ms > MAX_WAIT_MS {
+            return Err(eyre::eyre!("Timeout waiting for guest to connect to ready port"));
+        }
+
+        match ready {
+            0 => {
+                log::trace!("qemu_daemon: poll timeout, continuing to wait...");
+                continue;
+            }
+            n if n > 0 => {
+                if (pfd[0].revents & libc::POLLIN) != 0 {
+                    break accept(raw_fd)
+                        .map_err(|e| eyre::eyre!("Failed to accept on ready vsock port: {}", e))?;
+                }
+                if (pfd[0].revents & (libc::POLLERR | libc::POLLHUP)) != 0 {
+                    return Err(eyre::eyre!("Ready socket error during poll"));
+                }
+            }
+            _ => {
+                continue;
+            }
+        }
+    };
+
+    log::debug!("qemu_daemon: guest connected to ready port, guest is ready!");
+
+    let _ = nix::unistd::close(client_fd);
+    let _ = nix::unistd::close(raw_fd);
+
+    Ok(())
 }
 
 /// Percent-encode a string for kernel command line transmission
