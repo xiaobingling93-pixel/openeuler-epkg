@@ -166,14 +166,26 @@ pub fn install_epkg_with_force(force: bool) -> Result<()> {
             log::debug!("Could not fixup /lib64 symlink: {}", e);
         });
 
-    // Remove old self environment if --force is specified
-    if force {
+    // When force is specified, rename (don't delete) old self env first
+    // This allows us to copy the running binary from the old location before cleanup
+    let old_self_env = if force {
         let self_env_base = crate::dirs::get_env_base_path(SELF_ENV);
         if self_env_base.exists() {
-            println!("Removing old self environment: {}", self_env_base.display());
-            lfs::remove_dir_all(&self_env_base)?;
+            let old_path = self_env_base.parent().unwrap().join(".self-old");
+            // Remove any stale backup from previous interrupted install
+            if old_path.exists() {
+                log::info!("Removing stale backup: {}", old_path.display());
+                lfs::remove_dir_all(&old_path)?;
+            }
+            println!("Moving old self environment to: {}", old_path.display());
+            lfs::rename(&self_env_base, &old_path)?;
+            Some(old_path)
+        } else {
+            None
         }
-    }
+    } else {
+        None
+    };
 
     // Set up installation paths
     lfs::create_dir_all(&dirs().epkg_downloads_cache.join("epkg"))?;
@@ -190,6 +202,16 @@ pub fn install_epkg_with_force(force: bool) -> Result<()> {
 
     // Create self environment
     create_environment(SELF_ENV)?;
+
+    // Clean up old self environment after successful installation
+    if let Some(old_env) = old_self_env {
+        if old_env.exists() {
+            log::info!("Cleaning up old self environment: {}", old_env.display());
+            if let Err(e) = lfs::remove_dir_all(&old_env) {
+                log::warn!("Failed to remove old self environment: {}", e);
+            }
+        }
+    }
 
     // Install AppArmor profile to allow epkg to use namespaces and mounts
     // This is required on Ubuntu and other systems with strict AppArmor policies
