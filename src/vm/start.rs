@@ -107,6 +107,23 @@ fn vm_start_unix(env_root: &Path, env_name: &str, config: VmConfig) -> Result<()
             // Child process: become session leader to detach from parent
             let _ = nix::unistd::setsid();
 
+            // Detach from controlling terminal by redirecting stdio to /dev/null
+            // This prevents QEMU kernel output from leaking to the host terminal
+            let devnull = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/null")
+                .ok();
+            if let Some(dn) = devnull {
+                use std::os::fd::AsRawFd;
+                let null_fd = dn.as_raw_fd();
+                unsafe {
+                    libc::dup2(null_fd, 0);  // stdin
+                    libc::dup2(null_fd, 1);  // stdout
+                    libc::dup2(null_fd, 2);  // stderr
+                }
+            }
+
             // Run keeper logic
             if let Err(e) = run_vm_keeper(env_root, env_name, config) {
                 log::error!("VM keeper failed: {}", e);

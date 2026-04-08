@@ -28,15 +28,16 @@ pub fn cmd_vm_stop(_args: &ArgMatches) -> Result<()> {
         log::warn!("Failed to send shutdown to guest: {}", e);
     }
 
-    // Wait for daemon process to exit (up to 10 seconds)
+    // Wait for daemon process to exit (up to 5 seconds)
+    // For idle VMs, shutdown should be nearly instant
     let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(10);
+    let timeout = std::time::Duration::from_secs(5);
 
     while start.elapsed() < timeout {
         if !is_process_alive(session.daemon_pid) {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
     // Force cleanup if process is still alive
