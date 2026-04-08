@@ -14,6 +14,12 @@ case "$OS" in
     *)       run_install ruby ruby-dev ruby-devel gcc make redhat-rpm-config ;;
 esac
 
+# openEuler/RHEL ruby is compiled with -specs=/usr/lib/rpm/generic-hardened-cc1
+# but redhat-rpm-config package may not exist; create empty files to satisfy gcc
+if [ "$OS" = "openeuler" ] || [ "$OS" = "fedora" ] || [ "$OS" = "centos" ] || [ "$OS" = "rhel" ]; then
+    run /bin/sh -c 'mkdir -p /usr/lib/rpm && touch /usr/lib/rpm/generic-hardened-cc1 /usr/lib/rpm/generic-hardened-ld'
+fi
+
 check_cmd ruby --version || lang_skip "no ruby for OS=$OS"
 
 run_ebin ruby --version
