@@ -82,7 +82,7 @@ Can't exec.*"/bin/sh"       # Shell required for subprocess execution
 Failed to spawn.*No such file or directory # Script needs interpreter (shell/Python/etc.) not in VM
 
 # XDG_RUNTIME_DIR not set - VM environment lacks this runtime directory
-\$XDG_RUNTIME_DIR is not set  # Many modern Linux programs need this for runtime files
+XDG_RUNTIME_DIR.*(is not set|invalid)  # Many modern Linux programs need this for runtime files
 
 # Perl modules missing - Alpine packages may have incomplete dependencies
 Can't locate.*\.pm in @INC  # Perl module not installed (package dependency issue)
