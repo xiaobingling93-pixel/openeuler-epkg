@@ -69,19 +69,39 @@ fn send_shutdown_to_guest(socket_path: &Path, _backend: &str) -> Result<()> {
 
         let mut stream = std::os::unix::net::UnixStream::connect(socket_path)?;
 
-        let request = serde_json::json!({
-            "type": "session_done"
-        });
-        writeln!(stream, "{}", request)?;
+        // Use proper command request format that guest daemon expects
+        let request = super::client::build_command_request(
+            &[crate::run::VM_SESSION_DONE_CMD.to_string()],
+            crate::models::IoMode::Stream,
+            false,
+            None,
+            None,
+        );
+        let request_json = serde_json::Value::Object(request);
+        writeln!(stream, "{}", request_json)?;
 
-        log::debug!("Sent session_done to guest vm_daemon via Unix socket");
+        log::debug!("Sent {} to guest vm_daemon via Unix socket", crate::run::VM_SESSION_DONE_CMD);
         Ok(())
     }
 
     #[cfg(all(windows, feature = "libkrun"))]
     {
-        let _stream = crate::libkrun::bridge::connect_vsock_bridge(socket_path, 5)?;
-        log::debug!("Would send session_done to guest vm_daemon via named pipe");
+        use std::io::Write;
+
+        let mut stream = crate::libkrun::bridge::connect_vsock_bridge(socket_path, 5)?;
+
+        // Use proper command request format that guest daemon expects
+        let request = super::client::build_command_request(
+            &[crate::run::VM_SESSION_DONE_CMD.to_string()],
+            crate::models::IoMode::Stream,
+            false,
+            None,
+            None,
+        );
+        let request_json = serde_json::Value::Object(request);
+        writeln!(stream, "{}", request_json)?;
+
+        log::debug!("Sent {} to guest vm_daemon via named pipe", crate::run::VM_SESSION_DONE_CMD);
         Ok(())
     }
 
