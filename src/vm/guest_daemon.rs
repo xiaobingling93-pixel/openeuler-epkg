@@ -1174,7 +1174,16 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
                 });
                 let json = serde_json::to_string(&response)?;
                 debug_file_write(&format!("execute_batch: response JSON size={} bytes\n", json.len()));
-                stream.write_all(json.as_bytes())?;
+
+                // Write in 4KB chunks to avoid vsock buffer overflow
+                let json_bytes = json.as_bytes();
+                let mut offset = 0;
+                while offset < json_bytes.len() {
+                    let chunk_size = std::cmp::min(4096, json_bytes.len() - offset);
+                    let written = stream.write(&json_bytes[offset..offset + chunk_size])?;
+                    offset += written;
+                }
+
                 stream.write_all(b"\n")?;
                 stream.flush()?;
                 debug_file_write("execute_batch: response written and flushed\n");

@@ -282,14 +282,23 @@ fn handle_batch_response(stream: &mut std::os::unix::net::UnixStream) -> Result<
     let mut response = String::new();
     let reader = std::io::BufReader::new(stream);
 
+    let mut line_count = 0;
     for line in reader.lines() {
         let line = line?;
+        line_count += 1;
+        log::debug!("handle_batch_response: received line {} ({} bytes)", line_count, line.len());
         // Skip "READY" signal from reverse vsock handshake
         if line == "READY" {
+            log::debug!("handle_batch_response: skipped READY signal");
             continue;
         }
         response = line;
         break;
+    }
+
+    log::debug!("handle_batch_response: total lines={}, response len={}", line_count, response.len());
+    if response.is_empty() {
+        log::warn!("handle_batch_response: received empty response, line_count={}", line_count);
     }
 
     #[derive(Deserialize)]
