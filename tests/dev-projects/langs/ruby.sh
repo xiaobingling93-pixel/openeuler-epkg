@@ -50,6 +50,13 @@ if run which gem; then
     run $SHELL_CMD 'export GEM_HOME=/tmp/gem GEM_PATH=/tmp/gem && ruby -e "require \"json\"; puts JSON.parse(\"{\\\"x\\\":1}\")[\"x\"]"' | grep -qx 1
 fi
 run_ebin_if gem --version
-# gem install needs XDG_CACHE_HOME set to avoid permission issues
-XDG_CACHE_HOME=/tmp/xdg-cache run_ebin_if gem install json
+
+# Use 'run' instead of 'run_ebin_if' for gem install because:
+# - ebin/* binaries use elf-loader which calls unshare(CLONE_NEWUSER) in current process
+# - After unshare, current process UID becomes 65534 (nobody), not 0
+# - The UID mapping only affects child processes, so elf-loader execve's with UID=65534
+# - This causes make subprocesses to fail with "Invalid argument" when exec'ing /bin/sh
+# - In contrast, 'epkg run' forks first, then unshare in child, so child has UID=0
+GEM_HOME=/tmp/gem GEM_PATH=/tmp/gem XDG_CACHE_HOME=/tmp/xdg-cache run gem install json
+
 lang_ok
