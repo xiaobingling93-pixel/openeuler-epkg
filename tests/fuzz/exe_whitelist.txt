@@ -121,3 +121,17 @@ invalid option: --           # Generic pattern for tools without --help support
 /usr/bin/git-flow-support  # git-flow subcommand wrapper
 /usr/bin/git-flow-version  # git-flow subcommand wrapper
 /usr/bin/gitflow-shFlags   # git-flow internal script
+
+# =============================================================================
+# Alpine Package Dependency Issues (Alpine repo bugs, not epkg bugs)
+# =============================================================================
+
+# py3-gpsd - Alpine package dependency declaration bug
+# py3-gpsd Python bindings require libgps.so.31 and libgpsdpacket.so.31
+# These libraries are provided by gpsd package, but py3-gpsd doesn't depend on gpsd.
+# When epkg installs py3-gpsd following Alpine's declared dependencies,
+# gpscat/gpsfake fail with "PacketLibraryNotFoundError: Can't find packet library"
+# This is Alpine's dependency declaration bug, not epkg bug.
+# Reference: py3-gpsd requires: python3~3.12 (should also require gpsd)
+#            gpsd provides: so:libgps.so.31, so:libgpsdpacket.so.31
+PacketLibraryNotFoundError: Can't find packet library
