@@ -28,44 +28,19 @@ pub fn cmd_vm_stop(_args: &ArgMatches) -> Result<()> {
         log::warn!("Failed to send shutdown to guest: {}", e);
     }
 
-    // Wait for daemon process to exit (up to 5 seconds)
-    // For idle VMs, shutdown should be nearly instant
+    // Wait briefly for daemon process to exit (up to 100ms)
+    // For QEMU and properly configured libkrun, this should be nearly instant
     let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(5);
-
-    while start.elapsed() < timeout {
+    while start.elapsed() < std::time::Duration::from_millis(100) {
         if !is_process_alive(session.daemon_pid) {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
-    // Force cleanup if process is still alive
-    if is_process_alive(session.daemon_pid) {
-        log::warn!("VM daemon process {} did not exit gracefully, forcing termination", session.daemon_pid);
-
-        // Send SIGKILL to force termination of the keeper process
-        #[cfg(unix)]
-        {
-            use nix::sys::signal::{kill, Signal};
-            let pid = nix::unistd::Pid::from_raw(session.daemon_pid as i32);
-            if let Err(e) = kill(pid, Signal::SIGKILL) {
-                log::warn!("Failed to kill daemon process {}: {}", session.daemon_pid, e);
-            } else {
-                // Wait a moment for process to actually die
-                std::thread::sleep(std::time::Duration::from_millis(500));
-            }
-        }
-        #[cfg(windows)]
-        {
-            // On Windows, we'd need to use TerminateProcess, but for now just log
-            log::warn!("Windows: cannot force kill daemon process {}", session.daemon_pid);
-        }
-
-        // Clean up session and socket files
-        let session_file = vm_session_file_path(&env_name);
-        cleanup_vm_session_files(&session_file, &session.socket_path);
-    }
+    // Clean up session files
+    let session_file = vm_session_file_path(&env_name);
+    cleanup_vm_session_files(&session_file, &session.socket_path);
 
     println!("VM stopped for {}", env_name);
     Ok(())

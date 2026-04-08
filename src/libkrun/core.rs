@@ -1508,6 +1508,10 @@ struct VmReuseSession {
 #[allow(dead_code)]
 static VM_REUSE_SESSION: Mutex<Option<VmReuseSession>> = Mutex::new(None);
 
+/// Context ID for daemon mode, used by SIGTERM handler to trigger shutdown
+#[cfg(feature = "libkrun")]
+static DAEMON_CTX_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 #[cfg(feature = "libkrun")]
 fn apply_krun_exit_policy(exit_code: i32, run_options: &RunOptions) -> Result<()> {
     crate::debug_epkg!("libkrun: apply_krun_exit_policy called with exit_code={}", exit_code);
@@ -2232,9 +2236,38 @@ pub fn run_vm_daemon_mode(
 
     log::info!("libkrun: VM daemon session registered, waiting for VM shutdown...");
 
+    // Setup SIGTERM handler to trigger libkrun shutdown
+    // This allows the host to request quick VM termination
+    let signal_result = std::panic::catch_unwind(|| {
+        #[cfg(unix)]
+        {
+            use nix::sys::signal::{signal, SigHandler, Signal};
+            extern "C" fn handle_sigterm(_sig: libc::c_int) {
+                // Signal the VM to shutdown
+                // Note: ctx_id is stored in DAEMON_CTX_ID static
+                let stored_ctx_id = DAEMON_CTX_ID.load(std::sync::atomic::Ordering::SeqCst);
+                if stored_ctx_id != 0 {
+                    let _ = unsafe { krun_signal_shutdown(stored_ctx_id) };
+                }
+            }
+            unsafe {
+                let _ = signal(Signal::SIGTERM, SigHandler::Handler(handle_sigterm));
+            }
+        }
+    });
+    if signal_result.is_err() {
+        log::warn!("libkrun: failed to setup SIGTERM handler");
+    }
+
+    // Store ctx_id for signal handler
+    DAEMON_CTX_ID.store(ctx_id, std::sync::atomic::Ordering::SeqCst);
+
     // Wait for VM thread to complete (guest will shut down after idle timeout)
     let status = vm_thread.join()
         .map_err(|_| eyre::eyre!("VM thread panicked"))?;
+
+    // Clear ctx_id
+    DAEMON_CTX_ID.store(0, std::sync::atomic::Ordering::SeqCst);
 
     log::info!("libkrun: VM daemon exited with status {}", status);
 
