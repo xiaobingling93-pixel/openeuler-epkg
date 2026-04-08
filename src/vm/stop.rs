@@ -112,16 +112,16 @@ fn send_shutdown_to_guest(socket_path: &Path, _backend: &str) -> Result<()> {
 
         let mut stream = crate::libkrun::bridge::connect_vsock_bridge(socket_path, 5)?;
 
-        // Use proper command request format that guest daemon expects
-        let request = super::client::build_command_request(
-            &[crate::run::VM_SESSION_DONE_CMD.to_string()],
-            crate::models::IoMode::Stream,
-            false,
-            None,
-            None,
-        );
-        let request_json = serde_json::Value::Object(request);
-        writeln!(stream, "{}", request_json)?;
+        // Build simple JSON request inline (client module is Linux-only)
+        let request = serde_json::json!({
+            "command": [crate::run::VM_SESSION_DONE_CMD],
+            "cwd": null,
+            "env": {},
+            "stdin": "",
+            "pty": false,
+            "reuse_vm": false,
+        });
+        writeln!(stream, "{}", request)?;
 
         log::debug!("Sent {} to guest vm_daemon via named pipe", crate::run::VM_SESSION_DONE_CMD);
         Ok(())
