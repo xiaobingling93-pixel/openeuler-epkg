@@ -17,7 +17,6 @@ use crate::run::RunOptions;
 use crate::vm::{
     discover_vm_session, register_vm_session_simple,
     unregister_vm_session, is_vm_session_active, vm_socket_path_for_env,
-    VmSessionInfo,
 };
 
 /// Check if there's an active VM reuse session for a specific env_root.
