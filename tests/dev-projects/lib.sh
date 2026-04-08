@@ -93,16 +93,16 @@ run_with_timeout() {
 }
 
 log() {
-    echo -e "${GREEN}[${OS:-dev-projects}]${NC} $*" >&2
+    printf "%b[${OS:-dev-projects}]%b %b\n" "$GREEN" "$NC" "$*" >&2
 }
 
 error() {
-    echo -e "${RED}[ERROR]${NC} $*" >&2
+    printf "%b[ERROR]%b %b\n" "$RED" "$NC" "$*" >&2
     exit 1
 }
 
 skip() {
-    echo -e "${YELLOW}[SKIP]${NC} $*" >&2
+    printf "%b[SKIP]%b %b\n" "$YELLOW" "$NC" "$*" >&2
     exit 0
 }
 

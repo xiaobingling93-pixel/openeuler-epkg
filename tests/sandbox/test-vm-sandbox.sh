@@ -101,22 +101,21 @@ set_epkg_bin
 set_color_names
 
 log() {
-    echo "${GREEN}[TEST]${NC} $*" >&2
+    printf "%b[TEST]%b %b\n" "$GREEN" "$NC" "$*" >&2
 }
 
 error() {
-    echo "${RED}[ERROR]${NC} $*" >&2
+    printf "%b[ERROR]%b %b\n" "$RED" "$NC" "$*" >&2
     if [ -n "$INTERACTIVE" ]; then
-        echo "" >&2
-        echo "=== Debug Mode ===" >&2
-        echo "Press Enter to continue (or Ctrl+C to exit)..." >&2
+        printf "\n=== Debug Mode ===\n" >&2
+        printf "Press Enter to continue (or Ctrl+C to exit)...\n" >&2
         read dummy || true
     fi
     exit 1
 }
 
 skip() {
-    echo "${YELLOW}[SKIP]${NC} $*" >&2
+    printf "%b[SKIP]%b %b\n" "$YELLOW" "$NC" "$*" >&2
     exit 0
 }
 

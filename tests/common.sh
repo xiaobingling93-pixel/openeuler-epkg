@@ -31,11 +31,46 @@ set_epkg_bin() {
 }
 
 set_color_names() {
-    # Colors for output
-    RED='\033[0;31m'
-    GREEN='\033[0;32m'
-    YELLOW='\033[1;33m'
-    NC='\033[0m' # No Color
+    # Auto-detect if output is to a terminal (tty)
+    # Disable colors if not on tty (e.g., piped, redirected)
+    if [ -t 1 ]; then
+        RED='\033[0;31m'
+        GREEN='\033[0;32m'
+        YELLOW='\033[1;33m'
+        NC='\033[0m' # No Color
+    else
+        RED=''
+        GREEN=''
+        YELLOW=''
+        NC=''
+    fi
+}
+
+# Print colored message to stderr using printf (more reliable than echo -e)
+# Usage: color_print COLOR_NAME PREFIX MESSAGE
+# Example: color_print GREEN "[TEST]" "Running test..."
+color_print() {
+    local color_var="$1"
+    local prefix="$2"
+    local message="$3"
+    local color=""
+    eval "color=\$$color_var"
+    printf "%b%s%b %b\n" "$color" "$prefix" "$NC" "$message" >&2
+}
+
+# Convenience functions using color_print
+log() {
+    color_print GREEN "[TEST]" "$*"
+}
+
+error() {
+    color_print RED "[ERROR]" "$*"
+    exit 1
+}
+
+skip() {
+    color_print YELLOW "[SKIP]" "$*"
+    exit 0
 }
 
 # Parse debug flags (-d, --debug, -dd, -ddd) and shift arguments
