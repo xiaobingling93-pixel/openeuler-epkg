@@ -45,6 +45,7 @@ pub fn is_vm_reuse_active_for_env(env_root: &Path) -> bool {
 
 /// Connect to an existing VM session for the given env_root.
 /// Returns a connected stream and session info if successful, None if no session exists.
+/// Handles both libkrun (Unix socket) and QEMU (vsock) backends.
 #[cfg(all(feature = "libkrun", unix))]
 fn connect_to_existing_vm_socket(_env_root: &Path) -> Result<Option<(std::os::unix::net::UnixStream, crate::vm::VmSessionInfo)>> {
     let env_name = &crate::models::config().common.env_name;
@@ -53,9 +54,52 @@ fn connect_to_existing_vm_socket(_env_root: &Path) -> Result<Option<(std::os::un
         None => return Ok(None),
     };
 
+    let socket_str = info.socket_path.to_string_lossy();
+
+    // Check if this is a vsock address (QEMU backend)
+    if socket_str.starts_with("vsock:") {
+        let stream = connect_via_vsock(&socket_str)?;
+        log::info!("libkrun: connected to existing VM via vsock: {}", socket_str);
+        return Ok(Some((stream, info)));
+    }
+
+    // libkrun uses Unix socket
     let stream = std::os::unix::net::UnixStream::connect(&info.socket_path)?;
     log::info!("libkrun: connected to existing VM socket: {}", info.socket_path.display());
     Ok(Some((stream, info)))
+}
+
+/// Connect to vsock address (format: "vsock:3").
+/// Used for QEMU backend which uses vsock for VM communication.
+#[cfg(all(feature = "libkrun", unix))]
+fn connect_via_vsock(socket_str: &str) -> Result<std::os::unix::net::UnixStream> {
+    use nix::sys::socket::{socket, connect, AddressFamily, SockType, SockFlag, VsockAddr};
+    use std::os::fd::{IntoRawFd, FromRawFd};
+
+    // Parse "vsock:3" -> CID 3
+    let cid: u32 = socket_str
+        .strip_prefix("vsock:")
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| eyre::eyre!("Invalid vsock address: {}", socket_str))?;
+
+    // vm_daemon control port is 10000
+    const VM_DAEMON_PORT: u32 = 10000;
+
+    let fd = socket(
+        AddressFamily::Vsock,
+        SockType::Stream,
+        SockFlag::SOCK_CLOEXEC,
+        None,
+    ).map_err(|e| eyre::eyre!("Failed to create vsock socket: {}", e))?;
+
+    let raw_fd = fd.into_raw_fd();
+    let addr = VsockAddr::new(cid, VM_DAEMON_PORT);
+    connect(raw_fd, &addr)
+        .map_err(|e| eyre::eyre!("Failed to connect to vsock CID {} port {}: {}", cid, VM_DAEMON_PORT, e))?;
+
+    // Convert to UnixStream (vsock sockets are file descriptors on Linux)
+    let stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(raw_fd) };
+    Ok(stream)
 }
 
 #[cfg(all(feature = "libkrun", windows))]
