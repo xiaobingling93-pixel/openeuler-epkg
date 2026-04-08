@@ -663,9 +663,14 @@ def load_exe_whitelist() -> list:
 
 
 def error_matches_whitelist(error_msg: str, whitelist: list) -> bool:
-    """Check if error message matches any whitelist pattern using regex."""
+    """Check if error message matches any whitelist pattern using regex.
+
+    Uses case-insensitive matching since error messages from different
+    programs may have varying capitalization (e.g., "Cannot open display"
+    vs "cannot open display").
+    """
     for pattern in whitelist:
-        if re.search(pattern, error_msg):
+        if re.search(pattern, error_msg, re.IGNORECASE):
             return True
     return False
 
