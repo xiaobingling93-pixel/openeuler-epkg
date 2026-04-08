@@ -1669,7 +1669,7 @@ fn resolve_assets_for_os(
             String::new()
         };
 
-        // Local elf-loader: no need to fetch URL, target path will use default
+        // Local elf-loader: no need to fetch URL if local exists, otherwise download latest
         let elf_loader_url = if is_linux {
             match &new_version.elf_loader_version {
                 Some(elf_loader_tag) => {
@@ -1680,9 +1680,16 @@ fn resolve_assets_for_os(
                     Some(loader_url)
                 }
                 None => {
-                    // No version info, but local elf-loader exists or not needed
-                    // Target path will be determined by download_package_manager_files()
-                    None
+                    // No local elf-loader found, download latest from remote
+                    log::info!("No local elf-loader found, will download from remote");
+                    let elf_loader_release = fetch_latest_release(GITEE_OWNER, REPO_ELF_LOADER)?;
+                    match elf_loader_release.find_asset_urls_for_arch("elf-loader", arch) {
+                        Ok((loader_url, _)) => Some(loader_url),
+                        Err(e) => {
+                            log::warn!("Could not resolve elf-loader binary: {}", e);
+                            None
+                        }
+                    }
                 }
             }
         } else if cfg!(feature = "libkrun") {
