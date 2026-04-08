@@ -341,6 +341,54 @@ fn setup_hosts(env_root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Setup CA certificates symlink for compatibility with applications
+/// that expect /etc/ssl/certs/ca-certificates.crt (Debian/Ubuntu path)
+/// but the distro may use a different path (e.g., /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem on RPM-based distros)
+pub fn setup_ca_certificates_symlink(env_root: &Path) -> Result<()> {
+    let certs_dir = crate::dirs::path_join(env_root, &["etc", "ssl", "certs"]);
+    let ca_cert_path = certs_dir.join("ca-certificates.crt");
+
+    // If the file already exists (as a file or symlink), nothing to do
+    if lfs::exists_in_env(&ca_cert_path) {
+        return Ok(());
+    }
+
+    // Create the certs directory if it doesn't exist
+    lfs::create_dir_all(&certs_dir)?;
+
+    // Try to find the CA bundle in common locations
+    // Priority: check env_root first (for already-installed ca-certificates package)
+    let possible_paths = [
+        // RPM-based distros (openeuler, fedora, etc.)
+        "etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+        "etc/pki/tls/certs/ca-bundle.crt",
+        // Arch Linux
+        "etc/ca-certificates/extracted/tls-ca-bundle.pem",
+        // Debian/Ubuntu (already has ca-certificates.crt, but check anyway)
+        "etc/ssl/certs/ca-certificates.crt",
+        // SUSE
+        "etc/ssl/ca-bundle.pem",
+    ];
+
+    for rel_path in &possible_paths {
+        let full_path = env_root.join(rel_path);
+        if lfs::exists_in_env(&full_path) {
+            // Create symlink from ca-certificates.crt to the found bundle
+            // Use relative path for the symlink target so it works in chroot/VM
+            let target = PathBuf::from("/").join(rel_path);
+            log::debug!("Creating CA cert symlink: {} -> {}",
+                ca_cert_path.display(), target.display());
+            lfs::symlink_file_for_native(&target, &ca_cert_path)?;
+            return Ok(());
+        }
+    }
+
+    // If we reach here, no CA bundle was found
+    // This is not an error - the ca-certificates package may not be installed yet
+    log::debug!("No CA certificate bundle found in env, skipping symlink creation");
+    Ok(())
+}
+
 fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     let generations_root = env_root.join("generations");
     let gen_0_dir = generations_root.join("0");
@@ -787,6 +835,11 @@ fn import_packages_and_create_metadata(env_root: &Path) -> Result<()> {
         sync_channel_metadata()?;
         let plan = prepare_installation_plan(&packages_to_import, None)?;
         execute_installation_plan(plan)?;
+
+        // Setup CA certificates symlink after package installation
+        if let Err(e) = setup_ca_certificates_symlink(env_root) {
+            log::warn!("Failed to setup CA certificates symlink: {}", e);
+        }
     } else {
         // Create metadata files
         lfs::write(installed_packages_path, "{\n}")?;

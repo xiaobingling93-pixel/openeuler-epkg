@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::path::Path;
 
 use color_eyre::eyre::{self, Result, WrapErr, eyre};
 use crate::models::*;
@@ -313,6 +314,12 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
         if let Err(e) = crate::dpkg_db::generate_dpkg_database() {
             log::warn!("Failed to generate dpkg database: {}", e);
         }
+    }
+
+    // Setup CA certificates symlink for compatibility
+    let env_root = Path::new(&plan.env_root);
+    if let Err(e) = crate::environment::setup_ca_certificates_symlink(env_root) {
+        log::warn!("Failed to setup CA certificates symlink: {}", e);
     }
 
     Ok(plan)
