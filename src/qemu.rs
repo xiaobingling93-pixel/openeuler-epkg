@@ -499,7 +499,7 @@ fn build_qemu_command(
         .arg("-m").arg(vm_memory_mb.to_string())
         .arg("-smp").arg(vm_cpus.to_string())
         .arg("-no-reboot")
-        .arg("-nographic")
+        .arg("-display").arg("none")
         .arg("-serial").arg(format!("file:{}", serial_log_path.display()))
         .arg("-monitor").arg("none")
         .arg("-kernel").arg(kernel);
@@ -745,7 +745,7 @@ fn spawn_qemu(
                 log::warn!("Failed to create QEMU stderr log: {}", e);
                 Stdio::null()
             });
-        qemu_cmd.stdout(stdout_log).stderr(stderr_log);
+        qemu_cmd.stdin(Stdio::null()).stdout(stdout_log).stderr(stderr_log);
     } else if need_stderr_for_error_detection {
         // For vsock mode, capture stderr to detect QEMU early failures
         use std::fs::File;
@@ -755,9 +755,9 @@ fn spawn_qemu(
                 log::warn!("Failed to create QEMU stderr log: {}", e);
                 Stdio::null()
             });
-        qemu_cmd.stdout(Stdio::null()).stderr(stderr_log);
+        qemu_cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(stderr_log);
     } else {
-        qemu_cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        qemu_cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     }
 
     log::debug!("qemu command: {} {}",

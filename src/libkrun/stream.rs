@@ -392,22 +392,45 @@ pub fn send_command_via_vsock(
     }
 }
 
+/// RAII guard to restore terminal settings on drop.
+#[cfg(unix)]
+struct TerminalGuard {
+    original_mode: Option<nix::sys::termios::Termios>,
+}
+
+#[cfg(unix)]
+impl TerminalGuard {
+    fn new() -> Self {
+        let original_mode = nix::sys::termios::tcgetattr(std::io::stdin()).ok();
+        if let Some(ref orig) = original_mode {
+            let mut raw = orig.clone();
+            nix::sys::termios::cfmakeraw(&mut raw);
+            let _ = nix::sys::termios::tcsetattr(std::io::stdin(), nix::sys::termios::SetArg::TCSANOW, &raw);
+        }
+        Self { original_mode }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        if let Some(ref orig) = self.original_mode {
+            let _ = nix::sys::termios::tcsetattr(std::io::stdin(), nix::sys::termios::SetArg::TCSANOW, orig);
+        }
+    }
+}
+
 #[cfg(unix)]
 fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<i32> {
     use std::os::unix::io::AsRawFd;
 
     use console::Term;
     use nix::sys::signal::{signal, SigHandler, Signal};
-    use nix::sys::termios;
+
+    // RAII guard ensures terminal is restored even on panic or early return
+    let _term_guard = TerminalGuard::new();
 
     let term = Term::stdout();
-    let original_mode = termios::tcgetattr(std::io::stdin()).ok();
-
-    if let Some(ref orig) = original_mode {
-        let mut raw = orig.clone();
-        termios::cfmakeraw(&mut raw);
-        let _ = termios::tcsetattr(std::io::stdin(), termios::SetArg::TCSANOW, &raw);
-    }
 
     unsafe {
         let _ = signal(Signal::SIGWINCH, SigHandler::Handler(handle_sigwinch));
@@ -501,10 +524,6 @@ fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<
     }
 
     reader.join().ok();
-
-    if let Some(orig) = original_mode {
-        let _ = termios::tcsetattr(std::io::stdin(), termios::SetArg::TCSANOW, &orig);
-    }
 
     let code = exit_code.lock().unwrap().unwrap_or(0);
     Ok(code)

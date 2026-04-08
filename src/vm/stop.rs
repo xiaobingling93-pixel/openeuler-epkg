@@ -186,6 +186,8 @@ fn send_shutdown_via_vsock(socket_str: &str) -> Result<()> {
     let raw_fd = fd.into_raw_fd();
     // Connect from host to guest CID (guest-cid=3 in QEMU config)
     let addr = VsockAddr::new(cid, VM_DAEMON_PORT);
+
+    // vsock connect should be instant if VM is running
     connect(raw_fd, &addr)
         .map_err(|e| eyre::eyre!("Failed to connect to vsock CID {} port {}: {}", cid, VM_DAEMON_PORT, e))?;
 
