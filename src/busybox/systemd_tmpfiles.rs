@@ -1020,6 +1020,14 @@ fn set_ownership_if_specified(path: &Path, user_str: &str, group_str: &str) -> R
                         log::warn!("Cannot change ownership of {}: permission denied (skipping)", path.display());
                         return Ok(());
                     }
+                    // Skip invalid argument errors (EINVAL)
+                    // This happens in user namespaces when the target UID/GID is not mapped
+                    // Example: chown to gid=997 when only gid=0 is mapped in the namespace
+                    if e.kind() == ErrorKind::InvalidInput {
+                        log::warn!("Cannot change ownership of {} to uid={:?}, gid={:?}: invalid argument (GID not mapped in user namespace, skipping)",
+                                   path.display(), uid, gid);
+                        return Ok(());
+                    }
                     Err(eyre!("Failed to change ownership of {} to uid={:?}, gid={:?}: {}", path.display(), uid, gid, e))
                 }
             }?;
