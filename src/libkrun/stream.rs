@@ -958,6 +958,7 @@ pub fn send_command_over_named_pipe(
     reuse_vm: bool,
     vm_keep_timeout_secs: Option<u32>,
     extend_timeout_secs: Option<u32>,
+    env_vars: Option<&std::collections::HashMap<String, String>>,
     cwd: Option<&str>,
     mut stream: std::fs::File,
 ) -> Result<i32> {
@@ -967,7 +968,7 @@ pub fn send_command_over_named_pipe(
         io_mode, is_batch, reuse_vm);
 
     // Build and send command request
-    let request = build_command_request(cmd_parts, io_mode, reuse_vm, vm_keep_timeout_secs, extend_timeout_secs, None, cwd);
+    let request = build_command_request(cmd_parts, io_mode, reuse_vm, vm_keep_timeout_secs, extend_timeout_secs, env_vars, cwd);
     let request_json = serde_json::to_vec(&request)?;
     crate::debug_epkg!("libkrun_stream: [PERF] writing {} bytes to named pipe", request_json.len());
     let write_start = std::time::Instant::now();

@@ -151,6 +151,7 @@ pub fn execute_via_existing_vm(
         reuse_vm,
         vm_keep_timeout_secs,
         None,  // extend_timeout_secs
+        env_vars,
         cwd,
         stream,
     )?;
@@ -1874,6 +1875,7 @@ fn run_reverse_vsock_mode_inner(
         run_options.reuse_vm,
         run_options.vm_keep_timeout,
         None,  // extend_timeout_secs
+        Some(&run_options.env_vars),
         cwd,
         stream,
     ) {
@@ -1938,6 +1940,7 @@ fn run_reverse_vsock_mode_inner(
                 vsock_sock_path: vsock_sock_path.clone(),
                 vm_thread,
                 env_root: env_root.to_path_buf(),
+                env_name: env_name.clone(),
             });
             log::info!("libkrun: VM session kept alive for reuse (switched to forward mode, socket {})",
                        vsock_sock_path.display());
