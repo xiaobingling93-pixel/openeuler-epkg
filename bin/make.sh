@@ -117,7 +117,7 @@ set -e
 # =============================================================================
 
 # Variables
-LUA_VERSION=5.4.7
+LUA_VERSION=5.4.8
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUTPUT_DIR=dist
 
