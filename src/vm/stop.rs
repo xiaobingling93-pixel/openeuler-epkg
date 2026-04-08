@@ -28,17 +28,38 @@ pub fn cmd_vm_stop(_args: &ArgMatches) -> Result<()> {
         log::warn!("Failed to send shutdown to guest: {}", e);
     }
 
-    // Wait briefly for daemon process to exit (up to 100ms)
-    // For QEMU and properly configured libkrun, this should be nearly instant
+    // Send SIGTERM to daemon process to trigger graceful shutdown
+    // For libkrun, this calls krun_signal_shutdown() which speeds up VM termination
+    // For QEMU, the guest is already powering off from the shutdown command
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{kill, Signal};
+        let pid = nix::unistd::Pid::from_raw(session.daemon_pid as i32);
+        let _ = kill(pid, Signal::SIGTERM);
+    }
+
+    // Wait for daemon process to exit (up to 500ms)
+    // We need to ensure the daemon exits before cleaning up session files
+    // to avoid leaving orphan processes or race conditions with new VM starts
     let start = std::time::Instant::now();
-    while start.elapsed() < std::time::Duration::from_millis(100) {
+    while start.elapsed() < std::time::Duration::from_millis(500) {
         if !is_process_alive(session.daemon_pid) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
-    // Clean up session files
+    // Force kill if still alive
+    #[cfg(unix)]
+    if is_process_alive(session.daemon_pid) {
+        use nix::sys::signal::{kill, Signal};
+        let pid = nix::unistd::Pid::from_raw(session.daemon_pid as i32);
+        let _ = kill(pid, Signal::SIGKILL);
+        // Brief wait for SIGKILL to take effect
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    // Clean up session files only after daemon has exited
     let session_file = vm_session_file_path(&env_name);
     cleanup_vm_session_files(&session_file, &session.socket_path);
 
