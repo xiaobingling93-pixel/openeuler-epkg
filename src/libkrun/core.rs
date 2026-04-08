@@ -54,9 +54,11 @@ fn connect_to_existing_vm_socket(_env_root: &Path) -> Result<Option<(std::os::un
         None => return Ok(None),
     };
 
+    #[cfg(target_os = "linux")]
     let socket_str = info.socket_path.to_string_lossy();
 
-    // Check if this is a vsock address (QEMU backend)
+    // Check if this is a vsock address (QEMU backend - Linux only)
+    #[cfg(target_os = "linux")]
     if socket_str.starts_with("vsock:") {
         let stream = connect_via_vsock(&socket_str)?;
         log::info!("libkrun: connected to existing VM via vsock: {}", socket_str);
@@ -71,7 +73,8 @@ fn connect_to_existing_vm_socket(_env_root: &Path) -> Result<Option<(std::os::un
 
 /// Connect to vsock address (format: "vsock:3").
 /// Used for QEMU backend which uses vsock for VM communication.
-#[cfg(all(feature = "libkrun", unix))]
+/// Note: vsock is Linux-specific.
+#[cfg(all(feature = "libkrun", target_os = "linux"))]
 fn connect_via_vsock(socket_str: &str) -> Result<std::os::unix::net::UnixStream> {
     use nix::sys::socket::{socket, connect, AddressFamily, SockType, SockFlag, VsockAddr};
     use std::os::fd::{IntoRawFd, FromRawFd};

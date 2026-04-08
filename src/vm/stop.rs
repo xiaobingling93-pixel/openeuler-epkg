@@ -71,19 +71,21 @@ pub fn cmd_vm_stop(_args: &ArgMatches) -> Result<()> {
 }
 
 /// Send shutdown signal to guest vm_daemon.
-/// For QEMU: uses vsock (socket_path format: "vsock:3")
+/// For QEMU: uses vsock (socket_path format: "vsock:3") - Linux only
 /// For libkrun: uses Unix socket
 fn send_shutdown_to_guest(socket_path: &Path, _backend: &str) -> Result<()> {
-    let socket_str = socket_path.to_string_lossy();
-
-    // Check if this is a vsock address (QEMU backend)
-    if socket_str.starts_with("vsock:") {
-        send_shutdown_via_vsock(&socket_str)?;
-        return Ok(());
+    // vsock path (Linux only)
+    #[cfg(target_os = "linux")]
+    {
+        let socket_str = socket_path.to_string_lossy();
+        if socket_str.starts_with("vsock:") {
+            send_shutdown_via_vsock(&socket_str)?;
+            return Ok(());
+        }
     }
 
-    // libkrun uses Unix socket
-    #[cfg(all(unix, feature = "libkrun"))]
+    // libkrun uses Unix socket (Linux only - client module is Linux-specific)
+    #[cfg(all(target_os = "linux", feature = "libkrun"))]
     {
         use std::io::Write;
 
@@ -125,8 +127,31 @@ fn send_shutdown_to_guest(socket_path: &Path, _backend: &str) -> Result<()> {
         Ok(())
     }
 
+    // macOS libkrun: use Unix socket with inline JSON request
+    #[cfg(all(target_os = "macos", feature = "libkrun"))]
+    {
+        use std::io::Write;
+
+        let mut stream = std::os::unix::net::UnixStream::connect(socket_path)?;
+
+        // Build simple JSON request inline (client module is Linux-only)
+        let request = serde_json::json!({
+            "command": [crate::run::VM_SESSION_DONE_CMD],
+            "cwd": null,
+            "env": {},
+            "stdin": "",
+            "pty": false,
+            "reuse_vm": false,
+        });
+        writeln!(stream, "{}", request)?;
+
+        log::debug!("Sent {} to guest vm_daemon via Unix socket", crate::run::VM_SESSION_DONE_CMD);
+        Ok(())
+    }
+
     #[cfg(not(feature = "libkrun"))]
     {
+        let socket_str = socket_path.to_string_lossy();
         // Non-libkrun backend but not vsock - should not happen
         log::warn!("Unknown socket type for shutdown: {}", socket_str);
         Ok(())
@@ -185,9 +210,4 @@ fn send_shutdown_via_vsock(socket_str: &str) -> Result<()> {
     let _ = stream.shutdown(std::net::Shutdown::Both);
 
     Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn send_shutdown_via_vsock(_socket_str: &str) -> Result<()> {
-    Err(eyre::eyre!("vsock not supported on this platform"))
 }
