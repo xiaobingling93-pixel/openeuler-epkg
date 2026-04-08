@@ -150,7 +150,6 @@ run_with_timeout() {
     local timeout_secs=60
     local cmd=("$@")
     log "Running with timeout ${timeout_secs}s: ${cmd[*]}"
-    set +e
     case "$OS_TYPE" in
         linux)
             timeout --foreground "$timeout_secs" "${cmd[@]}"
@@ -167,7 +166,6 @@ run_with_timeout() {
             ;;
     esac
     local exit_code=$?
-    set -e
     case $exit_code in
         0)
             log "Command succeeded"
@@ -187,23 +185,21 @@ capture_with_timeout() {
     local timeout_secs=60
     local cmd=("$@")
     log "Running with timeout ${timeout_secs}s (capture output): ${cmd[*]}"
-    set +e
     case "$OS_TYPE" in
         linux)
-            output=$(timeout --foreground "$timeout_secs" "${cmd[@]}" 2>/dev/null)
+            output=$(timeout --foreground "$timeout_secs" "${cmd[@]}" 2>&1)
             ;;
         macos)
-            output=$(perl -e 'alarm shift; exec @ARGV' "$timeout_secs" "${cmd[@]}" 2>/dev/null)
+            output=$(perl -e 'alarm shift; exec @ARGV' "$timeout_secs" "${cmd[@]}" 2>&1)
             ;;
         windows)
-            output=$(timeout "$timeout_secs" "${cmd[@]}" 2>/dev/null)
+            output=$(timeout "$timeout_secs" "${cmd[@]}" 2>&1)
             ;;
         *)
-            output=$("${cmd[@]}" 2>/dev/null)
+            output=$("${cmd[@]}" 2>&1)
             ;;
     esac
     local exit_code=$?
-    set -e
     case $exit_code in
         0)
             log "Command succeeded"
@@ -487,17 +483,13 @@ fi
 log "Test 4: PASSED"
 
 # Test 5: Exit code propagation
-# KNOWN ISSUE: Exit code propagation in VM mode may not work correctly
-# Skip this test for now, investigate separately
-log "Test 5: Testing exit code propagation (SKIPPED - known issue)"
-# set +e
-# "$EPKG_BIN" -e "$ENV_NAME" run $ISOLATE_OPTS --io=batch sh -c 'exit 42' 2>/dev/null
-# exit_code=$?
-# set -e
-# if [ "$exit_code" != "42" ]; then
-#     error "Test 5 failed: Expected exit code 42, got $exit_code"
-# fi
-# log "Test 5: PASSED"
+log "Test 5: Testing exit code propagation"
+"$EPKG_BIN" -e "$ENV_NAME" run $ISOLATE_OPTS --io=batch sh -c 'exit 42'
+exit_code=$?
+if [ "$exit_code" != "42" ]; then
+    error "Test 5 failed: Expected exit code 42, got $exit_code"
+fi
+log "Test 5: PASSED"
 
 # Test 6: uname -a (check kernel info)
 log "Test 6: Running uname -a"
@@ -758,10 +750,8 @@ log "Test VM-4: PASSED"
 
 # Test VM-5: vm start rejects duplicate
 log "Test VM-5: vm start rejects duplicate session"
-set +e
 output=$("$EPKG_BIN" vm start "$ENV_NAME" 2>&1)
 exit_code=$?
-set -e
 if [ "$exit_code" = "0" ]; then
     error "Test VM-5 failed: vm start should fail when VM already running"
 fi
@@ -785,10 +775,8 @@ log "Test VM-6: PASSED"
 
 # Test VM-7: vm stop on non-existent VM fails
 log "Test VM-7: vm stop on non-existent VM fails"
-set +e
 output=$("$EPKG_BIN" vm stop "$ENV_NAME" 2>&1)
 exit_code=$?
-set -e
 if [ "$exit_code" = "0" ]; then
     error "Test VM-7 failed: vm stop should fail when no VM running"
 fi
@@ -799,10 +787,8 @@ log "Test VM-7: PASSED"
 
 # Test VM-8: vm status on non-existent VM fails
 log "Test VM-8: vm status on non-existent VM fails"
-set +e
 output=$("$EPKG_BIN" vm status "$ENV_NAME" 2>&1)
 exit_code=$?
-set -e
 if [ "$exit_code" = "0" ]; then
     error "Test VM-8 failed: vm status should fail when no VM running"
 fi
