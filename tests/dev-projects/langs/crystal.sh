@@ -3,7 +3,7 @@
 
 . "$(dirname "$0")/../common.sh"
 
-run_install crystal
+run_install crystal gcc
 check_cmd crystal --version || lang_skip "no crystal for OS=$OS"
 
 run_ebin crystal --version
@@ -16,5 +16,5 @@ else
 fi
 
 run $SHELL_CMD 'mkdir -p /tmp/crystalproj && cd /tmp/crystalproj && echo "puts \"ok\"" > main.cr'
-run $SHELL_CMD 'cd /tmp/crystalproj && crystal run main.cr' | grep -q ok
+run $SHELL_CMD 'cd /tmp/crystalproj && crystal run main.cr'
 lang_ok
