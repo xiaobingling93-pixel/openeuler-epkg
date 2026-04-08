@@ -1200,12 +1200,12 @@ fn create_and_configure_vm(
         setup_console_output(ctx.ctx_id)?;
         log::info!("libkrun: console output configured");
 
-        // On macOS, disable implicit virtio console to prevent kernel messages
-        // (like "sysrq: Power Off" during shutdown) from appearing in stdout.
-        // The kernel cmdline uses console=hvc0, which is the virtio console.
-        // Without this, shutdown messages leak into the user's command output
-        // in stream mode (where stdout is passed through directly).
-        #[cfg(target_os = "macos")]
+        // On Unix platforms (macOS and Linux), disable implicit virtio console to
+        // prevent kernel messages (like "sysrq: Power Off" during shutdown) from
+        // appearing in stdout. The kernel cmdline uses console=hvc0, which is the
+        // virtio console. Without this, shutdown messages leak into the user's
+        // command output in stream mode (where stdout is passed through directly).
+        #[cfg(unix)]
         {
             if std::env::var("EPKG_DEBUG_LIBKRUN").is_err() {
                 check_status("krun_disable_implicit_console",
