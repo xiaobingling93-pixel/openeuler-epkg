@@ -703,69 +703,87 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
 
     match isolate_mode {
         IsolateMode::Vm => {
-            // VM sandbox mode - supported via libkrun
+            crate::debug_epkg!("fork_and_execute: starting for VM mode");
+            crate::debug_epkg!("fork_and_execute: options prepared, isolate_mode={:?}", prepared_opts.effective_sandbox.isolate_mode);
+            crate::debug_epkg!("fork_and_execute: VM mode selected");
+
+            // Check for existing VM session to reuse (cross-process discovery)
             #[cfg(feature = "libkrun")]
-            {
-                crate::debug_epkg!("fork_and_execute: starting for VM mode");
-                crate::debug_epkg!("fork_and_execute: options prepared, isolate_mode={:?}", prepared_opts.effective_sandbox.isolate_mode);
-                crate::debug_epkg!("fork_and_execute: VM mode selected");
-                // Check for existing VM session to reuse (cross-process discovery)
-                if let Some(exit_code) = try_connect_and_execute_vm(env_root, &prepared_opts)? {
-                    log::info!("run: reused existing VM session, exit_code={}", exit_code);
-                    // For foreground processes, return Ok(None) on success, or error on failure
-                    // This matches the documented behavior: Ok(None) for foreground processes
-                    if exit_code == 0 {
-                        return Ok(None);
-                    } else {
-                        return Err(eyre::eyre!("Command exited with code {} in reused VM session", exit_code));
-                    }
-                }
-
-                crate::debug_epkg!("fork_and_execute: libkrun feature enabled, resolving command path");
-                let cmd_path = resolve_command_path(env_root, &prepared_opts)?;
-                crate::debug_epkg!("fork_and_execute: command path resolved: {:?}", cmd_path);
-
-                // Add EPKG_ACTIVE_ENV and EPKG_ENV_ROOT for VM guest process
-                // This is critical for nested epkg calls to know the current environment
-                // In VM guest, ~/.epkg is mounted at /opt/epkg, so we need to convert paths
-                let env_name = config().common.env_name.clone();
-                if !env_name.is_empty() {
-                    prepared_opts.env_vars.insert("EPKG_ACTIVE_ENV".to_string(), env_name.clone());
-                    // Convert host env_root to guest path: ~/.epkg/envs/NAME -> /opt/epkg/envs/NAME
-                    let home_epkg = crate::models::dirs().home_epkg.clone();
-                    let guest_env_root = if let Ok(stripped) = env_root.strip_prefix(&home_epkg) {
-                        let s = stripped.to_string_lossy();
-                        let prefix = if s.starts_with('/') { "/opt/epkg" } else { "/opt/epkg/" };
-                        format!("{}{}", prefix, s)
-                    } else {
-                        env_root.display().to_string()
-                    };
-                    prepared_opts.env_vars.insert("EPKG_ENV_ROOT".to_string(), guest_env_root.clone());
-                    debug!("Added EPKG_ACTIVE_ENV={} EPKG_ENV_ROOT={} (converted from {}) for VM execution",
-                           env_name, guest_env_root, env_root.display());
-                }
-
-                // Convert host path to guest path (strip env_root prefix if inside)
-                let guest_cmd_path = if let Ok(stripped) = cmd_path.strip_prefix(env_root) {
-                    Path::new("/").join(stripped)
+            if let Some(exit_code) = try_connect_and_execute_vm(env_root, &prepared_opts)? {
+                log::info!("run: reused existing VM session, exit_code={}", exit_code);
+                // For foreground processes, return Ok(None) on success, or error on failure
+                // This matches the documented behavior: Ok(None) for foreground processes
+                if exit_code == 0 {
+                    return Ok(None);
                 } else {
-                    cmd_path.clone()
+                    return Err(eyre::eyre!("Command exited with code {} in reused VM session", exit_code));
+                }
+            }
+
+            crate::debug_epkg!("fork_and_execute: resolving command path");
+            let cmd_path = resolve_command_path(env_root, &prepared_opts)?;
+            crate::debug_epkg!("fork_and_execute: command path resolved: {:?}", cmd_path);
+
+            // Add EPKG_ACTIVE_ENV and EPKG_ENV_ROOT for VM guest process
+            // This is critical for nested epkg calls to know the current environment
+            // In VM guest, ~/.epkg is mounted at /opt/epkg, so we need to convert paths
+            let env_name = config().common.env_name.clone();
+            if !env_name.is_empty() {
+                prepared_opts.env_vars.insert("EPKG_ACTIVE_ENV".to_string(), env_name.clone());
+                // Convert host env_root to guest path: ~/.epkg/envs/NAME -> /opt/epkg/envs/NAME
+                let home_epkg = crate::models::dirs().home_epkg.clone();
+                let guest_env_root = if let Ok(stripped) = env_root.strip_prefix(&home_epkg) {
+                    let s = stripped.to_string_lossy();
+                    let prefix = if s.starts_with('/') { "/opt/epkg" } else { "/opt/epkg/" };
+                    format!("{}{}", prefix, s)
+                } else {
+                    env_root.display().to_string()
                 };
-
-                crate::debug_epkg!("Guest command path: {}", guest_cmd_path.display());
-
-                // Note: run_command_in_krun never returns on success
-                crate::debug_epkg!("fork_and_execute: calling run_command_in_krun...");
-                crate::libkrun::run_command_in_krun(env_root, &prepared_opts, &guest_cmd_path)?;
-                Ok(None) // unreachable, but needed for type consistency
+                prepared_opts.env_vars.insert("EPKG_ENV_ROOT".to_string(), guest_env_root.clone());
+                debug!("Added EPKG_ACTIVE_ENV={} EPKG_ENV_ROOT={} (converted from {}) for VM execution",
+                       env_name, guest_env_root, env_root.display());
             }
-            #[cfg(not(feature = "libkrun"))]
+
+            // Convert host path to guest path (strip env_root prefix if inside)
+            let guest_cmd_path = if let Ok(stripped) = cmd_path.strip_prefix(env_root) {
+                Path::new("/").join(stripped)
+            } else {
+                cmd_path.clone()
+            };
+
+            crate::debug_epkg!("Guest command path: {}", guest_cmd_path.display());
+
+            // Use VMM backend selection that respects --vmm option
+            // On Linux: use vmm::try_vmm_backends which tries backends in vmm_order
+            // On non-Linux: use direct libkrun call
+            #[cfg(target_os = "linux")]
             {
-                Err(eyre::eyre!(
-                    "VM sandbox requires libkrun feature. \
-                     Recompile epkg with libkrun support for --isolate=vm"
-                ))
+                crate::debug_epkg!("fork_and_execute: calling try_vmm_backends with order {:?}...", prepared_opts.vmm_order);
+                crate::vmm::try_vmm_backends(
+                    env_root,
+                    &prepared_opts,
+                    &guest_cmd_path,
+                    None,
+                    &prepared_opts.vmm_order,
+                    prepared_opts.vm_reuse_connect,
+                )?;
             }
+            #[cfg(not(target_os = "linux"))]
+            {
+                #[cfg(feature = "libkrun")]
+                {
+                    crate::debug_epkg!("fork_and_execute: calling run_command_in_krun...");
+                    crate::libkrun::run_command_in_krun(env_root, &prepared_opts, &guest_cmd_path)?;
+                }
+                #[cfg(not(feature = "libkrun"))]
+                {
+                    return Err(eyre::eyre!(
+                        "VM sandbox requires libkrun feature. \
+                         Recompile epkg with libkrun support for --isolate=vm"
+                    ));
+                }
+            }
+            Ok(None) // unreachable, but needed for type consistency
         }
         IsolateMode::Env | IsolateMode::Fs => {
             // For conda/homebrew/msys2 packages, they work like portable apps
