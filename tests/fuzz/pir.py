@@ -906,8 +906,9 @@ def test_executables_batch(env_name: str, exe_whitelist: list = None) -> Tuple[l
         supported = detect_supported_flags(str(real_exe))
 
         # Generate commands with actual detected flags
+        # Use '--' separator to ensure flags are passed to the command, not epkg
         for flag in supported:
-            cmd_str = f"epkg -e {env_name} run {exe} {flag}"
+            cmd_str = f"epkg -e {env_name} run -- {exe} {flag}"
             commands.append(cmd_str)
 
         success, output = test_executable_help(env_name, exe)
