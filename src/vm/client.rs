@@ -950,8 +950,13 @@ fn handle_streaming(stream: &mut TcpStream, use_pty: bool) -> Result<i32> {
         None
     };
 
-    // Spawn stdin thread (needed for both modes)
-    let stdin_thread = spawn_stdin_thread(stream_for_stdin, Arc::clone(&stop_flag));
+    // Spawn stdin thread only for PTY mode (interactive sessions need stdin forwarding)
+    // Non-PTY mode typically doesn't need interactive stdin
+    let stdin_thread = if use_pty {
+        Some(spawn_stdin_thread(stream_for_stdin, Arc::clone(&stop_flag)))
+    } else {
+        None
+    };
 
     // Main thread: read from TCP and handle messages
     let mut reader = BufReader::new(stream);
@@ -964,8 +969,15 @@ fn handle_streaming(stream: &mut TcpStream, use_pty: bool) -> Result<i32> {
     // Signal stdin thread to stop before returning
     stop_flag.store(true, Ordering::SeqCst);
 
+    // Shutdown write side to unblock any pending writes in stdin thread
+    // This ensures stdin thread exits promptly when command completes
+    // Use get_mut() to access the underlying TcpStream from BufReader
+    let _ = reader.get_mut().shutdown(std::net::Shutdown::Write);
+
     // Wait for stdin thread to exit to avoid process hang
-    let _ = stdin_thread.join();
+    if let Some(handle) = stdin_thread {
+        let _ = handle.join();
+    }
 
     result
 }
@@ -987,17 +999,18 @@ fn handle_batch(stream: &mut TcpStream) -> Result<i32> {
     let result: BatchResult = serde_json::from_str(response.trim())
         .map_err(|e| eyre::eyre!("Failed to parse batch response: {} ({:?})", e, response))?;
 
-    // Decode and write stdout
+    let mut out = std::io::stdout();
+    let mut err = std::io::stderr();
     if !result.stdout.is_empty() {
         let stdout_bytes = STANDARD.decode(&result.stdout)?;
-        std::io::stdout().write_all(&stdout_bytes)?;
+        out.write_all(&stdout_bytes)?;
     }
-
-    // Decode and write stderr
     if !result.stderr.is_empty() {
         let stderr_bytes = STANDARD.decode(&result.stderr)?;
-        std::io::stderr().write_all(&stderr_bytes)?;
+        err.write_all(&stderr_bytes)?;
     }
+    out.flush()?;
+    err.flush()?;
 
     Ok(result.exit_code)
 }
