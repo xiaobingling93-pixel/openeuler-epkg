@@ -126,11 +126,10 @@ use serde_json;
 use libc;
 use std::net::TcpStream;
 use std::io::{Read, Write};
-use std::process::Command as StdCommand;
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use nix::pty::{openpty, Winsize, OpenptyResult};
 use nix::sys::wait::{waitpid, WaitPidFlag};
-use nix::unistd::{fork, ForkResult, dup2, setsid, close, Pid, getuid, geteuid, getgid, getegid};
+use nix::unistd::{fork, ForkResult, dup2, setsid, close, Pid, Uid, Gid, getuid, geteuid, getgid, getegid};
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use std::os::fd::{OwnedFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd};
 use nix::sys::socket::{self, AddressFamily, SockType, SockFlag, VsockAddr, Backlog};
@@ -382,84 +381,113 @@ fn resolve_request_user(user: Option<&str>) -> Result<Option<(u32, u32)>> {
     }
 }
 
-/// Outcome of spawning the child with pipes. Either the child and its stdio pipes, or spawn failed with error message.
+/// Outcome of spawning the child with pipes.
 enum SpawnOutcome {
-    Spawned(
-        std::process::Child,
-        Option<std::process::ChildStdin>,
-        std::process::ChildStdout,
-        std::process::ChildStderr,
-    ),
+    /// Child spawned successfully with pid and pipe handles
+    Spawned {
+        pid: Pid,
+        stdin: Option<std::fs::File>,
+        stdout: std::fs::File,
+        stderr: std::fs::File,
+    },
+    #[allow(dead_code)]
     SpawnFailed { error_msg: String },
 }
 
-/// Spawn the command with piped stdin/stdout/stderr. On spawn failure, returns error message without sending to stream.
-/// Caller is responsible for sending error response in appropriate format (streaming or batch).
-fn spawn_child_piped(
-    request: &CommandRequest,
-) -> Result<SpawnOutcome> {
+/// Spawn the command with piped stdin/stdout/stderr using fork() (not vfork).
+/// This avoids musl vfork issues with BusyBox applets like `time`.
+fn spawn_child_piped(request: &CommandRequest) -> Result<SpawnOutcome> {
+    use nix::unistd::{fork, ForkResult, pipe2};
+    use nix::fcntl::OFlag;
+    use std::os::unix::io::{FromRawFd, IntoRawFd, AsRawFd};
+
     log_process_identity("vm-daemon spawn_child_piped parent");
-    let mut child = StdCommand::new(&request.command[0]);
-    child.args(&request.command[1..]);
-    if let Some(cwd) = &request.cwd {
-        log::debug!("vm-daemon spawn_child_piped: setting cwd={}", cwd);
-        child.current_dir(cwd);
-    }
-    let uid_gid = resolve_request_user(request.user.as_deref())?;
-    if let Some((uid, gid)) = uid_gid {
-        use std::os::unix::process::CommandExt;
-        log::debug!("vm-daemon spawn_child_piped: setting child uid={} gid={}", uid, gid);
-        child.uid(uid);
-        child.gid(gid);
-    }
 
-    // Build environment with HOME set appropriately
-    let mut env = request.env.clone();
-    if !env.contains_key("HOME") {
-        let home = if let Some((uid, _)) = uid_gid {
-            if uid == 0 {
-                "/root".to_string()
-            } else {
-                // Try to find user's home from passwd
-                let passwd_entries = crate::userdb::read_passwd(None)?;
-                passwd_entries
-                    .iter()
-                    .find(|u| u.uid == uid)
-                    .map(|u| u.dir.clone())
-                    .unwrap_or_else(|| format!("/home/{}", uid))
-            }
-        } else {
-            // No user specified, running as current user (likely root from init)
-            "/root".to_string()
-        };
-        env.insert("HOME".to_string(), home);
-    }
-
-    log::debug!("vm-daemon spawn_child_piped: setting env: {:?}", env);
-    child.envs(&env);
-    // Use piped stdin only if stdin data is provided; otherwise use /dev/null to avoid
-    // potential vfork issues in child processes (e.g., BusyBox time on musl)
-    if request.stdin.is_empty() {
-        child.stdin(std::process::Stdio::null());
+    // Create pipes with CLOEXEC
+    let (stdout_r, stdout_w) = pipe2(OFlag::O_CLOEXEC)?;
+    let (stderr_r, stderr_w) = pipe2(OFlag::O_CLOEXEC)?;
+    let stdin_pipe = if request.stdin.is_empty() {
+        None
     } else {
-        child.stdin(std::process::Stdio::piped());
-    }
-    child.stdout(std::process::Stdio::piped());
-    child.stderr(std::process::Stdio::piped());
+        let (r, w) = pipe2(OFlag::O_CLOEXEC)?;
+        Some((r, w))
+    };
 
-    match child.spawn() {
-        Ok(mut c) => {
-            log::debug!("Child spawned successfully");
-            // stdin may be None if Stdio::null() was used
-            let stdin_pipe = c.stdin.take();
-            let stdout_pipe = c.stdout.take().expect("stdout pipe");
-            let stderr_pipe = c.stderr.take().expect("stderr pipe");
-            Ok(SpawnOutcome::Spawned(c, stdin_pipe, stdout_pipe, stderr_pipe))
+    let uid_gid = resolve_request_user(request.user.as_deref())?;
+
+    match unsafe { fork() }? {
+        ForkResult::Child => {
+            // Child: clear CLOEXEC and dup to stdio
+            unsafe {
+                libc::fcntl(stdout_w.as_raw_fd(), libc::F_SETFD, 0);
+                libc::fcntl(stderr_w.as_raw_fd(), libc::F_SETFD, 0);
+                libc::dup2(stdout_w.as_raw_fd(), 1);
+                libc::dup2(stderr_w.as_raw_fd(), 2);
+
+                if let Some((ref stdin_r, _)) = stdin_pipe {
+                    libc::fcntl(stdin_r.as_raw_fd(), libc::F_SETFD, 0);
+                    libc::dup2(stdin_r.as_raw_fd(), 0);
+                } else {
+                    let null_fd = libc::open(b"/dev/null\0".as_ptr() as *const _, libc::O_RDONLY);
+                    if null_fd >= 0 {
+                        libc::dup2(null_fd, 0);
+                        libc::close(null_fd);
+                    }
+                }
+            }
+
+            // Setup environment
+            if let Some(ref cwd) = request.cwd {
+                let _ = std::env::set_current_dir(cwd);
+            }
+            if let Some((uid, gid)) = uid_gid {
+                let _ = nix::unistd::setgid(Gid::from_raw(gid));
+                let _ = nix::unistd::setuid(Uid::from_raw(uid));
+            }
+
+            // Build env
+            let mut env = request.env.clone();
+            if !env.contains_key("HOME") {
+                let home = if let Some((uid, _)) = uid_gid {
+                    if uid == 0 { "/root".to_string() } else { format!("/home/{}", uid) }
+                } else { "/root".to_string() };
+                env.insert("HOME".to_string(), home);
+            }
+            for (k, v) in env {
+                std::env::set_var(k, v);
+            }
+
+            // Exec command
+            let cmd = std::ffi::CString::new(request.command[0].as_str()).unwrap();
+            let args: Vec<std::ffi::CString> = request.command.iter()
+                .map(|s| std::ffi::CString::new(s.as_str()).unwrap())
+                .collect();
+            let mut ptrs: Vec<*const libc::c_char> = args.iter().map(|s| s.as_ptr()).collect();
+            ptrs.push(std::ptr::null());
+
+            unsafe {
+                libc::execvp(cmd.as_ptr(), ptrs.as_ptr());
+                libc::perror(cmd.as_ptr());
+                libc::_exit(127);
+            }
         }
-        Err(e) => {
-            let error_msg = format!("Failed to spawn {}: {}", request.command[0], e);
-            log::debug!("{}", error_msg);
-            Ok(SpawnOutcome::SpawnFailed { error_msg })
+        ForkResult::Parent { child } => {
+            // Parent: close write ends, convert read ends to Child types
+            drop(stdout_w);
+            drop(stderr_w);
+
+            let stdin = stdin_pipe.map(|(_, w)| unsafe {
+                std::fs::File::from_raw_fd(w.into_raw_fd())
+            });
+            let stdout = unsafe {
+                std::fs::File::from_raw_fd(stdout_r.into_raw_fd())
+            };
+            let stderr = unsafe {
+                std::fs::File::from_raw_fd(stderr_r.into_raw_fd())
+            };
+
+            log::debug!("Child spawned with fork, pid={}", child);
+            Ok(SpawnOutcome::Spawned { pid: child, stdin, stdout, stderr })
         }
     }
 }
@@ -662,8 +690,8 @@ fn check_child_status(
 
 /// Drain stdout and stderr pipes after child exit.
 fn drain_pipes(
-    stdout_file: &mut std::process::ChildStdout,
-    stderr_file: &mut std::process::ChildStderr,
+    stdout_file: &mut std::fs::File,
+    stderr_file: &mut std::fs::File,
     stream: &mut TcpStream,
     buf: &mut [u8],
     seq_out: &mut u64,
@@ -860,7 +888,7 @@ fn execute_with_pty(request: &CommandRequest, stream: &mut TcpStream, initial_da
 
 /// Handle stdout pipe events: read and send data, return true on EOF.
 fn handle_stdout_event(
-    stdout_file: &mut std::process::ChildStdout,
+    stdout_file: &mut std::fs::File,
     stream: &mut TcpStream,
     buf: &mut [u8],
     seq_out: &mut u64,
@@ -885,7 +913,7 @@ fn handle_stdout_event(
 
 /// Handle stderr pipe events: read and send data, return true on EOF.
 fn handle_stderr_event(
-    stderr_file: &mut std::process::ChildStderr,
+    stderr_file: &mut std::fs::File,
     stream: &mut TcpStream,
     buf: &mut [u8],
     seq_err: &mut u64,
@@ -911,8 +939,8 @@ fn handle_stderr_event(
 /// Handle poll events for non-PTY mode: process stdout/stderr/stdin. Returns (should_break, stdin_eof_received).
 fn handle_nonpty_poll_events<W: std::io::Write>(
     poll_fds: &[PollFd],
-    stdout_file: &mut std::process::ChildStdout,
-    stderr_file: &mut std::process::ChildStderr,
+    stdout_file: &mut std::fs::File,
+    stderr_file: &mut std::fs::File,
     stdin_file: &mut Option<W>,
     stream: &mut TcpStream,
     buf: &mut [u8],
@@ -949,8 +977,8 @@ fn handle_nonpty_poll_events<W: std::io::Write>(
 /// Poll loop for non-PTY mode: forward pipe output to TCP, TCP input to stdin, check child status.
 fn nonpty_poll_loop<W: std::io::Write>(
     child_pid: Pid,
-    stdout_file: &mut std::process::ChildStdout,
-    stderr_file: &mut std::process::ChildStderr,
+    stdout_file: &mut std::fs::File,
+    stderr_file: &mut std::fs::File,
     mut stdin_file: Option<W>,
     stream: &mut TcpStream,
     initial_data: Option<Vec<u8>>,
@@ -1036,10 +1064,10 @@ fn execute_without_pty(request: &CommandRequest, stream: &mut TcpStream, initial
                 send_exit_and_flush(stream, -1)?;
                 return Ok(-1);
             }
-            SpawnOutcome::Spawned(child, stdin_pipe, stdout_pipe, stderr_pipe) => {
-                let mut stdin_file = stdin_pipe;
-                let mut stdout_file = stdout_pipe;
-                let mut stderr_file = stderr_pipe;
+            SpawnOutcome::Spawned { pid, stdin, stdout, stderr } => {
+                let mut stdin_file = stdin;
+                let mut stdout_file = stdout;
+                let mut stderr_file = stderr;
 
                 // Write request.stdin field if provided
                 if !request.stdin.is_empty() {
@@ -1080,7 +1108,7 @@ fn execute_without_pty(request: &CommandRequest, stream: &mut TcpStream, initial
                     }
                 }
 
-                let child_pid    = Pid::from_raw(child.id() as i32);
+                let child_pid    = pid;
                 let child_status = nonpty_poll_loop(child_pid, &mut stdout_file, &mut stderr_file, stdin_file, stream, None)?;
 
                 let status = match child_status {
@@ -1152,25 +1180,25 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
                 debug_file_write("execute_batch: done (error case)\n");
                 Ok(-1)
             }
-            SpawnOutcome::Spawned(child, mut stdin_pipe, stdout_pipe, stderr_pipe) => {
-                debug_file_write(&format!("execute_batch: child spawned, pid={}\n", child.id()));
+            SpawnOutcome::Spawned { pid, mut stdin, stdout, stderr } => {
+                debug_file_write(&format!("execute_batch: child spawned, pid={}\n", pid));
 
                 // Write stdin if provided, then close it
                 if !request.stdin.is_empty() {
-                    if let Some(ref mut stdin_ref) = stdin_pipe {
+                    if let Some(ref mut stdin_ref) = stdin {
                         use std::io::Write;
                         stdin_ref.write_all(request.stdin.as_bytes())?;
                     }
                 }
-                drop(stdin_pipe);
+                drop(stdin);
 
                 // Drain stdout/stderr while the child runs. Waiting for the child before reading
                 // pipes can deadlock: if the child fills a pipe buffer before exiting, it blocks on
                 // write while we block in waitpid (classic pipe deadlock).
                 debug_file_write("execute_batch: draining stdout/stderr (parallel) while child runs\n");
                 use std::io::Read;
-                let mut stdout_pipe = stdout_pipe;
-                let mut stderr_pipe = stderr_pipe;
+                let mut stdout_pipe = stdout;
+                let mut stderr_pipe = stderr;
                 let stdout_thread = std::thread::spawn(move || {
                     let mut v = Vec::new();
                     let _ = stdout_pipe.read_to_end(&mut v);
@@ -1185,7 +1213,7 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
                 debug_file_write("execute_batch: waiting for child to complete\n");
 
                 // Wait for child to complete
-                let child_pid = Pid::from_raw(child.id() as i32);
+                let child_pid = pid;
                 let status = waitpid(child_pid, None)?;
                 let exit_code = exit_code_from_wait_status(status);
 
