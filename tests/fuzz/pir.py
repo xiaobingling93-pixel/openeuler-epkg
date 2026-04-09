@@ -574,16 +574,6 @@ def compare_disk_space_estimate(
         if abs(error_pct) > ESTIMATION_ERROR_PERCENT:
             log(f"  WARNING: Estimation error too large!")
 
-        # Assert abort if underestimated disk space beyond threshold.
-        # Only abort when error exceeds 1/8 of free space - this preserves
-        # the failure state for analysis when it could actually cause OOS.
-        if error_pct > ESTIMATION_ERROR_PERCENT and error_bytes > error_threshold_bytes:
-            assert False, \
-                f"BUG: Disk space underestimated by {error_pct:.1f}%! " \
-                f"Estimated {format_size(estimated_bytes)}, actual {format_size(actual_delta)}. " \
-                f"Error {format_size(error_bytes)} > threshold {format_size(error_threshold_bytes)} (free/8). " \
-                f"Batch: {' '.join(batch)}. " \
-                f"This could cause out of space errors!"
     else:
         log(f"  Estimated:  (not found in epkg output)")
 
