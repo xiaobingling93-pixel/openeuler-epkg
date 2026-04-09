@@ -1026,6 +1026,7 @@ fn execute_without_pty(request: &CommandRequest, stream: &mut TcpStream, initial
             SpawnOutcome::SpawnFailed { error_msg } => {
                 // Send error as stderr chunk and exit message
                 send_stderr_chunk(stream, error_msg.as_bytes(), &mut 0)?;
+                send_exit_and_flush(stream, -1)?;
                 return Ok(-1);
             }
             SpawnOutcome::Spawned(child, stdin_pipe, stdout_pipe, stderr_pipe) => {
