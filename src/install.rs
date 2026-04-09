@@ -437,8 +437,8 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
 fn download_and_unpack_packages(
     plan: &mut InstallationPlan,
 ) -> Result<InstalledPackagesMap> {
-    // Reset unpack counters before starting new installation batch
-    crate::store::reset_unpack_counters();
+    // Reset estimation counters before starting new installation batch
+    crate::store::reset_estimation_counters();
 
     struct InstalledPathLookupGuard;
     impl Drop for InstalledPathLookupGuard {
