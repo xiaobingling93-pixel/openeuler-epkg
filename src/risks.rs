@@ -37,6 +37,23 @@ use crate::package_cache::map_pkgline2filelist;
 // As more packages are unpacked, BATCH_TOTAL_ESTIMATE becomes more accurate,
 // and predicted_final_free converges to the true final free space.
 //
+// Why INITIAL_FREE_SPACE is set ONLY ONCE at the start:
+// ======================================================
+// We do concurrent download+unpack. At any moment during the process:
+// - Some packages are fully unpacked
+// - Some packages are partially unpacked (files being written)
+// - Some packages are being downloaded
+// - Some packages haven't started yet
+//
+// During this period, a real-time 'df' query returns free space that is in an
+// indeterminate state - it doesn't correspond to any clean "checkpoint" in the
+// installation process. The free space is a moving target that can't be used
+// for meaningful calculations.
+//
+// Therefore, we can only reliably measure free space at the START (before any
+// concurrent unpacking begins) and use that as our baseline. All subsequent
+// calculations are based on this initial snapshot plus our progressive estimation.
+//
 // Constants derived from real /usr data analysis:
 // - 23GB total, 480,995 files, 45,681 dirs, 42,861 symlinks
 // - AVG_FILE_SIZE: 50KB (23GB / 480,995 files)
@@ -57,6 +74,8 @@ static BATCH_TOTAL_ESTIMATE: AtomicU64 = AtomicU64::new(0);
 static PACKAGE_ESTIMATES: RwLock<Option<HashMap<String, u64>>> = RwLock::new(None);
 
 /// Initialize estimation for entire batch (call once at installation start)
+/// Sets INITIAL_FREE_SPACE once - see module comment for why this is only
+/// done at the start and not during concurrent unpack operations.
 #[cfg(unix)]
 pub fn init_batch_estimation(pkgkeys: &[String]) -> Result<()> {
     let store_root = crate::models::dirs().epkg_store.clone();
