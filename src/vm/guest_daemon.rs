@@ -832,13 +832,20 @@ fn execute_with_pty(request: &CommandRequest, stream: &mut TcpStream, initial_da
     })();
 
     match result {
-        Ok(exit_code) => send_exit_and_flush(stream, exit_code),
+        Ok(exit_code) => {
+            send_exit_and_flush(stream, exit_code)?;
+            // Shutdown write side to signal EOF to client
+            // Required because stdin thread may hold a clone of this stream
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            Ok(exit_code)
+        }
         Err(e) => {
             log::debug!("execute_with_pty: error {}, sending error message", e);
             let _ = write_stream_message(stream, &StreamMessage::Error {
                 message: format!("execute_with_pty error: {}", e)
             });
             let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
             Err(e)
         }
     }
@@ -1080,13 +1087,20 @@ fn execute_without_pty(request: &CommandRequest, stream: &mut TcpStream, initial
     })();
 
     match result {
-        Ok(exit_code) => send_exit_and_flush(stream, exit_code),
+        Ok(exit_code) => {
+            send_exit_and_flush(stream, exit_code)?;
+            // Shutdown write side to signal EOF to client
+            // Required because stdin thread may hold a clone of this stream
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            Ok(exit_code)
+        }
         Err(e) => {
             log::debug!("execute_without_pty: error {}, sending error message", e);
             let _ = write_stream_message(stream, &StreamMessage::Error {
                 message: format!("execute_without_pty error: {}", e)
             });
             let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
             Err(e)
         }
     }
