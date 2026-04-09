@@ -8,6 +8,10 @@ use std::collections::HashMap;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::Arc;
+#[cfg(unix)]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(unix)]
+use std::sync::RwLock;
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use crate::models::InstalledPackagesMap;
@@ -15,6 +19,259 @@ use crate::models::PACKAGE_CACHE;
 use crate::models::config;
 use crate::plan::{InstallationPlan, FilesystemInfo};
 use crate::package_cache::map_pkgline2filelist;
+
+// ============================================================================
+// Progressive Disk Space Estimation for Store Data Integrity
+// ============================================================================
+//
+// Problem: Concurrent download+unpack means packages occupy disk space BEFORE
+// we get accurate file counts from filelist.txt. The original one-time risk
+// evaluation happens AFTER all packages are unpacked, which is too late.
+//
+// Solution: Progressive estimation per-package granularity:
+//
+// 1. At installation start: Calculate TOTAL estimate for ALL packages once
+// 2. After each unpack: Replace that package's estimate with actual value
+// 3. predicted_final_free = INITIAL_FREE_SPACE - BATCH_TOTAL_ESTIMATE
+//
+// As more packages are unpacked, BATCH_TOTAL_ESTIMATE becomes more accurate,
+// and predicted_final_free converges to the true final free space.
+//
+// Constants derived from real /usr data analysis:
+// - 23GB total, 480,995 files, 45,681 dirs, 42,861 symlinks
+// - AVG_FILE_SIZE: 50KB (23GB / 480,995 files)
+// - AVG_FILES_PER_DIR: 10 (480,995 / 45,681)
+// - AVG_FILES_PER_LINK: 11 (480,995 / 42,861)
+//
+
+const AVG_FILE_SIZE: u64 = 50 * 1024; // 50KB
+const AVG_FILES_PER_DIR: u64 = 10;
+const AVG_FILES_PER_LINK: u64 = 11;
+const MIN_FREE_SPACE: u64 = 100 * 1024 * 1024; // 100MB safety margin
+
+#[cfg(unix)]
+static INITIAL_FREE_SPACE: AtomicU64 = AtomicU64::new(0);
+#[cfg(unix)]
+static BATCH_TOTAL_ESTIMATE: AtomicU64 = AtomicU64::new(0);
+#[cfg(unix)]
+static PACKAGE_ESTIMATES: RwLock<Option<HashMap<String, u64>>> = RwLock::new(None);
+
+/// Initialize estimation for entire batch (call once at installation start)
+#[cfg(unix)]
+pub fn init_batch_estimation(pkgkeys: &[String]) -> Result<()> {
+    let store_root = crate::models::dirs().epkg_store.clone();
+    let store_fs_info = get_filesystem_info(&store_root);
+    INITIAL_FREE_SPACE.store(store_fs_info.free_space, Ordering::Relaxed);
+
+    let mut total_estimate: u64 = 0;
+    let mut pkg_estimates = HashMap::new();
+
+    for pkgkey in pkgkeys {
+        match estimate_package_disk_space(pkgkey) {
+            Ok(est) => {
+                pkg_estimates.insert(pkgkey.clone(), est);
+                total_estimate += est;
+            }
+            Err(e) => {
+                log::warn!("Failed to estimate disk space for {}: {}", pkgkey, e);
+            }
+        }
+    }
+
+    BATCH_TOTAL_ESTIMATE.store(total_estimate, Ordering::Relaxed);
+    *PACKAGE_ESTIMATES.write().unwrap() = Some(pkg_estimates);
+
+    log::debug!(
+        "init_batch_estimation: {} packages, initial_free={}, total_estimate={}",
+        pkgkeys.len(),
+        crate::utils::format_size(store_fs_info.free_space),
+        crate::utils::format_size(total_estimate)
+    );
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn init_batch_estimation(_pkgkeys: &[String]) -> Result<()> {
+    Ok(())
+}
+
+/// Reset estimation counters (call before starting new installation batch)
+#[cfg(unix)]
+pub fn reset_estimation_counters() {
+    INITIAL_FREE_SPACE.store(0, Ordering::Relaxed);
+    BATCH_TOTAL_ESTIMATE.store(0, Ordering::Relaxed);
+    *PACKAGE_ESTIMATES.write().unwrap() = None;
+}
+
+#[cfg(not(unix))]
+pub fn reset_estimation_counters() {}
+
+/// Get predicted final free space (converges to true value as packages are unpacked)
+#[cfg(unix)]
+pub fn get_predicted_final_free() -> u64 {
+    let initial_free = INITIAL_FREE_SPACE.load(Ordering::Relaxed);
+    let total_estimate = BATCH_TOTAL_ESTIMATE.load(Ordering::Relaxed);
+    initial_free.saturating_sub(total_estimate)
+}
+
+#[cfg(not(unix))]
+pub fn get_predicted_final_free() -> u64 {
+    0
+}
+
+/// Estimate disk space needed for a package (before unpack)
+#[cfg(unix)]
+pub fn estimate_package_disk_space(pkgkey: &str) -> Result<u64> {
+    let package = crate::package_cache::load_package_info(pkgkey)
+        .map_err(|e| eyre!("Failed to load package info for {}: {}", pkgkey, e))?;
+
+    let installed_size = package.installed_size as u64;
+    let file_count_estimate = if installed_size > 0 {
+        installed_size / AVG_FILE_SIZE
+    } else {
+        10
+    };
+
+    let dir_count_estimate = file_count_estimate / AVG_FILES_PER_DIR + 1;
+    let link_count_estimate = file_count_estimate / AVG_FILES_PER_LINK;
+
+    let store_root = crate::models::dirs().epkg_store.clone();
+    let store_fs_info = get_filesystem_info(&store_root);
+    let block_size = store_fs_info.block_size.max(4096);
+
+    let file_block_overhead = file_count_estimate * block_size * 3 / 4;
+    let dir_overhead = dir_count_estimate * block_size;
+
+    const INFO_BASE_OVERHEAD: u64 = 2 * 1024;
+    const FILELIST_BYTES_PER_ENTRY: u64 = 80;
+    let total_entries = file_count_estimate + dir_count_estimate + link_count_estimate;
+    let info_overhead = INFO_BASE_OVERHEAD + total_entries * FILELIST_BYTES_PER_ENTRY;
+
+    let total_estimate = installed_size + file_block_overhead + dir_overhead + info_overhead;
+
+    log::trace!(
+        "estimate_package_disk_space: pkgkey={}, installed_size={}, total_estimate={}",
+        pkgkey, crate::utils::format_size(installed_size), crate::utils::format_size(total_estimate)
+    );
+
+    Ok(total_estimate)
+}
+
+#[cfg(not(unix))]
+pub fn estimate_package_disk_space(_pkgkey: &str) -> Result<u64> {
+    Ok(0)
+}
+
+/// Check if there's enough disk space before unpacking
+#[cfg(unix)]
+pub fn check_store_space_before_unpack(pkgkey: &str) -> Result<()> {
+    let predicted_final_free = get_predicted_final_free();
+
+    log::trace!(
+        "check_store_space_before_unpack: pkgkey={}, predicted_final_free={}",
+        pkgkey,
+        crate::utils::format_size(predicted_final_free)
+    );
+
+    if predicted_final_free < MIN_FREE_SPACE {
+        let initial_free = INITIAL_FREE_SPACE.load(Ordering::Relaxed);
+        let batch_total = BATCH_TOTAL_ESTIMATE.load(Ordering::Relaxed);
+
+        return Err(eyre!(
+            "Insufficient disk space predicted: {} final free space. \
+             Initial free: {}, current batch estimate: {}. \
+             Abort early to prevent partial/corrupted store.",
+            crate::utils::format_size(predicted_final_free),
+            crate::utils::format_size(initial_free),
+            crate::utils::format_size(batch_total)
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn check_store_space_before_unpack(_pkgkey: &str) -> Result<()> {
+    Ok(())
+}
+
+/// Adjust batch estimate after unpack by replacing estimate with actual
+#[cfg(unix)]
+pub fn adjust_batch_estimate(pkgkey: &str, store_tmp_dir: &Path) -> Result<()> {
+    let pkg_estimate = {
+        let estimates = PACKAGE_ESTIMATES.read().unwrap();
+        match estimates.as_ref() {
+            Some(map) => map.get(pkgkey).copied().unwrap_or(0),
+            None => 0,
+        }
+    };
+
+    let filelist_path = store_tmp_dir.join("info").join("filelist.txt");
+
+    if !crate::lfs::exists_on_host(&filelist_path) {
+        log::warn!("filelist.txt not found at {}, skipping adjustment", filelist_path.display());
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(&filelist_path)
+        .map_err(|e| eyre!("Failed to read filelist.txt: {}", e))?;
+
+    let file_infos = crate::mtree::parse_simplified_mtree(&content)?;
+
+    let actual_file_count = file_infos.iter().filter(|f| f.is_file()).count() as u64;
+    let actual_dir_count = file_infos.iter().filter(|f| f.is_dir()).count() as u64;
+    let actual_link_count = file_infos.iter().filter(|f| f.is_link()).count() as u64;
+
+    let store_root = crate::models::dirs().epkg_store.clone();
+    let store_fs_info = get_filesystem_info(&store_root);
+    let block_size = store_fs_info.block_size.max(4096);
+
+    let file_block_overhead = actual_file_count * block_size * 3 / 4;
+    let dir_overhead = actual_dir_count * block_size;
+
+    const INFO_BASE_OVERHEAD: u64 = 2 * 1024;
+    const FILELIST_BYTES_PER_ENTRY: u64 = 80;
+    let actual_entries = actual_file_count + actual_dir_count + actual_link_count;
+    let info_overhead = INFO_BASE_OVERHEAD + actual_entries * FILELIST_BYTES_PER_ENTRY;
+
+    let package_txt_path = store_tmp_dir.join("info").join("package.txt");
+    let installed_size = if crate::lfs::exists_on_host(&package_txt_path) {
+        let pkg_content = std::fs::read_to_string(&package_txt_path)?;
+        pkg_content.lines()
+            .find(|line| line.starts_with("installedSize: "))
+            .and_then(|line| line.split(": ").nth(1))
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    let actual_size = installed_size + file_block_overhead + dir_overhead + info_overhead;
+
+    let prev_total = BATCH_TOTAL_ESTIMATE.fetch_sub(pkg_estimate, Ordering::Relaxed);
+    let new_total = BATCH_TOTAL_ESTIMATE.fetch_add(actual_size, Ordering::Relaxed);
+
+    log::trace!(
+        "adjust_batch_estimate: pkgkey={}, files={}, dirs={}, links={}, actual={}, estimate={}. \
+         Batch estimate: {} - {} + {} = {} (predicted_final_free: {})",
+        pkgkey, actual_file_count, actual_dir_count, actual_link_count,
+        crate::utils::format_size(actual_size),
+        crate::utils::format_size(pkg_estimate),
+        crate::utils::format_size(prev_total),
+        crate::utils::format_size(pkg_estimate),
+        crate::utils::format_size(actual_size),
+        crate::utils::format_size(new_total + actual_size),
+        crate::utils::format_size(get_predicted_final_free())
+    );
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn adjust_batch_estimate(_pkgkey: &str, _store_tmp_dir: &Path) -> Result<()> {
+    Ok(())
+}
 
 /// Returns true if `rel_path` (relative path under package `fs/`, POSIX separators) is a directory
 /// according to `filelist.txt` entries (directory paths end with `/`).

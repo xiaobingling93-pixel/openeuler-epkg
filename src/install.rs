@@ -438,7 +438,7 @@ fn download_and_unpack_packages(
     plan: &mut InstallationPlan,
 ) -> Result<InstalledPackagesMap> {
     // Reset estimation counters before starting new installation batch
-    crate::store::reset_estimation_counters();
+    crate::risks::reset_estimation_counters();
 
     struct InstalledPathLookupGuard;
     impl Drop for InstalledPathLookupGuard {
@@ -479,6 +479,16 @@ fn download_and_unpack_packages(
                     packages_to_download.insert(pkgkey.clone(), package_info);
                 }
             }
+        }
+    }
+
+    // Initialize batch estimation with all packages that need unpacking
+    // This calculates total estimate once, then each unpack replaces estimate with actual
+    #[cfg(unix)]
+    {
+        let pkgkeys: Vec<String> = packages_to_download.keys().cloned().collect();
+        if !pkgkeys.is_empty() {
+            crate::risks::init_batch_estimation(&pkgkeys)?;
         }
     }
 
