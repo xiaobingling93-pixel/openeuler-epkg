@@ -531,6 +531,8 @@ pub struct ProcessCreationConfig {
     pub namespace_flags: CloneFlags,
     pub needs_uid_mapping: bool,
     pub mount_spec_strings: Vec<String>,
+    /// Working directory to restore after pivot (for Fs mode)
+    pub working_dir: Option<PathBuf>,
 }
 
 /// Unified context for all child processes.

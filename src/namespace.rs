@@ -321,6 +321,28 @@ pub fn determine_process_config(env_root: &Path, run_options: &RunOptions) -> Pr
 
         // Add user-provided mount specifications
         mount_spec_strings.extend(run_options.effective_sandbox.mount_specs.iter().cloned());
+
+        // In Fs mode, bind-mount current working directory to sandbox if not chdir_to_env_root
+        if isolate_mode == IsolateMode::Fs && !run_options.chdir_to_env_root {
+            if let Ok(cwd) = std::env::current_dir() {
+                // Bind-mount cwd to same path inside sandbox so commands can access it
+                let cwd_str = cwd.to_string_lossy();
+                if cwd.is_absolute() && cwd.exists() {
+                    trace!("Fs mode: adding bind mount for current working directory: {}", cwd_str);
+                    mount_spec_strings.push(format!("{}:{}", cwd_str, cwd_str));
+                }
+            }
+        }
+    }
+
+    // Store working directory for Fs mode (used after pivot to restore cwd)
+    let mut working_dir = None;
+    if isolate_mode == IsolateMode::Fs && !run_options.chdir_to_env_root {
+        if let Ok(cwd) = std::env::current_dir() {
+            if cwd.is_absolute() && cwd.exists() {
+                working_dir = Some(cwd);
+            }
+        }
     }
 
     ProcessCreationConfig {
@@ -329,6 +351,7 @@ pub fn determine_process_config(env_root: &Path, run_options: &RunOptions) -> Pr
         namespace_flags,
         needs_uid_mapping,
         mount_spec_strings,
+        working_dir,
     }
 }
 
@@ -355,6 +378,7 @@ pub fn build_unified_context(
     // (this is before any namespace setup, so it's the real host UID)
     let mut run_options = run_options.clone();
     run_options.host_uid = Some(uid.as_raw());
+    run_options.working_dir = config.working_dir.clone();
 
     Ok(UnifiedChildContext {
         env_root: env_root.to_path_buf(),
@@ -609,6 +633,15 @@ fn setup_isolate_mode(context: &mut UnifiedChildContext) -> Result<()> {
 
 fn setup_fs_sandbox(context: &mut UnifiedChildContext) -> Result<()> {
     perform_fs_sandbox_tasks(context)?;
+
+    // After pivot_root, restore the working directory if specified
+    // The working directory was bind-mounted before pivot, so it should be accessible
+    if let Some(ref working_dir) = context.run_options.working_dir {
+        trace!("Fs sandbox: restoring working directory to {}", working_dir.display());
+        if let Err(e) = std::env::set_current_dir(working_dir) {
+            warn!("Failed to restore working directory to {}: {}. Continuing with /.", working_dir.display(), e);
+        }
+    }
 
     let guest_command = convert_host_path_to_guest_path(&context.command, &context.env_root);
     if guest_command != context.command {
