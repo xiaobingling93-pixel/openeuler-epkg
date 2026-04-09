@@ -484,33 +484,14 @@ def parse_epkg_estimated_space(output: str) -> Optional[int]:
     Parses lines like:
     - "After this operation, 2.5 GB of additional disk space will be used."
     - "After this operation, 1.2 MB of additional disk space will be used (50 MB available)."
-    - "After block alignment: 5 packages, 1234 entries, need 2.5 MB disk space" (second estimate, more accurate)
+
+    Note: "After block alignment" output has been removed because concurrent download+unpack
+    means packages already occupy most disk space when info/filelist.txt is obtained,
+    making file-count-based adjustment meaningless.
 
     Returns:
         Estimated space in bytes, or None if not found
     """
-    # Pattern 1: Second estimate (after block alignment) - more accurate
-    # Format: "After block alignment: 5 packages, 1234 entries, need 2.5 MB disk space"
-    pattern2 = r"After block alignment: \d+ packages, \d+ (?:files|entries), need ([\d.]+)\s*(KB|MB|GB|TB)? disk space"
-    match = re.search(pattern2, output, re.IGNORECASE)
-    if match:
-        size_str = match.group(1)
-        unit = match.group(2) or 'B'
-        try:
-            size = float(size_str)
-            unit_multipliers = {
-                'B': 1,
-                'KB': 1024,
-                'MB': 1024 * 1024,
-                'GB': 1024 * 1024 * 1024,
-                'TB': 1024 * 1024 * 1024 * 1024,
-            }
-            multiplier = unit_multipliers.get(unit.upper(), 1)
-            return int(size * multiplier)
-        except ValueError:
-            pass
-
-    # Pattern 2: First estimate (before block alignment)
     # Format: "After this operation, <size> of additional disk space will be used"
     pattern = r"After this operation, ([\d.]+)\s*(KB|MB|GB|TB)? of additional disk space will be used"
     match = re.search(pattern, output, re.IGNORECASE)

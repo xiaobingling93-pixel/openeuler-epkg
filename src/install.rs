@@ -358,17 +358,8 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
         crate::risks::validate_before_linking(plan)
             .with_context(|| "Risk check failed - aborting before any linking to keep environment clean")?;
 
-        // Display updated disk space estimate after overhead is added
-        // (validate_before_linking adds block alignment + info/ dir overhead)
-        // Use println! so pir.py can parse it even with RUST_LOG=warn
-        println!(
-            "After block alignment: {} packages, {} entries, need {} disk space",
-            plan.batch.new_pkgkeys.len(),
-            plan.total_inodes_needed,
-            crate::utils::format_size(plan.total_install)
-        );
-
         // Re-check store disk space after block alignment overhead is added to total_install
+        // Note: validate_before_linking adds block alignment + info/ dir overhead to plan.total_install
         let store_root = &plan.store_root;
         crate::risks::check_space(&plan.store_root_fs, plan.total_install, store_root)
             .with_context(|| "Insufficient disk space for store (after block alignment overhead)")?;
@@ -446,6 +437,9 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
 fn download_and_unpack_packages(
     plan: &mut InstallationPlan,
 ) -> Result<InstalledPackagesMap> {
+    // Reset unpack counters before starting new installation batch
+    crate::store::reset_unpack_counters();
+
     struct InstalledPathLookupGuard;
     impl Drop for InstalledPathLookupGuard {
         fn drop(&mut self) {

@@ -625,6 +625,16 @@ pub fn compare_disk_space_estimate(
         download_same_fs, estimated_download, estimated_install, estimated_total, store_actual
     );
 
+    // Store/Env disk space comparison is not shown to user because:
+    // - Concurrent download+unpack means packages already occupy most disk space
+    //   when info/filelist.txt is obtained, making file-count-based adjustment meaningless
+    // - Store data integrity is now checked in unpack_mv_package_with_format()
+    // Keep the calculation for internal debugging only
+    log::trace!(
+        "compare_disk_space_estimate: store_actual={}, estimated_total={}, label={}",
+        store_actual, estimated_total, label
+    );
+
     if store_actual > 0 && estimated_total > 0 {
         let diff = if estimated_total > store_actual {
             estimated_total.saturating_sub(store_actual)
@@ -633,9 +643,7 @@ pub fn compare_disk_space_estimate(
         };
         let sign = if estimated_total >= store_actual { "+" } else { "-" };
         let error_pct = format!("{}{:.1}%", sign, (diff as f64 / store_actual as f64) * 100.0);
-
-        // Use println! so pir.py can see it even with RUST_LOG=warn
-        println!(
+        log::trace!(
             "{} disk space: actual Δ {} (free: {} -> {}), estimated {}, error {}",
             label,
             crate::utils::format_size(store_actual),
@@ -645,9 +653,7 @@ pub fn compare_disk_space_estimate(
             error_pct
         );
     } else if estimated_total > 0 && store_actual == 0 {
-        // Estimated > 0 but actual = 0: hardlinks were used (packages already in store)
-        // This happens when reinstalling packages that exist in store
-        println!(
+        log::trace!(
             "{} disk space: actual Δ {} (hardlink reuse), estimated {} (over-estimated)",
             label,
             crate::utils::format_size(store_actual),

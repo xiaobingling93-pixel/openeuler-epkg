@@ -21,6 +21,123 @@ use crate::package;
 use crate::mtree::{escape_mtree_path, unescape_mtree_path};
 use log;
 
+#[cfg(unix)]
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// Global counters for tracking unpacked files during concurrent unpack operations
+// Used for store data integrity checking - ensure sufficient disk space remains
+#[cfg(unix)]
+static UNPACKED_FILE_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(unix)]
+static UNPACKED_DIR_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(unix)]
+static UNPACKED_LINK_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(unix)]
+static UNPACKED_PACKAGE_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Reset global unpack counters (called before starting a new installation batch)
+#[cfg(unix)]
+pub fn reset_unpack_counters() {
+    UNPACKED_FILE_COUNT.store(0, Ordering::Relaxed);
+    UNPACKED_DIR_COUNT.store(0, Ordering::Relaxed);
+    UNPACKED_LINK_COUNT.store(0, Ordering::Relaxed);
+    UNPACKED_PACKAGE_COUNT.store(0, Ordering::Relaxed);
+}
+
+#[cfg(not(unix))]
+pub fn reset_unpack_counters() {}
+
+/// Get current unpack counters
+#[cfg(unix)]
+pub fn get_unpack_counters() -> (u64, u64, u64, u64) {
+    (
+        UNPACKED_FILE_COUNT.load(Ordering::Relaxed),
+        UNPACKED_DIR_COUNT.load(Ordering::Relaxed),
+        UNPACKED_LINK_COUNT.load(Ordering::Relaxed),
+        UNPACKED_PACKAGE_COUNT.load(Ordering::Relaxed),
+    )
+}
+
+#[cfg(not(unix))]
+pub fn get_unpack_counters() -> (u64, u64, u64, u64) {
+    (0, 0, 0, 0)
+}
+
+/// Check store disk space after unpacking a package
+/// Returns error if free space < MIN_FREE_SPACE (100MB) to ensure data integrity
+#[cfg(unix)]
+fn check_store_disk_space_after_unpack(store_tmp_dir: &Path) -> Result<()> {
+    const MIN_FREE_SPACE: u64 = 100 * 1024 * 1024; // 100MB minimum
+
+    // Get store directory filesystem info
+    let store_root = dirs().epkg_store.clone();
+    let store_fs_info = crate::risks::get_filesystem_info(&store_root);
+
+    if store_fs_info.free_space < MIN_FREE_SPACE {
+        // Clean up temporary directory before returning error
+        if let Err(e) = lfs::remove_dir_all(store_tmp_dir) {
+            log::warn!("Failed to clean up temp directory {}: {}", store_tmp_dir.display(), e);
+        }
+
+        return Err(eyre!(
+            "Insufficient disk space in store: {} available, need at least {} (100MB safety margin). \
+             Unpacked {} packages with {} files, {} dirs, {} links. \
+             Abort to prevent partial/corrupted store.",
+            crate::utils::format_size(store_fs_info.free_space),
+            crate::utils::format_size(MIN_FREE_SPACE),
+            UNPACKED_PACKAGE_COUNT.load(Ordering::Relaxed),
+            UNPACKED_FILE_COUNT.load(Ordering::Relaxed),
+            UNPACKED_DIR_COUNT.load(Ordering::Relaxed),
+            UNPACKED_LINK_COUNT.load(Ordering::Relaxed)
+        ));
+    }
+
+    log::trace!(
+        "check_store_disk_space_after_unpack: free_space={}, file_count={}, dir_count={}, link_count={}, pkg_count={}",
+        crate::utils::format_size(store_fs_info.free_space),
+        UNPACKED_FILE_COUNT.load(Ordering::Relaxed),
+        UNPACKED_DIR_COUNT.load(Ordering::Relaxed),
+        UNPACKED_LINK_COUNT.load(Ordering::Relaxed),
+        UNPACKED_PACKAGE_COUNT.load(Ordering::Relaxed)
+    );
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn check_store_disk_space_after_unpack(_store_tmp_dir: &Path) -> Result<()> {
+    Ok(())
+}
+
+/// Count files, directories, and symlinks in a directory
+/// Returns (file_count, dir_count, link_count)
+fn count_entries_in_dir(dir: &Path) -> Result<(u64, u64, u64)> {
+    let mut file_count: u64 = 0;
+    let mut dir_count: u64 = 0;
+    let mut link_count: u64 = 0;
+
+    for entry_result in WalkDir::new(dir) {
+        let entry = entry_result?;
+        let path = entry.path();
+
+        // Skip the root directory itself
+        if path == dir {
+            continue;
+        }
+
+        let metadata = entry.metadata()?;
+        if metadata.is_symlink() {
+            link_count += 1;
+        } else if metadata.is_dir() {
+            dir_count += 1;
+        } else {
+            file_count += 1;
+        }
+    }
+
+    Ok((file_count, dir_count, link_count))
+}
+
 /// Unpack a package file
 ///
 /// Unpacks a package from a file path and returns the actual package key and pkgline.
@@ -259,6 +376,32 @@ pub fn unpack_mv_package_with_format(
     // Unpack the package (with optional format hint)
     general_unpack_package(Path::new(package_file), &store_tmp_dir, pkgkey, format_hint)
         .wrap_err_with(|| format!("Failed to unpack package {} to {}", package_file, store_tmp_dir.display()))?;
+
+    // Update global counters for store data integrity checking
+    // Count entries in the unpacked fs directory
+    let fs_dir = store_tmp_dir.join("fs");
+    if lfs::exists_on_host(&fs_dir) {
+        let (file_count, dir_count, link_count) = count_entries_in_dir(&fs_dir)?;
+        #[cfg(unix)]
+        {
+            UNPACKED_FILE_COUNT.fetch_add(file_count, Ordering::Relaxed);
+            UNPACKED_DIR_COUNT.fetch_add(dir_count, Ordering::Relaxed);
+            UNPACKED_LINK_COUNT.fetch_add(link_count, Ordering::Relaxed);
+            UNPACKED_PACKAGE_COUNT.fetch_add(1, Ordering::Relaxed);
+            log::trace!(
+                "unpack_mv_package_with_format: counted file={}, dir={}, link={}, pkg={} (totals: {} files, {} dirs, {} links, {} packages)",
+                file_count, dir_count, link_count, 1,
+                UNPACKED_FILE_COUNT.load(Ordering::Relaxed),
+                UNPACKED_DIR_COUNT.load(Ordering::Relaxed),
+                UNPACKED_LINK_COUNT.load(Ordering::Relaxed),
+                UNPACKED_PACKAGE_COUNT.load(Ordering::Relaxed)
+            );
+        }
+    }
+
+    // Check disk space after unpacking - abort if insufficient space
+    // This ensures store data integrity by preventing partial/corrupted installations
+    check_store_disk_space_after_unpack(&store_tmp_dir)?;
 
     // Calculate content-addressable hash
     #[allow(unused)]
