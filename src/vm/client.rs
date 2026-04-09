@@ -706,7 +706,7 @@ fn create_raw_terminal_guard() -> Option<RawTerminalGuard> {
 
 /// Spawn stdin reading thread with stop flag support.
 /// Uses poll() with timeout to allow graceful shutdown when stop_flag is set.
-fn spawn_stdin_thread(mut stream: TcpStream, stop_flag: Arc<AtomicBool>) {
+fn spawn_stdin_thread(mut stream: TcpStream, stop_flag: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
     use std::os::fd::AsFd;
     use std::thread;
 
@@ -758,7 +758,7 @@ fn spawn_stdin_thread(mut stream: TcpStream, stop_flag: Arc<AtomicBool>) {
             }
         }
         log::debug!("stdin thread exiting, stop_flag={}", stop_flag.load(Ordering::SeqCst));
-    });
+    })
 }
 
 /// Write bytes to stdout/stderr. When the output is a terminal (e.g. PTY mode),
@@ -951,7 +951,7 @@ fn handle_streaming(stream: &mut TcpStream, use_pty: bool) -> Result<i32> {
     };
 
     // Spawn stdin thread (needed for both modes)
-    spawn_stdin_thread(stream_for_stdin, Arc::clone(&stop_flag));
+    let stdin_thread = spawn_stdin_thread(stream_for_stdin, Arc::clone(&stop_flag));
 
     // Main thread: read from TCP and handle messages
     let mut reader = BufReader::new(stream);
@@ -963,6 +963,9 @@ fn handle_streaming(stream: &mut TcpStream, use_pty: bool) -> Result<i32> {
 
     // Signal stdin thread to stop before returning
     stop_flag.store(true, Ordering::SeqCst);
+
+    // Wait for stdin thread to exit to avoid process hang
+    let _ = stdin_thread.join();
 
     result
 }
