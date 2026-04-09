@@ -11,6 +11,7 @@
 # Audio devices - VM environment has no sound hardware
 /dev/snd/seq         # ALSA sequencer device not available in VM (no audio hardware)
 Cannot open sequencer # ALSA sequencer not available in VM
+Could not open a device! # OpenAL/ALSA programs need audio hardware, VM lacks it
 
 # User/Group management - VM environment has limited user database
 gpasswd: Cannot determine your user name # VM environment lacks full user database
