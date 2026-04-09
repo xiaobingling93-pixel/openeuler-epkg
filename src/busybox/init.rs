@@ -663,12 +663,40 @@ fn fs_create_dir_if_missing(p: &str) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn raise_system_file_limit() {
+    // Increase system-wide file handle limit
     const FILE_MAX_PATH: &str = "/proc/sys/fs/file-max";
     const TARGET: u64 = 1_048_576;
     if let Err(e) = std::fs::write(FILE_MAX_PATH, TARGET.to_string()) {
         log::debug!("init: could not set {} to {}: {} (kernel cmdline sysctl.fs.file-max may still apply)", FILE_MAX_PATH, TARGET, e);
     } else {
         log::debug!("init: set {} to {}", FILE_MAX_PATH, TARGET);
+    }
+
+    // Increase process-level file descriptor limit (RLIMIT_NOFILE)
+    // This is inherited by child processes and prevents "No file descriptors available" errors
+    const MIN_FD_LIMIT: u64 = 65_536;
+    const TARGET_FD_LIMIT: u64 = 1_048_576;
+
+    let mut rlim: libc::rlimit = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) } == 0 {
+        let soft = rlim.rlim_cur;
+        let hard = rlim.rlim_max;
+        log::debug!("init: current RLIMIT_NOFILE: soft={}, hard={}", soft, hard);
+
+        // If soft limit is too low, try to increase it
+        if soft < MIN_FD_LIMIT {
+            let target = std::cmp::min(hard, TARGET_FD_LIMIT);
+            rlim.rlim_cur = target;
+            if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) } != 0 {
+                let err = std::io::Error::last_os_error();
+                log::debug!("init: failed to increase RLIMIT_NOFILE from {} to {}: {}", soft, target, err);
+            } else {
+                log::debug!("init: increased RLIMIT_NOFILE from {} to {}", soft, target);
+            }
+        }
+    } else {
+        let err = std::io::Error::last_os_error();
+        log::debug!("init: failed to get RLIMIT_NOFILE: {}", err);
     }
 }
 
