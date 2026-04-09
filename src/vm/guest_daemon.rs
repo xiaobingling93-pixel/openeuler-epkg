@@ -386,7 +386,7 @@ fn resolve_request_user(user: Option<&str>) -> Result<Option<(u32, u32)>> {
 enum SpawnOutcome {
     Spawned(
         std::process::Child,
-        std::process::ChildStdin,
+        Option<std::process::ChildStdin>,
         std::process::ChildStdout,
         std::process::ChildStderr,
     ),
@@ -437,14 +437,21 @@ fn spawn_child_piped(
 
     log::debug!("vm-daemon spawn_child_piped: setting env: {:?}", env);
     child.envs(&env);
-    child.stdin(std::process::Stdio::piped());
+    // Use piped stdin only if stdin data is provided; otherwise use /dev/null to avoid
+    // potential vfork issues in child processes (e.g., BusyBox time on musl)
+    if request.stdin.is_empty() {
+        child.stdin(std::process::Stdio::null());
+    } else {
+        child.stdin(std::process::Stdio::piped());
+    }
     child.stdout(std::process::Stdio::piped());
     child.stderr(std::process::Stdio::piped());
 
     match child.spawn() {
         Ok(mut c) => {
             log::debug!("Child spawned successfully");
-            let stdin_pipe = c.stdin.take().expect("stdin pipe");
+            // stdin may be None if Stdio::null() was used
+            let stdin_pipe = c.stdin.take();
             let stdout_pipe = c.stdout.take().expect("stdout pipe");
             let stderr_pipe = c.stderr.take().expect("stderr pipe");
             Ok(SpawnOutcome::Spawned(c, stdin_pipe, stdout_pipe, stderr_pipe))
@@ -1030,7 +1037,7 @@ fn execute_without_pty(request: &CommandRequest, stream: &mut TcpStream, initial
                 return Ok(-1);
             }
             SpawnOutcome::Spawned(child, stdin_pipe, stdout_pipe, stderr_pipe) => {
-                let mut stdin_file  = Some(stdin_pipe);
+                let mut stdin_file = stdin_pipe;
                 let mut stdout_file = stdout_pipe;
                 let mut stderr_file = stderr_pipe;
 
@@ -1145,33 +1152,51 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
                 debug_file_write("execute_batch: done (error case)\n");
                 Ok(-1)
             }
-            SpawnOutcome::Spawned(child, stdin_pipe, stdout_pipe, stderr_pipe) => {
+            SpawnOutcome::Spawned(child, mut stdin_pipe, stdout_pipe, stderr_pipe) => {
                 debug_file_write(&format!("execute_batch: child spawned, pid={}\n", child.id()));
 
                 // Write stdin if provided, then close it
                 if !request.stdin.is_empty() {
-                    use std::io::Write;
-                    let mut stdin_ref = &stdin_pipe;
-                    stdin_ref.write_all(request.stdin.as_bytes())?;
+                    if let Some(ref mut stdin_ref) = stdin_pipe {
+                        use std::io::Write;
+                        stdin_ref.write_all(request.stdin.as_bytes())?;
+                    }
                 }
                 drop(stdin_pipe);
 
+                // Drain stdout/stderr while the child runs. Waiting for the child before reading
+                // pipes can deadlock: if the child fills a pipe buffer before exiting, it blocks on
+                // write while we block in waitpid (classic pipe deadlock).
+                debug_file_write("execute_batch: draining stdout/stderr (parallel) while child runs\n");
+                use std::io::Read;
+                let mut stdout_pipe = stdout_pipe;
+                let mut stderr_pipe = stderr_pipe;
+                let stdout_thread = std::thread::spawn(move || {
+                    let mut v = Vec::new();
+                    let _ = stdout_pipe.read_to_end(&mut v);
+                    v
+                });
+                let stderr_thread = std::thread::spawn(move || {
+                    let mut v = Vec::new();
+                    let _ = stderr_pipe.read_to_end(&mut v);
+                    v
+                });
+
+                debug_file_write("execute_batch: waiting for child to complete\n");
+
                 // Wait for child to complete
                 let child_pid = Pid::from_raw(child.id() as i32);
-                debug_file_write("execute_batch: waiting for child to complete\n");
                 let status = waitpid(child_pid, None)?;
                 let exit_code = exit_code_from_wait_status(status);
 
-                debug_file_write(&format!("execute_batch: child exited with code={}, collecting output\n", exit_code));
+                // Collect output from reader threads
+                let stdout_data = stdout_thread.join()
+                    .map_err(|_| eyre!("execute_batch: stdout reader thread panicked"))?;
+                let stderr_data = stderr_thread.join()
+                    .map_err(|_| eyre!("execute_batch: stderr reader thread panicked"))?;
 
-                // Collect all output
-                use std::io::Read;
-                let mut stdout_data = Vec::new();
-                let mut stderr_data = Vec::new();
-                let mut stdout_pipe = stdout_pipe;
-                let mut stderr_pipe = stderr_pipe;
-                stdout_pipe.read_to_end(&mut stdout_data)?;
-                stderr_pipe.read_to_end(&mut stderr_data)?;
+                debug_file_write(&format!("execute_batch: child exited with code={}, collected stdout={} stderr={} bytes\n",
+                    exit_code, stdout_data.len(), stderr_data.len()));
 
                 log::debug!("execute_batch: exit_code={}, stdout={} bytes, stderr={} bytes",
                             exit_code, stdout_data.len(), stderr_data.len());
