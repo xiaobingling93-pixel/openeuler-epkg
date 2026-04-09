@@ -514,8 +514,17 @@ fn mount_remount_ro(target: &Path, flags: MsFlags, options: Option<&str>) -> Res
     // Second step of read-only bind mount: change mount properties without affecting source.
     // MS_REMOUNT|MS_BIND|MS_RDONLY ensures the bind mount becomes read-only even if the
     // underlying filesystem is writable. This is the standard security sandboxing pattern.
-    mount::<Path, Path, str, str>(Some(target), target, None, flags | MsFlags::MS_REMOUNT | MsFlags::MS_BIND | MsFlags::MS_RDONLY, options)
-        .map_err(|e| eyre::eyre!("Failed to remount {} read-only: {}", target.display(), e))
+    match mount::<Path, Path, str, str>(Some(target), target, None, flags | MsFlags::MS_REMOUNT | MsFlags::MS_BIND | MsFlags::MS_RDONLY, options) {
+        Ok(()) => Ok(()),
+        Err(e) if e == Errno::EPERM || e == Errno::EACCES => {
+            // In unprivileged user namespaces, remounting bind mounts read-only requires
+            // CAP_SYS_ADMIN which we may not have. The bind mount already succeeded, so
+            // we log a warning and continue rather than failing entirely.
+            warn!("Cannot remount {} read-only in unprivileged namespace ({}). Continuing with writable bind mount.", target.display(), e);
+            Ok(())
+        }
+        Err(e) => Err(eyre::eyre!("Failed to remount {} read-only: {}", target.display(), e)),
+    }
 }
 
 /// Helper to mount special filesystems
