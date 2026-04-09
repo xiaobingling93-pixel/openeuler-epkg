@@ -419,6 +419,7 @@ fn spawn_child_piped(request: &CommandRequest) -> Result<SpawnOutcome> {
         ForkResult::Child => {
             // Child: clear CLOEXEC and dup to stdio
             unsafe {
+                // Setup stdio first
                 libc::fcntl(stdout_w.as_raw_fd(), libc::F_SETFD, 0);
                 libc::fcntl(stderr_w.as_raw_fd(), libc::F_SETFD, 0);
                 libc::dup2(stdout_w.as_raw_fd(), 1);
@@ -433,6 +434,15 @@ fn spawn_child_piped(request: &CommandRequest) -> Result<SpawnOutcome> {
                         libc::dup2(null_fd, 0);
                         libc::close(null_fd);
                     }
+                }
+
+                // CRITICAL: Close all fd > 2 to prevent pipe inheritance
+                // BusyBox time uses vfork internally; if time inherits daemon's pipes,
+                // vfork child also inherits them. When vfork child exits after execvp
+                // failure, time's waitpid hangs because the pipes are still open
+                // (inherited by the already-exited vfork child, but kernel keeps them).
+                for fd in 3..=255 {
+                    libc::close(fd);
                 }
             }
 
@@ -462,11 +472,31 @@ fn spawn_child_piped(request: &CommandRequest) -> Result<SpawnOutcome> {
             let args: Vec<std::ffi::CString> = request.command.iter()
                 .map(|s| std::ffi::CString::new(s.as_str()).unwrap())
                 .collect();
-            let mut ptrs: Vec<*const libc::c_char> = args.iter().map(|s| s.as_ptr()).collect();
-            ptrs.push(std::ptr::null());
+            let mut argv: Vec<*const libc::c_char> = args.iter().map(|s| s.as_ptr()).collect();
+            argv.push(std::ptr::null());
+
+            // Build envp (including PATH)
+            let mut envp: Vec<std::ffi::CString> = Vec::new();
+            for (k, v) in &request.env {
+                let entry = format!("{}={}", k, v);
+                envp.push(std::ffi::CString::new(entry).unwrap());
+            }
+            // Ensure PATH is set
+            if !request.env.contains_key("PATH") {
+                envp.push(std::ffi::CString::new("PATH=/usr/bin:/bin:/usr/sbin:/sbin").unwrap());
+            }
+            // Ensure HOME is set
+            if !request.env.contains_key("HOME") {
+                let home = if let Some((uid, _)) = uid_gid {
+                    if uid == 0 { "/root".to_string() } else { format!("/home/{}", uid) }
+                } else { "/root".to_string() };
+                envp.push(std::ffi::CString::new(format!("HOME={}", home)).unwrap());
+            }
+            let mut envp_ptrs: Vec<*const libc::c_char> = envp.iter().map(|s| s.as_ptr()).collect();
+            envp_ptrs.push(std::ptr::null());
 
             unsafe {
-                libc::execvp(cmd.as_ptr(), ptrs.as_ptr());
+                libc::execve(cmd.as_ptr(), argv.as_ptr(), envp_ptrs.as_ptr());
                 libc::perror(cmd.as_ptr());
                 libc::_exit(127);
             }
@@ -949,13 +979,17 @@ fn handle_nonpty_poll_events<W: std::io::Write>(
     seq_out: &mut u64,
     seq_err: &mut u64,
 ) -> Result<(bool, bool)> {
-    if poll_fds[0].revents().unwrap().contains(PollFlags::POLLIN) {
+    if poll_fds[0].revents().unwrap().contains(PollFlags::POLLIN)
+        || poll_fds[0].revents().unwrap().contains(PollFlags::POLLHUP)
+    {
         if handle_stdout_event(stdout_file, stream, buf, seq_out)? {
             return Ok((true, false));
         }
     }
 
-    if poll_fds[1].revents().unwrap().contains(PollFlags::POLLIN) {
+    if poll_fds[1].revents().unwrap().contains(PollFlags::POLLIN)
+        || poll_fds[1].revents().unwrap().contains(PollFlags::POLLHUP)
+    {
         if handle_stderr_event(stderr_file, stream, buf, seq_err)? {
             return Ok((true, false));
         }
@@ -1180,7 +1214,7 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
                 debug_file_write("execute_batch: done (error case)\n");
                 Ok(-1)
             }
-            SpawnOutcome::Spawned { pid, mut stdin, stdout, stderr } => {
+            SpawnOutcome::Spawned { pid, mut stdin, mut stdout, mut stderr } => {
                 debug_file_write(&format!("execute_batch: child spawned, pid={}\n", pid));
 
                 // Write stdin if provided, then close it
@@ -1192,36 +1226,84 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
                 }
                 drop(stdin);
 
-                // Drain stdout/stderr while the child runs. Waiting for the child before reading
-                // pipes can deadlock: if the child fills a pipe buffer before exiting, it blocks on
-                // write while we block in waitpid (classic pipe deadlock).
-                debug_file_write("execute_batch: draining stdout/stderr (parallel) while child runs\n");
-                use std::io::Read;
-                let mut stdout_pipe = stdout;
-                let mut stderr_pipe = stderr;
-                let stdout_thread = std::thread::spawn(move || {
-                    let mut v = Vec::new();
-                    let _ = stdout_pipe.read_to_end(&mut v);
-                    v
-                });
-                let stderr_thread = std::thread::spawn(move || {
-                    let mut v = Vec::new();
-                    let _ = stderr_pipe.read_to_end(&mut v);
-                    v
-                });
+                // Drain stdout/stderr while the child runs using non-blocking poll.
+                // This handles BusyBox time which can hang in vfork waitpid - when that
+                // happens, stdout/stderr may never close, so we need to detect HUP.
+                debug_file_write("execute_batch: draining stdout/stderr using poll\n");
+                use std::os::fd::AsRawFd;
 
-                debug_file_write("execute_batch: waiting for child to complete\n");
+                // Set nonblocking mode
+                let stdout_fd = stdout.as_raw_fd();
+                let stderr_fd = stderr.as_raw_fd();
+                unsafe {
+                    let flags = libc::fcntl(stdout_fd, libc::F_GETFL);
+                    libc::fcntl(stdout_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+                    let flags = libc::fcntl(stderr_fd, libc::F_GETFL);
+                    libc::fcntl(stderr_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+                }
 
-                // Wait for child to complete
+                let mut stdout_data = Vec::new();
+                let mut stderr_data = Vec::new();
+                let mut buf = [0u8; 4096];
                 let child_pid = pid;
-                let status = waitpid(child_pid, None)?;
-                let exit_code = exit_code_from_wait_status(status);
+                let mut child_status: Option<nix::sys::wait::WaitStatus> = None;
+                let mut stdout_hup = false;
+                let mut stderr_hup = false;
 
-                // Collect output from reader threads
-                let stdout_data = stdout_thread.join()
-                    .map_err(|_| eyre!("execute_batch: stdout reader thread panicked"))?;
-                let stderr_data = stderr_thread.join()
-                    .map_err(|_| eyre!("execute_batch: stderr reader thread panicked"))?;
+                // Poll loop for stdout/stderr + child status
+                while !stdout_hup || !stderr_hup || child_status.is_none() {
+                    // Check child status
+                    if child_status.is_none() {
+                        match waitpid(child_pid, Some(WaitPidFlag::WNOHANG)) {
+                            Ok(status) => {
+                                if status != nix::sys::wait::WaitStatus::StillAlive {
+                                    debug_file_write(&format!("execute_batch: child exited: {:?}\n", status));
+                                    child_status = Some(status);
+                                }
+                            }
+                            Err(e) => {
+                                debug_file_write(&format!("execute_batch: waitpid error: {}\n", e));
+                                break;
+                            }
+                        }
+                    }
+
+                    // Non-blocking read from stdout
+                    if !stdout_hup {
+                        match stdout.read(&mut buf) {
+                            Ok(0) => { stdout_hup = true; debug_file_write("execute_batch: stdout HUP\n"); }
+                            Ok(n) => stdout_data.extend_from_slice(&buf[..n]),
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                            Err(e) if e.raw_os_error() == Some(libc::EIO) => { stdout_hup = true; }
+                            Err(_) => stdout_hup = true,
+                        }
+                    }
+
+                    // Non-blocking read from stderr
+                    if !stderr_hup {
+                        match stderr.read(&mut buf) {
+                            Ok(0) => { stderr_hup = true; debug_file_write("execute_batch: stderr HUP\n"); }
+                            Ok(n) => stderr_data.extend_from_slice(&buf[..n]),
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                            Err(e) if e.raw_os_error() == Some(libc::EIO) => { stderr_hup = true; }
+                            Err(_) => stderr_hup = true,
+                        }
+                    }
+
+                    // Small sleep to avoid busy loop
+                    if !stdout_hup || !stderr_hup {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                }
+
+                let exit_code = match child_status {
+                    Some(status) => exit_code_from_wait_status(status),
+                    None => {
+                        debug_file_write("execute_batch: child status unknown after poll\n");
+                        let status = waitpid(child_pid, None)?;
+                        exit_code_from_wait_status(status)
+                    }
+                };
 
                 debug_file_write(&format!("execute_batch: child exited with code={}, collected stdout={} stderr={} bytes\n",
                     exit_code, stdout_data.len(), stderr_data.len()));
