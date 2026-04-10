@@ -150,6 +150,31 @@ const VM_REUSE_IDLE_TIMEOUT_MS: u32 = 30_000;
 /// TCP line buffer size (must fit at least one JSON message line).
 const TCP_LINE_BUF_SIZE: usize = 4096;
 
+/// Default socket buffer size for vsock communication (8MB).
+/// Large enough to handle batch/stream mode with large output.
+const VSOCK_SOCKET_BUF_SIZE: libc::c_int = 8 * 1024 * 1024;
+
+/// Set socket buffer sizes (SO_RCVBUF and SO_SNDBUF) for large data transfers.
+fn set_socket_buffer_size(fd: libc::c_int) {
+    unsafe {
+        // Ignore errors - will use system default if setsockopt fails
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            &VSOCK_SOCKET_BUF_SIZE as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_SNDBUF,
+            &VSOCK_SOCKET_BUF_SIZE as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
+    }
+}
+
 fn log_process_identity(tag: &str) {
     log::debug!(
         "{}: pid={} uid={} euid={} gid={} egid={}",
@@ -1669,9 +1694,9 @@ fn run_vsock_server() -> Result<()> {
     // Increase kernel socket buffer limits to handle large data transfers.
     // Default (~256KB) is too small for batch/stream mode with large output.
     // The guest vsock driver advertises socket buffer as buf_alloc to host.
-    const SOCKET_BUF_MAX: &str = "8388608"; // 8MB
-    let _ = std::fs::write("/proc/sys/net/core/rmem_max", SOCKET_BUF_MAX);
-    let _ = std::fs::write("/proc/sys/net/core/wmem_max", SOCKET_BUF_MAX);
+    let socket_buf_max = format!("{}", VSOCK_SOCKET_BUF_SIZE);
+    let _ = std::fs::write("/proc/sys/net/core/rmem_max", &socket_buf_max);
+    let _ = std::fs::write("/proc/sys/net/core/wmem_max", &socket_buf_max);
 
     // Fixed vsock ports matching host/client side.
     const VSOCK_PORT: u32 = 10000;      // Command port
@@ -1692,15 +1717,7 @@ fn run_vsock_server() -> Result<()> {
 
     // Set socket buffer size to handle large data transfers.
     // This determines the buf_alloc advertised to host via credit updates.
-    let buf_size: libc::c_int = 8 * 1024 * 1024; // 8MB
-    unsafe {
-        libc::setsockopt(fd.as_raw_fd(), libc::SOL_SOCKET, libc::SO_RCVBUF,
-                         &buf_size as *const _ as *const libc::c_void,
-                         std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-        libc::setsockopt(fd.as_raw_fd(), libc::SOL_SOCKET, libc::SO_SNDBUF,
-                         &buf_size as *const _ as *const libc::c_void,
-                         std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-    }
+    set_socket_buffer_size(fd.as_raw_fd());
 
     let addr = VsockAddr::new(libc::VMADDR_CID_ANY, VSOCK_PORT);
     let raw_fd = fd.as_raw_fd();
@@ -1782,15 +1799,7 @@ fn run_vsock_server() -> Result<()> {
 
         log::debug!("vm-daemon: accept() succeeded, fd={}", client_fd);
         // Set socket buffer size on accepted connection for large data transfers
-        let buf_size: libc::c_int = 8 * 1024 * 1024; // 8MB
-        unsafe {
-            libc::setsockopt(client_fd, libc::SOL_SOCKET, libc::SO_RCVBUF,
-                             &buf_size as *const _ as *const libc::c_void,
-                             std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-            libc::setsockopt(client_fd, libc::SOL_SOCKET, libc::SO_SNDBUF,
-                             &buf_size as *const _ as *const libc::c_void,
-                             std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-        }
+        set_socket_buffer_size(client_fd);
         kmsg_write("<6>run_vsock_server: creating TcpStream from fd\n");
         let stream = unsafe { TcpStream::from_raw_fd(client_fd) };
         log::debug!("vm-daemon vsock: accepted connection");

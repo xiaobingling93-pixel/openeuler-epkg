@@ -69,16 +69,7 @@ fn connect_to_existing_vm_socket(_env_root: &Path) -> Result<Option<(std::os::un
     let stream = std::os::unix::net::UnixStream::connect(&info.socket_path)?;
     // Increase socket buffer sizes to handle large data transfers
     use std::os::unix::io::AsRawFd;
-    let fd = stream.as_raw_fd();
-    let buf_size: libc::c_int = 8 * 1024 * 1024;  // 8MB
-    unsafe {
-        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF,
-                         &buf_size as *const _ as *const libc::c_void,
-                         std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_SNDBUF,
-                         &buf_size as *const _ as *const libc::c_void,
-                         std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-    }
+    super::set_socket_buffer_size(stream.as_raw_fd());
     log::info!("libkrun: connected to existing VM socket: {}", info.socket_path.display());
     Ok(Some((stream, info)))
 }

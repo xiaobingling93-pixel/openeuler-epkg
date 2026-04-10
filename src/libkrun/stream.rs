@@ -326,16 +326,7 @@ pub fn send_command_via_vsock(
                     // Increase socket buffer sizes to handle large data transfers
                     // Default system buffer (~200KB) is too small for batch mode
                     use std::os::unix::io::AsRawFd;
-                    let fd = unix_stream.as_raw_fd();
-                    let buf_size: libc::c_int = 8 * 1024 * 1024;  // 8MB
-                    unsafe {
-                        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF,
-                                         &buf_size as *const _ as *const libc::c_void,
-                                         std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-                        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_SNDBUF,
-                                         &buf_size as *const _ as *const libc::c_void,
-                                         std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-                    }
+                    super::set_socket_buffer_size(unix_stream.as_raw_fd());
                     s = Some(unix_stream);
                     break;
                 }

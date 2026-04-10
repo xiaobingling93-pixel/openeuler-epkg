@@ -77,6 +77,40 @@ pub mod bridge;
 pub mod stream;
 
 // ============================================================================
+// Socket Buffer Configuration
+// ============================================================================
+
+/// Default socket buffer size for vsock communication (8MB).
+/// Large enough to handle batch/stream mode with large output (e.g., seq 100000).
+/// Must be larger than guest vsock driver's buf_alloc to avoid credit update stalls.
+#[cfg(all(feature = "libkrun", unix))]
+pub const VSOCK_SOCKET_BUF_SIZE: usize = 8 * 1024 * 1024;
+
+/// Set socket buffer sizes (SO_RCVBUF and SO_SNDBUF) for large data transfers.
+/// Used for vsock Unix socket bridges to handle batch/stream mode output.
+#[cfg(all(feature = "libkrun", unix))]
+pub fn set_socket_buffer_size(fd: libc::c_int) {
+    let buf_size: libc::c_int = VSOCK_SOCKET_BUF_SIZE as libc::c_int;
+    unsafe {
+        // Ignore errors - will use system default if setsockopt fails
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            &buf_size as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_SNDBUF,
+            &buf_size as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
+    }
+}
+
+// ============================================================================
 // Public API (All Platforms)
 // ============================================================================
 
