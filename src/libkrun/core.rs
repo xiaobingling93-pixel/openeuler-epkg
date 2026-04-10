@@ -820,6 +820,17 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
         }
     }
 
+    // Mount current working directory if not chdir_to_env_root
+    // This allows VM guest to access files in the directory where epkg run was invoked
+    if !run_options.chdir_to_env_root {
+        if let Ok(cwd) = std::env::current_dir() {
+            if cwd.is_absolute() && cwd.exists() {
+                log::debug!("libkrun: adding cwd mount: {}", cwd.display());
+                try_add_mount(&cwd, None, false, true);
+            }
+        }
+    }
+
     // Add epkg binary directory if outside env.
     // This runs after user mounts so a broader user mount (e.g. /c/epkg)
     // can cover the binary directory and avoid consuming an extra virtiofs device.
@@ -1562,7 +1573,8 @@ fn try_reuse_existing_krun_session(
             match super::bridge::accept_reverse_connection(&listener, None) {
                 Ok(stream) => {
                     log::debug!("libkrun: Guest reconnected, sending command...");
-                    let cwd = if run_options.chdir_to_env_root { Some("/") } else { None };
+                    let cwd_str;
+                    let cwd = if run_options.chdir_to_env_root { Some("/") } else { cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()); cwd_str.as_deref() };
                     match super::stream::send_command_over_stream(
                         &config.cmd_parts,
                         run_options.io_mode,
@@ -1608,7 +1620,8 @@ fn try_reuse_existing_krun_session(
         }
 
         // Forward mode: Host connects to Guest
-        let cwd = if run_options.chdir_to_env_root { Some("/") } else { None };
+        let cwd_str;
+        let cwd = if run_options.chdir_to_env_root { Some("/") } else { cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()); cwd_str.as_deref() };
         match super::stream::send_command_via_vsock(
             &config.cmd_parts,
             run_options.io_mode,
@@ -1915,7 +1928,8 @@ fn run_reverse_vsock_mode_inner(
     let cmd_start = std::time::Instant::now();
 
     // Determine working directory for VM
-    let cwd = if run_options.chdir_to_env_root { Some("/") } else { None };
+    let cwd_str;
+    let cwd = if run_options.chdir_to_env_root { Some("/") } else { cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()); cwd_str.as_deref() };
 
     // Send command over the accepted connection
     // On Windows, use the named-pipe-specific function that calls FlushFileBuffers
@@ -2115,7 +2129,8 @@ pub fn run_command_in_krun(
         // The ready signal confirms guest vm_daemon is running and waiting.
 
         crate::debug_epkg!("libkrun: sending command via vsock...");
-        let cwd = if run_options.chdir_to_env_root { Some("/") } else { None };
+        let cwd_str;
+        let cwd = if run_options.chdir_to_env_root { Some("/") } else { cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()); cwd_str.as_deref() };
         let exit_code = super::stream::send_command_via_vsock(
             &config.cmd_parts,
             run_options.io_mode,

@@ -48,11 +48,13 @@ fn try_connect_and_execute_vm(env_root: &Path, run_options: &RunOptions) -> Resu
     log::debug!("run: checking for existing VM session for {}", env_root.display());
 
     // For VM mode, chdir_to_env_root means working directory should be "/" (VM root)
-    // which maps to the environment root via virtiofs
+    // which maps to the environment root via virtiofs. Otherwise, use current cwd.
+    let cwd_str;
     let cwd = if run_options.chdir_to_env_root {
         Some("/")
     } else {
-        None
+        cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string());
+        cwd_str.as_deref()
     };
 
     crate::libkrun::execute_via_existing_vm(
