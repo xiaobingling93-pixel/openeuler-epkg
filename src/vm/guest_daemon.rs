@@ -139,7 +139,7 @@ use crate::run::VM_SESSION_DONE_CMD;
 use super::client::StreamMessage;
 
 /// Poll timeout in milliseconds for PTY/pipe and TCP wait.
-const POLL_TIMEOUT_MS: u32 = 1000;
+const POLL_TIMEOUT_MS: u32 = 100;
 
 /// Default idle window (ms) for another vsock connection when `reuse_vm` is set but
 /// `vm_keep_timeout_secs` is omitted in the JSON request.
@@ -1156,30 +1156,9 @@ fn execute_without_pty(request: &CommandRequest, stream: &mut TcpStream, initial
                 let status = match child_status {
                     Some(s) => s,
                     None => {
-                        // Child status unknown after poll loop (should not happen often)
-                        // Use non-blocking wait with short timeout to avoid hang
-                        log::debug!("execute_without_pty: child status unknown, trying non-blocking wait");
-                        let start = std::time::Instant::now();
-                        loop {
-                            match waitpid(Some(child_pid), Some(WaitPidFlag::WNOHANG)) {
-                                Ok(status) if status != nix::sys::wait::WaitStatus::StillAlive => {
-                                    break status;
-                                }
-                                Ok(_) => {
-                                    // Still alive, check timeout
-                                    if start.elapsed().as_millis() > 1000 {
-                                        log::debug!("execute_without_pty: waitpid timeout, returning fake exit");
-                                        // Return a fake exit status
-                                        break nix::sys::wait::WaitStatus::Exited(child_pid, 127);
-                                    }
-                                    std::thread::sleep(std::time::Duration::from_millis(10));
-                                }
-                                Err(e) => {
-                                    log::debug!("execute_without_pty: waitpid error: {}", e);
-                                    break nix::sys::wait::WaitStatus::Exited(child_pid, 1);
-                                }
-                            }
-                        }
+                        // Pipes closed but child status unknown, wait for child (blocking)
+                        log::debug!("execute_without_pty: pipes closed, waiting for child");
+                        waitpid(Some(child_pid), None)?
                     }
                 };
                 let exit_code = exit_code_from_wait_status(status);
@@ -1282,11 +1261,11 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
                 let mut child_status: Option<nix::sys::wait::WaitStatus> = None;
                 let mut stdout_hup = false;
                 let mut stderr_hup = false;
-                let poll_start = std::time::Instant::now();
 
                 // Poll loop for stdout/stderr + child status
+                // Loop until: both pipes HUP AND child status is known
                 while !stdout_hup || !stderr_hup || child_status.is_none() {
-                    // Check child status
+                    // Check child status (non-blocking)
                     if child_status.is_none() {
                         match waitpid(child_pid, Some(WaitPidFlag::WNOHANG)) {
                             Ok(status) => {
@@ -1327,57 +1306,34 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
                         }
                     }
 
-                    // If stdout HUP but stderr not, and we've waited long enough, force break
-                    // This handles BusyBox time which may hang in waitpid after vfork child exits
-                    if stdout_hup && !stderr_hup && child_status.is_none() {
-                        if poll_start.elapsed().as_millis() > 500 {
-                            debug_file_write("execute_batch: stdout HUP but stderr not, forcing break after timeout\n");
-                            stderr_hup = true; // Force stderr HUP to break loop
-                        }
-                    }
-
-                    // If both stdout/stderr HUP but child still not exited (vfork hang),
-                    // wait a bit then force break
+                    // If both pipes HUP but child status unknown, wait for child (blocking)
+                    // This is the normal case when CMD closes stdout/stderr but keeps running
                     if stdout_hup && stderr_hup && child_status.is_none() {
-                        if poll_start.elapsed().as_millis() > 500 {
-                            debug_file_write("execute_batch: stdout/stderr HUP but child still alive, forcing break\n");
-                            break;
+                        debug_file_write("execute_batch: pipes closed, waiting for child\n");
+                        match waitpid(child_pid, None) {
+                            Ok(status) => {
+                                debug_file_write(&format!("execute_batch: child exited: {:?}\n", status));
+                                child_status = Some(status);
+                            }
+                            Err(e) => {
+                                debug_file_write(&format!("execute_batch: waitpid error: {}\n", e));
+                                break;
+                            }
                         }
                     }
 
-                    // Only sleep when no data available (WouldBlock) and still waiting for pipes
+                    // Small sleep to avoid busy loop when waiting for pipe data
                     if would_block && (!stdout_hup || !stderr_hup) {
                         std::thread::sleep(std::time::Duration::from_millis(1));
-                    } else if would_block && child_status.is_none() && stdout_hup && stderr_hup {
-                        // Both HUP but child not exited, spin faster
-                        std::thread::sleep(std::time::Duration::from_millis(10));
                     }
                 }
 
                 let exit_code = match child_status {
                     Some(status) => exit_code_from_wait_status(status),
                     None => {
-                        debug_file_write("execute_batch: child status unknown after poll, using non-blocking wait\n");
-                        // Try non-blocking wait with timeout
-                        let start = std::time::Instant::now();
-                        loop {
-                            match waitpid(child_pid, Some(WaitPidFlag::WNOHANG)) {
-                                Ok(status) if status != nix::sys::wait::WaitStatus::StillAlive => {
-                                    break exit_code_from_wait_status(status);
-                                }
-                                Ok(_) => {
-                                    if start.elapsed().as_millis() > 500 {
-                                        debug_file_write("execute_batch: waitpid timeout, returning 127\n");
-                                        break 127;
-                                    }
-                                    std::thread::sleep(std::time::Duration::from_millis(10));
-                                }
-                                Err(e) => {
-                                    debug_file_write(&format!("execute_batch: waitpid error: {}\n", e));
-                                    break 1;
-                                }
-                            }
-                        }
+                        // Should not reach here, but handle gracefully
+                        debug_file_write("execute_batch: child status unknown, returning 127\n");
+                        127
                     }
                 };
 
