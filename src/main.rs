@@ -265,33 +265,31 @@ fn main() -> Result<()> {
     // - When scanning 500k+ files, host FDs are exhausted before guest FDs
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
-        /// Minimum FD soft limit threshold - don't increase if already above this
-        #[cfg(target_os = "macos")]
-        const MIN_FD_LIMIT: u64 = 10_240;
-        #[cfg(target_os = "linux")]
-        const MIN_FD_LIMIT: u64 = 100_000;
-        /// Target FD limit to set if current is below MIN_FD_LIMIT
+        /// Target FD limit to set if current is below target
+        /// Increased to 2M for virtiofs inode cache (457k files need ~500k O_PATH FDs)
         #[cfg(target_os = "macos")]
         const TARGET_FD_LIMIT: u64 = 81_920;
         #[cfg(target_os = "linux")]
-        const TARGET_FD_LIMIT: u64 = 1_048_576;
+        const TARGET_FD_LIMIT: u64 = 2_097_152; // 2M
 
         let mut rlim: libc::rlimit = unsafe { std::mem::zeroed() };
         if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) } == 0 {
             let soft = rlim.rlim_cur;
             let hard = rlim.rlim_max;
             log::debug!("Current RLIMIT_NOFILE: soft={}, hard={}", soft, hard);
-            // If soft limit is too low, try to increase it
-            if soft < MIN_FD_LIMIT {
+            // If soft limit is below target, try to increase it
+            // This is critical for virtiofs which keeps O_PATH FDs for each accessed inode
+            if soft < TARGET_FD_LIMIT {
+                // Can only raise to hard limit (or lower)
                 let target = std::cmp::min(hard, TARGET_FD_LIMIT);
-                rlim.rlim_cur = target;
-                if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) } != 0 {
-                    let err = std::io::Error::last_os_error();
-                    // On Linux, hard limit may be 4096 (INR_OPEN_MAX) which is too low
-                    // Need to increase /proc/sys/fs/nr_open first, but that requires root
-                    log::warn!("Failed to increase file descriptor limit from {} to {}: {}", soft, target, err);
-                } else {
-                    log::debug!("Increased file descriptor limit from {} to {}", soft, target);
+                if target > soft {
+                    rlim.rlim_cur = target;
+                    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) } != 0 {
+                        let err = std::io::Error::last_os_error();
+                        log::warn!("Failed to increase file descriptor limit from {} to {}: {}", soft, target, err);
+                    } else {
+                        log::debug!("Increased file descriptor limit from {} to {}", soft, target);
+                    }
                 }
             }
         }

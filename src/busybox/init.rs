@@ -664,9 +664,10 @@ fn fs_create_dir_if_missing(p: &str) -> Result<()> {
 #[cfg(target_os = "linux")]
 fn raise_system_file_limit() {
     // Increase system-wide file handle limit
+    // Increased to 2M for virtiofs inode cache (457k files need ~500k O_PATH FDs)
     const FILE_MAX_PATH: &str = "/proc/sys/fs/file-max";
     const NR_OPEN_PATH: &str = "/proc/sys/fs/nr_open";
-    const TARGET: u64 = 1_048_576;
+    const TARGET: u64 = 2_097_152; // 2M
 
     // Step 1: Set fs.file-max (system-wide limit)
     if let Err(e) = std::fs::write(FILE_MAX_PATH, TARGET.to_string()) {
@@ -686,8 +687,9 @@ fn raise_system_file_limit() {
 
     // Step 3: Increase process-level file descriptor limit (RLIMIT_NOFILE)
     // This is inherited by child processes and prevents "No file descriptors available" errors
+    // Increased to 2M for virtiofs inode cache (457k files need ~500k O_PATH FDs)
     const MIN_FD_LIMIT: u64 = 65_536;
-    const TARGET_FD_LIMIT: u64 = 1_048_576;
+    const TARGET_FD_LIMIT: u64 = 2_097_152; // 2M
 
     let mut rlim: libc::rlimit = unsafe { std::mem::zeroed() };
     if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) } == 0 {
