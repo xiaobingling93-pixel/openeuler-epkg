@@ -257,26 +257,38 @@ fn main() -> Result<()> {
             std::env::current_exe().as_ref().map(|p| p.display().to_string()).unwrap_or_else(|_| "<unknown>".to_string()));
     }
 
-    // Increase file descriptor limit on macOS to avoid "Too many open files" errors
-    // when running multiple VM operations (scriptlets). The default soft limit on macOS
-    // is only 256, which is too low for VM operations.
-    #[cfg(target_os = "macos")]
+    // Increase file descriptor limit on macOS/Linux to avoid "Too many open files" errors
+    // when running VM operations with virtiofs. Virtiofs passthrough keeps an open FD
+    // for each accessed inode, which can exhaust FDs when scanning large codebases.
+    // - macOS default soft limit: 256 (too low)
+    // - Linux default soft limit: 1024, hard limit: 4096 (kernel INR_OPEN_MAX)
+    // - When scanning 500k+ files, host FDs are exhausted before guest FDs
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         /// Minimum FD soft limit threshold - don't increase if already above this
+        #[cfg(target_os = "macos")]
         const MIN_FD_LIMIT: u64 = 10_240;
+        #[cfg(target_os = "linux")]
+        const MIN_FD_LIMIT: u64 = 100_000;
         /// Target FD limit to set if current is below MIN_FD_LIMIT
+        #[cfg(target_os = "macos")]
         const TARGET_FD_LIMIT: u64 = 81_920;
+        #[cfg(target_os = "linux")]
+        const TARGET_FD_LIMIT: u64 = 1_048_576;
 
         let mut rlim: libc::rlimit = unsafe { std::mem::zeroed() };
         if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) } == 0 {
             let soft = rlim.rlim_cur;
             let hard = rlim.rlim_max;
+            log::debug!("Current RLIMIT_NOFILE: soft={}, hard={}", soft, hard);
             // If soft limit is too low, try to increase it
             if soft < MIN_FD_LIMIT {
                 let target = std::cmp::min(hard, TARGET_FD_LIMIT);
                 rlim.rlim_cur = target;
                 if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) } != 0 {
                     let err = std::io::Error::last_os_error();
+                    // On Linux, hard limit may be 4096 (INR_OPEN_MAX) which is too low
+                    // Need to increase /proc/sys/fs/nr_open first, but that requires root
                     log::warn!("Failed to increase file descriptor limit from {} to {}: {}", soft, target, err);
                 } else {
                     log::debug!("Increased file descriptor limit from {} to {}", soft, target);
