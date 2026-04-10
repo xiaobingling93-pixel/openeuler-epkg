@@ -1302,25 +1302,28 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
                         }
                     }
 
+                    // Track if we hit WouldBlock - only sleep if no data available
+                    let mut would_block = true;
+
                     // Non-blocking read from stdout
                     if !stdout_hup {
                         match stdout.read(&mut buf) {
-                            Ok(0) => { stdout_hup = true; debug_file_write("execute_batch: stdout HUP\n"); }
-                            Ok(n) => stdout_data.extend_from_slice(&buf[..n]),
+                            Ok(0) => { stdout_hup = true; would_block = false; debug_file_write("execute_batch: stdout HUP\n"); }
+                            Ok(n) => { stdout_data.extend_from_slice(&buf[..n]); would_block = false; }
                             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                            Err(e) if e.raw_os_error() == Some(libc::EIO) => { stdout_hup = true; }
-                            Err(_) => stdout_hup = true,
+                            Err(e) if e.raw_os_error() == Some(libc::EIO) => { stdout_hup = true; would_block = false; }
+                            Err(_) => { stdout_hup = true; would_block = false; }
                         }
                     }
 
                     // Non-blocking read from stderr
                     if !stderr_hup {
                         match stderr.read(&mut buf) {
-                            Ok(0) => { stderr_hup = true; debug_file_write("execute_batch: stderr HUP\n"); }
-                            Ok(n) => stderr_data.extend_from_slice(&buf[..n]),
+                            Ok(0) => { stderr_hup = true; would_block = false; debug_file_write("execute_batch: stderr HUP\n"); }
+                            Ok(n) => { stderr_data.extend_from_slice(&buf[..n]); would_block = false; }
                             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                            Err(e) if e.raw_os_error() == Some(libc::EIO) => { stderr_hup = true; }
-                            Err(_) => stderr_hup = true,
+                            Err(e) if e.raw_os_error() == Some(libc::EIO) => { stderr_hup = true; would_block = false; }
+                            Err(_) => { stderr_hup = true; would_block = false; }
                         }
                     }
 
@@ -1342,10 +1345,10 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
                         }
                     }
 
-                    // Small sleep to avoid busy loop
-                    if !stdout_hup || !stderr_hup {
+                    // Only sleep when no data available (WouldBlock) and still waiting for pipes
+                    if would_block && (!stdout_hup || !stderr_hup) {
                         std::thread::sleep(std::time::Duration::from_millis(1));
-                    } else if child_status.is_none() {
+                    } else if would_block && child_status.is_none() && stdout_hup && stderr_hup {
                         // Both HUP but child not exited, spin faster
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
