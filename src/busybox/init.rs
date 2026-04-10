@@ -665,14 +665,26 @@ fn fs_create_dir_if_missing(p: &str) -> Result<()> {
 fn raise_system_file_limit() {
     // Increase system-wide file handle limit
     const FILE_MAX_PATH: &str = "/proc/sys/fs/file-max";
+    const NR_OPEN_PATH: &str = "/proc/sys/fs/nr_open";
     const TARGET: u64 = 1_048_576;
+
+    // Step 1: Set fs.file-max (system-wide limit)
     if let Err(e) = std::fs::write(FILE_MAX_PATH, TARGET.to_string()) {
         log::debug!("init: could not set {} to {}: {} (kernel cmdline sysctl.fs.file-max may still apply)", FILE_MAX_PATH, TARGET, e);
     } else {
         log::debug!("init: set {} to {}", FILE_MAX_PATH, TARGET);
     }
 
-    // Increase process-level file descriptor limit (RLIMIT_NOFILE)
+    // Step 2: Increase fs.nr_open first - this raises the hard limit ceiling
+    // Without this, setrlimit cannot raise hard limit above default INR_OPEN_MAX (4096)
+    // The kernel default nr_open is 1048576, but we set it explicitly to ensure it's available
+    if let Err(e) = std::fs::write(NR_OPEN_PATH, TARGET.to_string()) {
+        log::debug!("init: could not set {} to {}: {}", NR_OPEN_PATH, TARGET, e);
+    } else {
+        log::debug!("init: set {} to {}", NR_OPEN_PATH, TARGET);
+    }
+
+    // Step 3: Increase process-level file descriptor limit (RLIMIT_NOFILE)
     // This is inherited by child processes and prevents "No file descriptors available" errors
     const MIN_FD_LIMIT: u64 = 65_536;
     const TARGET_FD_LIMIT: u64 = 1_048_576;
@@ -683,15 +695,26 @@ fn raise_system_file_limit() {
         let hard = rlim.rlim_max;
         log::debug!("init: current RLIMIT_NOFILE: soft={}, hard={}", soft, hard);
 
-        // If soft limit is too low, try to increase it
+        // If soft limit is too low, try to increase both soft and hard limits
+        // After setting nr_open above, we can now raise hard limit beyond 4096
         if soft < MIN_FD_LIMIT {
-            let target = std::cmp::min(hard, TARGET_FD_LIMIT);
-            rlim.rlim_cur = target;
+            // Set both soft and hard to target (root can raise hard limit after nr_open is increased)
+            rlim.rlim_cur = TARGET_FD_LIMIT;
+            rlim.rlim_max = TARGET_FD_LIMIT;
             if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) } != 0 {
                 let err = std::io::Error::last_os_error();
-                log::debug!("init: failed to increase RLIMIT_NOFILE from {} to {}: {}", soft, target, err);
+                log::debug!("init: failed to set RLIMIT_NOFILE to {}: {}", TARGET_FD_LIMIT, err);
+                // Fallback: try to just raise soft to current hard
+                rlim.rlim_cur = hard;
+                rlim.rlim_max = hard;
+                if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) } != 0 {
+                    let err2 = std::io::Error::last_os_error();
+                    log::debug!("init: fallback also failed: {}", err2);
+                } else {
+                    log::debug!("init: increased RLIMIT_NOFILE soft from {} to {} (hard limit)", soft, hard);
+                }
             } else {
-                log::debug!("init: increased RLIMIT_NOFILE from {} to {}", soft, target);
+                log::debug!("init: increased RLIMIT_NOFILE from soft={}, hard={} to {}", soft, hard, TARGET_FD_LIMIT);
             }
         }
     } else {
