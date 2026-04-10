@@ -417,7 +417,7 @@ fn spawn_child_piped(request: &CommandRequest) -> Result<SpawnOutcome> {
 
     match unsafe { fork() }? {
         ForkResult::Child => {
-            // Child: clear CLOEXEC and dup to stdio
+            // Child: clear CLOEXEC and dup to stdio, then close all other fds
             unsafe {
                 // Setup stdio first
                 libc::fcntl(stdout_w.as_raw_fd(), libc::F_SETFD, 0);
@@ -436,13 +436,21 @@ fn spawn_child_piped(request: &CommandRequest) -> Result<SpawnOutcome> {
                     }
                 }
 
-                // CRITICAL: Close all fd > 2 to prevent pipe inheritance
-                // BusyBox time uses vfork internally; if time inherits daemon's pipes,
-                // vfork child also inherits them. When vfork child exits after execvp
-                // failure, time's waitpid hangs because the pipes are still open
-                // (inherited by the already-exited vfork child, but kernel keeps them).
-                for fd in 3..=255 {
-                    libc::close(fd);
+                // CRITICAL: Close pipe fds inherited from parent to prevent
+                // BusyBox time vfork hang. When time vforks, child inherits
+                // all fds. If child exits after execvp failure, time's waitpid
+                // can hang if these pipe fds are still open.
+                //
+                // Close read ends of stdout/stderr pipes (parent uses these)
+                libc::close(stdout_r.as_raw_fd());
+                libc::close(stderr_r.as_raw_fd());
+                // Close write ends after dup2 (already duped to 1/2)
+                libc::close(stdout_w.as_raw_fd());
+                libc::close(stderr_w.as_raw_fd());
+                // Close stdin pipe if present
+                if let Some((ref stdin_r, ref stdin_w)) = stdin_pipe {
+                    libc::close(stdin_r.as_raw_fd());
+                    libc::close(stdin_w.as_raw_fd());
                 }
             }
 
