@@ -450,9 +450,17 @@ fn spawn_child_piped(request: &CommandRequest) -> Result<SpawnOutcome> {
     // Create pipes with CLOEXEC
     let (stdout_r, stdout_w) = pipe2(OFlag::O_CLOEXEC)?;
     let (stderr_r, stderr_w) = pipe2(OFlag::O_CLOEXEC)?;
-    let stdin_pipe = if request.stdin.is_empty() {
-        None
+    // For batch mode: stdin pipe only if stdin data is in request
+    // For stream mode: stdin pipe always needed (stdin comes over stream)
+    let stdin_pipe = if request.batch {
+        if request.stdin.is_empty() {
+            None
+        } else {
+            let (r, w) = pipe2(OFlag::O_CLOEXEC)?;
+            Some((r, w))
+        }
     } else {
+        // Stream mode: always create stdin pipe for forwarding
         let (r, w) = pipe2(OFlag::O_CLOEXEC)?;
         Some((r, w))
     };
@@ -1233,12 +1241,16 @@ fn nonpty_poll_loop<W: std::io::Write>(
                     if should_break {
                         break;
                     }
-                }
-
-                // Always process TCP input (stdin from host)
-                if poll_fds[2].revents().unwrap().contains(PollFlags::POLLIN) {
-                    let mut dummy_eof = false;
-                    handle_nonpty_tcp_input_only(stream, &mut stdin_file, &mut tcp_buf, &mut tcp_buf_pos, &mut dummy_eof)?;
+                } else {
+                    // When stream is blocked, only process stdin (TCP input), not stdout/stderr
+                    if poll_fds[2].revents().unwrap().contains(PollFlags::POLLIN) {
+                        let mut stdin_eof = false;
+                        handle_nonpty_tcp_input_only(stream, &mut stdin_file, &mut tcp_buf, &mut tcp_buf_pos, &mut stdin_eof)?;
+                        if stdin_eof {
+                            log::debug!("execute_without_pty: stdin EOF received (blocked), closing stdin pipe");
+                            stdin_file = None;
+                        }
+                    }
                 }
 
                 if check_child_status(child_pid, &mut child_status) {

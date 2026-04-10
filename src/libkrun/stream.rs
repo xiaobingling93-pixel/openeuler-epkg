@@ -272,7 +272,15 @@ fn handle_streaming_simple(stream: &mut std::os::unix::net::UnixStream, is_batch
             if ready > 0 && ((pfd[0].revents & libc::POLLIN) != 0 || (pfd[0].revents & libc::POLLHUP) != 0) {
                 let mut buf = [0u8; 4096];
                 match std::io::stdin().read(&mut buf) {
-                    Ok(0) => break, // EOF from host stdin
+                    Ok(0) => {
+                        // EOF from host stdin - send StdinEof to close guest stdin pipe
+                        let msg = StreamMessage::StdinEof { seq };
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            let _ = stream.write_all(json.as_bytes());
+                            let _ = stream.write_all(b"\n");
+                        }
+                        break;
+                    }
                     Ok(n) => {
                         let data = STANDARD.encode(&buf[..n]);
                         let msg = StreamMessage::Stdin { data, seq };
