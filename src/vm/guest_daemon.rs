@@ -475,8 +475,30 @@ fn spawn_child_piped(request: &CommandRequest) -> Result<SpawnOutcome> {
                 std::env::set_var(k, v);
             }
 
+            // Resolve command path if not absolute
+            let cmd_path = if request.command[0].contains('/') {
+                request.command[0].clone()
+            } else {
+                // Search PATH for the command
+                let path_env = request.env.get("PATH")
+                    .map(|s| s.as_str())
+                    .unwrap_or("/usr/bin:/bin:/usr/sbin:/sbin");
+                let mut found_path = None;
+                for dir in path_env.split(':') {
+                    let candidate = format!("{}/{}", dir, request.command[0]);
+                    if std::path::Path::new(&candidate).exists() {
+                        found_path = Some(candidate);
+                        break;
+                    }
+                }
+                match found_path {
+                    Some(p) => p,
+                    None => request.command[0].clone(), // Let execve fail with original
+                }
+            };
+
             // Exec command
-            let cmd = std::ffi::CString::new(request.command[0].as_str()).unwrap();
+            let cmd = std::ffi::CString::new(cmd_path.as_str()).unwrap();
             let args: Vec<std::ffi::CString> = request.command.iter()
                 .map(|s| std::ffi::CString::new(s.as_str()).unwrap())
                 .collect();
