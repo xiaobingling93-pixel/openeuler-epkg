@@ -1369,9 +1369,9 @@ impl KrunContext {
     #[allow(dead_code)]
     #[allow(dead_code)]
     unsafe fn add_virtiofs(&self, tag: &str, path: &str) -> Result<()> {
-        // Use add_virtiofs2 with default DAX window size of 256 MiB
+        // Use add_virtiofs2 with 512 MiB DAX window for better performance
         // This enables DAX (Direct Access) for better virtiofs performance
-        const DEFAULT_VIRTIOFS_SHM_SIZE: u64 = 1 << 28; // 256 MiB
+        const DEFAULT_VIRTIOFS_SHM_SIZE: u64 = 1 << 29; // 512 MiB
         self.add_virtiofs2(tag, path, DEFAULT_VIRTIOFS_SHM_SIZE)
     }
 
