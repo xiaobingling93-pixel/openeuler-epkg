@@ -533,14 +533,34 @@ if ! echo "$output" | grep -q "caught"; then
 fi
 log "Test 10: PASSED"
 
-# Test 11: Large output handling
-log "Test 11: Testing large output handling"
+# Test 11: Large output handling (small)
+log "Test 11: Testing large output handling (100 lines)"
 output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run $ISOLATE_OPTS --io=batch sh -c 'seq 1 100')
 line_count=$(echo "$output" | grep -v '^\[' | grep -v '^$' | wc -l | tr -d ' ')
 if [ "$line_count" != "100" ]; then
     error "Test 11 failed: Expected 100 lines, got $line_count"
 fi
 log "Test 11: PASSED"
+
+# Test 11b: Large output handling (batch mode, 100000 lines)
+# This tests the vsock credit mechanism for large data transfers
+log "Test 11b: Testing large output handling (batch mode, 100000 lines)"
+output=$(capture_with_timeout 120 "$EPKG_BIN" -e "$ENV_NAME" run $ISOLATE_OPTS --io=batch seq 100000)
+line_count=$(echo "$output" | grep -v '^\[' | grep -v '^$' | wc -l | tr -d ' ')
+if [ "$line_count" != "100000" ]; then
+    error "Test 11b failed: Expected 100000 lines, got $line_count"
+fi
+log "Test 11b: PASSED"
+
+# Test 11c: Large output handling (stream mode, 100000 lines)
+# This tests streaming flow control for large data transfers
+log "Test 11c: Testing large output handling (stream mode, 100000 lines)"
+output=$(capture_with_timeout 120 "$EPKG_BIN" -e "$ENV_NAME" run $ISOLATE_OPTS --io=stream seq 100000)
+line_count=$(echo "$output" | grep -v '^\[' | grep -v '^$' | wc -l | tr -d ' ')
+if [ "$line_count" != "100000" ]; then
+    error "Test 11c failed: Expected 100000 lines, got $line_count"
+fi
+log "Test 11c: PASSED"
 
 # Test 12: Check /proc filesystem
 log "Test 12: Checking /proc filesystem in VM"

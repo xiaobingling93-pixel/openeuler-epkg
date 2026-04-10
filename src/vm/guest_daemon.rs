@@ -209,11 +209,56 @@ fn log_process_identity(tag: &str) {
 }
 
 /// Write a single newline-delimited JSON stream message to the TCP stream.
+/// Uses non-blocking I/O with retry on EAGAIN to avoid blocking the poll loop.
 fn write_stream_message(stream: &mut TcpStream, msg: &StreamMessage) -> Result<()> {
     log::trace!("write_stream_message: {:?}", msg);
     let json = serde_json::to_string(msg)?;
-    stream.write_all(json.as_bytes())?;
-    stream.write_all(b"\n")?;
+    let data = format!("{}\n", json);
+
+    // Set stream to non-blocking mode
+    stream.set_nonblocking(true)?;
+
+    let data_bytes = data.as_bytes();
+    let mut offset = 0;
+    let mut retries = 0;
+    const MAX_RETRIES: usize = 100;  // ~100ms total wait
+
+    while offset < data_bytes.len() {
+        match stream.write(&data_bytes[offset..]) {
+            Ok(n) => {
+                offset += n;
+                retries = 0;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                retries += 1;
+                if retries > MAX_RETRIES {
+                    log::warn!("write_stream_message: max retries exceeded, giving up");
+                    stream.set_nonblocking(false)?;
+                    return Err(eyre!("write blocked after {} retries", MAX_RETRIES));
+                }
+                // Wait for writability using poll
+                let fd = stream.as_raw_fd();
+                let mut pfd = [libc::pollfd {
+                    fd,
+                    events: libc::POLLOUT,
+                    revents: 0,
+                }];
+                let poll_ret = unsafe { libc::poll(pfd.as_mut_ptr(), 1, 1) };
+                if poll_ret < 0 {
+                    log::warn!("poll error in write_stream_message");
+                    break;
+                }
+                continue;
+            }
+            Err(e) => {
+                stream.set_nonblocking(false)?;
+                return Err(e.into());
+            }
+        }
+    }
+
+    // Restore blocking mode and flush
+    stream.set_nonblocking(false)?;
     stream.flush()?;
     Ok(())
 }
