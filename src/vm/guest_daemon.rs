@@ -1366,39 +1366,37 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
                             exit_code, stdout_data.len(), stderr_data.len());
                 debug_file_write(&format!("execute_batch: stdout={} bytes, stderr={} bytes\n", stdout_data.len(), stderr_data.len()));
 
-                log::debug!("execute_batch: sending response (exit_code={})", exit_code);
-                let _ = kmsg_write(&format!("<6>execute_batch: sending response (exit_code={})\n", exit_code));
-                debug_file_write("execute_batch: sending response JSON\n");
+                log::debug!("execute_batch: sending output chunks (exit_code={})", exit_code);
+                let _ = kmsg_write(&format!("<6>execute_batch: sending output chunks (exit_code={})\n", exit_code));
+                debug_file_write("execute_batch: sending stdout/stderr chunks\n");
 
-                // Send batch response
-                let response = serde_json::json!({
-                    "exit_code": exit_code,
-                    "stdout": STANDARD.encode(&stdout_data),
-                    "stderr": STANDARD.encode(&stderr_data),
-                });
-                let json = serde_json::to_string(&response)?;
-                debug_file_write(&format!("execute_batch: response JSON size={} bytes\n", json.len()));
-
-                // Write in 4KB chunks to avoid vsock buffer overflow
-                let json_bytes = json.as_bytes();
-                let mut offset = 0;
-                while offset < json_bytes.len() {
-                    let chunk_size = std::cmp::min(4096, json_bytes.len() - offset);
-                    let written = stream.write(&json_bytes[offset..offset + chunk_size])?;
-                    offset += written;
+                // Send stdout in chunks using stream protocol
+                let mut seq_out = 0u64;
+                let total_chunks = stdout_data.len() / 4096 + if stdout_data.len() % 4096 > 0 { 1 } else { 0 };
+                debug_file_write(&format!("execute_batch: stdout {} bytes = {} chunks\n", stdout_data.len(), total_chunks));
+                for (i, chunk) in stdout_data.chunks(4096).enumerate() {
+                    let chunk_num = i + 1;
+                    if chunk_num % 20 == 0 || chunk_num == total_chunks {
+                        debug_file_write(&format!("execute_batch: sending stdout chunk {} of {}\n", chunk_num, total_chunks));
+                    }
+                    send_stdout_chunk(stream, chunk, &mut seq_out)?;
                 }
+                debug_file_write(&format!("execute_batch: sent {} stdout chunks OK\n", seq_out));
 
-                stream.write_all(b"\n")?;
-                stream.flush()?;
-                debug_file_write("execute_batch: response written and flushed\n");
+                // Send stderr in chunks
+                let mut seq_err = 0u64;
+                for chunk in stderr_data.chunks(4096) {
+                    send_stderr_chunk(stream, chunk, &mut seq_err)?;
+                }
+                debug_file_write(&format!("execute_batch: sent {} stderr chunks\n", seq_err));
 
-                // CRITICAL: Shutdown the write side to signal EOF to host
-                // This ensures the host's read_to_string() returns
-                let _ = kmsg_write("<6>execute_batch: shutting down stream write side\n");
-                debug_file_write("execute_batch: shutting down stream write side\n");
+                // Send exit message
+                send_exit_and_flush(stream, exit_code)?;
+                debug_file_write("execute_batch: exit message sent and flushed\n");
+
+                // Shutdown write side to signal EOF to host
                 let _ = stream.shutdown(std::net::Shutdown::Write);
-
-                let _ = kmsg_write("<6>execute_batch: response sent, returning\n");
+                let _ = kmsg_write("<6>execute_batch: done\n");
                 debug_file_write("execute_batch: done\n");
                 Ok(exit_code)
             }
@@ -1408,19 +1406,13 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
     match result {
         Ok(exit_code) => Ok(exit_code),
         Err(e) => {
-            log::debug!("execute_batch: error {}, sending error response", e);
-            debug_file_write(&format!("execute_batch: error {}, sending error response\n", e));
-            // Send batch response with error
-            let response = serde_json::json!({
-                "exit_code": -1,
-                "stdout": "",
-                "stderr": STANDARD.encode(format!("execute_batch error: {}", e).as_bytes()),
-            });
-            if let Ok(json) = serde_json::to_string(&response) {
-                let _ = stream.write_all(json.as_bytes());
-                let _ = stream.write_all(b"\n");
-                let _ = stream.flush();
-            }
+            log::debug!("execute_batch: error {}, sending error message", e);
+            debug_file_write(&format!("execute_batch: error {}, sending error message\n", e));
+            // Send error as stderr chunk + exit message
+            let error_msg = format!("execute_batch error: {}", e);
+            let mut seq = 0u64;
+            send_stderr_chunk(stream, error_msg.as_bytes(), &mut seq)?;
+            send_exit_and_flush(stream, -1)?;
             let _ = stream.shutdown(std::net::Shutdown::Write);
             Err(e)
         }
@@ -1674,6 +1666,13 @@ fn run_vsock_server() -> Result<()> {
     kmsg_write("<6>run_vsock_server: start\n");
     log_process_identity("vm-daemon run_vsock_server start");
 
+    // Increase kernel socket buffer limits to handle large data transfers.
+    // Default (~256KB) is too small for batch/stream mode with large output.
+    // The guest vsock driver advertises socket buffer as buf_alloc to host.
+    const SOCKET_BUF_MAX: &str = "8388608"; // 8MB
+    let _ = std::fs::write("/proc/sys/net/core/rmem_max", SOCKET_BUF_MAX);
+    let _ = std::fs::write("/proc/sys/net/core/wmem_max", SOCKET_BUF_MAX);
+
     // Fixed vsock ports matching host/client side.
     const VSOCK_PORT: u32 = 10000;      // Command port
     const READY_PORT: u32 = 10001;      // Ready notification port
@@ -1690,6 +1689,18 @@ fn run_vsock_server() -> Result<()> {
     ).map_err(|e| { log::debug!("vm-daemon: socket() failed: {}", e); e })?;
     kmsg_write("<6>run_vsock_server: socket created\n");
     log::debug!("vm-daemon: socket created, fd={}", fd.as_raw_fd());
+
+    // Set socket buffer size to handle large data transfers.
+    // This determines the buf_alloc advertised to host via credit updates.
+    let buf_size: libc::c_int = 8 * 1024 * 1024; // 8MB
+    unsafe {
+        libc::setsockopt(fd.as_raw_fd(), libc::SOL_SOCKET, libc::SO_RCVBUF,
+                         &buf_size as *const _ as *const libc::c_void,
+                         std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+        libc::setsockopt(fd.as_raw_fd(), libc::SOL_SOCKET, libc::SO_SNDBUF,
+                         &buf_size as *const _ as *const libc::c_void,
+                         std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+    }
 
     let addr = VsockAddr::new(libc::VMADDR_CID_ANY, VSOCK_PORT);
     let raw_fd = fd.as_raw_fd();
@@ -1770,6 +1781,16 @@ fn run_vsock_server() -> Result<()> {
         };
 
         log::debug!("vm-daemon: accept() succeeded, fd={}", client_fd);
+        // Set socket buffer size on accepted connection for large data transfers
+        let buf_size: libc::c_int = 8 * 1024 * 1024; // 8MB
+        unsafe {
+            libc::setsockopt(client_fd, libc::SOL_SOCKET, libc::SO_RCVBUF,
+                             &buf_size as *const _ as *const libc::c_void,
+                             std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+            libc::setsockopt(client_fd, libc::SOL_SOCKET, libc::SO_SNDBUF,
+                             &buf_size as *const _ as *const libc::c_void,
+                             std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+        }
         kmsg_write("<6>run_vsock_server: creating TcpStream from fd\n");
         let stream = unsafe { TcpStream::from_raw_fd(client_fd) };
         log::debug!("vm-daemon vsock: accepted connection");

@@ -105,6 +105,18 @@ pub fn connect_vsock_bridge(sock_path: &Path, max_retries: u32) -> Result<std::o
     while retry_count < max_retries {
         match UnixStream::connect(sock_path) {
             Ok(stream) => {
+                // Increase socket buffer sizes to handle large data transfers
+                use std::os::unix::io::AsRawFd;
+                let fd = stream.as_raw_fd();
+                let buf_size: libc::c_int = 8 * 1024 * 1024;  // 8MB
+                unsafe {
+                    libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF,
+                                     &buf_size as *const _ as *const libc::c_void,
+                                     std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+                    libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_SNDBUF,
+                                     &buf_size as *const _ as *const libc::c_void,
+                                     std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+                }
                 return Ok(stream);
             }
             Err(e) => {
