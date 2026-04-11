@@ -893,7 +893,17 @@ fn handle_pty_poll_events(
     seq_out: &mut u64,
 ) -> Result<bool> {
     let master_revents = poll_fds[0].revents().unwrap();
-    if master_revents.contains(PollFlags::POLLIN) || master_revents.contains(PollFlags::POLLHUP) {
+
+    // On POLLHUP, drain all remaining data immediately
+    // This ensures all output is sent before exit, avoiding multiple poll rounds
+    if master_revents.contains(PollFlags::POLLHUP) {
+        log::debug!("execute_with_pty: PTY POLLHUP, draining remaining data");
+        drain_reader_to_stdout(master_file, stream, buf, seq_out)?;
+        let _ = stream.flush();
+        return Ok(true);
+    }
+
+    if master_revents.contains(PollFlags::POLLIN) {
         if handle_pty_output(master_file, stream, buf, seq_out)? {
             return Ok(true);
         }
@@ -920,7 +930,7 @@ fn pty_poll_loop(
     let stream_bfd = unsafe { BorrowedFd::borrow_raw(stream.as_raw_fd()) };
 
     let mut poll_fds = vec![
-        PollFd::new(master_bfd, PollFlags::POLLIN),
+        PollFd::new(master_bfd, PollFlags::POLLIN | PollFlags::POLLHUP),
         PollFd::new(stream_bfd, PollFlags::POLLIN),
     ];
 
