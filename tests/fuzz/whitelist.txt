@@ -46,12 +46,12 @@ libcurl
 libjaxws-java 2.3
 libjodatime-java
 libproxy-duktape
-libstdc++6-pp-gcc13-32bit 13
+libstdc\+\+6-pp-gcc13-32bit 13
 linux-image-uc-6.8.0-1041-azure
 linux-modules-6.8.0-1005-intel
 linux-modules-nvidia-
 llama.cpp-tools
-llvm15-libc++1 15
+llvm15-libc\+\+1 15
 -microarch-level
 nodejs-request 2.67
 nvidia-kernel-common-

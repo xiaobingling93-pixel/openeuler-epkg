@@ -94,7 +94,7 @@ XDG_RUNTIME_DIR.*(is not set|invalid)  # Many modern Linux programs need this fo
 Can't locate.*\.pm in @INC  # Perl module not installed (package dependency issue)
 
 # Sxmo scripts require hook files that are part of sxmo ecosystem
-sxmo_hook_icons.sh.*was not found in \$PATH  # Sxmo hook dependency
+sxmo_hook_icons.sh.*was not found in $PATH  # Sxmo hook dependency
 
 # Tcl/Tk interpreter missing
 exec: no such command `wish'  # Tk interpreter not installed
