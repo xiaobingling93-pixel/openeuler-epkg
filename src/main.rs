@@ -22,6 +22,12 @@ macro_rules! debug_epkg {
     };
 }
 
+#[cfg(not(feature = "libkrun"))]
+#[macro_export]
+macro_rules! debug_epkg {
+    ($($arg:tt)*) => {};
+}
+
 mod dirs;
 mod models;
 mod io;
