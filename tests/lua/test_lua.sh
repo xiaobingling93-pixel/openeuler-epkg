@@ -12,8 +12,6 @@
 # WARNING: System rpmlua may segfault when running the full test suite due to memory corruption
 # or other issues that accumulate over multiple test executions.
 
-set -e
-
 # Source common variables and setup
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

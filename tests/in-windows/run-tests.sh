@@ -25,8 +25,6 @@
 # This script copies the tests and binary to a Windows-accessible location
 # and runs them using cmd.exe, because cmd.exe cannot work with WSL UNC paths.
 
-set -e
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 

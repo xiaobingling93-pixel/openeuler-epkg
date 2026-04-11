@@ -5,7 +5,6 @@
 # Usage: mk-epkg-bindir.sh <bindir> [epkg_bin]
 # Output: prints bindir path (for use with bindir=... runtest)
 
-set -e
 BINDIR="${1:?need bindir}"
 
 # Get script directory and project root

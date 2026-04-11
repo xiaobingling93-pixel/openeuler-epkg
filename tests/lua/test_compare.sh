@@ -10,8 +10,6 @@
 #   - NGROUPS_MAX: musl=32 (POSIX min), glibc=runtime value
 #   - LINK_MAX:    musl=8 (POSIX min), glibc=runtime value
 
-set -e
-
 # Source common variables and setup
 source "$(dirname "$0")/common.sh"
 
