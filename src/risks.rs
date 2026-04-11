@@ -4,14 +4,12 @@
 //! file conflict detection, and config file handling.
 
 use std::collections::HashMap;
-#[cfg(unix)]
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::Arc;
-#[cfg(unix)]
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(unix)]
 use std::sync::RwLock;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use crate::models::InstalledPackagesMap;
@@ -66,17 +64,13 @@ const AVG_FILES_PER_DIR: u64 = 10;
 const AVG_FILES_PER_LINK: u64 = 11;
 const MIN_FREE_SPACE: u64 = 100 * 1024 * 1024; // 100MB safety margin
 
-#[cfg(unix)]
 static INITIAL_FREE_SPACE: AtomicU64 = AtomicU64::new(0);
-#[cfg(unix)]
 static BATCH_TOTAL_ESTIMATE: AtomicU64 = AtomicU64::new(0);
-#[cfg(unix)]
 static PACKAGE_ESTIMATES: RwLock<Option<HashMap<String, u64>>> = RwLock::new(None);
 
 /// Initialize estimation for entire batch (call once at installation start)
 /// Sets INITIAL_FREE_SPACE once - see module comment for why this is only
 /// done at the start and not during concurrent unpack operations.
-#[cfg(unix)]
 pub fn init_batch_estimation(pkgkeys: &[String]) -> Result<()> {
     let store_root = crate::models::dirs().epkg_store.clone();
     let store_fs_info = get_filesystem_info(&store_root);
@@ -110,37 +104,21 @@ pub fn init_batch_estimation(pkgkeys: &[String]) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn init_batch_estimation(_pkgkeys: &[String]) -> Result<()> {
-    Ok(())
-}
-
 /// Reset estimation counters (call before starting new installation batch)
-#[cfg(unix)]
 pub fn reset_estimation_counters() {
     INITIAL_FREE_SPACE.store(0, Ordering::Relaxed);
     BATCH_TOTAL_ESTIMATE.store(0, Ordering::Relaxed);
     *PACKAGE_ESTIMATES.write().unwrap() = None;
 }
 
-#[cfg(not(unix))]
-pub fn reset_estimation_counters() {}
-
 /// Get predicted final free space (converges to true value as packages are unpacked)
-#[cfg(unix)]
 pub fn get_predicted_final_free() -> u64 {
     let initial_free = INITIAL_FREE_SPACE.load(Ordering::Relaxed);
     let total_estimate = BATCH_TOTAL_ESTIMATE.load(Ordering::Relaxed);
     initial_free.saturating_sub(total_estimate)
 }
 
-#[cfg(not(unix))]
-pub fn get_predicted_final_free() -> u64 {
-    0
-}
-
 /// Estimate disk space needed for a package (before unpack)
-#[cfg(unix)]
 pub fn estimate_package_disk_space(pkgkey: &str) -> Result<u64> {
     let package = crate::package_cache::load_package_info(pkgkey)
         .map_err(|e| eyre!("Failed to load package info for {}: {}", pkgkey, e))?;
@@ -177,13 +155,7 @@ pub fn estimate_package_disk_space(pkgkey: &str) -> Result<u64> {
     Ok(total_estimate)
 }
 
-#[cfg(not(unix))]
-pub fn estimate_package_disk_space(_pkgkey: &str) -> Result<u64> {
-    Ok(0)
-}
-
 /// Check if there's enough disk space before unpacking
-#[cfg(unix)]
 pub fn check_store_space_before_unpack(pkgkey: &str) -> Result<()> {
     let predicted_final_free = get_predicted_final_free();
 
@@ -210,13 +182,7 @@ pub fn check_store_space_before_unpack(pkgkey: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn check_store_space_before_unpack(_pkgkey: &str) -> Result<()> {
-    Ok(())
-}
-
 /// Adjust batch estimate after unpack by replacing estimate with actual
-#[cfg(unix)]
 pub fn adjust_batch_estimate(pkgkey: &str, store_tmp_dir: &Path) -> Result<()> {
     let pkg_estimate = {
         let estimates = PACKAGE_ESTIMATES.read().unwrap();
@@ -284,11 +250,6 @@ pub fn adjust_batch_estimate(pkgkey: &str, store_tmp_dir: &Path) -> Result<()> {
         crate::utils::format_size(get_predicted_final_free())
     );
 
-    Ok(())
-}
-
-#[cfg(not(unix))]
-pub fn adjust_batch_estimate(_pkgkey: &str, _store_tmp_dir: &Path) -> Result<()> {
     Ok(())
 }
 

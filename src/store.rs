@@ -248,7 +248,6 @@ pub fn unpack_mv_package_with_format(
 ) -> Result<std::path::PathBuf> {
     // Phase 1: Check disk space BEFORE unpack
     // Uses global predicted_final_free which converges to true value
-    #[cfg(unix)]
     if let Some(pk) = pkgkey {
         crate::risks::check_store_space_before_unpack(pk)?;
     }
@@ -269,7 +268,6 @@ pub fn unpack_mv_package_with_format(
 
     // Phase 3: Adjust batch estimate AFTER unpack using actual filelist.txt data
     // This replaces this package's estimate with actual, making predicted_final_free converge
-    #[cfg(unix)]
     if let Some(pk) = pkgkey {
         crate::risks::adjust_batch_estimate(pk, &store_tmp_dir)?;
     }

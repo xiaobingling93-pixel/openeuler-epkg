@@ -484,7 +484,6 @@ fn download_and_unpack_packages(
 
     // Initialize batch estimation with all packages that need unpacking
     // This calculates total estimate once, then each unpack replaces estimate with actual
-    #[cfg(unix)]
     {
         let pkgkeys: Vec<String> = packages_to_download.keys().cloned().collect();
         if !pkgkeys.is_empty() {
