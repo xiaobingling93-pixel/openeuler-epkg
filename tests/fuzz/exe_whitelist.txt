@@ -110,6 +110,9 @@ Failed to read /sys/devices/system/memory  # chmem needs physical memory sysfs
 radacct-rotate: invalid option: --  # freeradius tool doesn't support --help
 invalid option: --           # Generic pattern for tools without --help support
 
+# Programs that show help but return exit code 1 (upstream behavior)
+/usr/bin/tor-gencert        # tor-gencert shows syntax help but exits with code 1
+
 # Empty output (some tools output nothing with --help/--version)
 # These are detected when Flags failed shows empty output
 /usr/bin/git-flow          # git-flow subcommands output nothing without proper git repo context

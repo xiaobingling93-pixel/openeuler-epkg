@@ -9,6 +9,12 @@
 # =============================================================================
 read_chunk_from_stream: Read error  # HTTP download timeout/disconnect
 Peer disconnected           # Network connection issues
+Network unreachable         # Network connectivity issues (transient)
+
+# =============================================================================
+# Post-install Script Issues (not epkg bugs)
+# =============================================================================
+failed to write cache       # fc-cache may fail when ~/.local/share/fonts doesn't exist
 
 # =============================================================================
 # VM Resource Limits (not epkg bugs)

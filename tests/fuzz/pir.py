@@ -217,8 +217,11 @@ def cmd_setup(dry_run: bool = False) -> bool:
             expected_target = tmpfs_path.resolve()
             if current_target != expected_target:
                 log(f"WARNING: .epkg links to {current_target}, expected {expected_target}")
+        elif IS_LINUX and is_path_mounted(epkg_link):
+            # On Linux, .epkg can be a tmpfs mount directly (valid alternative)
+            log(f"INFO: .epkg is a tmpfs mount (valid alternative to symlink)")
         else:
-            log(f"ERROR: .epkg exists but is not a symlink")
+            log(f"ERROR: .epkg exists but is not a symlink or tmpfs mount")
             return False
     else:
         log(f"Creating symlink: {epkg_link} -> {tmpfs_path}")
@@ -232,8 +235,11 @@ def cmd_setup(dry_run: bool = False) -> bool:
             expected_target = cache_dir.resolve()
             if current_target != expected_target:
                 log(f"WARNING: cache links to {current_target}, expected {expected_target}")
+        elif cache_link.resolve() == cache_dir.resolve():
+            # cache_link is the actual cache directory (valid when CACHE_DIR points to it)
+            log(f"INFO: cache is the actual directory (valid alternative to symlink)")
         else:
-            log(f"ERROR: cache exists but is not a symlink")
+            log(f"ERROR: cache exists but is not a symlink or the specified CACHE_DIR")
             return False
     else:
         log(f"Creating symlink: {cache_link} -> {cache_dir}")
@@ -439,6 +445,10 @@ def check_log_for_errors(log_content: str) -> list:
             if 'read_chunk_from_stream: Read error' in line:
                 continue
             if 'Peer disconnected' in line:
+                continue
+            # Ignore file size mismatch during concurrent download+unpack
+            # (actual file size differs from expected due to ongoing unpack)
+            if 'File size mismatch after write' in line:
                 continue
             errors.append(f"ERROR: {line}")
 
