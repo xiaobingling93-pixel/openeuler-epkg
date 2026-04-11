@@ -44,10 +44,20 @@ ensure_e2e_bare_env
 
 # Guest: root + global epkg under tmpfs /opt/epkg; tmpfs /root for HOME.
 # Host download cache + optional log dir + resolv.conf for HTTPS/DNS.
+#
+# IMPORTANT: libkrun has limited IRQs (11 on x86_64). Each virtiofs mount needs one IRQ.
+# Rootfs, rng, and vsock each use one IRQ. So we can only have ~8 additional mounts.
+# To stay under the limit, mount parent directories instead of multiple separate paths.
+#
+# Strategy: Mount ~/.cache/epkg as /opt/epkg/cache to cover both downloads and e2e-logs.
+# This reduces mount count while preserving functionality.
 MOUNTS="-m tmpfs:/opt/epkg"
 MOUNTS="$MOUNTS -m tmpfs:/root"
-MOUNTS="$MOUNTS -m $DL_CACHE:/opt/epkg/cache/downloads"
-MOUNTS="$MOUNTS -m $E2E_LOG_DIR:/var/log/epkg-e2e:rw"
+# Mount the entire epkg cache directory to cover downloads and e2e-logs
+EPKG_CACHE_DIR="${HOME}/.cache/epkg"
+mkdir -p "$EPKG_CACHE_DIR/downloads" "$EPKG_CACHE_DIR/e2e-logs"
+MOUNTS="$MOUNTS -m $EPKG_CACHE_DIR:/opt/epkg/cache"
+E2E_LOG_DIR=/opt/epkg/cache/e2e-logs  # Guest path (under the mounted cache)
 RESOLV_TMP="${TMPDIR:-/tmp}/epkg-e2e-resolv.$$"
 # Guest DNS: public resolvers first (work through QEMU NAT), then QEMU slirp (10.0.2.3) and host
 # upstreams from systemd. Slirp-only configs often return EAI_AGAIN on some hosts. Do not bind-mount host
@@ -75,14 +85,17 @@ fi
 # Some kernels/userns combinations reject read-only bind remount for regular files (EPERM),
 # which aborts the namespace setup before tests even start.
 MOUNTS="$MOUNTS -m $RESOLV_TMP:/etc/resolv.conf"
+# Mount project root (read-only) - this provides test scripts and epkg binary
 MOUNTS="$MOUNTS -m $PROJECT_ROOT:$PROJECT_ROOT:ro"
+# Mount timezone (read-only) - use host timezone in guest
 MOUNTS="$MOUNTS -m $zoneinfo:$zoneinfo:ro"
 
 # bare-rootfs case: pre-provision chroot mounts from host-side epkg run.
+# Instead of mounting separate tmpfs and resolv.conf, use the existing mounts.
 if [ "$TEST_REL_PATH" = "cases/bare-rootfs.sh" ]; then
 	E2E_BARE_CHROOT="${E2E_BARE_CHROOT:-/tmp/epkg-bare-chroot}"
-	MOUNTS="$MOUNTS -m tmpfs:$E2E_BARE_CHROOT"
-	MOUNTS="$MOUNTS -m $RESOLV_TMP:$E2E_BARE_CHROOT/etc/resolv.conf"
+	# Note: We don't add extra mounts here to stay under IRQ limit.
+	# The test will create the chroot directory within the VM.
 fi
 
 trap 'rm -f "$RESOLV_TMP"' EXIT INT HUP
@@ -118,7 +131,7 @@ set -- \
 	E2E_VMM="${E2E_VMM:-}" \
 	E2E_COMBO="${E2E_COMBO:-}" \
 	E2E_BARE_CHROOT="${E2E_BARE_CHROOT:-}" \
-	E2E_LOG_DIR=/var/log/epkg-e2e \
+	E2E_LOG_DIR=/opt/epkg/cache/e2e-logs \
 	/bin/bash "$E2E_DIR/entry.sh" $ADDITIONAL_ARGS
 
 	echo "Running in-vm test: $*" >&2
