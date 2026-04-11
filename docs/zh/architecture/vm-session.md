@@ -290,26 +290,100 @@ def run_fuzz_iteration(os_name, env_name, ...):
 
 ### StreamMessage 消息格式
 
-Host 和 Guest 之间通过 vsock 传递 JSON 格式的 StreamMessage：
+Host 和 Guest 之间通过 vsock 传递 JSON 格式的 StreamMessage。每条消息以换行符 `\n` 结束：
 
 ```rust
+/**
+ * StreamMessage - Host <-> Guest 通信协议
+ *
+ * 格式: JSON + '\n' 换行分隔
+ * 编码: stdout/stderr/stdin 数据使用 base64 编码
+ *
+ * 流程:
+ *   1. Host 发送 CommandRequest (命令 + 环境 + cwd + stdin)
+ *   2. Guest 执行命令，实时发送 Stdout/Stderr chunks
+ *   3. Guest 发送 Exit 或 Error 表示执行结束
+ *   4. Host 收到 Exit/Error 后关闭连接
+ *
+ * 流量控制:
+ *   - Guest 使用 blocking write + yield_now() 确保数据不丢失
+ *   - 每次写入后 yield，让 kernel 处理 vsock buffer
+ *   - 避免 256KB guest vsock buffer 溢出
+ */
 enum StreamMessage {
-    // Guest → Host: 命令输出
-    Stdout { data: String, seq: u64 },   // base64 编码的 stdout
-    Stderr { data: String, seq: u64 },   // base64 编码的 stderr
+    // ═══════════════════════════════════════════════════════════
+    // Guest → Host: 命令输出 (流式传输)
+    // ═══════════════════════════════════════════════════════════
+    /**
+     * Stdout - 标准输出数据块
+     * - data: base64 编码的原始数据
+     * - seq: 序号（用于调试/排序）
+     * 
+     * 流量控制关键: write 后必须 yield_now()
+     * 否则会丢失数据（vsock buffer ~256KB）
+     */
+    Stdout { data: String, seq: u64 },
     
-    // Guest → Host: 执行结果
-    Exit { code: i32 },                   // 命令退出码
+    /**
+     * Stderr - 标准错误数据块
+     * 格式同 Stdout，用于分离 stdout/stderr
+     */
+    Stderr { data: String, seq: u64 },
     
-    // 双向: 错误通知
-    Error { message: String },            // 错误消息（替代 Exit）
+    // ═══════════════════════════════════════════════════════════
+    // Guest → Host: 执行结果 (终止消息)
+    // ═══════════════════════════════════════════════════════════
+    /**
+     * Exit - 正常退出
+     * - code: 命令退出码 (0=成功, >0=错误, 128+N=信号)
+     * 
+     * 必须在命令执行完成后发送，即使 stdout/stderr 为空
+     */
+    Exit { code: i32 },
     
-    // Host → Guest: 输入转发（PTY/交互模式）
-    Stdin { data: String, seq: u64 },     // base64 编码的 stdin
-    StdinEof { seq: u64 },                // stdin EOF
-    Signal { signal: String },            // 信号转发 (INT/TERM/HUP/QUIT/KILL/WINCH)
-    Resize { rows: u16, cols: u16 },      // 终端大小变化
+    /**
+     * Error - 异常终止
+     * - message: 错误描述
+     * 
+     * 用于替代 Exit，表示 guest daemon 内部错误:
+     * - spawn 失败
+     * - poll/read 错误
+     * - 资源不足
+     */
+    Error { message: String },
+    
+    // ═══════════════════════════════════════════════════════════
+    // Host → Guest: 输入转发 (stream 模式)
+    // ═══════════════════════════════════════════════════════════
+    /**
+     * Stdin - 标准输入数据块
+     * - data: base64 编码的原始数据
+     * - seq: 序号
+     * 
+     * 仅在 stream 模式使用（batch 模式 stdin 在 CommandRequest 中）
+     * Host stdin thread 持续读取并转发
+     */
+    Stdin { data: String, seq: u64 },
+    
+    /**
+     * StdinEof - stdin 结束
+     * 当 host stdin 关闭时发送，通知 guest 关闭 stdin pipe
+     * 
+     * 关键: 必须发送此消息，否则 guest stdin pipe 保持打开
+     * 导致 cat 等命令永远等待输入
+     */
+    StdinEof { seq: u64 },
+    
+    // ═══════════════════════════════════════════════════════════
+    // Host → Guest: 信号/终端控制 (PTY/交互模式)
+    // ═══════════════════════════════════════════════════════════
+    /** Signal - 信号转发 (INT/TERM/HUP/QUIT/KILL/WINCH) */
+    Signal { signal: String },
+    
+    /** Resize - 终端大小变化 */
+    Resize { rows: u16, cols: u16 },
 }
+```
 ```
 
 ### 消息流程
@@ -317,14 +391,158 @@ enum StreamMessage {
 ```
 Host                              Guest
   │                                 │
-  │──── CommandRequest (JSON) ─────►│  命令 + 环境 + cwd
+  │──── CommandRequest (JSON) ─────►│  命令 + 环境 + cwd + stdin(batch)
   │                                 │
-  │◄──── Stdout/Stderr ────────────│  实时输出流
-  │◄──── Stdout/Stderr ────────────│  (base64 编码)
+  │◄──── Stdout/Stderr ────────────│  实时输出流 (blocking write + yield)
+  │◄──── Stdout/Stderr ────────────│  (base64 编码, 每块 <4KB)
   │        ...                      │
+  │                                 │
+  │──── Stdin (stream模式) ────────►│  stdin 数据块 (host stdin thread)
+  │──── StdinEof ──────────────────►│  stdin EOF (关闭 guest stdin pipe)
   │                                 │
   │◄──── Exit/Error ───────────────│  执行结果
   │                                 │
+```
+
+### Batch vs Stream 模式
+
+**Batch 模式**：
+```
+特点: Guest 先收集所有输出，再一次性发送
+流程:
+  1. Guest 执行命令，收集 stdout/stderr 到 buffer
+  2. 命令完成后，按 chunk 发送 Stdout/Stderr
+  3. 发送 Exit
+优点: 简单，适合小输出
+缺点: 大输出占用大量内存，不适合交互
+
+stdin: 在 CommandRequest 中传递 (一次性)
+```
+
+**Stream 模式**：
+```
+特点: 实时流式传输，支持 stdin 转发
+流程:
+  1. Guest 执行命令
+  2. 实时读取 stdout/stderr，发送 Stdout/Stderr chunks
+  3. Host stdin thread 转发 stdin 数据
+  4. Host stdin EOF → 发送 StdinEof → guest 关闭 stdin pipe
+  5. 发送 Exit
+优点: 实时交互，内存占用小，支持 stdin
+缺点: 流量控制复杂
+
+stdin: 独立 thread 持续转发 (实时)
+关键: stream 模式必须创建 stdin pipe (即使 request.stdin 为空)
+```
+
+### 流量控制机制
+
+**问题背景**：
+- Guest kernel vsock buffer ~256KB
+- Guest 写入速度 > Host 接收速度
+- buffer 溢出 → 数据丢失 (约 ~540KB 处截断)
+
+**解决方案**：blocking write + yield_now()
+
+```rust
+// src/vm/guest_daemon.rs: write_stream_message()
+fn write_stream_message(stream: &mut TcpStream, msg: &StreamMessage) {
+    // 1. 切换到 blocking 模式 (kernel 处理 backpressure)
+    stream.set_nonblocking(false)?;
+    
+    // 2. 写入数据 (会阻塞直到 buffer 有空间)
+    stream.write_all(json.as_bytes());
+    stream.write_all(b"\n");
+    stream.flush();
+    
+    // 3. 关键: yield 让 kernel 处理数据
+    //    - vsock kernel thread 发送数据到 host
+    //    - host 读取数据，发送 credit update
+    //    - guest kernel 更新可用 buffer 空间
+    std::thread::yield_now();
+    
+    // 4. 恢复 non-blocking 模式 (poll loop 需要)
+    stream.set_nonblocking(true)?;
+}
+```
+
+**工作原理**：
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      流量控制流程                               │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  Guest                          Host                            │
+│    │                              │                             │
+│    │ write()                      │                             │
+│    │──► vsock buffer ─────────────► read()                      │
+│    │    (~256KB)                  │                             │
+│    │                              │                             │
+│    │ yield_now()                  │                             │
+│    │──► scheduler switch          │                             │
+│    │                              │                             │
+│    │        ┌─────────────────────┤                             │
+│    │        │ kernel vsock thread │                             │
+│    │        │ - 发送数据          │                             │
+│    │        │ - 等待 credit       │                             │
+│    │        └─────────────────────┤                             │
+│    │                              │                             │
+│    │                              │◄── credit update            │
+│    │◄── buffer space freed        │                             │
+│    │                              │                             │
+│    │ next write() succeeds        │                             │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**为什么 yield_now() 有效**：
+1. 允许调度器切换到 kernel vsock thread
+2. Kernel 发送 buffer 中的数据到 host
+3. Host 接收数据，libkrun 发送 credit update
+4. Guest kernel 收到 credit，更新 fwd_cnt
+5. vsock buffer 空间释放，下次 write 成功
+
+### Stdin 转发机制
+
+**问题**：stream 模式下 stdin 转发失败
+
+**原因**：
+1. `spawn_child_piped()` 只在 `request.stdin` 非空时创建 stdin pipe
+2. stream 模式的 stdin 来自 stream 消息，不在 request 中
+3. child 获得 `/dev/null` 作为 stdin，无法接收转发数据
+
+**修复**：
+```rust
+// src/vm/guest_daemon.rs: spawn_child_piped()
+let stdin_pipe = if request.batch {
+    // Batch: stdin 在 request 中
+    if request.stdin.is_empty() { None } else { Some(pipe) }
+} else {
+    // Stream: stdin 来自 stream 消息，必须创建 pipe
+    Some(pipe)
+};
+```
+
+**Host stdin thread**：
+```rust
+// src/libkrun/stream.rs: handle_streaming_simple()
+// stdin thread 仅在 stream 模式运行 (!is_batch)
+loop {
+    if exit_code.is_some() { break; }
+    
+    // poll stdin
+    poll(stdin_fd, POLLIN, timeout=50ms);
+    
+    if ready {
+        read(stdin) → encode base64 → send Stdin message
+    }
+}
+
+// stdin EOF → 发送 StdinEof
+if read() == 0 {
+    send StdinEof { seq };  // 关键: 必须发送
+    break;
+}
 ```
 
 ### 错误处理原则
@@ -347,6 +565,17 @@ if !got_exit {
     return Err("VM connection closed prematurely");
 }
 ```
+
+### 相关代码位置
+
+| 文件 | 关键函数 | 功能 |
+|------|----------|------|
+| `src/vm/guest_daemon.rs` | `write_stream_message()` | blocking write + yield |
+| `src/vm/guest_daemon.rs` | `spawn_child_piped()` | stdin pipe 创建逻辑 |
+| `src/vm/guest_daemon.rs` | `nonpty_poll_loop()` | poll loop 处理 |
+| `src/libkrun/stream.rs` | `handle_streaming_simple()` | host reader/stdin thread |
+| `src/libkrun/stream.rs` | `send_command_via_vsock()` | 命令发送入口 |
+| `git/libkrun/unix.rs` | `sendmsg()` | TX retry + credit update |
 
 ## Install/Upgrade 期间的 VM 复用
 
