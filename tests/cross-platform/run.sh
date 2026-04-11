@@ -134,8 +134,8 @@ should_run_channel() {
             # Conda works on all OSes
             return 0
             ;;
-        homebrew)
-            # Homebrew only on macOS and Linux
+        brew)
+            # Homebrew on macOS and Linux
             [ "$HOST_OS" = "macos" ] || [ "$HOST_OS" = "linux" ]
             return $?
             ;;
