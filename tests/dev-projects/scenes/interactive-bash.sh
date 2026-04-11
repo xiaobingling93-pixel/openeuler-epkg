@@ -2,10 +2,9 @@
 # Test script for interactive bash in VM mode
 #
 # This test verifies that:
-# - Non-interactive commands work
-# - Multiple commands via -c work
-# - PTY devices exist in VM
-# - Piped stdin works
+# - Non-interactive bash commands work
+# - PTY devices are available in VM
+# - Interactive stdin works
 #
 # Usage:
 #   E2E_OS=alpine ./interactive-bash.sh [-d|--debug|-dd|-ddd]
@@ -36,6 +35,9 @@ case $? in
         echo "  -d, --debug    Interactive debug mode"
         echo "  -dd            Debug logging"
         echo "  -ddd           Trace logging"
+        echo ""
+        echo "Environment:"
+        echo "  E2E_OS          Target OS/distro"
         exit 0
         ;;
 esac
@@ -45,10 +47,6 @@ set_color_names
 
 log() {
     printf "%b[TEST]%b %b\n" "$GREEN" "$NC" "$*" >&2
-}
-
-warn() {
-    printf "%b[WARN]%b %b\n" "$YELLOW" "$NC" "$*" >&2
 }
 
 error() {
@@ -88,40 +86,28 @@ log "Creating environment for $TARGET_OS"
 log "Installing bash"
 "$EPKG_BIN" -e "$TEST_ENV" --assume-yes install --no-install-essentials bash || error "Failed to install bash"
 
+EPKG_CMD="$EPKG_BIN -e $TEST_ENV"
+
 log "=== Test 1: Non-interactive command (should work) ==="
-"$EPKG_BIN" -e "$TEST_ENV" run -- bash -c "echo HELLO" || error "Test 1 failed"
-log "Test 1 passed"
-echo ""
+$EPKG_CMD run -- bash -c "echo HELLO" || error "Test 1 failed"
 
 log "=== Test 2: Multiple commands via -c (should work) ==="
-"$EPKG_BIN" -e "$TEST_ENV" run -- bash -c "id; whoami; pwd" || warn "Test 2 had issues"
-log "Test 2 completed"
-echo ""
+$EPKG_CMD run -- bash -c "id; whoami; pwd" || error "Test 2 failed"
 
-log "=== Test 3: Check PTY devices ==="
-"$EPKG_BIN" -e "$TEST_ENV" run -- stat /dev/ptmx 2>&1 || warn "Test 3: /dev/ptmx check had issues"
-log "Test 3 completed"
-echo ""
+log "=== Test 3: Check PTY devices in VM ==="
+$EPKG_CMD run -- stat /dev/ptmx || error "Test 3 failed"
 
 log "=== Test 4: Check /dev/pts/ ==="
-"$EPKG_BIN" -e "$TEST_ENV" run -- ls -la /dev/pts/ 2>&1 || warn "Test 4: /dev/pts check had issues"
-log "Test 4 completed"
-echo ""
+$EPKG_CMD run -- ls -la /dev/pts/ || error "Test 4 failed"
 
 log "=== Test 5: Check stdin in VM (piped) ==="
-echo "test" | "$EPKG_BIN" -e "$TEST_ENV" run -- bash -c "cat" || warn "Test 5: piped stdin had issues"
-log "Test 5 completed"
-echo ""
+echo "test" | $EPKG_CMD run -- bash -c "cat" || error "Test 5 failed"
 
 log "=== Test 6: Interactive stdin test ==="
-echo "id" | "$EPKG_BIN" -e "$TEST_ENV" run bash
-log "Test 6 exit code: $?"
-echo ""
+echo "id" | $EPKG_CMD run bash || error "Test 6 failed"
 
 log "=== Test 7: Check if bash is available ==="
-"$EPKG_BIN" -e "$TEST_ENV" run -- which bash || warn "bash not found via which"
-"$EPKG_BIN" -e "$TEST_ENV" run -- bash --version | head -1 || warn "bash --version failed"
-log "Test 7 completed"
-echo ""
+$EPKG_CMD run -- which bash || error "Test 7 failed: bash not found"
+$EPKG_CMD run -- bash --version | head -1 || error "Test 7 failed: bash --version"
 
-log "All interactive bash tests completed for $TARGET_OS"
+log "All interactive bash tests passed for $TARGET_OS"

@@ -134,21 +134,32 @@ esac
 log "Nested epkg list works"
 
 # Compare output between direct and nested
-log "Comparing direct vs nested epkg list output"
-list1=$("$EPKG_BIN" -e "$TEST_ENV" list 2>/dev/null | tail -n +5 | grep -v '^Total' | grep -v '^$' | sort)
+# Note: repo data may differ between host and VM (VM may auto-update repo).
+# Compare only core fields (pkgname, version, arch, size, depth), ignore repo and upgrade markers.
+log "Comparing direct vs nested epkg list output (core fields only)"
+
+# Extract core fields: depth, size, name, version, arch (columns 2,3,4,5,6)
+# Format: |I| depth | size | name | version | arch | repo | summary
+# Strip status flags (I/U), keep depth, size, name, version, arch
+extract_core_fields() {
+    # Input line: "I       4  405.57 KB  musl  1.2.5-r21  aarch64  main  description"
+    # Output:     "4  405.57 KB  musl  1.2.5-r21  aarch64"
+    sed 's/^[IU]*[[:space:]]*//' | awk '{print $1, $2, $3, $4, $5, $6}'
+}
 
 case "$(uname -s)" in
     Darwin)
-        # Inside VM, EPKG_ACTIVE_ENV is set, so just run 'epkg list' without -e
-        list2=$("$EPKG_BIN" -e "$TEST_ENV" run bash -c "\"$epkg_cmd\" list" 2>/dev/null | tail -n +5 | grep -v '^Total' | grep -v '^$' | sort)
+        list1=$("$EPKG_BIN" -e "$TEST_ENV" list 2>/dev/null | tail -n +5 | grep -v '^Total' | grep -v '^$' | extract_core_fields | sort)
+        list2=$("$EPKG_BIN" -e "$TEST_ENV" run bash -c "\"$epkg_cmd\" list" 2>/dev/null | tail -n +5 | grep -v '^Total' | grep -v '^$' | extract_core_fields | sort)
         ;;
     *)
-        list2=$("$EPKG_BIN" -e "$TEST_ENV" run bash -c "\"$epkg_cmd\" -e \"$TEST_ENV\" list" 2>/dev/null | tail -n +5 | grep -v '^Total' | grep -v '^$' | sort)
+        list1=$("$EPKG_BIN" -e "$TEST_ENV" list 2>/dev/null | tail -n +5 | grep -v '^Total' | grep -v '^$' | extract_core_fields | sort)
+        list2=$("$EPKG_BIN" -e "$TEST_ENV" run bash -c "\"$epkg_cmd\" -e \"$TEST_ENV\" list" 2>/dev/null | tail -n +5 | grep -v '^Total' | grep -v '^$' | extract_core_fields | sort)
         ;;
 esac
 
 if [ "$list1" != "$list2" ]; then
-    log "ERROR: epkg list output differs between direct and nested"
+    log "ERROR: epkg list core fields differ between direct and nested"
     diff_tmp1=$(mktemp)
     diff_tmp2=$(mktemp)
     echo "$list1" > "$diff_tmp1"
@@ -157,7 +168,7 @@ if [ "$list1" != "$list2" ]; then
     rm -f "$diff_tmp1" "$diff_tmp2"
     error "Output mismatch between direct and nested epkg list"
 fi
-log "Direct and nested epkg list outputs match"
+log "Direct and nested epkg list outputs match (core fields)"
 
 # Test nested epkg install via 'epkg run epkg install'
 log "Testing nested epkg install via 'epkg run epkg install'"
