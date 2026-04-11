@@ -90,14 +90,59 @@ flowchart LR
 
 **Stream message types (TCP protocol):**
 
-| Message   | Direction     | When / meaning |
-|-----------|---------------|----------------|
-| `stdout`  | Guest → Host  | Command stdout chunk (base64). |
-| `stderr`  | Guest → Host  | Command stderr chunk (base64). |
-| `exit`    | Guest → Host  | Command finished; `code` is exit status. |
-| `stdin`   | Host → Guest  | Forward host stdin to command (base64). |
-| `resize`  | Host → Guest  | PTY only; terminal rows/cols changed. |
-| `signal`  | Host → Guest  | PTY only; e.g. `INT`, `TERM`, `WINCH`. |
+| Message    | Direction     | When / meaning |
+|------------|---------------|----------------|
+| `stdout`   | Guest → Host  | Command stdout chunk (base64). |
+| `stderr`   | Guest → Host  | Command stderr chunk (base64). |
+| `exit`     | Guest → Host  | Command finished; `code` is exit status. |
+| `error`    | Guest → Host  | Guest daemon error (spawn failure, etc.). |
+| `stdin`    | Host → Guest  | Forward host stdin to command (base64). |
+| `stdin_eof`| Host → Guest  | Host stdin EOF; close guest stdin pipe. |
+| `resize`   | Host → Guest  | PTY only; terminal rows/cols changed. |
+| `signal`   | Host → Guest  | PTY only; e.g. `INT`, `TERM`, `WINCH`. |
+
+### Stream mode flow control
+
+**Problem**: Large output (e.g. `seq 100000` ~588KB) could lose data at ~540KB.
+
+**Root cause**: Guest kernel vsock buffer is ~256KB. When guest writes faster than host reads, the buffer fills. Without proper flow control, subsequent writes timeout and data is lost.
+
+**Solution**: Guest uses **blocking write + yield_now()**:
+
+```rust
+// guest_daemon.rs: write_stream_message()
+fn write_stream_message(stream, msg) {
+    stream.set_nonblocking(false);  // Kernel handles backpressure
+    stream.write_all(json + "\n");
+    stream.flush();
+    std::thread::yield_now();       // KEY: let kernel process buffer
+    stream.set_nonblocking(true);   // Restore for poll loop
+}
+```
+
+**Why yield_now() works**:
+1. Allows scheduler to switch to kernel vsock thread
+2. Kernel sends buffered data to host
+3. Host reads data, libkrun sends credit update
+4. Guest kernel receives credit, updates fwd_cnt
+5. Buffer space freed, next write succeeds
+
+### Batch vs Stream mode
+
+| Aspect | Batch mode | Stream mode |
+|--------|------------|-------------|
+| Output | Collect all, then send | Real-time chunks |
+| stdin | In `CommandRequest` (one-time) | Host stdin thread sends `stdin` messages |
+| stdin EOF | N/A | Host sends `stdin_eof` → guest closes pipe |
+| Memory | Large output in memory | Small chunks, low memory |
+| Flow control | Simpler (all-at-once) | Complex (yield per write) |
+
+**Stream mode stdin forwarding**:
+- Guest must create stdin pipe even when `request.stdin` is empty
+- stdin comes from stream messages, not in initial request
+- Host stdin thread reads and sends `stdin` chunks
+- When host stdin EOF, sends `stdin_eof` message
+- Guest closes stdin pipe on `stdin_eof`
 
 ### Host TCP client
 
