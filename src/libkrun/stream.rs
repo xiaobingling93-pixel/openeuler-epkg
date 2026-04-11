@@ -52,7 +52,7 @@ fn flush_named_pipe(file: &std::fs::File) -> std::io::Result<()> {
 
 /// Streaming message types for interactive/TUI modes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", deny_unknown_fields)]
 enum StreamMessage {
     #[serde(rename = "stdin")]
     Stdin { data: String, seq: u64 },
@@ -99,7 +99,6 @@ pub(crate) fn build_command_request(
         });
 
     let mut m = serde_json::Map::new();
-    m.insert("type".to_string(), serde_json::json!("command"));
     m.insert(
         "command".to_string(),
         serde_json::Value::Array(

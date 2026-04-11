@@ -340,7 +340,8 @@ fn drain_reader_to_stderr<R: Read>(
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TerminalConfig {
     rows: u16,
     cols: u16,
@@ -356,7 +357,8 @@ pub struct VmDaemonOptions {
     pub reverse_mode: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CommandRequest {
     /// After this command, wait for more connections instead of powering off.
     #[serde(default)]
@@ -1284,18 +1286,10 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
                 debug_file_write(&format!("execute_batch: spawn FAILED: {}\n", error_msg));
                 log::debug!("execute_batch: spawn failed: {}", error_msg);
 
-                // Send batch response with error
-                let response = serde_json::json!({
-                    "exit_code": -1,
-                    "stdout": "",
-                    "stderr": STANDARD.encode(error_msg.as_bytes()),
-                });
-                let json = serde_json::to_string(&response)?;
-                debug_file_write(&format!("execute_batch: error response JSON size={} bytes\n", json.len()));
-                stream.write_all(json.as_bytes())?;
-                stream.write_all(b"\n")?;
-                stream.flush()?;
-                debug_file_write("execute_batch: error response written and flushed\n");
+                // Send error as stderr chunk + exit (use unified stream protocol)
+                send_stderr_chunk(stream, error_msg.as_bytes(), &mut 0)?;
+                send_exit_and_flush(stream, -1)?;
+                debug_file_write("execute_batch: error response sent (stream protocol)\n");
 
                 // Shutdown the write side to signal EOF to host
                 let _ = stream.shutdown(std::net::Shutdown::Write);

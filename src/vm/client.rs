@@ -51,7 +51,7 @@ extern "C" fn handle_sigwinch(_: i32) {
 
 /// Streaming message types for interactive/TUI modes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", deny_unknown_fields)]
 pub enum StreamMessage {
     #[serde(rename = "stdin")]
     Stdin { data: String, seq: u64 },
