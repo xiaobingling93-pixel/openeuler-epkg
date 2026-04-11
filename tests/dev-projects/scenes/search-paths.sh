@@ -110,10 +110,8 @@ log "Installing bash"
 
 # Test search --paths (this downloads file list database, may take time)
 log "Testing epkg search --paths /bin/bash (may download file list database)"
-result=$("$EPKG_BIN" -e "$TEST_ENV" search --paths /bin/bash 2>&1)
-if [ $? -ne 0 ]; then
-    # search --paths may fail due to filelist database issues; skip rather than fail
-    skip "epkg search --paths /bin/bash failed (filelist database may not be available): $result"
+if ! "$EPKG_BIN" -e "$TEST_ENV" search --paths /bin/bash >/dev/null 2>&1; then
+    error "epkg search --paths /bin/bash failed"
 fi
 log "search --paths works for /bin/bash"
 

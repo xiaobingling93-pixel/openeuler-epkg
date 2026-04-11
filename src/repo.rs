@@ -1206,7 +1206,11 @@ fn create_filelists_symlink(revise: &RepoReleaseItem, output_path: &PathBuf) -> 
     // Create symbolic link
     // /home/wfg/.cache/epkg/channels/debian-trixie/contrib/x86_64/filelists-all.gz =>
     // /home/wfg/.cache/epkg/downloads/debian/dists/trixie/contrib/by-hash/SHA256/9cc88157988a1ccc1240aa749a311bd6c445ecc890d16c431816a409303f3f51
-    log::debug!("Creating symlink from {} to {}", revise.download_path.display(), output_path.display());
+
+    // Compute the actual download path from URL (not download_path which is relative)
+    let download_path = crate::mirror::Mirrors::url_to_cache_path(&revise.url, &revise.repo_revise.repodata_name)
+        .with_context(|| format!("Failed to compute cache path for URL: {}", revise.url))?;
+    log::debug!("Creating symlink from {} to {}", download_path.display(), output_path.display());
 
     // Check if output_path exists and is a valid file/symlink
     if lfs::symlink_metadata(output_path).is_ok() {
@@ -1214,7 +1218,7 @@ fn create_filelists_symlink(revise: &RepoReleaseItem, output_path: &PathBuf) -> 
         lfs::remove_file(&output_path)?;
     }
 
-    lfs::symlink_file_for_native(&revise.download_path, output_path)?;
+    lfs::symlink_file_for_native(&download_path, output_path)?;
 
     Ok(())
 }
