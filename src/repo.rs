@@ -144,6 +144,21 @@ fn msys2_repo_applies_to_arch(repo_name: &str, arch: &str) -> bool {
     }
 }
 
+/// Conda repos have different availability per arch; skip repos that don't exist.
+/// The 'pro' repo doesn't exist for osx-arm64 (Apple Silicon).
+/// Reference: https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/
+/// Note: arch here is the standard arch (e.g., "aarch64") not conda arch (e.g., "osx-arm64")
+fn conda_repo_applies_to_arch(repo_name: &str, arch: &str) -> bool {
+    // Known repos that don't exist for certain architectures
+    // pro repo doesn't exist for osx-arm64 (Apple Silicon)
+    // On macOS with aarch64, the conda arch is osx-arm64
+    if repo_name == "pro" && arch == "aarch64" && cfg!(target_os = "macos") {
+        return false;
+    }
+    // All other combinations are assumed to exist
+    true
+}
+
 fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
     let mut all_repos: Vec<RepoRevise> = Vec::new();
 
@@ -157,6 +172,15 @@ fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
         if config.distro == "msys2" && !msys2_repo_applies_to_arch(repo_name, &config.arch) {
             log::debug!(
                 "Skipping MSYS2 repo '{}' for arch '{}'",
+                repo_name,
+                config.arch
+            );
+            continue;
+        }
+
+        if config.format == PackageFormat::Conda && !conda_repo_applies_to_arch(repo_name, &config.arch) {
+            log::debug!(
+                "Skipping Conda repo '{}' for arch '{}'",
                 repo_name,
                 config.arch
             );
