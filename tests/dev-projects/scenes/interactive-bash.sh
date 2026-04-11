@@ -1,36 +1,127 @@
-#!/bin/bash
+#!/bin/sh
 # Test script for interactive bash in VM mode
+#
+# This test verifies that:
+# - Non-interactive commands work
+# - Multiple commands via -c work
+# - PTY devices exist in VM
+# - Piped stdin works
+#
+# Usage:
+#   E2E_OS=alpine ./interactive-bash.sh [-d|--debug|-dd|-ddd]
+#   ./interactive-bash.sh alpine [-d|--debug|-dd|-ddd]
 
-EPKG="epkg -e alpine"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+. "$PROJECT_ROOT/tests/common.sh"
 
-echo "=== Test 1: Non-interactive command (should work) ==="
-$EPKG run -- bash -c "echo HELLO"
+# Parse command line flags
+parse_debug_flags "$@"
+case $? in
+    0)
+        eval set -- "$PARSE_DEBUG_FLAGS_REMAINING"
+        ;;
+    1)
+        exit 1
+        ;;
+    2)
+        echo "Usage: $0 [OS] [-d|--debug|-dd|-ddd]"
+        echo ""
+        echo "Test interactive bash in VM mode"
+        echo ""
+        echo "Arguments:"
+        echo "  OS              Target OS/distro (default: from E2E_OS env var, or alpine)"
+        echo ""
+        echo "Options:"
+        echo "  -d, --debug    Interactive debug mode"
+        echo "  -dd            Debug logging"
+        echo "  -ddd           Trace logging"
+        exit 0
+        ;;
+esac
+
+set_epkg_bin
+set_color_names
+
+log() {
+    printf "%b[TEST]%b %b\n" "$GREEN" "$NC" "$*" >&2
+}
+
+warn() {
+    printf "%b[WARN]%b %b\n" "$YELLOW" "$NC" "$*" >&2
+}
+
+error() {
+    printf "%b[ERROR]%b %b\n" "$RED" "$NC" "$*" >&2
+    if [ -n "$DEBUG_FLAG" ]; then
+        printf "\n=== Debug Mode ===\n" >&2
+        if [ -t 0 ]; then
+            printf "Press Enter to continue (or Ctrl+C to exit)...\n" >&2
+            read dummy || true
+        fi
+    fi
+    exit 1
+}
+
+# Determine target OS
+TARGET_OS="${1:-${E2E_OS:-alpine}}"
+TEST_ENV="test-interactive-${TARGET_OS}-$$"
+
+log "Starting interactive bash test for OS: $TARGET_OS"
+log "Test environment: $TEST_ENV"
+
+cleanup() {
+    if [ -n "$TEST_ENV" ]; then
+        log "Cleaning up environment: $TEST_ENV"
+        "$EPKG_BIN" --assume-yes env remove "$TEST_ENV" 2>/dev/null || true
+    fi
+}
+
+trap cleanup EXIT INT TERM
+
+# Create environment
+log "Creating environment for $TARGET_OS"
+"$EPKG_BIN" env remove "$TEST_ENV" 2>/dev/null || true
+"$EPKG_BIN" env create "$TEST_ENV" -c "$TARGET_OS" || error "Failed to create environment"
+
+# Install bash
+log "Installing bash"
+"$EPKG_BIN" -e "$TEST_ENV" --assume-yes install --no-install-essentials bash || error "Failed to install bash"
+
+log "=== Test 1: Non-interactive command (should work) ==="
+"$EPKG_BIN" -e "$TEST_ENV" run -- bash -c "echo HELLO" || error "Test 1 failed"
+log "Test 1 passed"
 echo ""
 
-echo "=== Test 2: Multiple commands via -c (should work) ==="
-$EPKG run -- bash -c "id; whoami; pwd"
+log "=== Test 2: Multiple commands via -c (should work) ==="
+"$EPKG_BIN" -e "$TEST_ENV" run -- bash -c "id; whoami; pwd" || warn "Test 2 had issues"
+log "Test 2 completed"
 echo ""
 
-echo "=== Test 3: Check PTY devices in VM ==="
-$EPKG run -- stat /dev/ptmx
+log "=== Test 3: Check PTY devices ==="
+"$EPKG_BIN" -e "$TEST_ENV" run -- stat /dev/ptmx 2>&1 || warn "Test 3: /dev/ptmx check had issues"
+log "Test 3 completed"
 echo ""
 
-echo "=== Test 4: Check /dev/pts/ ==="
-$EPKG run -- ls -la /dev/pts/
+log "=== Test 4: Check /dev/pts/ ==="
+"$EPKG_BIN" -e "$TEST_ENV" run -- ls -la /dev/pts/ 2>&1 || warn "Test 4: /dev/pts check had issues"
+log "Test 4 completed"
 echo ""
 
-echo "=== Test 5: Check stdin in VM (piped) ==="
-echo "test" | $EPKG run -- bash -c "cat"
+log "=== Test 5: Check stdin in VM (piped) ==="
+echo "test" | "$EPKG_BIN" -e "$TEST_ENV" run -- bash -c "cat" || warn "Test 5: piped stdin had issues"
+log "Test 5 completed"
 echo ""
 
-echo "=== Test 6: Interactive stdin test (problematic) ==="
-echo "id" | $EPKG run bash
-echo "Exit code: $?"
+log "=== Test 6: Interactive stdin test ==="
+echo "id" | "$EPKG_BIN" -e "$TEST_ENV" run bash
+log "Test 6 exit code: $?"
 echo ""
 
-echo "=== Test 7: Check if bash is available ==="
-$EPKG run -- which bash
-$EPKG run -- bash --version | head -1
+log "=== Test 7: Check if bash is available ==="
+"$EPKG_BIN" -e "$TEST_ENV" run -- which bash || warn "bash not found via which"
+"$EPKG_BIN" -e "$TEST_ENV" run -- bash --version | head -1 || warn "bash --version failed"
+log "Test 7 completed"
 echo ""
 
-echo "All tests completed!"
+log "All interactive bash tests completed for $TARGET_OS"
