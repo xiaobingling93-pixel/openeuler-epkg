@@ -224,7 +224,7 @@ capture_with_timeout() {
 
 # Check dependencies
 check_dependency() {
-    if ! command -v "$1" >/dev/null 2>&1; then
+    if ! has_cmd "$1"; then
         skip "$1 not found"
     fi
 }
@@ -234,8 +234,8 @@ auto_select_vmm() {
     case "$OS_TYPE" in
         linux)
             # Prefer qemu if available, otherwise libkrun
-            if command -v qemu-system-x86_64 >/dev/null 2>&1 && \
-               (command -v virtiofsd >/dev/null 2>&1 || [ -x "/usr/libexec/virtiofsd" ]); then
+            if has_cmd qemu-system-x86_64 && \
+               (has_cmd virtiofsd || [ -x "/usr/libexec/virtiofsd" ]); then
                 echo "qemu"
             else
                 echo "libkrun"
@@ -271,7 +271,7 @@ check_qemu_requirements() {
     check_dependency timeout
 
     # Check virtiofsd
-    if ! command -v virtiofsd >/dev/null 2>&1 && [ ! -x "/usr/libexec/virtiofsd" ]; then
+    if ! has_cmd virtiofsd && [ ! -x "/usr/libexec/virtiofsd" ]; then
         skip "virtiofsd not found in PATH or /usr/libexec/virtiofsd"
     fi
 
@@ -290,7 +290,7 @@ check_qemu_requirements() {
     fi
     export EPKG_VM_KERNEL
     export EPKG_VM_QEMU="$QEMU_BIN"
-    if command -v virtiofsd >/dev/null 2>&1; then
+    if has_cmd virtiofsd; then
         export EPKG_VM_VIRTIOFSD="virtiofsd"
     else
         export EPKG_VM_VIRTIOFSD="/usr/libexec/virtiofsd"

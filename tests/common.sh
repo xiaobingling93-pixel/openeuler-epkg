@@ -111,3 +111,10 @@ parse_debug_flags() {
     PARSE_DEBUG_FLAGS_REMAINING="$*"
     return 0
 }
+
+# Check if a command exists in PATH
+# Usage: has_cmd <command>
+# Returns: 0 if found, 1 if not
+has_cmd() {
+    command -v "$1" >/dev/null 2>&1
+}

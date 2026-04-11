@@ -41,10 +41,10 @@ add_user() {
     if id "$user" >/dev/null 2>&1; then
         return 0
     fi
-    if command -v adduser >/dev/null 2>&1; then
+    if has_cmd adduser; then
         adduser -D -s /bin/sh "$user" && return 0
     fi
-    if command -v useradd >/dev/null 2>&1; then
+    if has_cmd useradd; then
         useradd -m -s /bin/sh "$user" && return 0
     fi
     error "Failed to create user $user"

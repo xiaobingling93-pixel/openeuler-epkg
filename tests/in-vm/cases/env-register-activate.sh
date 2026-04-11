@@ -192,7 +192,7 @@ fi
 
 # Verify jq binary is accessible
 log "Verifying jq binary is accessible"
-if ! command -v jq >/dev/null 2>&1; then
+if ! has_cmd jq; then
     error "jq command not found in PATH after install"
 fi
 
