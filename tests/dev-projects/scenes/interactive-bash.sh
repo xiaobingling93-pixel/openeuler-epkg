@@ -82,9 +82,9 @@ log "Creating environment for $TARGET_OS"
 "$EPKG_BIN" env remove "$TEST_ENV" 2>/dev/null || true
 "$EPKG_BIN" env create "$TEST_ENV" -c "$TARGET_OS" || error "Failed to create environment"
 
-# Install bash
-log "Installing bash"
-"$EPKG_BIN" -e "$TEST_ENV" --assume-yes install --no-install-essentials bash || error "Failed to install bash"
+# Install bash and coreutils (for id, whoami, etc.)
+log "Installing bash and coreutils"
+"$EPKG_BIN" -e "$TEST_ENV" --assume-yes install --no-install-essentials bash coreutils || error "Failed to install bash and coreutils"
 
 EPKG_CMD="$EPKG_BIN -e $TEST_ENV"
 
