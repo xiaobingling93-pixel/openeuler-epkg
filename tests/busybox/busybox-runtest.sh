@@ -53,7 +53,7 @@ sed -i 's/^testing "sed \/.*_in_regex\//true &/' sed.tests
 sed -i 's/google.com/bing.com/' wget/wget-*
 
 # Clean leftover dirs from previous failed runs so tar.tests "mkdir tar.tempdir" succeeds
-rmdir tar.tempdir 2>/dev/null || true
+[ -d tar.tempdir ] && rmdir tar.tempdir
 
 if [ $# -eq 0 ]; then
     ./runtest ${VERBOSE:+-v}
