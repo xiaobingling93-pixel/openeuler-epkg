@@ -209,30 +209,26 @@ fn log_process_identity(tag: &str) {
 }
 
 /// Write a single newline-delimited JSON stream message to the TCP stream.
-/// Write a single newline-delimited JSON stream message to the TCP stream.
-/// Returns Ok(true) if written successfully, Ok(false) if blocked (WouldBlock).
-fn write_stream_message(stream: &mut TcpStream, msg: &StreamMessage) -> Result<bool> {
+/// Uses blocking mode with yield to ensure data is sent (kernel handles backpressure).
+fn write_stream_message(stream: &mut TcpStream, msg: &StreamMessage) -> Result<()> {
     log::trace!("write_stream_message: {:?}", msg);
+
+    // Use blocking mode for reliable writes (kernel handles flow control)
+    stream.set_nonblocking(false)?;
+
     let json = serde_json::to_string(msg)?;
-    match stream.write_all(json.as_bytes()) {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-            log::debug!("write_stream_message: WouldBlock, need to wait for POLLOUT");
-            return Ok(false);
-        }
-        Err(e) => return Err(e.into()),
-    }
-    match stream.write_all(b"\n") {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-            log::debug!("write_stream_message: WouldBlock on newline");
-            return Ok(false);
-        }
-        Err(e) => return Err(e.into()),
-    }
-    // Flush may also block, but we can ignore WouldBlock here
-    let _ = stream.flush();
-    Ok(true)
+    let data = format!("{}\n", json);
+    stream.write_all(data.as_bytes())?;
+    stream.flush()?;
+
+    // Yield to allow kernel to process the data
+    // This prevents overwhelming the vsock buffer on fast writes
+    std::thread::yield_now();
+
+    // Restore non-blocking for poll loop
+    stream.set_nonblocking(true)?;
+
+    Ok(())
 }
 
 /// Compute exit code from wait status (exited code, or 128+signal for signaled).
@@ -246,15 +242,14 @@ fn exit_code_from_wait_status(status: nix::sys::wait::WaitStatus) -> i32 {
 
 /// Send exit message, flush stream, and return the exit code.
 fn send_exit_and_flush(stream: &mut TcpStream, exit_code: i32) -> Result<i32> {
-    // For exit message, we need blocking write to ensure it's sent
     stream.set_nonblocking(false)?;
     write_stream_message(stream, &StreamMessage::Exit { code: exit_code })?;
     stream.flush()?;
     Ok(exit_code)
 }
 
-/// Send stdout data chunk. Returns Ok(true) if sent, Ok(false) if blocked.
-fn send_stdout_chunk(stream: &mut TcpStream, data: &[u8], seq: &mut u64) -> Result<bool> {
+/// Send stdout data chunk.
+fn send_stdout_chunk(stream: &mut TcpStream, data: &[u8], seq: &mut u64) -> Result<()> {
     *seq += 1;
     let msg = StreamMessage::Stdout {
         data: STANDARD.encode(data),
@@ -263,8 +258,8 @@ fn send_stdout_chunk(stream: &mut TcpStream, data: &[u8], seq: &mut u64) -> Resu
     write_stream_message(stream, &msg)
 }
 
-/// Send stderr data chunk. Returns Ok(true) if sent, Ok(false) if blocked.
-fn send_stderr_chunk(stream: &mut TcpStream, data: &[u8], seq: &mut u64) -> Result<bool> {
+/// Send stderr data chunk.
+fn send_stderr_chunk(stream: &mut TcpStream, data: &[u8], seq: &mut u64) -> Result<()> {
     *seq += 1;
     let msg = StreamMessage::Stderr {
         data: STANDARD.encode(data),
@@ -854,40 +849,6 @@ fn handle_nonpty_tcp_input<W: std::io::Write>(
 
 /// Handle TCP input only (stdin from host), separate from stdout/stderr.
 /// Used when stream is blocked for output.
-fn handle_nonpty_tcp_input_only<W: std::io::Write>(
-    stream: &mut TcpStream,
-    stdin_file: &mut Option<W>,
-    tcp_buf: &mut [u8],
-    tcp_buf_pos: &mut usize,
-    stdin_eof: &mut bool,
-) -> Result<()> {
-    match stream.read(&mut tcp_buf[*tcp_buf_pos..]) {
-        Ok(0) => {}, // EOF from TCP, ignore here
-        Ok(n) => {
-            *tcp_buf_pos += n;
-            process_tcp_line_buffer(tcp_buf, tcp_buf_pos, |msg| {
-                match msg {
-                    StreamMessage::Stdin { data, .. } => {
-                        if let Some(ref mut stdin) = stdin_file {
-                            let bytes = STANDARD.decode(&data)?;
-                            stdin.write_all(&bytes)?;
-                        }
-                        Ok(())
-                    }
-                    StreamMessage::StdinEof { .. } => {
-                        *stdin_eof = true;
-                        Ok(())
-                    }
-                    _ => Ok(()),
-                }
-            })?;
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {},
-        Err(e) => return Err(e.into()),
-    }
-    Ok(())
-}
-
 /// Setup PTY with nonblocking master and return (master_file, child_pid).
 fn setup_pty_and_fork(request: &CommandRequest) -> Result<(std::fs::File, Pid)> {
     use std::fs::File;
@@ -1035,71 +996,55 @@ fn execute_with_pty(request: &CommandRequest, stream: &mut TcpStream, initial_da
 }
 
 /// Handle stdout pipe events: read and send data, return true on EOF.
-/// Handle stdout pipe events: read and send data, return (eof, blocked).
-/// blocked=true means stream write failed with WouldBlock, data needs to be retried.
 fn handle_stdout_event(
     stdout_file: &mut std::fs::File,
     stream: &mut TcpStream,
     buf: &mut [u8],
     seq_out: &mut u64,
-) -> Result<(bool, bool)> {
+) -> Result<bool> {
     match stdout_file.read(buf) {
         Ok(0) => {
             log::debug!("execute_without_pty: stdout EOF");
-            Ok((true, false))
+            Ok(true)
         }
         Ok(n) => {
             log::debug!("execute_without_pty: read stdout {} bytes", n);
-            match send_stdout_chunk(stream, &buf[..n], seq_out)? {
-                true => Ok((false, false)),  // sent successfully
-                false => {
-                    // Write blocked, but we already read the data
-                    // For simplicity, we'll retry on next poll iteration
-                    // by not reading again until stream is writable
-                    log::debug!("execute_without_pty: stdout send blocked");
-                    Ok((false, true))
-                }
-            }
+            send_stdout_chunk(stream, &buf[..n], seq_out)?;
+            Ok(false)
         }
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-            log::debug!("execute_without_pty: stdout read WouldBlock");
-            Ok((false, false))
+            Ok(false)
         }
         Err(e) => Err(e.into()),
     }
 }
 
-/// Handle stderr pipe events: read and send data, return (eof, blocked).
+/// Handle stderr pipe events: read and send data, return true on EOF.
 fn handle_stderr_event(
     stderr_file: &mut std::fs::File,
     stream: &mut TcpStream,
     buf: &mut [u8],
     seq_err: &mut u64,
-) -> Result<(bool, bool)> {
+) -> Result<bool> {
     match stderr_file.read(buf) {
         Ok(0) => {
             log::debug!("execute_without_pty: stderr EOF");
-            Ok((true, false))
+            Ok(true)
         }
         Ok(n) => {
             log::debug!("execute_without_pty: read stderr {} bytes", n);
-            match send_stderr_chunk(stream, &buf[..n], seq_err)? {
-                true => Ok((false, false)),
-                false => {
-                    log::debug!("execute_without_pty: stderr send blocked");
-                    Ok((false, true))
-                }
-            }
+            send_stderr_chunk(stream, &buf[..n], seq_err)?;
+            Ok(false)
         }
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-            Ok((false, false))
+            Ok(false)
         }
         Err(e) => Err(e.into()),
     }
 }
 
 /// Handle poll events for non-PTY mode: process stdout/stderr/stdin.
-/// Returns (should_break, stdin_eof_received, stream_blocked).
+/// Returns (should_break, stdin_eof_received).
 fn handle_nonpty_poll_events<W: std::io::Write>(
     poll_fds: &[PollFd],
     stdout_file: &mut std::fs::File,
@@ -1111,48 +1056,38 @@ fn handle_nonpty_poll_events<W: std::io::Write>(
     tcp_buf_pos: &mut usize,
     seq_out: &mut u64,
     seq_err: &mut u64,
-) -> Result<(bool, bool, bool)> {
-    let mut stream_blocked = false;
-
+) -> Result<(bool, bool)> {
     if poll_fds[0].revents().unwrap().contains(PollFlags::POLLIN)
         || poll_fds[0].revents().unwrap().contains(PollFlags::POLLHUP)
     {
-        let (eof, blocked) = handle_stdout_event(stdout_file, stream, buf, seq_out)?;
-        if blocked {
-            stream_blocked = true;
-        }
-        if eof {
-            return Ok((true, false, stream_blocked));
+        if handle_stdout_event(stdout_file, stream, buf, seq_out)? {
+            return Ok((true, false));
         }
     }
 
     if poll_fds[1].revents().unwrap().contains(PollFlags::POLLIN)
         || poll_fds[1].revents().unwrap().contains(PollFlags::POLLHUP)
     {
-        let (eof, blocked) = handle_stderr_event(stderr_file, stream, buf, seq_err)?;
-        if blocked {
-            stream_blocked = true;
-        }
-        if eof {
-            return Ok((true, false, stream_blocked));
+        if handle_stderr_event(stderr_file, stream, buf, seq_err)? {
+            return Ok((true, false));
         }
     }
 
     if poll_fds[2].revents().unwrap().contains(PollFlags::POLLIN) {
         let (tcp_eof, stdin_eof) = handle_nonpty_tcp_input(stream, stdin_file, tcp_buf, tcp_buf_pos)?;
         if tcp_eof {
-            return Ok((true, false, stream_blocked));
+            return Ok((true, false));
         }
         if stdin_eof {
-            return Ok((false, true, stream_blocked));
+            return Ok((false, true));
         }
     }
 
-    Ok((false, false, stream_blocked))
+    Ok((false, false))
 }
 
 /// Poll loop for non-PTY mode: forward pipe output to TCP, TCP input to stdin, check child status.
-/// Implements proper flow control: only read from stdout/stderr when stream is writable.
+/// Uses blocking poll retry in write to ensure data is never lost.
 fn nonpty_poll_loop<W: std::io::Write>(
     child_pid: Pid,
     stdout_file: &mut std::fs::File,
@@ -1181,9 +1116,6 @@ fn nonpty_poll_loop<W: std::io::Write>(
         tcp_buf_pos = len;
     }
 
-    // Track whether stream is writable for flow control
-    let mut stream_writable = true;
-
     let mut child_status = None;
     loop {
         if check_child_status(child_pid, &mut child_status) {
@@ -1192,17 +1124,12 @@ fn nonpty_poll_loop<W: std::io::Write>(
             break;
         }
 
-        // Build poll_fds based on stream writability for flow control
-        // - Always poll stream for POLLIN (stdin from host) and POLLOUT (writability check)
-        // - Only poll stdout/stderr when stream is writable (to create backpressure)
-        let stdout_events = if stream_writable { PollFlags::POLLIN | PollFlags::POLLHUP } else { PollFlags::empty() };
-        let stderr_events = if stream_writable { PollFlags::POLLIN | PollFlags::POLLHUP } else { PollFlags::empty() };
-        let stream_events = PollFlags::POLLIN | PollFlags::POLLOUT;
-
+        // Simple poll: poll stdout, stderr, and stream for input
+        // Flow control handled by blocking poll retry in write_stream_message
         let mut poll_fds = vec![
-            PollFd::new(stdout_fd, stdout_events),
-            PollFd::new(stderr_fd, stderr_events),
-            PollFd::new(stream_fd, stream_events),
+            PollFd::new(stdout_fd, PollFlags::POLLIN | PollFlags::POLLHUP),
+            PollFd::new(stderr_fd, PollFlags::POLLIN | PollFlags::POLLHUP),
+            PollFd::new(stream_fd, PollFlags::POLLIN),
         ];
 
         match poll(&mut poll_fds, PollTimeout::try_from(POLL_TIMEOUT_MS).unwrap()) {
@@ -1216,41 +1143,18 @@ fn nonpty_poll_loop<W: std::io::Write>(
                 }
             }
             Ok(_) => {
-                // Check stream writability for flow control
-                if poll_fds[2].revents().unwrap().contains(PollFlags::POLLOUT) {
-                    stream_writable = true;
+                let (should_break, stdin_eof) = handle_nonpty_poll_events(
+                    &poll_fds, stdout_file, stderr_file, &mut stdin_file, stream,
+                    &mut buf, &mut tcp_buf, &mut tcp_buf_pos, &mut seq_out, &mut seq_err
+                )?;
+
+                if stdin_eof {
+                    log::debug!("execute_without_pty: stdin EOF received, closing stdin pipe");
+                    stdin_file = None;
                 }
 
-                // Only process stdout/stderr if stream is writable
-                if stream_writable {
-                    let (should_break, stdin_eof, stream_blocked) = handle_nonpty_poll_events(
-                        &poll_fds, stdout_file, stderr_file, &mut stdin_file, stream,
-                        &mut buf, &mut tcp_buf, &mut tcp_buf_pos, &mut seq_out, &mut seq_err
-                    )?;
-
-                    // When stream is blocked, stop reading from pipes to create backpressure
-                    if stream_blocked {
-                        stream_writable = false;
-                    }
-
-                    if stdin_eof {
-                        log::debug!("execute_without_pty: stdin EOF received, closing stdin pipe");
-                        stdin_file = None;
-                    }
-
-                    if should_break {
-                        break;
-                    }
-                } else {
-                    // When stream is blocked, only process stdin (TCP input), not stdout/stderr
-                    if poll_fds[2].revents().unwrap().contains(PollFlags::POLLIN) {
-                        let mut stdin_eof = false;
-                        handle_nonpty_tcp_input_only(stream, &mut stdin_file, &mut tcp_buf, &mut tcp_buf_pos, &mut stdin_eof)?;
-                        if stdin_eof {
-                            log::debug!("execute_without_pty: stdin EOF received (blocked), closing stdin pipe");
-                            stdin_file = None;
-                        }
-                    }
+                if should_break {
+                    break;
                 }
 
                 if check_child_status(child_pid, &mut child_status) {
@@ -1263,9 +1167,7 @@ fn nonpty_poll_loop<W: std::io::Write>(
         }
     }
 
-    // Restore blocking mode before returning
     stream.set_nonblocking(false)?;
-
     Ok(child_status)
 }
 
