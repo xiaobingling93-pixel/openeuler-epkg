@@ -724,7 +724,16 @@ fn spawn_stdin_thread(mut stream: TcpStream, stop_flag: Arc<AtomicBool>) -> std:
                 Ok(_) => {
                     // stdin has data ready
                     match std::io::stdin().read(&mut buf) {
-                        Ok(0) => break, // EOF (Ctrl+D)
+                        Ok(0) => {
+                            // EOF from host stdin - send StdinEof to close guest stdin pipe
+                            // This is critical for commands like `cat` that wait for stdin EOF
+                            let msg = StreamMessage::StdinEof { seq };
+                            if let Ok(json) = serde_json::to_string(&msg) {
+                                let _ = stream.write_all(json.as_bytes());
+                                let _ = stream.write_all(b"\n");
+                            }
+                            break;
+                        }
                         Ok(n) => {
                             seq += 1;
                             let data = STANDARD.encode(&buf[..n]);
@@ -950,13 +959,10 @@ fn handle_streaming(stream: &mut TcpStream, use_pty: bool) -> Result<i32> {
         None
     };
 
-    // Spawn stdin thread only for PTY mode (interactive sessions need stdin forwarding)
-    // Non-PTY mode typically doesn't need interactive stdin
-    let stdin_thread = if use_pty {
-        Some(spawn_stdin_thread(stream_for_stdin, Arc::clone(&stop_flag)))
-    } else {
-        None
-    };
+    // Spawn stdin thread for both PTY and stream modes (not batch mode).
+    // Batch mode's stdin comes from the request JSON, not host stdin.
+    // Stream mode needs stdin forwarding for commands like `cat`.
+    let stdin_thread = Some(spawn_stdin_thread(stream_for_stdin, Arc::clone(&stop_flag)));
 
     // Main thread: read from TCP and handle messages
     let mut reader = BufReader::new(stream);
@@ -982,35 +988,9 @@ fn handle_streaming(stream: &mut TcpStream, use_pty: bool) -> Result<i32> {
     result
 }
 
-/// Batch mode response from vm-daemon.
-#[derive(Debug, Deserialize)]
-struct BatchResult {
-    exit_code: i32,
-    stdout: String,
-    stderr: String,
-}
-
-/// Handle batch mode: read single JSON response with all output.
+/// Handle batch mode: guest now sends stream protocol messages (stdout/stderr chunks + exit).
+/// Reuse run_non_pty_loop since guest uses same protocol as stream mode.
 fn handle_batch(stream: &mut TcpStream) -> Result<i32> {
-    let mut response = String::new();
     let mut reader = BufReader::new(stream);
-    reader.read_line(&mut response)?;
-
-    let result: BatchResult = serde_json::from_str(response.trim())
-        .map_err(|e| eyre::eyre!("Failed to parse batch response: {} ({:?})", e, response))?;
-
-    let mut out = std::io::stdout();
-    let mut err = std::io::stderr();
-    if !result.stdout.is_empty() {
-        let stdout_bytes = STANDARD.decode(&result.stdout)?;
-        out.write_all(&stdout_bytes)?;
-    }
-    if !result.stderr.is_empty() {
-        let stderr_bytes = STANDARD.decode(&result.stderr)?;
-        err.write_all(&stderr_bytes)?;
-    }
-    out.flush()?;
-    err.flush()?;
-
-    Ok(result.exit_code)
+    run_non_pty_loop(&mut reader)
 }

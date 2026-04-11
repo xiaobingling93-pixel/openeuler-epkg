@@ -184,6 +184,13 @@ run_with_timeout() {
 capture_with_timeout() {
     local timeout_secs=60
     local cmd=("$@")
+
+    # Check if first argument is a number (timeout override)
+    if [ $# -gt 0 ] && [ "${1##*[!0-9]}" = "$1" ]; then
+        timeout_secs="$1"
+        cmd=("${cmd[@]:1}")
+    fi
+
     log "Running with timeout ${timeout_secs}s (capture output): ${cmd[*]}"
     case "$OS_TYPE" in
         linux)
