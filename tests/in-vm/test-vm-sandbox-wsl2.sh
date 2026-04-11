@@ -36,8 +36,9 @@ done
 
 # Parse debug flags
 eval set -- $filtered_args
-parse_debug_flags "$@"
-case $? in
+parse_ret=0
+parse_debug_flags "$@" || parse_ret=$?
+case $parse_ret in
     0)
         eval set -- "$PARSE_DEBUG_FLAGS_REMAINING"
         ;;
