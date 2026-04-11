@@ -562,6 +562,16 @@ if [ "$line_count" != "100000" ]; then
 fi
 log "Test 11c: PASSED"
 
+# Test 11d: stdin forwarding in stream mode
+# This tests stdin forwarding from host to VM (fixed in commit e02439b)
+log "Test 11d: Testing stdin forwarding in stream mode"
+output=$(echo "hello stdin world" | timeout 60 "$EPKG_BIN" -e "$ENV_NAME" run $ISOLATE_OPTS --io=stream cat 2>&1)
+output=$(echo "$output" | grep -v '^\[' | grep -v '^$' | tail -1)
+if [ "$output" != "hello stdin world" ]; then
+    error "Test 11d failed: Expected 'hello stdin world', got '$output'"
+fi
+log "Test 11d: PASSED"
+
 # Test 12: Check /proc filesystem
 log "Test 12: Checking /proc filesystem in VM"
 output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run $ISOLATE_OPTS --io=batch ls /proc)
