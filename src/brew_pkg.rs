@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use tar::Archive;
 use log;
@@ -9,16 +9,14 @@ use flate2::read::GzDecoder;
 use crate::lfs;
 use crate::tar_extract::{create_package_dirs, ExtractConfig, extract_archive_with_policy};
 
-/// Homebrew placeholder prefixes that need to be rewritten in dylib paths
-#[cfg(target_os = "macos")]
+/// Homebrew placeholder prefixes that need to be rewritten in dylib/interpreter paths
 const HOMEBREW_PLACEHOLDER_PREFIXES: &[&str] = &[
     "@@HOMEBREW_CELLAR@@",
     "@@HOMEBREW_PREFIX@@",
 ];
 
-/// Global lock to serialize install_name_tool rewrites.
+/// Global lock to serialize install_name_tool/patchelf rewrites.
 /// Parallel package linking can trigger concurrent rewrite passes on the same env files.
-#[cfg(target_os = "macos")]
 static BREW_DYLIB_REWRITE_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
 
@@ -247,12 +245,34 @@ fn create_package_txt_from_pkgkey<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: &str
 ///
 /// This function is called after files are moved to the environment (LinkType::Move).
 /// Each environment gets its own copy with paths specific to that environment.
-#[cfg(target_os = "macos")]
+/// Rewrite dylib/interpreter paths for all binaries in the environment.
+/// On macOS: rewrite dylib paths in Mach-O files using install_name_tool.
+/// On Linux: rewrite ELF interpreter paths using patchelf.
 pub fn rewrite_dylib_paths_for_env(env_root: &Path) -> Result<()> {
     let _rewrite_guard = BREW_DYLIB_REWRITE_LOCK
         .lock()
         .map_err(|e| eyre::eyre!("Failed to acquire brew dylib rewrite lock: {}", e))?;
 
+    #[cfg(target_os = "macos")]
+    {
+        rewrite_mach_o_dylib_paths(env_root)
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        rewrite_elf_interpreter_paths(env_root)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        // Other platforms: nothing to do
+        Ok(())
+    }
+}
+
+/// Rewrite dylib paths in Mach-O files (macOS).
+#[cfg(target_os = "macos")]
+fn rewrite_mach_o_dylib_paths(env_root: &Path) -> Result<()> {
     // Collect all potential Mach-O files (binaries and dylibs)
     let mut mach_o_files: Vec<std::path::PathBuf> = Vec::new();
     let mut seen_real_paths: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
@@ -518,4 +538,187 @@ fn extract_lib_path_and_resolve(rest: &str, env_root: &Path) -> Option<String> {
     }
 
     None
+}
+
+// ============================================================================
+// Linux ELF Interpreter Path Rewriting
+// ============================================================================
+
+/// Rewrite ELF interpreter paths for all binaries in the environment (Linux).
+/// Homebrew Linux bottles use @@HOMEBREW_PREFIX@@ as a placeholder in the
+/// ELF interpreter path (PT_INTERP). This function replaces
+/// those paths to point to the actual environment location.
+#[cfg(target_os = "linux")]
+fn rewrite_elf_interpreter_paths(env_root: &Path) -> Result<()> {
+    // Collect all potential ELF files
+    let mut elf_files: Vec<std::path::PathBuf> = Vec::new();
+    let mut seen_real_paths: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
+
+    // Scan bin/ directory
+    let bin_dir = env_root.join("bin");
+    if bin_dir.exists() {
+        for entry in walkdir::WalkDir::new(&bin_dir).into_iter().filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if entry.file_type().is_symlink() {
+                continue;
+            }
+            if path.is_file() && is_elf_file(path) {
+                let real_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+                if seen_real_paths.insert(real_path.clone()) {
+                    elf_files.push(real_path);
+                }
+            }
+        }
+    }
+
+    // Scan libexec/ directory
+    let libexec_dir = env_root.join("libexec");
+    if libexec_dir.exists() {
+        for entry in walkdir::WalkDir::new(&libexec_dir).into_iter().filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if entry.file_type().is_symlink() {
+                continue;
+            }
+            if path.is_file() && is_elf_file(path) {
+                let real_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+                if seen_real_paths.insert(real_path.clone()) {
+                    elf_files.push(real_path);
+                }
+            }
+        }
+    }
+
+    if elf_files.is_empty() {
+        log::debug!("No ELF files found in {}", env_root.display());
+        return Ok(());
+    }
+
+    log::info!("Checking ELF interpreter paths in {} files for env {}", elf_files.len(), env_root.display());
+
+    // Homebrew Linux bottles use @@HOMEBREW_PREFIX@@/lib/ld.so as the interpreter path.
+    // Replace it with the system's dynamic linker.
+    // x86_64 Linux typically uses /lib64/ld-linux-x86-64.so.2
+    let new_interpreter = "/lib64/ld-linux-x86-64.so.2";
+
+    for elf_path in &elf_files {
+        if let Err(e) = rewrite_elf_interpreter_for_file(elf_path, &new_interpreter) {
+            log::warn!("Failed to rewrite ELF interpreter for {}: {}", elf_path.display(), e);
+        }
+    }
+
+    Ok(())
+}
+
+/// Check if a file is an ELF binary.
+#[cfg(target_os = "linux")]
+fn is_elf_file(path: &Path) -> bool {
+    use std::io::Read;
+
+    // Check file extension - skip common non-binary extensions
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ["txt", "md", "json", "xml", "html", "py", "sh", "pl", "rb"].contains(&ext) {
+        return false;
+    }
+
+    // Check magic number for ELF
+    if let Ok(mut file) = std::fs::File::open(path) {
+        let mut magic = [0u8; 4];
+        if file.read_exact(&mut magic).is_ok() {
+            // ELF magic: 0x7F 'E' 'L' 'F'
+            return magic == [0x7F, 0x45, 0x4C, 0x46];
+        }
+    }
+    false
+}
+
+/// Rewrite ELF interpreter path for a single file using goblin.
+/// Homebrew Linux bottles use @@HOMEBREW_PREFIX@@ as a placeholder in the
+/// ELF interpreter path (PT_INTERP). This function replaces it with the actual path.
+#[cfg(target_os = "linux")]
+fn rewrite_elf_interpreter_for_file(elf_path: &Path, new_interpreter: &str) -> Result<()> {
+    use goblin::elf::Elf;
+    use std::io::{Seek, SeekFrom, Read, Write};
+
+    // Read the file
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(elf_path)
+        .wrap_err_with(|| format!("Failed to open ELF file {}", elf_path.display()))?;
+
+    let mut content = Vec::new();
+    file.read_to_end(&mut content)?;
+
+    // Parse ELF
+    let elf = match Elf::parse(&content) {
+        Ok(elf) => elf,
+        Err(e) => {
+            log::debug!("Not a valid ELF file {}: {}", elf_path.display(), e);
+            return Ok(());
+        }
+    };
+
+    // Find PT_INTERP program header
+    let interp_phdr = elf.program_headers.iter().find(|ph| ph.p_type == goblin::elf::program_header::PT_INTERP);
+
+    let interp_phdr = match interp_phdr {
+        Some(ph) => ph,
+        None => {
+            log::debug!("ELF {} has no PT_INTERP segment", elf_path.display());
+            return Ok(());
+        }
+    };
+
+    // Get the current interpreter string
+    let interp_offset = interp_phdr.p_offset as usize;
+    let interp_filesz = interp_phdr.p_filesz as usize;
+
+    if interp_offset == 0 || interp_filesz == 0 {
+        return Ok(());
+    }
+
+    // Read the current interpreter path (null-terminated string)
+    let interp_offset = interp_phdr.p_offset as usize;
+    let interp_filesz = interp_phdr.p_filesz as usize;
+    let current_interp_str: String = {
+        let current_interp = &content[interp_offset..interp_offset + interp_filesz];
+        match std::ffi::CStr::from_bytes_with_nul(current_interp) {
+            Ok(cstr) => cstr.to_string_lossy().into_owned(),
+            Err(_) => {
+                log::debug!("Invalid interpreter string in {}", elf_path.display());
+                return Ok(());
+            }
+        }
+    };
+
+    // Check if it contains the placeholder
+    if !current_interp_str.contains("@@HOMEBREW_PREFIX@@") {
+        log::debug!("ELF {} interpreter does not contain placeholder: {}",
+            elf_path.display(), current_interp_str);
+        return Ok(());
+    }
+
+    // Check if new interpreter fits in the allocated space
+    let new_interp_bytes = new_interpreter.as_bytes();
+    if new_interp_bytes.len() + 1 > interp_filesz {
+        log::warn!("New interpreter path too long for {}: need {} bytes, have {} bytes",
+            elf_path.display(), new_interp_bytes.len() + 1, interp_filesz);
+        return Ok(());
+    }
+
+    // Replace the interpreter path in place
+    let interp_slice = &mut content[interp_offset..interp_offset + interp_filesz];
+    interp_slice.fill(0); // Clear old content
+    interp_slice[..new_interp_bytes.len()].copy_from_slice(new_interp_bytes);
+    interp_slice[new_interp_bytes.len()] = 0; // Null terminator
+
+    // Write back to file
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(&content)?;
+    file.set_len(content.len() as u64)?;
+
+    log::info!("Rewrote ELF interpreter for {}: {} -> {}",
+        elf_path.display(), current_interp_str, new_interpreter);
+
+    Ok(())
 }

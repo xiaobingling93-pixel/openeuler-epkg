@@ -62,7 +62,16 @@ run() {
 }
 
 run_install() {
-    _run_logged "install" "epkg -e $ENV_NAME --assume-yes install --ignore-missing $*" --assume-yes install --ignore-missing "$@"
+    local pkg="$1"
+    local log_file
+    log_file="$(_run_logged "install" "epkg -e $ENV_NAME --assume-yes install --ignore-missing $pkg" --assume-yes install --ignore-missing "$pkg")"
+    local r=$?
+    # Check if package was actually installed (not just "No packages to install")
+    if echo "$log_file" | grep -q "No packages to install"; then
+        echo "Package '$pkg' not found or already installed" >&2
+        return 1
+    fi
+    return $r
 }
 
 run_remove() {

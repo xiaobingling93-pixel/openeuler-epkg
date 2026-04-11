@@ -148,12 +148,11 @@ pub fn link_package(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> Result<(
     }
     link_package_generic(plan, store_fs_dir)?;
 
-    // For brew packages, rewrite dylib paths to use absolute paths pointing to this env
-    #[cfg(target_os = "macos")]
+    // For brew packages, rewrite dylib/interpreter paths to use absolute paths pointing to this env
     if plan.package_format == PackageFormat::Brew && matches!(plan.link, LinkType::Move | LinkType::Hardlink) {
-        log::info!("Rewriting brew dylib paths for env: {}", plan.env_root.display());
+        log::info!("Rewriting brew library/interpreter paths for env: {}", plan.env_root.display());
         if let Err(e) = crate::brew_pkg::rewrite_dylib_paths_for_env(&plan.env_root) {
-            log::warn!("Failed to rewrite brew dylib paths: {}", e);
+            log::warn!("Failed to rewrite brew library/interpreter paths: {}", e);
         }
     }
 

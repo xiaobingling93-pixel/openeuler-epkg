@@ -79,9 +79,9 @@ test_build_cmake() {
 
 test_build_make() {
     run_install make || return 1
-    # brew's make package installs gmake, not make
+    # brew's make package may install make (patched ELF now works)
     if [ "$CHANNEL_NAME" = "brew" ]; then
-        run gmake --version || return 1
+        run make --version || return 1
     else
         run make --version || return 1
     fi
@@ -167,8 +167,11 @@ test_suite_utils() {
 
     # tree - directory listing
     if ! echo "$skip_list" | grep -qw "tree"; then
-        run_install tree || channel_skip "no tree for channel=$CHANNEL_NAME"
-        run tree --version || channel_skip "tree not found"
+        if run_install tree 2>/dev/null; then
+            run tree --version || channel_skip "tree not found"
+        else
+            channel_skip "no tree for channel=$CHANNEL_NAME"
+        fi
     fi
 }
 
