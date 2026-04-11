@@ -4,8 +4,13 @@
 #
 # This script runs VM sandbox tests on Windows native epkg.exe from WSL2.
 # It copies the binary to a Windows-accessible location and runs tests via cmd.exe.
-
-set -e
+#
+# Principles:
+# - Supports debug mode with -d/-dd/-ddd flags
+# - Assumes epkg is already installed
+# - Creates new env with non-random name for testing
+# - Run tests with 'timeout' prefix and '-y|--assume-yes' for automation
+# - Leaves the env for human/agent debug (removed at start if exists)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -36,8 +41,8 @@ done
 
 # Parse debug flags
 eval set -- $filtered_args
-parse_ret=0
-parse_debug_flags "$@" || parse_ret=$?
+parse_debug_flags "$@"
+parse_ret=$?
 case $parse_ret in
     0)
         eval set -- "$PARSE_DEBUG_FLAGS_REMAINING"
