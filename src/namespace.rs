@@ -922,35 +922,9 @@ fn fs_mount_spec_strings(env_root: &Path) -> Vec<String> {
             log::debug!("Created symlink {} -> {}", hb_inside_env.display(), symlink_target);
         }
 
-        // Also bind mount host's /lib64 and /lib for the dynamic linker and libc
-        // since brew environments don't include glibc by default
-        if std::path::Path::new("/lib64").exists() {
-            // Mount to usr/lib64 instead of lib64 since lib64 -> usr/lib64 symlink
-            // This ensures the bind mount is at the real directory location
-            let env_lib64 = env_root.join("usr/lib64");
-            if !env_lib64.exists() {
-                if let Err(e) = std::fs::create_dir_all(&env_lib64) {
-                    log::warn!("Failed to create usr/lib64 directory {}: {}", env_lib64.display(), e);
-                }
-            }
-            // Mount host /lib64 into env_root/usr/lib64 using // prefix for absolute host path
-            let target_with_prefix = format!("//{}", env_lib64.to_string_lossy().trim_start_matches('/'));
-            specs.push(format!("/lib64:{}", target_with_prefix));
-            log::debug!("Brew environment (Fs mode): binding host /lib64 to {}", target_with_prefix);
-        }
-        // Also mount /lib/x86_64-linux-gnu for libc (brew bottles link to this path)
-        // Mount it into usr/lib/x86_64-linux-gnu since lib -> usr/lib
-        if std::path::Path::new("/lib/x86_64-linux-gnu").exists() {
-            let env_lib_arch = env_root.join("usr/lib/x86_64-linux-gnu");
-            if !env_lib_arch.exists() {
-                if let Err(e) = std::fs::create_dir_all(&env_lib_arch) {
-                    log::warn!("Failed to create lib arch directory {}: {}", env_lib_arch.display(), e);
-                }
-            }
-            let target_with_prefix = format!("//{}", env_lib_arch.to_string_lossy().trim_start_matches('/'));
-            specs.push(format!("/lib/x86_64-linux-gnu:{}", target_with_prefix));
-            log::debug!("Brew environment (Fs mode): binding host /lib/x86_64-linux-gnu to {}", target_with_prefix);
-        }
+        // Note: We don't mount host libraries (/lib64, /lib/x86_64-linux-gnu)
+        // because linuxbrew has its own glibc installed as an essential package.
+        // The environment is self-contained and doesn't need host system libraries.
     }
 
     specs

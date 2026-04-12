@@ -126,9 +126,11 @@ epkg run -e system-brew -- tree --version  # 无隔离，原生性能
 - 性能敏感场景
 - 需要与系统其他工具集成的场景
 
+**注意**：以下 Env/Fs 隔离模式仅适用于 Linux（linuxbrew），因为只有 Linux 支持普通用户使用 namespace + bind mount。macOS 无此功能，只能直接使用 HOMEBREW_PREFIX 作为 env_root。
+
 ### Env 模式（--isolate=env）
 
-**触发条件**：HOMEBREW_PREFIX 存在且可访问，env_root != HOMEBREW_PREFIX
+**触发条件**：Linux 系统，HOMEBREW_PREFIX 存在且可访问，env_root != HOMEBREW_PREFIX
 
 **挂载策略**：
 ```
@@ -137,36 +139,39 @@ $env_root -> /home/linuxbrew/.linuxbrew  (绑定挂载)
 
 **特点**：
 - 轻量级隔离
-- 与主机共享 /usr, /etc 等目录
-- 仅重定向 brew 包路径
+- 不挂载主机的 /usr, /etc（linuxbrew 自包含 glibc 和依赖，不需要主机系统目录）
+- 仅重定向 brew 包路径到 HOMEBREW_PREFIX
 
 ### Fs 模式（--isolate=fs）
 
-**触发条件**：HOMEBREW_PREFIX 不存在，或显式指定
+**触发条件**：Linux 系统，HOMEBREW_PREFIX 不存在，或显式指定
 
 **目录结构**：
 ```
-$env_root/
+$env_root/                    (pivot_root 后成为新的 /)
 ├── home/
 │   └── linuxbrew/
-│       └── .linuxbrew -> ../../../../  (相对符号链接)
-├── usr/
-│   ├── bin/     (epkg 工具链)
-│   ├── lib/     (主机库挂载点)
-│   └── lib64/   (主机库挂载点)
+│       └── .linuxbrew -> ../../../../  (相对符号链接指向新的根目录)
+├── usr/                      (仅包含 epkg 工具链，linuxbrew 包不使用 /usr/)
+│   └── bin/     (epkg, init 等工具)
 ├── bin/         (brew 包二进制文件)
-├── lib/         (brew 包库文件)
+├── lib/         (brew 包库文件，包括 glibc)
 └── ...
 ```
 
 **挂载策略**：
 ```
-1. 不挂载主机 /home（避免覆盖环境的 home 结构）
+1. 不挂载主机 /home 目录
+   - 环境自带 home/linuxbrew/ 结构
+   - 可能挂载当前用户的 $HOME/.epkg 等，但不会覆盖 /home/linuxbrew/
+
 2. 挂载 /opt/epkg（只读，用于包操作）
-3. 挂载主机库目录（用于动态链接）：
-   - /lib64 -> $env_root/usr/lib64
-   - /lib/x86_64-linux-gnu -> $env_root/usr/lib/x86_64-linux-gnu
-4. pivot_root 到 $env_root
+
+3. 不挂载主机库目录（/lib64, /lib/x86_64-linux-gnu）
+   - linuxbrew 已安装自己的 glibc 作为 essential 包
+   - 库和依赖完全自包含，无需使用主机系统库
+
+4. pivot_root 到 $env_root，使环境成为新的根文件系统
 ```
 
 **符号链接工作原理**：
@@ -174,6 +179,7 @@ $env_root/
 - 从 `.linuxbrew` 向上 4 层到达 `env_root`
 - pivot_root 后，env_root 成为新的根目录 `/`
 - 因此链接指向 `/`，即新的根目录
+- 所有 brew 包安装在 `bin/`, `lib/` 下，通过该链接可访问
 
 ## ELF 文件处理
 
@@ -313,21 +319,11 @@ RUST_LOG=trace epkg run -e <env> -- tree --version 2>&1 | head -50
 
 ## 未来发展方向
 
-1. **glibc 捆绑**
-   - 在 brew 环境中安装 glibc 作为 essential 包
-   - 修改动态链接器路径指向环境内部
-   - 完全消除主机库依赖
-
-2. **多架构支持**
+1. **多架构支持**
    - 支持 ARM64 Linux brew bottles
    - 通过 binfmt_misc 或 QEMU 实现跨架构运行
 
-3. **依赖解析增强**
+2. **依赖解析增强**
    - 实现完整的 Homebrew 依赖解析器
    - 支持 `depends_on` 和 `resource` 块
    - 自动安装依赖链
-
-4. **性能优化**
-   - 延迟挂载：仅在首次访问时挂载主机库
-   - OverlayFS：支持可写的层叠文件系统
-   - 二进制缓存：缓存重写后的 ELF 文件
