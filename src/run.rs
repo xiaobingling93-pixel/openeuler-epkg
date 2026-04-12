@@ -1106,19 +1106,24 @@ pub fn is_executable(path: &Path) -> Result<bool> {
     Ok(executable)
 }
 
-/// Check if a file is executable, handling symlinks that may point to targets within environment root
+/// Check if a file is executable, handling symlinks that may point to targets within environment root.
+/// Returns the resolved path if executable, or None if not.
 #[cfg(unix)]
-fn is_executable_within_env(path: &Path, env_root: &Path) -> Result<bool> {
+fn is_executable_within_env(path: &Path, env_root: &Path) -> Result<Option<PathBuf>> {
     trace!("is_executable_within_env checking: {}", path.display());
 
     match lfs::resolve_symlink_in_env(path, env_root) {
         Some(resolved) => {
             trace!("Resolved {} -> {}", path.display(), resolved.display());
-            is_executable(&resolved)
+            if is_executable(&resolved)? {
+                Ok(Some(resolved))
+            } else {
+                Ok(None)
+            }
         }
         None => {
             trace!("Path {} cannot be resolved within environment root", path.display());
-            Ok(false)
+            Ok(None)
         }
     }
 }
@@ -1151,6 +1156,9 @@ fn is_executable_within_env(path: &Path, env_root: &Path) -> Result<bool> {
 /// ```
 #[cfg(unix)]
 pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathBuf> {
+    // Check if this is a brew environment
+    let is_brew_env = is_brew_environment(env_root);
+
     // Collect non-empty PATH directories; if none, use default system paths
     let path_str = env::var("PATH").unwrap_or_default();
     let mut dirs: Vec<&str> = path_str.split(':').filter(|d| !d.is_empty()).collect();
@@ -1158,6 +1166,31 @@ pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathB
         dirs.extend(["/usr/bin", "/bin", "/usr/sbin", "/sbin"]);
     }
 
+    // For brew environments, also check the root bin/ and libexec/bin/ directories
+    // since brew packages don't follow the standard FHS layout
+    let brew_paths = if is_brew_env {
+        vec!["bin", "libexec/bin"]
+    } else {
+        vec![]
+    };
+
+    // First check brew-specific paths for brew environments
+    for subdir in &brew_paths {
+        let cmd_path = env_root.join(subdir).join(cmd_name);
+        trace!("find_command_in_env_path: checking brew path {:?}", cmd_path);
+        if let Some(resolved_path) = is_executable_within_env(&cmd_path, env_root)? {
+            if resolved_path.starts_with(env_root) {
+                let guest_rel = resolved_path.strip_prefix(env_root).unwrap_or(&resolved_path);
+                // For brew environments, prepend HOMEBREW_PREFIX to the guest path
+                // so the command is found at the correct location inside the namespace
+                let homebrew_prefix = crate::brew_pkg::prefix::preferred_path();
+                let guest_path = homebrew_prefix.join(guest_rel);
+                return Ok(guest_path);
+            }
+        }
+    }
+
+    // Then check standard PATH directories
     for path_dir in dirs {
         trace!("find_command_in_env_path: checking path_dir={}", path_dir);
         // Skip paths ending with "/ebin"
@@ -1171,17 +1204,28 @@ pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathB
         let cmd_path = env_root.join(rel_path).join(cmd_name);
         trace!("find_command_in_env_path: cmd_path={:?}", cmd_path);
 
-        if is_executable_within_env(&cmd_path, env_root)? {
-            // Check if this command is under the env_root prefix
-            if cmd_path.starts_with(env_root) {
-                // Strip env_root prefix to get the guest path (e.g., /usr/bin/go)
-                // The env_root/usr is bind-mounted to /usr in the namespace
-                let guest_path = PathBuf::from("/").join(rel_path).join(cmd_name);
+        if let Some(resolved_path) = is_executable_within_env(&cmd_path, env_root)? {
+            // Use the resolved path (which may be different from cmd_path due to symlinks)
+            // e.g., bin/go -> libexec/bin/go, we should use libexec/bin/go
+            if resolved_path.starts_with(env_root) {
+                // Strip env_root prefix to get the guest path (e.g., /libexec/bin/go)
+                let guest_rel = resolved_path.strip_prefix(env_root).unwrap_or(&resolved_path);
+                let guest_path = PathBuf::from("/").join(guest_rel);
                 return Ok(guest_path);
             }
         }
     }
     Err(eyre::eyre!("Command '{}' not found in environment PATH under {}", cmd_name, env_root.display()))
+}
+
+/// Check if an environment is a brew environment by examining its channel config
+fn is_brew_environment(env_root: &Path) -> bool {
+    match crate::io::deserialize_channel_config_from_root(&env_root.to_path_buf()) {
+        Ok(configs) => {
+            configs.first().map(|c| c.format == crate::models::PackageFormat::Brew).unwrap_or(false)
+        }
+        Err(_) => false,
+    }
 }
 
 /// Check if the host OS uses traditional directory layout (dirs) or usr-merge layout (symlinks).
@@ -1263,12 +1307,15 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
     let (channel_format, distro) = ch.map(|c| (c.format, c.distro.clone()))
         .unwrap_or((crate::models::PackageFormat::Apk, "alpine".to_string()));
     let is_conda = channel_format == crate::models::PackageFormat::Conda;
-    let is_brew = channel_format == crate::models::PackageFormat::Brew;
+    let _is_brew = channel_format == crate::models::PackageFormat::Brew;
     let is_msys2 = channel_format == crate::models::PackageFormat::Pacman && distro == "msys2";
     let is_linux_format = is_linux_package_format(channel_format, &distro);
-    if is_conda || is_brew || is_msys2 {
-        // conda ELF binary has RPATH; brew bottles are native macOS binaries;
-        // MSYS2/MinGW binaries are native Windows PE and run on the host
+
+    // For brew packages, we use namespace isolation with HOMEBREW_PREFIX bind mount.
+    // The namespace setup (env_mount_spec_strings) handles brew specially by mounting
+    // $env_root to HOMEBREW_PREFIX instead of standard /usr, /bin mounts.
+    if is_conda || is_msys2 {
+        // conda ELF binary has RPATH; MSYS2/MinGW binaries are native Windows PE
         run_options.skip_namespace_isolation = true;
     }
 

@@ -228,6 +228,7 @@ pub(crate) fn ensure_devpts_mount(dev_root: &Path) -> Result<()> {
 
 /// Substitute '@' prefix with env_root in a path string.
 /// - If path starts with '@', replace '@' with env_root (e.g., "@/tmp" -> env_root + "/tmp")
+/// - If path starts with '//', strip one '/' to get absolute host path (e.g., "//tmp" -> "/tmp")
 /// - If path starts with '/', treat as absolute host path
 /// - Otherwise, join with env_root (relative path)
 ///
@@ -237,6 +238,9 @@ fn substitute_env_root(path: &str, env_root: &Path) -> PathBuf {
     if let Some(stripped) = path.strip_prefix("@/") {
         // '@' prefix: substitute env_root
         env_root.join(stripped)
+    } else if let Some(stripped) = path.strip_prefix("//") {
+        // '//' prefix: absolute host path (strip the extra '/')
+        PathBuf::from(format!("/{}", stripped))
     } else if path.starts_with('/') {
         // Absolute host path
         PathBuf::from(path)

@@ -15,6 +15,57 @@ const HOMEBREW_PLACEHOLDER_PREFIXES: &[&str] = &[
     "@@HOMEBREW_PREFIX@@",
 ];
 
+/// Homebrew preferred installation prefixes.
+///
+/// Homebrew bottles are precompiled binaries that expect to be installed at specific
+/// prefixes. Using the correct prefix is required for most bottles to work.
+///
+/// See: https://docs.brew.sh/Homebrew-on-Linux
+/// See: https://docs.brew.sh/Installation
+pub mod prefix {
+    use std::path::PathBuf;
+
+    /// Linux preferred prefix: /home/linuxbrew/.linuxbrew
+    /// This avoids writing to system-owned directories while allowing bottles to work.
+    pub const LINUX: &str = "/home/linuxbrew/.linuxbrew";
+
+    /// macOS ARM (Apple Silicon) preferred prefix: /opt/homebrew
+    #[cfg(target_os = "macos")]
+    pub const MACOS_ARM: &str = "/opt/homebrew";
+
+    /// macOS Intel preferred prefix: /usr/local
+    #[cfg(target_os = "macos")]
+    pub const MACOS_INTEL: &str = "/usr/local";
+
+    /// Get the preferred HOMEBREW_PREFIX for the current platform.
+    pub fn preferred() -> &'static str {
+        #[cfg(target_os = "macos")]
+        {
+            // Detect Apple Silicon vs Intel
+            if is_apple_silicon() {
+                MACOS_ARM
+            } else {
+                MACOS_INTEL
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            LINUX
+        }
+    }
+
+    /// Get the preferred prefix as a PathBuf
+    pub fn preferred_path() -> PathBuf {
+        PathBuf::from(preferred())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn is_apple_silicon() -> bool {
+        // Check for ARM64 architecture
+        std::env::consts::ARCH == "aarch64"
+    }
+}
+
 /// Global lock to serialize install_name_tool/patchelf rewrites.
 /// Parallel package linking can trigger concurrent rewrite passes on the same env files.
 static BREW_DYLIB_REWRITE_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
@@ -593,7 +644,24 @@ fn rewrite_elf_interpreter_paths(env_root: &Path) -> Result<()> {
         return Ok(());
     }
 
-    log::info!("Checking ELF interpreter paths in {} files for env {}", elf_files.len(), env_root.display());
+    // Scan lib/ directory for libraries (they also have RPATH that needs rewriting)
+    let lib_dir = env_root.join("lib");
+    if lib_dir.exists() {
+        for entry in walkdir::WalkDir::new(&lib_dir).into_iter().filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if entry.file_type().is_symlink() {
+                continue;
+            }
+            if path.is_file() && is_elf_file(path) {
+                let real_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+                if seen_real_paths.insert(real_path.clone()) {
+                    elf_files.push(real_path);
+                }
+            }
+        }
+    }
+
+    log::info!("Checking ELF paths in {} files for env {}", elf_files.len(), env_root.display());
 
     // Homebrew Linux bottles use @@HOMEBREW_PREFIX@@/lib/ld.so as the interpreter path.
     // Replace it with the system's dynamic linker.
@@ -631,9 +699,9 @@ fn is_elf_file(path: &Path) -> bool {
     false
 }
 
-/// Rewrite ELF interpreter path for a single file using goblin.
+/// Rewrite ELF interpreter and RPATH for a single file using goblin.
 /// Homebrew Linux bottles use @@HOMEBREW_PREFIX@@ as a placeholder in the
-/// ELF interpreter path (PT_INTERP). This function replaces it with the actual path.
+/// ELF interpreter path (PT_INTERP) and RPATH. This function replaces them.
 #[cfg(target_os = "linux")]
 fn rewrite_elf_interpreter_for_file(elf_path: &Path, new_interpreter: &str) -> Result<()> {
     use goblin::elf::Elf;
@@ -649,7 +717,7 @@ fn rewrite_elf_interpreter_for_file(elf_path: &Path, new_interpreter: &str) -> R
     let mut content = Vec::new();
     file.read_to_end(&mut content)?;
 
-    // Parse ELF
+    // Parse ELF - this borrows from content, so we extract info first
     let elf = match Elf::parse(&content) {
         Ok(elf) => elf,
         Err(e) => {
@@ -658,67 +726,136 @@ fn rewrite_elf_interpreter_for_file(elf_path: &Path, new_interpreter: &str) -> R
         }
     };
 
-    // Find PT_INTERP program header
-    let interp_phdr = elf.program_headers.iter().find(|ph| ph.p_type == goblin::elf::program_header::PT_INTERP);
+    // Extract RPATH information before modifying content
+    let rpath_info = extract_rpath_info(&elf, &content, elf_path);
 
-    let interp_phdr = match interp_phdr {
-        Some(ph) => ph,
-        None => {
-            log::debug!("ELF {} has no PT_INTERP segment", elf_path.display());
-            return Ok(());
-        }
-    };
+    // Extract interpreter information
+    let interp_info = extract_interp_info(&elf, &content, elf_path);
 
-    // Get the current interpreter string
-    let interp_offset = interp_phdr.p_offset as usize;
-    let interp_filesz = interp_phdr.p_filesz as usize;
-
-    if interp_offset == 0 || interp_filesz == 0 {
-        return Ok(());
-    }
-
-    // Read the current interpreter path (null-terminated string)
-    let interp_offset = interp_phdr.p_offset as usize;
-    let interp_filesz = interp_phdr.p_filesz as usize;
-    let current_interp_str: String = {
-        let current_interp = &content[interp_offset..interp_offset + interp_filesz];
-        match std::ffi::CStr::from_bytes_with_nul(current_interp) {
-            Ok(cstr) => cstr.to_string_lossy().into_owned(),
-            Err(_) => {
-                log::debug!("Invalid interpreter string in {}", elf_path.display());
-                return Ok(());
+    // Now modify content - interpreter first
+    if let Some((offset, old_str, max_len)) = interp_info {
+        if HOMEBREW_PLACEHOLDER_PREFIXES.iter().any(|p| old_str.contains(p)) {
+            let new_interp_bytes = new_interpreter.as_bytes();
+            if new_interp_bytes.len() + 1 <= max_len {
+                let interp_slice = &mut content[offset..offset + max_len];
+                interp_slice.fill(0);
+                interp_slice[..new_interp_bytes.len()].copy_from_slice(new_interp_bytes);
+                interp_slice[new_interp_bytes.len()] = 0;
+                log::info!("Rewrote ELF interpreter for {}: {} -> {}",
+                    elf_path.display(), old_str, new_interpreter);
+            } else {
+                log::warn!("New interpreter path too long for {}: need {} bytes, have {} bytes",
+                    elf_path.display(), new_interp_bytes.len() + 1, max_len);
             }
         }
-    };
-
-    // Check if it contains the placeholder
-    if !HOMEBREW_PLACEHOLDER_PREFIXES.iter().any(|prefix| current_interp_str.contains(prefix)) {
-        log::debug!("ELF {} interpreter does not contain placeholder: {}",
-            elf_path.display(), current_interp_str);
-        return Ok(());
     }
 
-    // Check if new interpreter fits in the allocated space
-    let new_interp_bytes = new_interpreter.as_bytes();
-    if new_interp_bytes.len() + 1 > interp_filesz {
-        log::warn!("New interpreter path too long for {}: need {} bytes, have {} bytes",
-            elf_path.display(), new_interp_bytes.len() + 1, interp_filesz);
-        return Ok(());
-    }
+    // Then modify RPATH
+    for (str_offset, old_rpath, max_len) in rpath_info {
+        if HOMEBREW_PLACEHOLDER_PREFIXES.iter().any(|p| old_rpath.contains(p)) {
+            let homebrew_prefix = crate::brew_pkg::prefix::preferred();
+            let mut new_rpath = old_rpath.clone();
+            for placeholder in HOMEBREW_PLACEHOLDER_PREFIXES {
+                new_rpath = new_rpath.replace(placeholder, homebrew_prefix);
+            }
 
-    // Replace the interpreter path in place
-    let interp_slice = &mut content[interp_offset..interp_offset + interp_filesz];
-    interp_slice.fill(0); // Clear old content
-    interp_slice[..new_interp_bytes.len()].copy_from_slice(new_interp_bytes);
-    interp_slice[new_interp_bytes.len()] = 0; // Null terminator
+            let new_len = new_rpath.len() + 1;
+            if new_len <= max_len {
+                let rpath_slice = &mut content[str_offset..str_offset + max_len];
+                rpath_slice.fill(0);
+                let new_bytes = new_rpath.as_bytes();
+                rpath_slice[..new_bytes.len()].copy_from_slice(new_bytes);
+                rpath_slice[new_bytes.len()] = 0;
+                log::info!("Rewrote ELF RPATH for {}: {} -> {}",
+                    elf_path.display(), old_rpath, new_rpath);
+            } else {
+                log::warn!("New RPATH too long for {}: need {} bytes, have {} bytes (old: {}, new: {})",
+                    elf_path.display(), new_len, max_len, old_rpath, new_rpath);
+            }
+        }
+    }
 
     // Write back to file
     file.seek(SeekFrom::Start(0))?;
     file.write_all(&content)?;
     file.set_len(content.len() as u64)?;
 
-    log::info!("Rewrote ELF interpreter for {}: {} -> {}",
-        elf_path.display(), current_interp_str, new_interpreter);
-
     Ok(())
+}
+
+/// Extract interpreter information from ELF.
+/// Returns (offset, current_string, max_length) if PT_INTERP exists.
+#[cfg(target_os = "linux")]
+fn extract_interp_info(elf: &goblin::elf::Elf, content: &[u8], _elf_path: &Path) -> Option<(usize, String, usize)> {
+    let interp_phdr = elf.program_headers.iter().find(|ph| ph.p_type == goblin::elf::program_header::PT_INTERP)?;
+
+    let offset = interp_phdr.p_offset as usize;
+    let filesz = interp_phdr.p_filesz as usize;
+
+    if offset == 0 || filesz == 0 {
+        return None;
+    }
+
+    let current_str = read_null_terminated_string(content, offset)?;
+    Some((offset, current_str, filesz))
+}
+
+/// Extract RPATH information from ELF.
+/// Returns Vec of (string_offset, current_string, max_length) for each RPATH/RUNPATH entry.
+#[cfg(target_os = "linux")]
+fn extract_rpath_info(elf: &goblin::elf::Elf, content: &[u8], _elf_path: &Path) -> Vec<(usize, String, usize)> {
+    let mut result = Vec::new();
+
+    let dyn_section = match elf.dynamic.as_ref() {
+        Some(d) => d,
+        None => return result,
+    };
+
+    // Get dynstr section offset from section headers
+    let dynstr_sh = elf.section_headers.iter()
+        .find(|sh| elf.shdr_strtab.get_at(sh.sh_name).map(|name| name == ".dynstr").unwrap_or(false));
+
+    let dynstr_offset = match dynstr_sh {
+        Some(sh) => sh.sh_offset as usize,
+        None => return result,
+    };
+
+    // Find all RPATH/RUNPATH entries
+    let rpath_entries: Vec<_> = dyn_section.dyns.iter()
+        .filter(|e| e.d_tag == goblin::elf::dynamic::DT_RPATH || e.d_tag == goblin::elf::dynamic::DT_RUNPATH)
+        .collect();
+
+    for entry in &rpath_entries {
+        let str_offset = dynstr_offset + entry.d_val as usize;
+
+        if let Some(current_str) = read_null_terminated_string(content, str_offset) {
+            // Calculate max length by finding the next string or end of section
+            let max_len = find_string_max_length(content, str_offset);
+            result.push((str_offset, current_str, max_len));
+        }
+    }
+
+    result
+}
+
+/// Find the maximum length of a string at the given offset (until next string or end of content).
+#[cfg(target_os = "linux")]
+fn find_string_max_length(content: &[u8], offset: usize) -> usize {
+    if offset >= content.len() {
+        return 0;
+    }
+    // Find the null terminator
+    let end = content[offset..].iter().position(|&b| b == 0).unwrap_or(content.len() - offset);
+    // The max length includes the null terminator
+    end + 1
+}
+
+/// Read a null-terminated string from a byte slice at the given offset.
+#[cfg(target_os = "linux")]
+fn read_null_terminated_string(content: &[u8], offset: usize) -> Option<String> {
+    if offset >= content.len() {
+        return None;
+    }
+    let end = content[offset..].iter().position(|&b| b == 0)?;
+    Some(String::from_utf8_lossy(&content[offset..offset + end]).into_owned())
 }

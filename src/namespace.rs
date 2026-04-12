@@ -313,9 +313,21 @@ pub fn determine_process_config(env_root: &Path, run_options: &RunOptions) -> Pr
 
     if !run_options.skip_namespace_isolation {
         // Add sandbox-mode specific mount specifications (skip when no isolation)
+        // For brew environments, if Env mode fails (e.g., HOMEBREW_PREFIX not available),
+        // fall back to Fs mode which can create the directory inside the chroot
+        let mut effective_isolate_mode = isolate_mode;
         match isolate_mode {
-            IsolateMode::Env => mount_spec_strings.extend(env_mount_spec_strings(env_root, run_options)),
-            IsolateMode::Fs => mount_spec_strings.extend(fs_mount_spec_strings()),
+            IsolateMode::Env => {
+                match env_mount_spec_strings(env_root, run_options) {
+                    Some(specs) => mount_spec_strings.extend(specs),
+                    None => {
+                        log::warn!("Env mode not available for brew environment, falling back to Fs mode");
+                        effective_isolate_mode = IsolateMode::Fs;
+                        mount_spec_strings.extend(fs_mount_spec_strings(env_root));
+                    }
+                }
+            }
+            IsolateMode::Fs => mount_spec_strings.extend(fs_mount_spec_strings(env_root)),
             IsolateMode::Vm => mount_spec_strings.extend(vm_mount_spec_strings()),
         }
 
@@ -323,7 +335,7 @@ pub fn determine_process_config(env_root: &Path, run_options: &RunOptions) -> Pr
         mount_spec_strings.extend(run_options.effective_sandbox.mount_specs.iter().cloned());
 
         // In Fs mode, bind-mount current working directory to sandbox if not chdir_to_env_root
-        if isolate_mode == IsolateMode::Fs && !run_options.chdir_to_env_root {
+        if effective_isolate_mode == IsolateMode::Fs && !run_options.chdir_to_env_root {
             if let Ok(cwd) = std::env::current_dir() {
                 // Bind-mount cwd to same path inside sandbox so commands can access it
                 let cwd_str = cwd.to_string_lossy();
@@ -750,17 +762,48 @@ fn prepare_and_execute_command(command: &Path, args: &[String], env_vars: &std::
 
 
 /// Mounts for the "Env" sandbox mode
-fn env_mount_spec_strings(env_root: &Path, _run_options: &RunOptions) -> Vec<String> {
+/// Returns None if Env mode cannot be used (e.g., HOMEBREW_PREFIX not available for brew)
+fn env_mount_spec_strings(env_root: &Path, _run_options: &RunOptions) -> Option<Vec<String>> {
     use nix::unistd::{getuid, geteuid};
     let uid = getuid();
     let euid = geteuid();
     let mut specs = Vec::new();
 
+    // Check if this is a brew environment - if so, use HOMEBREW_PREFIX mount strategy
+    let is_brew_env = is_brew_environment(env_root);
+
+    // For brew environments, we need HOMEBREW_PREFIX to exist
+    if is_brew_env {
+        let homebrew_prefix = crate::brew_pkg::prefix::preferred();
+        let hb_prefix_path = Path::new(homebrew_prefix);
+        if !hb_prefix_path.exists() {
+            log::warn!("HOMEBREW_PREFIX directory {} does not exist. Falling back to IsolateMode::Fs for brew environment.", homebrew_prefix);
+            return None;
+        }
+
+        // Always make mounts private to prevent mount leaks to parent namespace.
+        specs.push("make-rprivate://".to_string());
+
+        // For bind mount: $env_root -> //home/linuxbrew/.linuxbrew
+        specs.push(format!("{}://{}", env_root.display(), homebrew_prefix.trim_start_matches('/')));
+
+        // Also add minimal standard mounts for basic functionality
+        specs.push("@/etc://etc".to_string());
+        specs.push("@/tmp://tmp".to_string());
+        specs.push("@/var://var".to_string());
+
+        log::debug!("Brew environment: mounting {} to {}", env_root.display(), homebrew_prefix);
+
+        // Mount host's network configuration files for DNS resolution.
+        specs.push("/etc/hosts://etc/hosts:try".to_string());
+        specs.push("/etc/resolv.conf://etc/resolv.conf:try".to_string());
+
+        return Some(specs);
+    }
+
+    // Standard non-brew environment mounts
     // Always make mounts private to prevent mount leaks to parent namespace.
-    // This ensures that when epkg exits, Linux automatically cleans up all mounts.
-    // Without this, recursive bind mounts (especially /opt/epkg) can leak and
-    // create thousands of nested mount points if interrupted (Ctrl+C, timeout, etc).
-    specs.push("make-rprivate://".to_string());  // use "//" for host dir
+    specs.push("make-rprivate://".to_string());
 
     // Add traditional layout compatibility mounts (must be before /usr mount)
     match crate::mount::mount_traditional_host_compatibility(env_root) {
@@ -783,16 +826,25 @@ fn env_mount_spec_strings(env_root: &Path, _run_options: &RunOptions) -> Vec<Str
     }
 
     // Mount host's network configuration files for DNS resolution.
-    // These are mounted after the environment's /etc to override missing files.
-    // Use :try to silently skip if files don't exist on host.
     specs.push("/etc/hosts://etc/hosts:try".to_string());
     specs.push("/etc/resolv.conf://etc/resolv.conf:try".to_string());
 
-    specs
+    Some(specs)
 }
 
-fn fs_mount_spec_strings() -> Vec<String> {
+/// Check if an environment is a brew environment by examining its channel config
+fn is_brew_environment(env_root: &Path) -> bool {
+    match crate::io::deserialize_channel_config_from_root(&env_root.to_path_buf()) {
+        Ok(configs) => {
+            configs.first().map(|c| c.format == crate::models::PackageFormat::Brew).unwrap_or(false)
+        }
+        Err(_) => false,
+    }
+}
+
+fn fs_mount_spec_strings(env_root: &Path) -> Vec<String> {
     let mut specs: Vec<String> = Vec::new();
+    let is_brew_env = is_brew_environment(env_root);
 
     // Always make mounts private to prevent mount leaks to parent namespace.
     // This ensures that when epkg exits, Linux automatically cleans up all mounts.
@@ -801,7 +853,82 @@ fn fs_mount_spec_strings() -> Vec<String> {
     specs.insert(0, "make-rprivate://:silent".to_string());  // use "//" for host dir
 
     specs.extend(crate::mount::pseudo_fs_mount_spec_strings().iter().map(|s| s.to_string()));
-    add_epkg_mount_spec_strings(&mut specs);
+
+    // For brew environments in Fs mode, we only add minimal epkg mounts.
+    // We skip home_epkg and home_cache mounts because they would shadow
+    // the env_root's home directory structure (which contains linuxbrew).
+    if is_brew_env {
+        // Only mount opt_epkg (needed for package operations)
+        let opt_epkg_opts = if crate::utils::should_mount_opt_epkg_readonly() {
+            "ro,try"
+        } else {
+            "try"
+        };
+        specs.push(format!("{}:{}", dirs().opt_epkg.display(), opt_epkg_opts));
+        // Mount epkg binary dir if needed
+        add_epkg_bin_dir_mount(&mut specs);
+    } else {
+        // Standard environments: add all epkg mount specs
+        add_epkg_mount_spec_strings(&mut specs);
+    }
+
+    // For brew environments in Fs mode, we need to create HOMEBREW_PREFIX inside the chroot
+    // Since env_root becomes the root via pivot_root, we create HOMEBREW_PREFIX as a
+    // symlink pointing to / (the env_root)
+    if is_brew_env {
+        let homebrew_prefix = crate::brew_pkg::prefix::preferred();
+        let hb_inside_env = env_root.join(homebrew_prefix.trim_start_matches('/'));
+        // Remove existing directory/symlink if it exists (to allow recreation)
+        if hb_inside_env.exists() {
+            log::debug!("Removing existing HOMEBREW_PREFIX at {}", hb_inside_env.display());
+            let _ = std::fs::remove_dir_all(&hb_inside_env);
+            let _ = std::fs::remove_file(&hb_inside_env);
+        }
+        // Create parent directories
+        if let Some(parent) = hb_inside_env.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                log::warn!("Failed to create HOMEBREW_PREFIX parent directory: {}", e);
+            }
+        }
+        // Create a relative symlink: .linuxbrew -> ../../../../ (which points to env_root after pivot_root)
+        // Path: home/linuxbrew/.linuxbrew -> ../../../../ (4 levels up from .linuxbrew to reach env_root)
+        let symlink_target = "../../../../".to_string();
+        if let Err(e) = std::os::unix::fs::symlink(&symlink_target, &hb_inside_env) {
+            log::warn!("Failed to create HOMEBREW_PREFIX symlink: {}", e);
+        } else {
+            log::debug!("Created symlink {} -> {}", hb_inside_env.display(), symlink_target);
+        }
+
+        // Also bind mount host's /lib64 and /lib for the dynamic linker and libc
+        // since brew environments don't include glibc by default
+        if std::path::Path::new("/lib64").exists() {
+            // Mount to usr/lib64 instead of lib64 since lib64 -> usr/lib64 symlink
+            // This ensures the bind mount is at the real directory location
+            let env_lib64 = env_root.join("usr/lib64");
+            if !env_lib64.exists() {
+                if let Err(e) = std::fs::create_dir_all(&env_lib64) {
+                    log::warn!("Failed to create usr/lib64 directory {}: {}", env_lib64.display(), e);
+                }
+            }
+            // Mount host /lib64 into env_root/usr/lib64 using // prefix for absolute host path
+            let target_with_prefix = format!("//{}", env_lib64.to_string_lossy().trim_start_matches('/'));
+            specs.push(format!("/lib64:{}", target_with_prefix));
+            log::debug!("Brew environment (Fs mode): binding host /lib64 to {}", target_with_prefix);
+        }
+        // Also mount /lib/x86_64-linux-gnu for libc (brew bottles link to this path)
+        // Mount it into usr/lib/x86_64-linux-gnu since lib -> usr/lib
+        if std::path::Path::new("/lib/x86_64-linux-gnu").exists() {
+            let env_lib_arch = env_root.join("usr/lib/x86_64-linux-gnu");
+            if !env_lib_arch.exists() {
+                if let Err(e) = std::fs::create_dir_all(&env_lib_arch) {
+                    log::warn!("Failed to create lib arch directory {}: {}", env_lib_arch.display(), e);
+                }
+            }
+            let target_with_prefix = format!("//{}", env_lib_arch.to_string_lossy().trim_start_matches('/'));
+            specs.push(format!("/lib/x86_64-linux-gnu:{}", target_with_prefix));
+            log::debug!("Brew environment (Fs mode): binding host /lib/x86_64-linux-gnu to {}", target_with_prefix);
+        }
+    }
 
     specs
 }

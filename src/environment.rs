@@ -711,6 +711,25 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
         // On Linux, do nothing - packages will create usr/libexec as a real directory if needed
     }
 
+    // For Brew environments on Linux, try to create HOMEBREW_PREFIX directory
+    // This is required for brew bottles to work properly with --isolate=env
+    #[cfg(target_os = "linux")]
+    if *pkg_format == PackageFormat::Brew {
+        let homebrew_prefix = crate::brew_pkg::prefix::preferred();
+        let hb_prefix_path = std::path::Path::new(homebrew_prefix);
+        if !hb_prefix_path.exists() {
+            log::info!("Attempting to create HOMEBREW_PREFIX directory: {}", homebrew_prefix);
+            match std::fs::create_dir_all(hb_prefix_path) {
+                Ok(_) => {
+                    log::info!("Successfully created HOMEBREW_PREFIX: {}", homebrew_prefix);
+                }
+                Err(e) => {
+                    log::warn!("Cannot create HOMEBREW_PREFIX directory {}: {}. Consider creating it manually with sudo, or use --isolate=fs mode.", homebrew_prefix, e);
+                }
+            }
+        }
+    }
+
     // Fedora: usr/sbin is a symlink to bin (unified /usr/bin and /usr/sbin)
     if channel_config.distro == "fedora" {
         force_symlink_dir_for_virtiofs("bin", crate::dirs::path_join(env_root, &["usr", "sbin"]))?;
