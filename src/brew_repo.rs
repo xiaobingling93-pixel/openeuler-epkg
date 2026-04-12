@@ -676,6 +676,7 @@ fn process_brew_formulas(repo_dir: &PathBuf, revise: &RepoReleaseItem, formulas:
     // Create essential_pkgnames for brew
     // glibc is essential for Linux brew bottles to have proper dynamic linker
     let essential_pkgnames_path = repo_dir.join(filename.replace("packages", "essential_pkgnames"));
+    #[allow(unused_mut)]
     let mut essential_pkgnames: HashSet<String> = HashSet::new();
     #[cfg(target_os = "linux")]
     {

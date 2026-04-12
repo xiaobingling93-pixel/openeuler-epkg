@@ -27,6 +27,7 @@ pub mod prefix {
 
     /// Linux preferred prefix: /home/linuxbrew/.linuxbrew
     /// This avoids writing to system-owned directories while allowing bottles to work.
+    #[cfg(not(target_os = "macos"))]
     pub const LINUX: &str = "/home/linuxbrew/.linuxbrew";
 
     /// macOS ARM (Apple Silicon) preferred prefix: /opt/homebrew
