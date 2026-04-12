@@ -711,25 +711,6 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
         // On Linux, do nothing - packages will create usr/libexec as a real directory if needed
     }
 
-    // For Brew environments on Linux, try to create HOMEBREW_PREFIX directory
-    // This is required for brew bottles to work properly with --isolate=env
-    #[cfg(target_os = "linux")]
-    if *pkg_format == PackageFormat::Brew {
-        let homebrew_prefix = crate::brew_pkg::prefix::preferred();
-        let hb_prefix_path = std::path::Path::new(homebrew_prefix);
-        if !hb_prefix_path.exists() {
-            log::info!("Attempting to create HOMEBREW_PREFIX directory: {}", homebrew_prefix);
-            match std::fs::create_dir_all(hb_prefix_path) {
-                Ok(_) => {
-                    log::info!("Successfully created HOMEBREW_PREFIX: {}", homebrew_prefix);
-                }
-                Err(e) => {
-                    log::warn!("Cannot create HOMEBREW_PREFIX directory {}: {}. Consider creating it manually with sudo, or use --isolate=fs mode.", homebrew_prefix, e);
-                }
-            }
-        }
-    }
-
     // Fedora: usr/sbin is a symlink to bin (unified /usr/bin and /usr/sbin)
     if channel_config.distro == "fedora" {
         force_symlink_dir_for_virtiofs("bin", crate::dirs::path_join(env_root, &["usr", "sbin"]))?;
@@ -870,35 +851,12 @@ fn import_packages_and_create_metadata(env_root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Initialize env_config and channel_configs
-fn initialize_environment_config(env_name: &str, env_root: &Path, env_base: &Path) -> Result<(EnvConfig, PackageFormat, ChannelConfig)> {
-    // Initialize environment config and create channel config files
-    let mut env_config = if let Some(import_file) = &config().env.import_file {
-        import_environment_from_file(env_root, import_file)?
-    } else {
-        copy_channel_configs(env_root)?;
-        EnvConfig::default()
-    };
-
-    // Override config values by command line options
-    override_env_config(&mut env_config, env_name, env_base, env_root);
-
-    // Save environment config
-    io::serialize_env_config(env_config.clone())?;
-
-    let channel_configs = io::deserialize_channel_config_from_root(&env_root.to_path_buf())?;
-    let pkg_format = channel_configs[0].format.clone();
-    let channel_config = channel_configs[0].clone();
-
-    Ok((env_config, pkg_format, channel_config))
-}
-
 /// Setup and validate environment paths, create symlinks if needed
-fn setup_environment_paths(env_base: &PathBuf) -> Result<PathBuf> {
+fn setup_environment_paths(env_base: &Path) -> Result<PathBuf> {
     let env_root = if !config().common.env_root.is_empty() {
         PathBuf::from(&config().common.env_root)
     } else {
-        env_base.clone()
+        env_base.to_path_buf()
     };
 
     let env_channel_yaml = env_root_channel_yaml(&env_root);
@@ -926,29 +884,161 @@ fn setup_environment_paths(env_base: &PathBuf) -> Result<PathBuf> {
 
 pub fn create_environment(env_name: &str) -> Result<()> {
     let env_base = dirs().user_envs.join(env_name);
-    let env_root = setup_environment_paths(&env_base)?;
-
-    println!("Creating environment '{}' in {}", env_name, env_root.display());
 
     // Warn if auto-generated name (starts with "__")
     if env_name.starts_with("__") {
-        println!("# Note: environment name '{}' was auto-generated from path '{}'", env_name, env_root.display());
+        println!("# Note: environment name '{}' was auto-generated", env_name);
     }
 
-    // Create basic directories early (before we need channel configs)
+    // Step 1: Setup initial paths and copy channel configs to determine package format
+    let (env_root, pkg_format) = setup_brew_environment_paths(&env_base)?;
+
+    println!("Creating environment '{}' in {}", env_name, env_root.display());
+
+    // Step 2: Create basic directories early
     create_environment_dirs_early(&env_root)?;
 
-    // Initialize environment config and get package format
-    let (env_config, pkg_format, channel_config) = initialize_environment_config(env_name, &env_root, &env_base)?;
+    // Step 3: Initialize environment config
+    let (env_config, channel_config) = initialize_environment_config_after_setup(env_name, &env_root, &env_base)?;
     create_environment_dirs(&env_root, &pkg_format, &env_config, &channel_config)?;
 
-    // Create world.json with default no-install packages
+    // Step 4: Create world.json with default no-install packages
     create_default_world_json(&env_root, &pkg_format)?;
 
-    // Install packages and create metadata files
+    // Step 5: Install packages and create metadata files
     import_packages_and_create_metadata(&env_root)?;
 
     Ok(())
+}
+
+/// Setup environment paths with special handling for Brew environments.
+/// For Brew environments, checks HOMEBREW_PREFIX and may use it as env_root.
+fn setup_brew_environment_paths(env_base: &Path) -> Result<(PathBuf, PackageFormat)> {
+    // First, copy channel configs to determine package format
+    // We need to do this before setting up env_root because brew needs special handling
+    let temp_env_root = if !config().common.env_root.is_empty() {
+        PathBuf::from(&config().common.env_root)
+    } else {
+        env_base.to_path_buf()
+    };
+
+    // Copy channel configs to a temporary location to determine package format
+    create_environment_dirs_early(&temp_env_root)?;
+    copy_channel_configs(&temp_env_root)?;
+
+    // Determine package format from channel config
+    let pkg_format = match io::deserialize_channel_config_from_root(&temp_env_root) {
+        Ok(configs) if !configs.is_empty() => configs[0].format.clone(),
+        _ => PackageFormat::Deb, // Default fallback
+    };
+
+    // For Brew environments, handle HOMEBREW_PREFIX specially
+    if pkg_format == PackageFormat::Brew {
+        let homebrew_prefix = crate::brew_pkg::prefix::preferred();
+        let hb_path = Path::new(homebrew_prefix);
+
+        // Case 1: HOMEBREW_PREFIX doesn't exist - try to create it
+        if !hb_path.exists() {
+            log::info!("HOMEBREW_PREFIX {} does not exist, attempting to create...", homebrew_prefix);
+            match try_create_homebrew_prefix(homebrew_prefix) {
+                Ok(_) => {
+                    log::info!("Successfully created HOMEBREW_PREFIX: {}", homebrew_prefix);
+                    // Use HOMEBREW_PREFIX as env_root since it's now available and empty
+                    return Ok((hb_path.to_path_buf(), pkg_format));
+                }
+                Err(e) => {
+                    log::warn!("Cannot create HOMEBREW_PREFIX: {}. Will use regular env_root with --isolate=fs mode.", e);
+                    // Fall through to use regular env_root
+                }
+            }
+        }
+        // Case 2: HOMEBREW_PREFIX exists and is empty - use it as env_root
+        else if is_dir_empty(hb_path)? {
+            log::info!("HOMEBREW_PREFIX {} exists and is empty, using as env_root", homebrew_prefix);
+            return Ok((hb_path.to_path_buf(), pkg_format));
+        }
+        // Case 3: HOMEBREW_PREFIX exists and is not empty
+        else {
+            #[cfg(target_os = "macos")]
+            {
+                // On macOS, we cannot use namespace + bind mount as normal user
+                // So we must use HOMEBREW_PREFIX directly as env_root
+                return Err(eyre::eyre!(
+                    "HOMEBREW_PREFIX {} already exists and is not empty. \
+                     On macOS, brew environments must use HOMEBREW_PREFIX as env_root. \
+                     Please remove or empty the directory first.",
+                    homebrew_prefix
+                ));
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                // On Linux, we can use namespace isolation, so we can use a different env_root
+                log::info!("HOMEBREW_PREFIX {} exists and is not empty, using regular env_root with namespace isolation", homebrew_prefix);
+            }
+        }
+    }
+
+    // Use regular env_root setup for non-brew or fallback cases
+    let env_root = setup_environment_paths(env_base)?;
+    Ok((env_root, pkg_format))
+}
+
+/// Try to create HOMEBREW_PREFIX directory using sudo if needed
+fn try_create_homebrew_prefix(path: &str) -> Result<()> {
+    // First try without sudo
+    match std::fs::create_dir_all(path) {
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            // Try with sudo
+            log::info!("Need sudo to create {}, attempting...", path);
+            let output = std::process::Command::new("sudo")
+                .args(&["sh", "-c", &format!("mkdir -p '{}' && chown $(id -u):$(id -g) '{}'", path, path)])
+                .output()
+                .wrap_err("Failed to run sudo command")?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(eyre::eyre!("sudo command failed: {}", stderr));
+            }
+            Ok(())
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Check if a directory is empty
+fn is_dir_empty(path: &Path) -> Result<bool> {
+    if !path.is_dir() {
+        return Ok(false);
+    }
+    let mut entries = std::fs::read_dir(path)?;
+    Ok(entries.next().is_none())
+}
+
+/// Initialize environment config after paths are set up
+fn initialize_environment_config_after_setup(
+    env_name: &str,
+    env_root: &Path,
+    env_base: &Path
+) -> Result<(EnvConfig, ChannelConfig)> {
+    // Initialize environment config
+    let mut env_config = if let Some(import_file) = &config().env.import_file {
+        import_environment_from_file(env_root, import_file)?
+    } else {
+        // Channel configs already copied in setup_brew_environment_paths
+        EnvConfig::default()
+    };
+
+    // Override config values by command line options
+    override_env_config(&mut env_config, env_name, env_base, env_root);
+
+    // Save environment config
+    io::serialize_env_config(env_config.clone())?;
+
+    let channel_configs = io::deserialize_channel_config_from_root(&env_root.to_path_buf())?;
+    let channel_config = channel_configs[0].clone();
+
+    Ok((env_config, channel_config))
 }
 
 /*

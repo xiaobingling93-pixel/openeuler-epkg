@@ -673,10 +673,15 @@ fn process_brew_formulas(repo_dir: &PathBuf, revise: &RepoReleaseItem, formulas:
     crate::mmio::serialize_provide2pkgnames(&provide2pkgnames_path, &provide2pkgnames)
         .with_context(|| "Failed to serialize provide2pkgnames")?;
 
-    // Create essential_pkgnames (empty for brew)
+    // Create essential_pkgnames for brew
+    // glibc is essential for Linux brew bottles to have proper dynamic linker
     let essential_pkgnames_path = repo_dir.join(filename.replace("packages", "essential_pkgnames"));
-    let empty_essentials: HashSet<String> = HashSet::new();
-    crate::mmio::serialize_essential_pkgnames(&essential_pkgnames_path, &empty_essentials)
+    let mut essential_pkgnames: HashSet<String> = HashSet::new();
+    #[cfg(target_os = "linux")]
+    {
+        essential_pkgnames.insert("glibc".to_string());
+    }
+    crate::mmio::serialize_essential_pkgnames(&essential_pkgnames_path, &essential_pkgnames)
         .with_context(|| "Failed to serialize essential_pkgnames")?;
 
     // Create pkgname2ranges.idx
@@ -699,6 +704,8 @@ fn process_brew_formulas(repo_dir: &PathBuf, revise: &RepoReleaseItem, formulas:
         .with_context(|| "Failed to serialize RepoIndex")?;
     lfs::write(&repoindex_path, repoindex_json.as_bytes())?;
 
+    let nr_essentials = essential_pkgnames.len();
+
     // Create .packages.json metadata file
     let json_path = repo_dir.join(".packages.json");
     let packages_file_info = PackagesFileInfo {
@@ -708,7 +715,7 @@ fn process_brew_formulas(repo_dir: &PathBuf, revise: &RepoReleaseItem, formulas:
         size: 0,
         nr_packages: package_count,
         nr_provides,
-        nr_essentials: 0,
+        nr_essentials,
     };
 
     let packages_json = serde_json::to_string(&packages_file_info)

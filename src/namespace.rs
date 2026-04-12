@@ -279,14 +279,22 @@ fn needs_uid_mapping(namespace_flags: CloneFlags) -> bool {
 pub fn determine_process_config(env_root: &Path, run_options: &RunOptions) -> ProcessCreationConfig {
     use crate::models::{IsolateMode, NamespaceStrategy, ProcessCreationConfig};
 
+    // Check if this is a brew environment with env_root at HOMEBREW_PREFIX
+    // In this case, we can skip namespace isolation since the paths match naturally
+    let is_brew_at_prefix = is_brew_environment(env_root) && is_env_at_homebrew_prefix(env_root);
+    if is_brew_at_prefix {
+        log::debug!("Brew environment at HOMEBREW_PREFIX, skipping namespace isolation");
+    }
+
     let isolate_mode = run_options.effective_sandbox.isolate_mode.unwrap_or(IsolateMode::Env);
-    let namespace_strategy = if run_options.skip_namespace_isolation {
+    let skip_namespace_isolation = run_options.skip_namespace_isolation || is_brew_at_prefix;
+    let namespace_strategy = if skip_namespace_isolation {
         NamespaceStrategy::Unshare
     } else {
         run_options.effective_sandbox.namespace_strategy.unwrap_or(NamespaceStrategy::Clone)
     };
 
-    let namespace_flags = if run_options.skip_namespace_isolation {
+    let namespace_flags = if skip_namespace_isolation {
         // No namespaces when isolation is skipped
         CloneFlags::empty()
     } else {
@@ -839,6 +847,21 @@ fn is_brew_environment(env_root: &Path) -> bool {
             configs.first().map(|c| c.format == crate::models::PackageFormat::Brew).unwrap_or(false)
         }
         Err(_) => false,
+    }
+}
+
+/// Check if env_root is at HOMEBREW_PREFIX (in which case namespace isolation can be skipped)
+fn is_env_at_homebrew_prefix(env_root: &Path) -> bool {
+    let homebrew_prefix = crate::brew_pkg::prefix::preferred();
+    let hb_path = std::path::Path::new(homebrew_prefix);
+    match env_root.canonicalize() {
+        Ok(canonical_env) => {
+            match hb_path.canonicalize() {
+                Ok(canonical_hb) => canonical_env == canonical_hb,
+                Err(_) => env_root == hb_path,
+            }
+        }
+        Err(_) => env_root == hb_path,
     }
 }
 
