@@ -937,28 +937,28 @@ fn setup_brew_environment_paths(env_base: &Path) -> Result<(PathBuf, PackageForm
         let homebrew_prefix = crate::brew_pkg::prefix::preferred();
         let hb_path = Path::new(homebrew_prefix);
 
-        // Case 1: HOMEBREW_PREFIX doesn't exist - try to create it
-        if !hb_path.exists() {
+        // Check if we can use HOMEBREW_PREFIX as env_root:
+        // - If it doesn't exist: try to create it (no conflicting users possible)
+        // - If it exists and is empty: safe to use (no conflicting users)
+        let can_use_hb_prefix = if !hb_path.exists() {
+            // Case 1: HOMEBREW_PREFIX doesn't exist - try to create it
             log::info!("HOMEBREW_PREFIX {} does not exist, attempting to create...", homebrew_prefix);
             match try_create_homebrew_prefix(homebrew_prefix) {
                 Ok(_) => {
                     log::info!("Successfully created HOMEBREW_PREFIX: {}", homebrew_prefix);
-                    // Use HOMEBREW_PREFIX as env_root since it's now available and empty
-                    return Ok((hb_path.to_path_buf(), pkg_format));
+                    true
                 }
                 Err(e) => {
                     log::warn!("Cannot create HOMEBREW_PREFIX: {}. Will use regular env_root with --isolate=fs mode.", e);
-                    // Fall through to use regular env_root
+                    false
                 }
             }
-        }
-        // Case 2: HOMEBREW_PREFIX exists and is empty - use it as env_root
-        else if is_dir_empty(hb_path)? {
+        } else if is_dir_empty(hb_path)? {
+            // Case 2: HOMEBREW_PREFIX exists and is empty - safe to use
             log::info!("HOMEBREW_PREFIX {} exists and is empty, using as env_root", homebrew_prefix);
-            return Ok((hb_path.to_path_buf(), pkg_format));
-        }
-        // Case 3: HOMEBREW_PREFIX exists and is not empty
-        else {
+            true
+        } else {
+            // Case 3: HOMEBREW_PREFIX exists and is not empty
             #[cfg(target_os = "macos")]
             {
                 // On macOS, we cannot use namespace + bind mount as normal user
@@ -974,7 +974,12 @@ fn setup_brew_environment_paths(env_base: &Path) -> Result<(PathBuf, PackageForm
             {
                 // On Linux, we can use namespace isolation, so we can use a different env_root
                 log::info!("HOMEBREW_PREFIX {} exists and is not empty, using regular env_root with namespace isolation", homebrew_prefix);
+                false
             }
+        };
+
+        if can_use_hb_prefix {
+            return Ok((hb_path.to_path_buf(), pkg_format));
         }
     }
 

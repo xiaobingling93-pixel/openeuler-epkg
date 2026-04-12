@@ -227,27 +227,20 @@ $env_root/
 
 ### glibc 策略
 
-**当前实现**：依赖主机 glibc
-- Fs 模式：挂载主机 /lib64 和 /lib/x86_64-linux-gnu
-- Env 模式：使用主机动态链接器
+**平台差异**：
+- **Linux**：brew 提供 `glibc` 包，已设置为 essential，自动安装
+  - 使环境自包含，减少主机依赖
+  - 可通过 RPATH 指向环境内部的 glibc
+- **macOS**：homebrew 不提供 glibc（使用系统 libc）
+  - 依赖主机系统库
+  - 这是设计选择，与 macOS 系统紧密集成
 
-**未来改进**：捆绑 brew 的 glibc
-- 安装 glibc 作为 essential 包
-- 完全消除主机依赖
-- 类似于 deb_repo.rs 中的 `derived_files.on_essential("mawk")`
-
-### 库搜索路径
-
-**Linux 标准路径**：
-- `/lib/x86_64-linux-gnu`
-- `/usr/lib/x86_64-linux-gnu`
-- `/lib64`
-
-**brew 包路径**：
-- `/home/linuxbrew/.linuxbrew/lib`
+**当前实现**：
+- Linux：安装 brew 的 glibc 作为 essential 包
+- macOS：依赖主机系统库
 
 **运行时链接**：
-- 通过 RPATH 确保优先使用 brew 库
+- 优先使用环境内部的库（如果有）
 - 主机库作为后备
 
 ## 调试与故障排除
