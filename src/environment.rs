@@ -933,6 +933,7 @@ fn setup_brew_environment_paths(env_base: &Path) -> Result<(PathBuf, PackageForm
     };
 
     // For Brew environments, handle HOMEBREW_PREFIX specially
+    #[cfg(unix)]
     if pkg_format == PackageFormat::Brew {
         let homebrew_prefix = crate::brew_pkg::prefix::preferred();
         let hb_path = Path::new(homebrew_prefix);
@@ -983,12 +984,19 @@ fn setup_brew_environment_paths(env_base: &Path) -> Result<(PathBuf, PackageForm
         }
     }
 
+    #[cfg(not(unix))]
+    if pkg_format == PackageFormat::Brew {
+        // Brew is Unix-only (Linux/macOS), on Windows just fall through to regular env_root
+        log::debug!("Brew package format on non-Unix platform, using regular env_root");
+    }
+
     // Use regular env_root setup for non-brew or fallback cases
     let env_root = setup_environment_paths(env_base)?;
     Ok((env_root, pkg_format))
 }
 
 /// Try to create HOMEBREW_PREFIX directory using sudo if needed
+#[cfg(unix)]
 fn try_create_homebrew_prefix(path: &str) -> Result<()> {
     // First try without sudo
     match std::fs::create_dir_all(path) {
@@ -1012,6 +1020,7 @@ fn try_create_homebrew_prefix(path: &str) -> Result<()> {
 }
 
 /// Check if a directory is empty
+#[cfg(unix)]
 fn is_dir_empty(path: &Path) -> Result<bool> {
     if !path.is_dir() {
         return Ok(false);

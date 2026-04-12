@@ -1220,6 +1220,7 @@ pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathB
 
 /// Check if current environment is a brew environment
 /// Uses global channel_config().format for O(1) access instead of deserializing
+#[cfg(unix)]
 pub fn is_brew_environment(_env_root: &Path) -> bool {
     crate::models::channel_config().format == crate::models::PackageFormat::Brew
 }
