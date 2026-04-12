@@ -347,7 +347,14 @@ impl PackagesStreamline {
             .wrap_err_with(|| format!("[PackagesStreamline::on_finish] Failed to flush output file: {:?}", self.output_path))?;
 
         // Save package offsets to index file
-        self.serialize_all_indices()?;
+        mmio::serialize_all_indices(
+            &self.pkgname2ranges_path,
+            &self.provide2pkgnames_path,
+            &self.essential_pkgnames_path,
+            &self.pkgname2ranges,
+            &self.provide2pkgnames,
+            &self.essential_pkgnames,
+        )?;
 
         let sha256sum = hex::encode(self.new_hasher.finalize_reset());
         log::debug!("[PackagesStreamline::on_finish] Saving file metadata to {:?}", self.json_path);
@@ -360,23 +367,6 @@ impl PackagesStreamline {
             self.essential_pkgnames.len(),
         )
         .wrap_err_with(|| format!("[PackagesStreamline::on_finish] Failed to save file metadata to {:?}", self.json_path))
-    }
-
-    /// Serialize all index files (pkgname2ranges, provide2pkgnames, essential_pkgnames)
-    fn serialize_all_indices(&self) -> Result<()> {
-        log::debug!("[PackagesStreamline::on_finish] Serializing pkgname2ranges to {:?}", self.pkgname2ranges_path);
-        mmio::serialize_pkgname2ranges(&self.pkgname2ranges_path, &self.pkgname2ranges)
-            .wrap_err_with(|| format!("[PackagesStreamline::on_finish] Failed to serialize package ranges to {}", self.pkgname2ranges_path.display()))?;
-
-        log::debug!("[PackagesStreamline::on_finish] Serializing provide2pkgnames to {:?}", self.provide2pkgnames_path);
-        mmio::serialize_provide2pkgnames(&self.provide2pkgnames_path, &self.provide2pkgnames)
-            .wrap_err_with(|| format!("[PackagesStreamline::on_finish] Failed to serialize provide-to-package mappings to {}", self.provide2pkgnames_path.display()))?;
-
-        log::debug!("[PackagesStreamline::on_finish] Serializing essential_pkgnames to {:?}", self.essential_pkgnames_path);
-        mmio::serialize_essential_pkgnames(&self.essential_pkgnames_path, &self.essential_pkgnames)
-            .wrap_err_with(|| format!("[PackagesStreamline::on_finish] Failed to serialize essential package names to {}", self.essential_pkgnames_path.display()))?;
-
-        Ok(())
     }
 
     pub fn handle_chunk(&mut self, result: std::io::Result<usize>, unpack_buf: &[u8]) -> Result<bool> {

@@ -583,14 +583,15 @@ fn write_conda_packages_output(
 
     create_parent_dirs(&output_path, &json_path)?;
     let sha256sum = write_output_file(&output_path, &output)?;
-    serialize_indices(
+    mmio::serialize_all_indices(
         &pkgname2ranges_path,
         &provide2pkgnames_path,
         &essential_pkgnames_path,
         &pkgname2ranges,
         &provide2pkgnames,
         &essential_pkgnames,
-    )?;
+    )
+    .map_err(|e| eyre!("Failed to serialize indices: {}", e))?;
 
     mmio::save_packages_metadata(
         output_path,
@@ -685,28 +686,4 @@ fn write_output_file(output_path: &PathBuf, output: &str) -> Result<String> {
     log::debug!("Successfully wrote and flushed output file: {:?}", output_path);
 
     Ok(sha256sum)
-}
-
-/// Serialize all index files
-fn serialize_indices(
-    pkgname2ranges_path: &PathBuf,
-    provide2pkgnames_path: &PathBuf,
-    essential_pkgnames_path: &PathBuf,
-    pkgname2ranges: &BTreeMap<String, Vec<PackageRange>>,
-    provide2pkgnames: &HashMap<String, Vec<String>>,
-    essential_pkgnames: &HashSet<String>,
-) -> Result<()> {
-    log::debug!("Serializing pkgname2ranges to {:?}", pkgname2ranges_path);
-    mmio::serialize_pkgname2ranges(pkgname2ranges_path, pkgname2ranges)
-        .map_err(|e| eyre!("Failed to serialize package ranges: {}", e))?;
-
-    log::debug!("Serializing provide2pkgnames to {:?}", provide2pkgnames_path);
-    mmio::serialize_provide2pkgnames(provide2pkgnames_path, provide2pkgnames)
-        .map_err(|e| eyre!("Failed to serialize provide-to-package mappings: {}", e))?;
-
-    log::debug!("Serializing essential_pkgnames to {:?}", essential_pkgnames_path);
-    mmio::serialize_essential_pkgnames(essential_pkgnames_path, essential_pkgnames)
-        .map_err(|e| eyre!("Failed to serialize essential package names: {}", e))?;
-
-    Ok(())
 }

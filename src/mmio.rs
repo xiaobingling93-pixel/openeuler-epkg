@@ -270,6 +270,31 @@ pub fn serialize_pkgname2ranges(path: &PathBuf, pkgname2ranges: &BTreeMap<String
     Ok(())
 }
 
+/// Serialize all index files (pkgname2ranges, provide2pkgnames, essential_pkgnames)
+/// Shared function used by both conda_repo.rs and packages_stream.rs
+pub fn serialize_all_indices(
+    pkgname2ranges_path: &PathBuf,
+    provide2pkgnames_path: &PathBuf,
+    essential_pkgnames_path: &PathBuf,
+    pkgname2ranges: &BTreeMap<String, Vec<PackageRange>>,
+    provide2pkgnames: &HashMap<String, Vec<String>>,
+    essential_pkgnames: &HashSet<String>,
+) -> Result<()> {
+    log::debug!("Serializing pkgname2ranges to {:?}", pkgname2ranges_path);
+    serialize_pkgname2ranges(pkgname2ranges_path, pkgname2ranges)
+        .with_context(|| format!("Failed to serialize package ranges to {}", pkgname2ranges_path.display()))?;
+
+    log::debug!("Serializing provide2pkgnames to {:?}", provide2pkgnames_path);
+    serialize_provide2pkgnames(provide2pkgnames_path, provide2pkgnames)
+        .with_context(|| format!("Failed to serialize provide-to-package mappings to {}", provide2pkgnames_path.display()))?;
+
+    log::debug!("Serializing essential_pkgnames to {:?}", essential_pkgnames_path);
+    serialize_essential_pkgnames(essential_pkgnames_path, essential_pkgnames)
+        .with_context(|| format!("Failed to serialize essential package names to {}", essential_pkgnames_path.display()))?;
+
+    Ok(())
+}
+
 /// Save packages metadata to a JSON file
 /// This is a shared function used by both conda_repo.rs and packages_stream.rs
 pub fn save_packages_metadata(
