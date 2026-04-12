@@ -10,7 +10,6 @@ use crate::lfs;
 use crate::tar_extract::{create_package_dirs, ExtractConfig, extract_archive_with_policy};
 
 /// Homebrew placeholder prefixes that need to be rewritten in dylib/interpreter paths
-#[cfg(target_os = "macos")]
 const HOMEBREW_PLACEHOLDER_PREFIXES: &[&str] = &[
     "@@HOMEBREW_CELLAR@@",
     "@@HOMEBREW_PREFIX@@",
@@ -693,7 +692,7 @@ fn rewrite_elf_interpreter_for_file(elf_path: &Path, new_interpreter: &str) -> R
     };
 
     // Check if it contains the placeholder
-    if !current_interp_str.contains("@@HOMEBREW_PREFIX@@") {
+    if !HOMEBREW_PLACEHOLDER_PREFIXES.iter().any(|prefix| current_interp_str.contains(prefix)) {
         log::debug!("ELF {} interpreter does not contain placeholder: {}",
             elf_path.display(), current_interp_str);
         return Ok(());
