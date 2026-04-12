@@ -281,7 +281,7 @@ pub fn determine_process_config(env_root: &Path, run_options: &RunOptions) -> Pr
 
     // Check if this is a brew environment with env_root at HOMEBREW_PREFIX
     // In this case, we can skip namespace isolation since the paths match naturally
-    let is_brew_at_prefix = is_brew_environment(env_root) && is_env_at_homebrew_prefix(env_root);
+    let is_brew_at_prefix = crate::run::is_brew_environment(env_root) && is_env_at_homebrew_prefix(env_root);
     if is_brew_at_prefix {
         log::debug!("Brew environment at HOMEBREW_PREFIX, skipping namespace isolation");
     }
@@ -320,22 +320,25 @@ pub fn determine_process_config(env_root: &Path, run_options: &RunOptions) -> Pr
     let mut mount_spec_strings = Vec::new();
     let mut effective_isolate_mode = isolate_mode;
 
+    // Check if this is a brew environment once and cache the result
+    let is_brew_env = crate::run::is_brew_environment(env_root);
+
     if !run_options.skip_namespace_isolation {
         // Add sandbox-mode specific mount specifications (skip when no isolation)
         // For brew environments, if Env mode fails (e.g., HOMEBREW_PREFIX not available),
         // fall back to Fs mode which can create the directory inside the chroot
         match isolate_mode {
             IsolateMode::Env => {
-                match env_mount_spec_strings(env_root, run_options) {
+                match env_mount_spec_strings(env_root, run_options, is_brew_env) {
                     Some(specs) => mount_spec_strings.extend(specs),
                     None => {
                         log::warn!("Env mode not available for brew environment, falling back to Fs mode");
                         effective_isolate_mode = IsolateMode::Fs;
-                        mount_spec_strings.extend(fs_mount_spec_strings(env_root));
+                        mount_spec_strings.extend(fs_mount_spec_strings(env_root, is_brew_env));
                     }
                 }
             }
-            IsolateMode::Fs => mount_spec_strings.extend(fs_mount_spec_strings(env_root)),
+            IsolateMode::Fs => mount_spec_strings.extend(fs_mount_spec_strings(env_root, is_brew_env)),
             IsolateMode::Vm => mount_spec_strings.extend(vm_mount_spec_strings()),
         }
 
@@ -400,6 +403,9 @@ pub fn build_unified_context(
     run_options.host_uid = Some(uid.as_raw());
     run_options.working_dir = config.working_dir.clone();
 
+    // Check if this is a brew environment once and cache the result
+    let is_brew_env = crate::run::is_brew_environment(env_root);
+
     Ok(UnifiedChildContext {
         env_root: env_root.to_path_buf(),
         run_options,
@@ -407,6 +413,7 @@ pub fn build_unified_context(
         args,
         stdin_read_fd,
         isolate_mode: config.isolate_mode,
+        is_brew_env,
         sync_read_fd: None, // will be set later if needed
         mount_specs,
         uid,
@@ -672,9 +679,7 @@ fn setup_fs_sandbox(context: &mut UnifiedChildContext) -> Result<()> {
     // For brew environments, resolve symlinks in the command path
     // This is needed because commands like /home/linuxbrew/.linuxbrew/bin/python3
     // need to be resolved through the symlink after pivot_root
-    let is_brew = is_brew_environment(&context.env_root);
-    debug!("setup_fs_sandbox: is_brew_environment({}) = {}", context.env_root.display(), is_brew);
-    if is_brew {
+    if context.is_brew_env {
         let cmd_path = PathBuf::from(&context.command);
         debug!("setup_fs_sandbox: attempting to resolve brew command symlink: {}", cmd_path.display());
         // Try to resolve symlinks in the command path
@@ -796,14 +801,11 @@ fn prepare_and_execute_command(command: &Path, args: &[String], env_vars: &std::
 
 /// Mounts for the "Env" sandbox mode
 /// Returns None if Env mode cannot be used (e.g., HOMEBREW_PREFIX not available for brew)
-fn env_mount_spec_strings(env_root: &Path, _run_options: &RunOptions) -> Option<Vec<String>> {
+fn env_mount_spec_strings(env_root: &Path, _run_options: &RunOptions, is_brew_env: bool) -> Option<Vec<String>> {
     use nix::unistd::{getuid, geteuid};
     let uid = getuid();
     let euid = geteuid();
     let mut specs = Vec::new();
-
-    // Check if this is a brew environment - if so, use HOMEBREW_PREFIX mount strategy
-    let is_brew_env = is_brew_environment(env_root);
 
     // For brew environments, we need HOMEBREW_PREFIX to exist
     if is_brew_env {
@@ -865,16 +867,6 @@ fn env_mount_spec_strings(env_root: &Path, _run_options: &RunOptions) -> Option<
     Some(specs)
 }
 
-/// Check if an environment is a brew environment by examining its channel config
-fn is_brew_environment(env_root: &Path) -> bool {
-    match crate::io::deserialize_channel_config_from_root(&env_root.to_path_buf()) {
-        Ok(configs) => {
-            configs.first().map(|c| c.format == crate::models::PackageFormat::Brew).unwrap_or(false)
-        }
-        Err(_) => false,
-    }
-}
-
 /// Check if env_root is at HOMEBREW_PREFIX (in which case namespace isolation can be skipped)
 fn is_env_at_homebrew_prefix(env_root: &Path) -> bool {
     let homebrew_prefix = crate::brew_pkg::prefix::preferred();
@@ -890,9 +882,8 @@ fn is_env_at_homebrew_prefix(env_root: &Path) -> bool {
     }
 }
 
-fn fs_mount_spec_strings(env_root: &Path) -> Vec<String> {
+fn fs_mount_spec_strings(env_root: &Path, is_brew_env: bool) -> Vec<String> {
     let mut specs: Vec<String> = Vec::new();
-    let is_brew_env = is_brew_environment(env_root);
 
     // Always make mounts private to prevent mount leaks to parent namespace.
     // This ensures that when epkg exits, Linux automatically cleans up all mounts.
@@ -945,29 +936,6 @@ fn fs_mount_spec_strings(env_root: &Path) -> Vec<String> {
             log::warn!("Failed to create HOMEBREW_PREFIX symlink: {}", e);
         } else {
             log::debug!("Created symlink {} -> {}", hb_inside_env.display(), symlink_target);
-        }
-
-        // Note: Ideally we wouldn't mount host libraries since linuxbrew should have
-        // its own glibc. However, for backward compatibility with environments
-        // created before glibc was marked as essential, we mount host libraries
-        // as a fallback. New environments with glibc installed won't need these.
-        if std::path::Path::new("/lib64").exists() {
-            let env_lib64 = env_root.join("usr/lib64");
-            if !env_lib64.exists() {
-                let _ = std::fs::create_dir_all(&env_lib64);
-            }
-            let target_with_prefix = format!("//{}", env_lib64.to_string_lossy().trim_start_matches('/'));
-            specs.push(format!("/lib64:{}", target_with_prefix));
-            log::debug!("Brew environment (Fs mode): binding host /lib64 to {}", target_with_prefix);
-        }
-        if std::path::Path::new("/lib/x86_64-linux-gnu").exists() {
-            let env_lib_arch = env_root.join("usr/lib/x86_64-linux-gnu");
-            if !env_lib_arch.exists() {
-                let _ = std::fs::create_dir_all(&env_lib_arch);
-            }
-            let target_with_prefix = format!("//{}", env_lib_arch.to_string_lossy().trim_start_matches('/'));
-            specs.push(format!("/lib/x86_64-linux-gnu:{}", target_with_prefix));
-            log::debug!("Brew environment (Fs mode): binding host /lib/x86_64-linux-gnu to {}", target_with_prefix);
         }
     }
 

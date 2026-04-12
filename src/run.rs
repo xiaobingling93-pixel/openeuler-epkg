@@ -1219,7 +1219,7 @@ pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathB
 }
 
 /// Check if an environment is a brew environment by examining its channel config
-fn is_brew_environment(env_root: &Path) -> bool {
+pub fn is_brew_environment(env_root: &Path) -> bool {
     match crate::io::deserialize_channel_config_from_root(&env_root.to_path_buf()) {
         Ok(configs) => {
             configs.first().map(|c| c.format == crate::models::PackageFormat::Brew).unwrap_or(false)

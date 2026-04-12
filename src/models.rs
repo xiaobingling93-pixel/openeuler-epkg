@@ -551,6 +551,9 @@ pub struct UnifiedChildContext {
     // Mode-specific configuration
     pub isolate_mode: IsolateMode,
 
+    // Environment type flag (cached to avoid repeated deserialization)
+    pub is_brew_env: bool,
+
     // Sync pipe for parent-child coordination
     // Note: This is the read end for the child to wait on mapping completion.
     // The write end is owned by the parent.
