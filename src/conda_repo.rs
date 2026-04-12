@@ -4,13 +4,11 @@ use std::collections::{HashMap, HashSet, BTreeMap};
 use std::fs::OpenOptions;
 use std::io::{Write, BufWriter};
 use std::fmt::Write as FmtWrite;
-use color_eyre::eyre::{Result, WrapErr};
-use color_eyre::eyre;
+use color_eyre::eyre::{eyre, Result, WrapErr};
 use flate2::read::GzDecoder;
 use bzip2::read::BzDecoder;
 use sha2::{Sha256, Digest};
 use hex;
-use time::{OffsetDateTime, format_description};
 use serde::de::{Error, Visitor};
 use std::fmt;
 use crate::models::*;
@@ -328,7 +326,7 @@ fn parse_compressed_json(reader: packages_stream::ReceiverHasher, location: &str
         let error_msg = format!("{} error for {}: {}", error_type, location, e);
         log::error!("{}", error_msg);
 
-        let mut err = eyre::eyre!("{}", error_msg);
+        let mut err = eyre!("{}", error_msg);
         if e.is_io() {
             err = err.wrap_err("This might indicate download corruption, incomplete download, or hash validation failure.");
         } else if e.is_data() {
@@ -420,7 +418,7 @@ fn process_conda_repodata(
     }
 
     if error_count > 0 {
-        return Err(eyre::eyre!("Failed to process {} packages from Conda repodata. Processed: {}, Skipped: {}",
+        return Err(eyre!("Failed to process {} packages from Conda repodata. Processed: {}, Skipped: {}",
                                error_count, processed_count, skipped_count));
     }
 
@@ -579,52 +577,80 @@ fn write_conda_packages_output(
     log::debug!("  output size: {} bytes", output.len());
 
     let output_path = &revise.output_path;
-    let filename = output_path.file_name()
+    let json_path = get_json_path(output_path, repo_dir)?;
+    let (_, provide2pkgnames_path, essential_pkgnames_path, pkgname2ranges_path) =
+        mmio::get_package_paths(repo_dir, &get_filename(output_path)?);
+
+    create_parent_dirs(&output_path, &json_path)?;
+    let sha256sum = write_output_file(&output_path, &output)?;
+    serialize_indices(
+        &pkgname2ranges_path,
+        &provide2pkgnames_path,
+        &essential_pkgnames_path,
+        &pkgname2ranges,
+        &provide2pkgnames,
+        &essential_pkgnames,
+    )?;
+
+    mmio::save_packages_metadata(
+        output_path,
+        &json_path,
+        sha256sum,
+        pkgname2ranges.len(),
+        provide2pkgnames.len(),
+        essential_pkgnames.len(),
+    )
+    .with_context(|| format!("Failed to save packages metadata for {}", revise.location))
+}
+
+/// Get the JSON metadata path for a packages output file
+fn get_json_path(output_path: &PathBuf, repo_dir: &PathBuf) -> Result<PathBuf> {
+    let file_stem = output_path.file_stem()
+        .ok_or_else(|| eyre!("Invalid output path: no file stem"))?
+        .to_string_lossy();
+    Ok(repo_dir.join(format!(".{}.json", file_stem)))
+}
+
+/// Extract filename from output path
+fn get_filename(output_path: &PathBuf) -> Result<String> {
+    output_path.file_name()
         .ok_or_else(|| {
-            let err = eyre::eyre!("Invalid output path: no filename component: {:?}", output_path);
+            let err = eyre!("Invalid output path: no filename component: {:?}", output_path);
             log::error!("{}", err);
             err
-        })?
-        .to_string_lossy();
+        })
+        .map(|name| name.to_string_lossy().into_owned())
+}
 
-    log::debug!("Extracted filename: {}", filename);
-
-    let (_, provide2pkgnames_path, essential_pkgnames_path, pkgname2ranges_path) =
-        crate::mmio::get_package_paths(repo_dir, &filename);
-
-    let json_path = {
-        let file_stem = output_path.file_stem()
-            .ok_or_else(|| eyre::eyre!("Invalid output path: no file stem"))?
-            .to_string_lossy();
-        repo_dir.join(format!(".{}.json", file_stem))
-    };
-
+/// Create parent directories for output and JSON files
+fn create_parent_dirs(output_path: &PathBuf, json_path: &PathBuf) -> Result<()> {
     if let Some(parent) = output_path.parent() {
         log::debug!("Creating output directory: {:?}", parent);
-        std::fs::create_dir_all(parent)
+        lfs::create_dir_all(parent)
             .map_err(|e| {
-                let err = eyre::eyre!("Failed to create output directory {:?}: {}", parent, e);
+                let err = eyre!("Failed to create output directory {:?}: {}", parent, e);
                 log::error!("{}", err);
                 err
             })?;
         log::debug!("Successfully created output directory: {:?}", parent);
-    } else {
-        log::warn!("output_path has no parent directory: {:?}", output_path);
     }
 
     if let Some(parent) = json_path.parent() {
         log::debug!("Creating json directory: {:?}", parent);
-        std::fs::create_dir_all(parent)
+        lfs::create_dir_all(parent)
             .map_err(|e| {
-                let err = eyre::eyre!("Failed to create json directory {:?}: {}", parent, e);
+                let err = eyre!("Failed to create json directory {:?}: {}", parent, e);
                 log::error!("{}", err);
                 err
             })?;
         log::debug!("Successfully created json directory: {:?}", parent);
-    } else {
-        log::warn!("json_path has no parent directory: {:?}", json_path);
     }
 
+    Ok(())
+}
+
+/// Write the packages output file and return the SHA256 hash
+fn write_output_file(output_path: &PathBuf, output: &str) -> Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(output.as_bytes());
     let sha256sum = hex::encode(hasher.finalize());
@@ -636,7 +662,7 @@ fn write_conda_packages_output(
         .truncate(true)
         .open(output_path)
         .map_err(|e| {
-            let err = eyre::eyre!("Failed to create output file {}: {}", output_path.display(), e);
+            let err = eyre!("Failed to create output file {}: {}", output_path.display(), e);
             log::error!("{}", err);
             err
         })?;
@@ -646,82 +672,41 @@ fn write_conda_packages_output(
     log::debug!("Writing {} bytes to output file", output.as_bytes().len());
     writer.write_all(output.as_bytes())
         .map_err(|e| {
-            let err = eyre::eyre!("Failed to write to output file {}: {}", output_path.display(), e);
+            let err = eyre!("Failed to write to output file {}: {}", output_path.display(), e);
             log::error!("{}", err);
             err
         })?;
     writer.flush()
         .map_err(|e| {
-            let err = eyre::eyre!("Failed to flush output file {}: {}", output_path.display(), e);
+            let err = eyre!("Failed to flush output file {}: {}", output_path.display(), e);
             log::error!("{}", err);
             err
         })?;
     log::debug!("Successfully wrote and flushed output file: {:?}", output_path);
 
-    log::debug!("Serializing pkgname2ranges to {:?}", pkgname2ranges_path);
-    mmio::serialize_pkgname2ranges(&pkgname2ranges_path, &pkgname2ranges)
-        .map_err(|e| eyre::eyre!("Failed to serialize package ranges: {}", e))?;
-
-    log::debug!("Serializing provide2pkgnames to {:?}", provide2pkgnames_path);
-    mmio::serialize_provide2pkgnames(&provide2pkgnames_path, &provide2pkgnames)
-        .map_err(|e| eyre::eyre!("Failed to serialize provide-to-package mappings: {}", e))?;
-
-    log::debug!("Serializing essential_pkgnames to {:?}", essential_pkgnames_path);
-    mmio::serialize_essential_pkgnames(&essential_pkgnames_path, &essential_pkgnames)
-        .map_err(|e| eyre::eyre!("Failed to serialize essential package names: {}", e))?;
-
-    log::debug!("Saving file metadata to {:?}", json_path);
-    save_packages_metadata(
-        output_path,
-        &json_path,
-        sha256sum,
-        pkgname2ranges.len(),
-        provide2pkgnames.len(),
-        essential_pkgnames.len(),
-    )
-    .map_err(|e| eyre::eyre!("Failed to save file metadata: {}", e))
+    Ok(sha256sum)
 }
 
-fn save_packages_metadata(
-    output_path: &PathBuf,
-    json_path: &PathBuf,
-    sha256sum: String,
-    nr_packages: usize,
-    nr_provides: usize,
-    nr_essentials: usize,
-) -> Result<PackagesFileInfo> {
-    let metadata = lfs::metadata_on_host(output_path)
-        .map_err(|e| eyre::eyre!("Failed to get file metadata: {}", e))?;
+/// Serialize all index files
+fn serialize_indices(
+    pkgname2ranges_path: &PathBuf,
+    provide2pkgnames_path: &PathBuf,
+    essential_pkgnames_path: &PathBuf,
+    pkgname2ranges: &BTreeMap<String, Vec<PackageRange>>,
+    provide2pkgnames: &HashMap<String, Vec<String>>,
+    essential_pkgnames: &HashSet<String>,
+) -> Result<()> {
+    log::debug!("Serializing pkgname2ranges to {:?}", pkgname2ranges_path);
+    mmio::serialize_pkgname2ranges(pkgname2ranges_path, pkgname2ranges)
+        .map_err(|e| eyre!("Failed to serialize package ranges: {}", e))?;
 
-    let datetime = {
-        let system_time = metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        let offset_datetime = OffsetDateTime::from(system_time);
+    log::debug!("Serializing provide2pkgnames to {:?}", provide2pkgnames_path);
+    mmio::serialize_provide2pkgnames(provide2pkgnames_path, provide2pkgnames)
+        .map_err(|e| eyre!("Failed to serialize provide-to-package mappings: {}", e))?;
 
-        let format = format_description::parse("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z")
-            .map_err(|e| eyre::eyre!("Failed to create datetime format: {}", e))?;
+    log::debug!("Serializing essential_pkgnames to {:?}", essential_pkgnames_path);
+    mmio::serialize_essential_pkgnames(essential_pkgnames_path, essential_pkgnames)
+        .map_err(|e| eyre!("Failed to serialize essential package names: {}", e))?;
 
-        offset_datetime.format(&format)
-            .map_err(|e| eyre::eyre!("Failed to format datetime: {}", e))?
-    };
-
-    let packages_file_info = PackagesFileInfo {
-        filename: output_path.file_name()
-            .ok_or_else(|| eyre::eyre!("Invalid output path: no filename component"))?
-            .to_string_lossy()
-            .to_string(),
-        sha256sum,
-        datetime,
-        size: metadata.len(),
-        nr_packages,
-        nr_provides,
-        nr_essentials,
-    };
-
-    let json_content = serde_json::to_string_pretty(&packages_file_info)
-        .map_err(|e| eyre::eyre!("Failed to serialize packages metadata: {}", e))?;
-
-    std::fs::write(json_path, json_content)
-        .map_err(|e| eyre::eyre!("Failed to write packages metadata to {}: {}", json_path.display(), e))?;
-
-    Ok(packages_file_info)
+    Ok(())
 }

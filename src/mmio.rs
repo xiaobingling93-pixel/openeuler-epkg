@@ -3,10 +3,10 @@ use std::fs::File;
 use std::path::PathBuf;
 use std::collections::{HashMap, BTreeMap, HashSet};
 use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::time::SystemTime;
 use std::sync::atomic::{AtomicBool, Ordering};
 use memmap2::Mmap;
-use color_eyre::eyre::{Result, WrapErr};
-use color_eyre::eyre;
+use color_eyre::eyre::{eyre, Result, WrapErr};
 // Use Archived type alias from rkyv
 // When HashMap<String, Vec<String>> is archived, it becomes Archived<HashMap<String, Vec<String>>>
 // which internally uses ArchivedHashMap<ArchivedString, ArchivedVec<ArchivedString>>
@@ -242,7 +242,7 @@ pub fn serialize_provide2pkgnames(path: &PathBuf, provide2pkgnames: &HashMap<Str
     // HashMap will be archived as Archived<HashMap<...>>
     use rancor::Error;
     let aligned_vec = rkyv::to_bytes::<Error>(&filtered_map)
-        .map_err(|e| eyre::eyre!("Failed to serialize provide2pkgnames: {:?}", e))?;
+        .map_err(|e| eyre!("Failed to serialize provide2pkgnames: {:?}", e))?;
     // AlignedVec implements AsRef<[u8]>, convert to Vec for fs::write
     let bytes: Vec<u8> = aligned_vec.as_ref().to_vec();
 
@@ -270,7 +270,47 @@ pub fn serialize_pkgname2ranges(path: &PathBuf, pkgname2ranges: &BTreeMap<String
     Ok(())
 }
 
-// Function to deserialize pkgname2ranges from a file
+/// Save packages metadata to a JSON file
+/// This is a shared function used by both conda_repo.rs and packages_stream.rs
+pub fn save_packages_metadata(
+    output_path: &PathBuf,
+    json_path: &PathBuf,
+    sha256sum: String,
+    nr_packages: usize,
+    nr_provides: usize,
+    nr_essentials: usize,
+) -> Result<PackagesFileInfo> {
+    log::debug!("[save_packages_metadata] Saving metadata for {:?} to {:?}", output_path, json_path);
+
+    let metadata = lfs::metadata_on_host(output_path)
+        .with_context(|| format!("[save_packages_metadata] Failed to get metadata for file: {}", output_path.display()))?;
+
+    let datetime = metadata.modified()
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string());
+
+    let file_info = PackagesFileInfo {
+        filename: output_path.file_name()
+            .ok_or_else(|| eyre!("[save_packages_metadata] Invalid output path: {}", output_path.display()))?
+            .to_string_lossy().into_owned(),
+        sha256sum,
+        datetime,
+        size: metadata.len(),
+        nr_packages,
+        nr_provides,
+        nr_essentials,
+    };
+
+    let json_content = serde_json::to_string_pretty(&file_info)
+        .with_context(|| "[save_packages_metadata] Failed to serialize file info to JSON")?;
+    lfs::write(json_path, json_content)
+        .with_context(|| format!("[save_packages_metadata] Failed to write JSON metadata to file: {:?}", json_path))?;
+
+    log::debug!("[save_packages_metadata] Successfully saved packages metadata");
+    Ok(file_info)
+}
 pub fn deserialize_pkgname2ranges(path: &PathBuf) -> Result<BTreeMap<String, Vec<PackageRange>>> {
     log::trace!("deserialize_pkgname2ranges for {}", path.display());
 
@@ -471,7 +511,7 @@ pub fn map_pkgkey2package(pkgkey: &str) -> Result<Package> {
         }
     }
 
-    Err(eyre::eyre!("Package not found for pkgkey: {}", pkgkey))
+    Err(eyre!("Package not found for pkgkey: {}", pkgkey))
 }
 
 /// Lookup package names that provide a given capability.
@@ -556,7 +596,7 @@ pub fn map_pkgline2package(pkgline: &str) -> Result<Package> {
     );
 
     if !store_path.exists() {
-        return Err(eyre::eyre!("Package info not found in store: {}", store_path.display()));
+        return Err(eyre!("Package info not found in store: {}", store_path.display()));
     }
 
     let content = fs::read_to_string(&store_path)

@@ -1,8 +1,6 @@
 use std::path::PathBuf;
 use std::collections::{HashMap, HashSet, BTreeMap};
-use std::time::SystemTime;
 use std::sync::mpsc::Receiver;
-use std::fs;
 use std::fs::{OpenOptions, File};
 use std::io::BufWriter;
 use std::io::Write;
@@ -349,19 +347,11 @@ impl PackagesStreamline {
             .wrap_err_with(|| format!("[PackagesStreamline::on_finish] Failed to flush output file: {:?}", self.output_path))?;
 
         // Save package offsets to index file
-        log::debug!("[PackagesStreamline::on_finish] Serializing pkgname2ranges to {:?}", self.pkgname2ranges_path);
-        mmio::serialize_pkgname2ranges(&self.pkgname2ranges_path, &self.pkgname2ranges)
-            .wrap_err_with(|| format!("[PackagesStreamline::on_finish] Failed to serialize package ranges to {}", self.pkgname2ranges_path.display()))?;
-        log::debug!("[PackagesStreamline::on_finish] Serializing provide2pkgnames to {:?}", self.provide2pkgnames_path);
-        mmio::serialize_provide2pkgnames(&self.provide2pkgnames_path, &self.provide2pkgnames)
-            .wrap_err_with(|| format!("[PackagesStreamline::on_finish] Failed to serialize provide-to-package mappings to {}", self.provide2pkgnames_path.display()))?;
-        log::debug!("[PackagesStreamline::on_finish] Serializing essential_pkgnames to {:?}", self.essential_pkgnames_path);
-        mmio::serialize_essential_pkgnames(&self.essential_pkgnames_path, &self.essential_pkgnames)
-            .wrap_err_with(|| format!("[PackagesStreamline::on_finish] Failed to serialize essential package names to {}", self.essential_pkgnames_path.display()))?;
+        self.serialize_all_indices()?;
 
         let sha256sum = hex::encode(self.new_hasher.finalize_reset());
         log::debug!("[PackagesStreamline::on_finish] Saving file metadata to {:?}", self.json_path);
-        save_packages_metadata(
+        mmio::save_packages_metadata(
             &self.output_path,
             &self.json_path,
             sha256sum,
@@ -370,6 +360,23 @@ impl PackagesStreamline {
             self.essential_pkgnames.len(),
         )
         .wrap_err_with(|| format!("[PackagesStreamline::on_finish] Failed to save file metadata to {:?}", self.json_path))
+    }
+
+    /// Serialize all index files (pkgname2ranges, provide2pkgnames, essential_pkgnames)
+    fn serialize_all_indices(&self) -> Result<()> {
+        log::debug!("[PackagesStreamline::on_finish] Serializing pkgname2ranges to {:?}", self.pkgname2ranges_path);
+        mmio::serialize_pkgname2ranges(&self.pkgname2ranges_path, &self.pkgname2ranges)
+            .wrap_err_with(|| format!("[PackagesStreamline::on_finish] Failed to serialize package ranges to {}", self.pkgname2ranges_path.display()))?;
+
+        log::debug!("[PackagesStreamline::on_finish] Serializing provide2pkgnames to {:?}", self.provide2pkgnames_path);
+        mmio::serialize_provide2pkgnames(&self.provide2pkgnames_path, &self.provide2pkgnames)
+            .wrap_err_with(|| format!("[PackagesStreamline::on_finish] Failed to serialize provide-to-package mappings to {}", self.provide2pkgnames_path.display()))?;
+
+        log::debug!("[PackagesStreamline::on_finish] Serializing essential_pkgnames to {:?}", self.essential_pkgnames_path);
+        mmio::serialize_essential_pkgnames(&self.essential_pkgnames_path, &self.essential_pkgnames)
+            .wrap_err_with(|| format!("[PackagesStreamline::on_finish] Failed to serialize essential package names to {}", self.essential_pkgnames_path.display()))?;
+
+        Ok(())
     }
 
     pub fn handle_chunk(&mut self, result: std::io::Result<usize>, unpack_buf: &[u8]) -> Result<bool> {
@@ -478,39 +485,4 @@ impl PackagesStreamline {
             }
         }
     }
-}
-
-fn save_packages_metadata(
-    output_path: &PathBuf,
-    json_path: &PathBuf,
-    sha256sum: String,
-    nr_packages: usize,
-    nr_provides: usize,
-    nr_essentials: usize,
-) -> Result<PackagesFileInfo> {
-    log::debug!("[save_packages_metadata] Saving metadata for {:?} to {:?}", output_path, json_path);
-    let metadata = fs::metadata(output_path)
-        .wrap_err_with(|| format!("[save_packages_metadata] Failed to get metadata for file: {}", output_path.display()))?;
-    let file_info = PackagesFileInfo {
-        filename: output_path.file_name()
-            .ok_or_else(|| eyre!("[save_packages_metadata] Invalid output path: {}", output_path.display()))?
-            .to_string_lossy().into_owned(),
-        sha256sum: sha256sum,
-        datetime: metadata.modified()
-            .wrap_err_with(|| format!("[save_packages_metadata] Failed to get modification time for {}", output_path.display()))?
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .wrap_err_with(|| format!("[save_packages_metadata] Failed to calculate duration since epoch for {}", output_path.display()))?
-            .as_secs().to_string(),
-        size: metadata.len(),
-        nr_packages,
-        nr_provides,
-        nr_essentials,
-    };
-    let json_content = serde_json::to_string_pretty(&file_info)
-        .wrap_err_with(|| "[save_packages_metadata] Failed to serialize file info to JSON")?;
-    fs::write(json_path, json_content)
-        .wrap_err_with(|| format!("[save_packages_metadata] Failed to write JSON metadata to file: {:?}", json_path))?;
-
-    log::debug!("[save_packages_metadata] Successfully processed packages content");
-    Ok(file_info)
 }
