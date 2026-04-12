@@ -318,12 +318,12 @@ pub fn determine_process_config(env_root: &Path, run_options: &RunOptions) -> Pr
 
     // Start with empty mount spec strings
     let mut mount_spec_strings = Vec::new();
+    let mut effective_isolate_mode = isolate_mode;
 
     if !run_options.skip_namespace_isolation {
         // Add sandbox-mode specific mount specifications (skip when no isolation)
         // For brew environments, if Env mode fails (e.g., HOMEBREW_PREFIX not available),
         // fall back to Fs mode which can create the directory inside the chroot
-        let mut effective_isolate_mode = isolate_mode;
         match isolate_mode {
             IsolateMode::Env => {
                 match env_mount_spec_strings(env_root, run_options) {
@@ -357,7 +357,7 @@ pub fn determine_process_config(env_root: &Path, run_options: &RunOptions) -> Pr
 
     // Store working directory for Fs mode (used after pivot to restore cwd)
     let mut working_dir = None;
-    if isolate_mode == IsolateMode::Fs && !run_options.chdir_to_env_root {
+    if effective_isolate_mode == IsolateMode::Fs && !run_options.chdir_to_env_root {
         if let Ok(cwd) = std::env::current_dir() {
             if cwd.is_absolute() && cwd.exists() {
                 working_dir = Some(cwd);
@@ -367,7 +367,7 @@ pub fn determine_process_config(env_root: &Path, run_options: &RunOptions) -> Pr
 
     ProcessCreationConfig {
         namespace_strategy,
-        isolate_mode,
+        isolate_mode: effective_isolate_mode,
         namespace_flags,
         needs_uid_mapping,
         mount_spec_strings,
@@ -668,6 +668,31 @@ fn setup_fs_sandbox(context: &mut UnifiedChildContext) -> Result<()> {
         trace!("Fs sandbox: adjusting command path from {} to {} after pivot", context.command.display(), guest_command.display());
         context.command = guest_command;
     }
+
+    // For brew environments, resolve symlinks in the command path
+    // This is needed because commands like /home/linuxbrew/.linuxbrew/bin/python3
+    // need to be resolved through the symlink after pivot_root
+    let is_brew = is_brew_environment(&context.env_root);
+    debug!("setup_fs_sandbox: is_brew_environment({}) = {}", context.env_root.display(), is_brew);
+    if is_brew {
+        let cmd_path = PathBuf::from(&context.command);
+        debug!("setup_fs_sandbox: attempting to resolve brew command symlink: {}", cmd_path.display());
+        // Try to resolve symlinks in the command path
+        match std::fs::canonicalize(&cmd_path) {
+            Ok(resolved) => {
+                if resolved != cmd_path {
+                    debug!("Fs sandbox: resolved brew command symlink from {} to {}", cmd_path.display(), resolved.display());
+                    context.command = resolved;
+                } else {
+                    debug!("Fs sandbox: command path unchanged after canonicalize: {}", cmd_path.display());
+                }
+            }
+            Err(e) => {
+                debug!("Fs sandbox: failed to canonicalize command path {}: {}", cmd_path.display(), e);
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -922,9 +947,28 @@ fn fs_mount_spec_strings(env_root: &Path) -> Vec<String> {
             log::debug!("Created symlink {} -> {}", hb_inside_env.display(), symlink_target);
         }
 
-        // Note: We don't mount host libraries (/lib64, /lib/x86_64-linux-gnu)
-        // because linuxbrew has its own glibc installed as an essential package.
-        // The environment is self-contained and doesn't need host system libraries.
+        // Note: Ideally we wouldn't mount host libraries since linuxbrew should have
+        // its own glibc. However, for backward compatibility with environments
+        // created before glibc was marked as essential, we mount host libraries
+        // as a fallback. New environments with glibc installed won't need these.
+        if std::path::Path::new("/lib64").exists() {
+            let env_lib64 = env_root.join("usr/lib64");
+            if !env_lib64.exists() {
+                let _ = std::fs::create_dir_all(&env_lib64);
+            }
+            let target_with_prefix = format!("//{}", env_lib64.to_string_lossy().trim_start_matches('/'));
+            specs.push(format!("/lib64:{}", target_with_prefix));
+            log::debug!("Brew environment (Fs mode): binding host /lib64 to {}", target_with_prefix);
+        }
+        if std::path::Path::new("/lib/x86_64-linux-gnu").exists() {
+            let env_lib_arch = env_root.join("usr/lib/x86_64-linux-gnu");
+            if !env_lib_arch.exists() {
+                let _ = std::fs::create_dir_all(&env_lib_arch);
+            }
+            let target_with_prefix = format!("//{}", env_lib_arch.to_string_lossy().trim_start_matches('/'));
+            specs.push(format!("/lib/x86_64-linux-gnu:{}", target_with_prefix));
+            log::debug!("Brew environment (Fs mode): binding host /lib/x86_64-linux-gnu to {}", target_with_prefix);
+        }
     }
 
     specs
