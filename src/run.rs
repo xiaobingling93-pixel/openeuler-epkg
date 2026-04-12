@@ -1218,14 +1218,10 @@ pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathB
     Err(eyre::eyre!("Command '{}' not found in environment PATH under {}", cmd_name, env_root.display()))
 }
 
-/// Check if an environment is a brew environment by examining its channel config
-pub fn is_brew_environment(env_root: &Path) -> bool {
-    match crate::io::deserialize_channel_config_from_root(&env_root.to_path_buf()) {
-        Ok(configs) => {
-            configs.first().map(|c| c.format == crate::models::PackageFormat::Brew).unwrap_or(false)
-        }
-        Err(_) => false,
-    }
+/// Check if current environment is a brew environment
+/// Uses global channel_config().format for O(1) access instead of deserializing
+pub fn is_brew_environment(_env_root: &Path) -> bool {
+    crate::models::channel_config().format == crate::models::PackageFormat::Brew
 }
 
 /// Check if the host OS uses traditional directory layout (dirs) or usr-merge layout (symlinks).
