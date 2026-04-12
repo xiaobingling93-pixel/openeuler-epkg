@@ -297,8 +297,53 @@ fn create_package_txt_from_pkgkey<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: &str
 /// This function is called after files are moved to the environment (LinkType::Move).
 /// Each environment gets its own copy with paths specific to that environment.
 /// Rewrite dylib/interpreter paths for all binaries in the environment.
-/// On macOS: rewrite dylib paths in Mach-O files using install_name_tool.
-/// On Linux: rewrite ELF interpreter paths using patchelf.
+/// Rewrite dylib/interpreter paths in binary files for a Homebrew environment.
+///
+/// # Policy: Dynamic Linking Path Rewriting for Homebrew Bottles
+///
+/// Homebrew bottles contain placeholder paths (e.g., `@@HOMEBREW_PREFIX@@`) that must be
+/// rewritten to the actual installation path for the binaries to work. This is because
+/// bottles are built on CI machines with hardcoded paths that differ from the user's
+/// installation location.
+///
+/// ## Linux ELF Rewriting
+///
+/// Rewrites two types of paths in ELF binaries:
+/// 1. **PT_INTERP** (dynamic linker): Homebrew bottles use `@@HOMEBREW_PREFIX@@/lib/ld.so`
+///    as the interpreter path. We rewrite this to the system's dynamic linker
+///    (e.g., `/lib64/ld-linux-x86-64.so.2`).
+///
+/// 2. **RPATH/RUNPATH**: Library search paths containing `@@HOMEBREW_PREFIX@@` or
+///    `@@HOMEBREW_CELLAR@@` are rewritten to the actual HOMEBREW_PREFIX.
+///
+/// Example:
+/// ```
+/// # Before: PT_INTERP = "@@HOMEBREW_PREFIX@@/lib/ld.so"
+/// # After:  PT_INTERP = "/lib64/ld-linux-x86-64.so.2"
+///
+/// # Before: RPATH = "@@HOMEBREW_PREFIX@@/lib:@@HOMEBREW_CELLAR@@/gcc/14.2.0/lib"
+/// # After:  RPATH = "/home/linuxbrew/.linuxbrew/lib:/home/linuxbrew/.linuxbrew/Cellar/gcc/14.2.0/lib"
+/// ```
+///
+/// ## macOS Mach-O Rewriting
+///
+/// Uses `install_name_tool` to rewrite dylib load commands and rpaths in Mach-O binaries.
+/// Similar placeholder replacement is performed for macOS paths.
+///
+/// ## Algorithm
+///
+/// 1. Collect all binary files from standard directories (bin/, lib/, libexec/, Frameworks/)
+/// 2. Deduplicate using canonicalized paths (handles symlinks pointing to same file)
+/// 3. For each binary:
+///    - Parse the binary format (ELF/Mach-O)
+///    - Extract current paths
+///    - Rewrite placeholders to actual paths
+///    - Write back modified binary
+///
+/// # Locking
+///
+/// Uses a global mutex to serialize rewrites. Parallel package installation can trigger
+/// concurrent rewrites on the same environment files.
 pub fn rewrite_dylib_paths_for_env(env_root: &Path) -> Result<()> {
     let _rewrite_guard = BREW_DYLIB_REWRITE_LOCK
         .lock()
@@ -321,80 +366,54 @@ pub fn rewrite_dylib_paths_for_env(env_root: &Path) -> Result<()> {
     }
 }
 
+/// Collect binary files from standard directories.
+///
+/// Scans the given directories for files matching the predicate (e.g., is_elf_file, is_mach_o_file).
+/// Returns a deduplicated list of canonicalized paths (handles symlinks pointing to same file).
+///
+/// # Arguments
+/// * `env_root` - Environment root directory
+/// * `dirs` - List of directory names to scan (e.g., ["bin", "lib", "libexec"])
+/// * `is_binary` - Predicate function to check if a file is a binary of the target type
+fn collect_binary_files(env_root: &Path, dirs: &[&str], is_binary: fn(&Path) -> bool) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+
+    for dir_name in dirs {
+        let dir = env_root.join(dir_name);
+        if !dir.exists() {
+            continue;
+        }
+
+        for entry in walkdir::WalkDir::new(&dir).into_iter().filter_map(|e| e.ok()) {
+            let path = entry.path();
+
+            // Skip symlinks to avoid processing the same file multiple times
+            if entry.file_type().is_symlink() {
+                continue;
+            }
+
+            // Check if it's a regular file and matches the binary predicate
+            if path.is_file() && is_binary(path) {
+                let real_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+                if seen.insert(real_path.clone()) {
+                    files.push(real_path);
+                }
+            }
+        }
+    }
+
+    files
+}
+
 /// Rewrite dylib paths in Mach-O files (macOS).
+///
+/// Collects all Mach-O binaries from bin/, lib/, libexec/, and Frameworks/ directories,
+/// then rewrites their dylib load commands using install_name_tool.
 #[cfg(target_os = "macos")]
 fn rewrite_mach_o_dylib_paths(env_root: &Path) -> Result<()> {
     // Collect all potential Mach-O files (binaries and dylibs)
-    let mut mach_o_files: Vec<std::path::PathBuf> = Vec::new();
-    let mut seen_real_paths: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
-
-    // Scan bin/ directory
-    let bin_dir = env_root.join("bin");
-    if bin_dir.exists() {
-        for entry in walkdir::WalkDir::new(&bin_dir).into_iter().filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if entry.file_type().is_symlink() {
-                continue;
-            }
-            if path.is_file() && is_mach_o_file(path) {
-                let real_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-                if seen_real_paths.insert(real_path.clone()) {
-                    mach_o_files.push(real_path);
-                }
-            }
-        }
-    }
-
-    // Scan lib/ directory
-    let lib_dir = env_root.join("lib");
-    if lib_dir.exists() {
-        for entry in walkdir::WalkDir::new(&lib_dir).into_iter().filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if entry.file_type().is_symlink() {
-                continue;
-            }
-            if path.is_file() && is_mach_o_file(path) {
-                let real_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-                if seen_real_paths.insert(real_path.clone()) {
-                    mach_o_files.push(real_path);
-                }
-            }
-        }
-    }
-
-    // Scan libexec/ directory (gcc internal tools like cc1, cc1plus are here)
-    let libexec_dir = env_root.join("libexec");
-    if libexec_dir.exists() {
-        for entry in walkdir::WalkDir::new(&libexec_dir).into_iter().filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if entry.file_type().is_symlink() {
-                continue;
-            }
-            if path.is_file() && is_mach_o_file(path) {
-                let real_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-                if seen_real_paths.insert(real_path.clone()) {
-                    mach_o_files.push(real_path);
-                }
-            }
-        }
-    }
-
-    // Scan Frameworks/ directory (macOS Python framework, etc.)
-    let frameworks_dir = env_root.join("Frameworks");
-    if frameworks_dir.exists() {
-        for entry in walkdir::WalkDir::new(&frameworks_dir).into_iter().filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if entry.file_type().is_symlink() {
-                continue;
-            }
-            if path.is_file() && is_mach_o_file(path) {
-                let real_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-                if seen_real_paths.insert(real_path.clone()) {
-                    mach_o_files.push(real_path);
-                }
-            }
-        }
-    }
+    let mach_o_files = collect_binary_files(env_root, &["bin", "lib", "libexec", "Frameworks"], is_mach_o_file);
 
     if mach_o_files.is_empty() {
         log::debug!("No Mach-O files found in {}", env_root.display());
@@ -598,67 +617,40 @@ fn extract_lib_path_and_resolve(rest: &str, env_root: &Path) -> Option<String> {
 /// Rewrite ELF interpreter paths for all binaries in the environment (Linux).
 /// Homebrew Linux bottles use @@HOMEBREW_PREFIX@@ as a placeholder in the
 /// ELF interpreter path (PT_INTERP). This function replaces
-/// those paths to point to the actual environment location.
+/// Rewrite ELF interpreter and RPATH in ELF binaries (Linux).
+///
+/// Collects all ELF binaries from bin/, lib/, and libexec/ directories,
+/// then rewrites their PT_INTERP (interpreter) and RPATH entries.
+///
+/// # Policy
+///
+/// Homebrew Linux bottles contain placeholder paths like `@@HOMEBREW_PREFIX@@` in:
+/// - PT_INTERP (dynamic linker path): typically `@@HOMEBREW_PREFIX@@/lib/ld.so`
+/// - RPATH/RUNPATH: library search paths with placeholders
+///
+/// This function rewrites:
+/// - PT_INTERP to the system's dynamic linker (e.g., `/lib64/ld-linux-x86-64.so.2`)
+/// - RPATH placeholders to actual HOMEBREW_PREFIX paths
+///
+/// # Example
+///
+/// ```
+/// # Before rewriting:
+/// # PT_INTERP = "@@HOMEBREW_PREFIX@@/lib/ld.so"
+/// # RPATH     = "@@HOMEBREW_PREFIX@@/lib:@@HOMEBREW_CELLAR@@/gcc/14.2.0/lib"
+///
+/// # After rewriting:
+/// # PT_INTERP = "/lib64/ld-linux-x86-64.so.2"
+/// # RPATH     = "/home/linuxbrew/.linuxbrew/lib:/home/linuxbrew/.linuxbrew/Cellar/gcc/14.2.0/lib"
+/// ```
 #[cfg(target_os = "linux")]
 fn rewrite_elf_interpreter_paths(env_root: &Path) -> Result<()> {
-    // Collect all potential ELF files
-    let mut elf_files: Vec<std::path::PathBuf> = Vec::new();
-    let mut seen_real_paths: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
-
-    // Scan bin/ directory
-    let bin_dir = env_root.join("bin");
-    if bin_dir.exists() {
-        for entry in walkdir::WalkDir::new(&bin_dir).into_iter().filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if entry.file_type().is_symlink() {
-                continue;
-            }
-            if path.is_file() && is_elf_file(path) {
-                let real_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-                if seen_real_paths.insert(real_path.clone()) {
-                    elf_files.push(real_path);
-                }
-            }
-        }
-    }
-
-    // Scan libexec/ directory
-    let libexec_dir = env_root.join("libexec");
-    if libexec_dir.exists() {
-        for entry in walkdir::WalkDir::new(&libexec_dir).into_iter().filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if entry.file_type().is_symlink() {
-                continue;
-            }
-            if path.is_file() && is_elf_file(path) {
-                let real_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-                if seen_real_paths.insert(real_path.clone()) {
-                    elf_files.push(real_path);
-                }
-            }
-        }
-    }
+    // Collect all ELF files from standard directories
+    let elf_files = collect_binary_files(env_root, &["bin", "lib", "libexec"], is_elf_file);
 
     if elf_files.is_empty() {
         log::debug!("No ELF files found in {}", env_root.display());
         return Ok(());
-    }
-
-    // Scan lib/ directory for libraries (they also have RPATH that needs rewriting)
-    let lib_dir = env_root.join("lib");
-    if lib_dir.exists() {
-        for entry in walkdir::WalkDir::new(&lib_dir).into_iter().filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if entry.file_type().is_symlink() {
-                continue;
-            }
-            if path.is_file() && is_elf_file(path) {
-                let real_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-                if seen_real_paths.insert(real_path.clone()) {
-                    elf_files.push(real_path);
-                }
-            }
-        }
     }
 
     log::info!("Checking ELF paths in {} files for env {}", elf_files.len(), env_root.display());
@@ -702,6 +694,28 @@ fn is_elf_file(path: &Path) -> bool {
 /// Rewrite ELF interpreter and RPATH for a single file using goblin.
 /// Homebrew Linux bottles use @@HOMEBREW_PREFIX@@ as a placeholder in the
 /// ELF interpreter path (PT_INTERP) and RPATH. This function replaces them.
+#[cfg(target_os = "linux")]
+/// Rewrite ELF interpreter (PT_INTERP) and RPATH for a single ELF file.
+///
+/// Uses the `goblin` crate to parse ELF and perform in-place modifications.
+/// This is a low-level file processor called by `rewrite_elf_interpreter_paths()`.
+///
+/// # Arguments
+/// * `elf_path` - Path to the ELF file to modify
+/// * `new_interpreter` - New interpreter path (e.g., "/lib64/ld-linux-x86-64.so.2")
+///
+/// # Process
+/// 1. Parse ELF structure using goblin
+/// 2. Extract PT_INTERP segment info (offset, current string, max length)
+/// 3. Extract RPATH/RUNPATH dynamic entries from .dynstr section
+/// 4. Modify PT_INTERP if it contains Homebrew placeholders
+/// 5. Modify RPATH entries by replacing placeholders with actual paths
+/// 6. Write modified content back to file
+///
+/// # Safety
+/// - Preserves file structure (does not resize)
+/// - New strings must fit within original buffer sizes
+/// - Logs warnings if new strings are too long
 #[cfg(target_os = "linux")]
 fn rewrite_elf_interpreter_for_file(elf_path: &Path, new_interpreter: &str) -> Result<()> {
     use goblin::elf::Elf;
