@@ -362,6 +362,70 @@ pub fn rename<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()> {
     Ok(())
 }
 
+/// Rename a file, falling back to copy+delete if cross-device.
+/// This is useful for Move link type where we want to move files from store to env,
+/// but store and env may be on different filesystems.
+#[cfg(not(windows))]
+pub fn rename_or_copy_delete<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()> {
+    let from = from.as_ref();
+    let to = to.as_ref();
+    debug_assert_no_forward_slash(from);
+    debug_assert_no_forward_slash(to);
+    log::trace!("rename_or_copy_delete: {} -> {}", from.display(), to.display());
+
+    // Try rename first (fast, works on same filesystem)
+    if fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+
+    // Rename failed, likely cross-device. Fall back to copy + delete.
+    log::debug!("rename failed (likely cross-device), falling back to copy+delete: {} -> {}", from.display(), to.display());
+    fs::copy(from, to)
+        .wrap_err_with(|| format!("Failed to copy {} to {}", from.display(), to.display()))?;
+    fs::remove_file(from)
+        .wrap_err_with(|| format!("Failed to remove source file {} after copy", from.display()))?;
+    Ok(())
+}
+
+/// Rename a file on Windows, falling back to copy+delete if cross-device.
+#[cfg(windows)]
+pub fn rename_or_copy_delete<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let from = from.as_ref();
+    let to = to.as_ref();
+    debug_assert_no_forward_slash(from);
+    debug_assert_no_forward_slash(to);
+    log::trace!("rename_or_copy_delete: {} -> {}", from.display(), to.display());
+
+    // Convert paths to wide strings
+    let from_wide: Vec<u16> = from.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let to_wide: Vec<u16> = to.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+
+    // Try MoveFileEx first (works on same drive)
+    // SAFETY: We're calling MoveFileExW with valid null-terminated wide strings
+    if unsafe {
+        MoveFileExW(
+            windows::core::PCWSTR(from_wide.as_ptr()),
+            windows::core::PCWSTR(to_wide.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        ).is_ok()
+    } {
+        return Ok(());
+    }
+
+    // MoveFileEx failed, likely cross-drive. Fall back to copy + delete.
+    log::debug!("MoveFileEx failed (likely cross-drive), falling back to copy+delete: {} -> {}", from.display(), to.display());
+    fs::copy(from, to)
+        .wrap_err_with(|| format!("Failed to copy {} to {}", from.display(), to.display()))?;
+    fs::remove_file(from)
+        .wrap_err_with(|| format!("Failed to remove source file {} after copy", from.display()))?;
+    Ok(())
+}
+
 /// Remove a file.
 #[cfg(not(windows))]
 pub fn remove_file<P: AsRef<Path>>(path: P) -> Result<()> {

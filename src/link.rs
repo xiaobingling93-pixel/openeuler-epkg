@@ -468,15 +468,13 @@ pub fn compute_link_type_and_reflink(
         // If not same_fs, can_reflink remains false, link_type stays Reflink (will fall back to copy)
     } else if link_type == LinkType::Move || link_type == LinkType::Runpath {
         if !same_fs {
-            // Different filesystems, rename() will fail
-            return Err(eyre::eyre!(
-                "Link type {:?} requires store and environment to be on the same filesystem, but they are on different filesystems (store: {}, env: {})",
-                link_type,
-                plan.store_root.display(),
-                plan.env_root.display()
-            ));
+            // Different filesystems, rename() will fail, but we can fall back to copy+delete
+            log::debug!("Store root and env root are on different filesystems, {:?} will use copy+delete fallback (store: {}, env: {})",
+                       link_type,
+                       plan.store_root.display(),
+                       plan.env_root.display());
         }
-        // Same filesystem, rename() will work
+        // Continue with Move/Runpath, actual execution will use copy+delete fallback if needed
     } else if link_type == LinkType::Symlink && !can_create_symlinks {
         // On Windows without symlink permission, downgrade to hardlink if same filesystem
         if same_fs {
@@ -694,7 +692,15 @@ fn mirror_symlink_file(fs_file: &Path, target_path: &Path, link_type: LinkType) 
         if let Some(parent) = target_path.parent() {
             lfs::create_dir_all_with_case_sensitivity(parent)?;
         }
-        lfs::rename(fs_file, target_path)?;
+        // Try rename first (works on same filesystem)
+        if lfs::rename(fs_file, target_path).is_ok() {
+            return Ok(());
+        }
+        // Rename failed (likely cross-device), fall back to copy_symlink + remove
+        log::debug!("rename failed for symlink (likely cross-device), falling back to copy+delete: {} -> {}", fs_file.display(), target_path.display());
+        copy_symlink(fs_file, target_path)
+            .with_context(|| format!("Failed to copy symlink from {} to {}", fs_file.display(), target_path.display()))?;
+        lfs::remove_file(fs_file)?;
         return Ok(());
     }
 
@@ -814,12 +820,13 @@ fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path, link
         }
         LinkType::Move => {
             // Move file from store to env (will be removed from store later)
-            lfs::rename(fs_file, target_path)?;
+            // Use rename_or_copy_delete to handle cross-filesystem case
+            lfs::rename_or_copy_delete(fs_file, target_path)?;
         }
         LinkType::Runpath => {
             // Move file from store to env (will be removed from store later)
-            // Same as Move - requires same filesystem (checked in compute_link_type_and_reflink)
-            lfs::rename(fs_file, target_path)?;
+            // Same as Move - use rename_or_copy_delete for cross-filesystem fallback
+            lfs::rename_or_copy_delete(fs_file, target_path)?;
         }
     }
     Ok(())
