@@ -905,21 +905,14 @@ fn try_use_homebrew_prefix() -> Result<Option<PathBuf>> {
     let homebrew_prefix = crate::brew_pkg::prefix::preferred();
     let hb_path        = Path::new(homebrew_prefix);
 
-    let can_use = if !hb_path.exists() {
+    if !hb_path.exists() {
         log::info!("HOMEBREW_PREFIX {} does not exist, attempting to create...", homebrew_prefix);
-        match try_create_homebrew_prefix(homebrew_prefix) {
-            Ok(_) => {
-                log::info!("Successfully created HOMEBREW_PREFIX: {}", homebrew_prefix);
-                true
-            }
-            Err(e) => {
-                log::warn!("Cannot create HOMEBREW_PREFIX: {}. Will use regular env_root with --isolate=fs mode.", e);
-                false
-            }
-        }
+        try_create_homebrew_prefix(homebrew_prefix)?;
+        log::info!("Successfully created HOMEBREW_PREFIX: {}", homebrew_prefix);
+        Ok(Some(hb_path.to_path_buf()))
     } else if is_dir_empty(hb_path)? {
         log::info!("HOMEBREW_PREFIX {} exists and is empty, using as env_root", homebrew_prefix);
-        true
+        Ok(Some(hb_path.to_path_buf()))
     } else {
         #[cfg(target_os = "macos")]
         {
@@ -933,11 +926,9 @@ fn try_use_homebrew_prefix() -> Result<Option<PathBuf>> {
         #[cfg(not(target_os = "macos"))]
         {
             log::info!("HOMEBREW_PREFIX {} exists and is not empty, using regular env_root with namespace isolation", homebrew_prefix);
-            false
+            Ok(None)
         }
-    };
-
-    Ok(if can_use { Some(hb_path.to_path_buf()) } else { None })
+    }
 }
 
 #[cfg(not(unix))]
@@ -993,17 +984,19 @@ fn try_create_homebrew_prefix(path: &str) -> Result<()> {
     match std::fs::create_dir_all(path) {
         Ok(_) => return Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            // Prompt user before requesting sudo
+            println!("Need to create Homebrew prefix directory: {}", path);
+            println!("Requesting sudo permission to create it...");
             // Try with sudo
-            log::info!("Need sudo to create {}, attempting...", path);
             let output = std::process::Command::new("sudo")
                 .args(&["sh", "-c", &format!("mkdir -p '{}' && chown $(id -u):$(id -g) '{}'", path, path)])
-                .output()
+                .status()
                 .wrap_err("Failed to run sudo command")?;
 
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(eyre::eyre!("sudo command failed: {}", stderr));
+            if !output.success() {
+                return Err(eyre::eyre!("sudo command failed or was cancelled"));
             }
+            log::info!("Successfully created HOMEBREW_PREFIX: {}", path);
             Ok(())
         }
         Err(e) => Err(e.into()),
