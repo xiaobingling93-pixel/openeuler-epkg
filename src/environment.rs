@@ -1205,14 +1205,12 @@ fn handle_active_environment_for_removal(name: &str) -> Result<()> {
 
 /// Clean up env_root if it differs from env_base
 /// For brew environments, env_root may be sudo-created and cannot be removed by normal user
-fn cleanup_env_root_if_needed(env_base: &Path, env_name: &str) {
-    let env_root = crate::dirs::get_env_root(env_name.to_string()).ok();
-
+fn cleanup_env_root_if_needed(env_base: &Path, env_root: Option<&Path>) {
     if let Some(env_root) = env_root {
         if env_root != env_base {
             log::debug!("Cleaning up env_root {} (different from env_base {})", env_root.display(), env_base.display());
             // Try to remove env_root contents, tolerate failure for sudo-created directories
-            match lfs::remove_dir_all(&env_root) {
+            match lfs::remove_dir_all(env_root) {
                 Ok(()) => {
                     log::debug!("Successfully removed env_root {}", env_root.display());
                 }
@@ -1228,6 +1226,10 @@ fn cleanup_env_root_if_needed(env_base: &Path, env_name: &str) {
 pub fn remove_environment(name: &str) -> Result<()> {
     let env_base = validate_environment_for_removal(name)?;
     handle_active_environment_for_removal(name)?;
+
+    // Get env_root BEFORE deleting env_base (env_root info is in env_base/etc/epkg/env.yaml)
+    let env_root = crate::dirs::get_env_root(name.to_string()).ok();
+
     unregister_environment(name)?;
 
     // Remove env_base first (always succeeds for user-owned directory)
@@ -1235,7 +1237,7 @@ pub fn remove_environment(name: &str) -> Result<()> {
         .with_context(|| format!("Failed to remove environment directory '{}'", env_base.display()))?;
 
     // Clean up env_root if it differs from env_base
-    cleanup_env_root_if_needed(&env_base, name);
+    cleanup_env_root_if_needed(&env_base, env_root.as_deref());
 
     println!("# Environment '{}' has been removed.", name);
     Ok(())
