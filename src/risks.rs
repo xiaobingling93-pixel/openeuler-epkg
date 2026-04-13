@@ -732,6 +732,26 @@ pub fn validate_file_conflicts(
                                 pkgkey
                             );
                         } else if !config().install.ignore_file_conflicts {
+                            // For symlinks with identical targets, allow the conflict
+                            // This is common in brew packages where multiple GNU packages share symlinks
+                            // e.g., libexec/gnubin/man -> ../gnuman in both libtool and make
+                            if file_info.is_link() {
+                                // Check if existing file in env is also a symlink with same target
+                                let env_path = plan.env_root.join(&file_info.path);
+                                if let Ok(existing_link_target) = std::fs::read_link(&env_path) {
+                                    if let Some(new_link_target) = &file_info.link_target {
+                                        if existing_link_target == Path::new(new_link_target) {
+                                            log::debug!(
+                                                "Symlink conflict with identical target: {} (target: {}) - allowing from package {}",
+                                                file_info.path,
+                                                new_link_target,
+                                                pkgkey
+                                            );
+                                            continue; // Skip this conflict, allow the new package to "overwrite" the same symlink
+                                        }
+                                    }
+                                }
+                            }
                             return Err(eyre!(
                                 "File conflict: {} (from package {}) conflicts with installed file from package {}",
                                 file_info.path,
