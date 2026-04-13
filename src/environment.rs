@@ -942,48 +942,47 @@ fn try_use_homebrew_prefix() -> Result<Option<PathBuf>> {
 fn setup_brew_environment_paths(env_base: &Path) -> Result<(PathBuf, PackageFormat)> {
     // Check if environment already exists BEFORE determining package format.
     // determine_package_format() creates channel.yaml, which would break this check.
-    let env_root = if !config().common.env_root.is_empty() {
+    let initial_env_root = if !config().common.env_root.is_empty() {
         PathBuf::from(&config().common.env_root)
     } else {
         env_base.to_path_buf()
     };
-    let env_channel_yaml = env_root_channel_yaml(&env_root);
+    let env_channel_yaml = env_root_channel_yaml(&initial_env_root);
     if !config().common.force && lfs::exists_on_host(&env_channel_yaml) {
-        return Err(eyre::eyre!("Environment already exists at path: '{}'", env_root.display()));
+        return Err(eyre::eyre!("Environment already exists at path: '{}'", initial_env_root.display()));
     }
 
+    // determine_package_format creates channel.yaml in env_base
     let pkg_format = determine_package_format(env_base)?;
 
-    if pkg_format == PackageFormat::Brew {
-        if let Some(hb_path) = try_use_homebrew_prefix()? {
-            // Move channel.yaml from env_base to HOMEBREW_PREFIX
-            // since determine_package_format() created it in env_base
-            let src_channel_yaml = env_root_channel_yaml(env_base);
-            let dst_channel_yaml = env_root_channel_yaml(&hb_path);
-            if src_channel_yaml.exists() {
-                lfs::create_dir_all(dst_channel_yaml.parent().unwrap())?;
-                lfs::copy(&src_channel_yaml, &dst_channel_yaml)?;
-                log::info!("Copied channel.yaml from {} to {}", src_channel_yaml.display(), dst_channel_yaml.display());
-                // Clean up temporary files created in env_base
-                let src_epkg_dir = env_base.join("etc/epkg");
-                if src_epkg_dir.exists() {
-                    lfs::remove_dir_all(&src_epkg_dir)?;
-                    log::info!("Cleaned up temporary epkg dir in {}", src_epkg_dir.display());
-                }
-                // Clean up other directories created by create_environment_dirs_early
-                for dir in &["generations", "root", "ebin"] {
-                    let path = env_base.join(dir);
-                    if path.exists() {
-                        lfs::remove_dir_all(&path)?;
-                    }
-                }
-            }
-            return Ok((hb_path, pkg_format));
-        }
-    }
+    // Determine final env_root: brew may override with HOMEBREW_PREFIX
+    let env_root = if pkg_format == PackageFormat::Brew {
+        try_use_homebrew_prefix()?.unwrap_or(initial_env_root)
+    } else {
+        initial_env_root
+    };
 
-    // If env_root is specified, create symlink from env_base to env_root
-    if !config().common.env_root.is_empty() {
+    // Rule: if env_base != env_root, create symlink env_base -> env_root
+    if env_base != env_root {
+        // Move channel.yaml from env_base to env_root
+        let src_channel_yaml = env_root_channel_yaml(env_base);
+        let dst_channel_yaml = env_root_channel_yaml(&env_root);
+        if src_channel_yaml.exists() {
+            lfs::create_dir_all(dst_channel_yaml.parent().unwrap())?;
+            lfs::copy(&src_channel_yaml, &dst_channel_yaml)?;
+            log::info!("Copied channel.yaml from {} to {}", src_channel_yaml.display(), dst_channel_yaml.display());
+        }
+        // Clean up temporary files created in env_base
+        for dir in &["etc", "generations", "root", "ebin"] {
+            let path = env_base.join(dir);
+            if path.exists() {
+                lfs::remove_dir_all(&path)?;
+            }
+        }
+        // Remove env_base if empty, so symlink can be created
+        if env_base.exists() && is_dir_empty(env_base)? {
+            lfs::remove_dir(env_base)?;
+        }
         // Check if env_base already exists as a directory (not a symlink/junction)
         if lfs::exists_no_follow(&env_base) && !lfs::is_symlink_or_junction(&env_base) {
             return Err(eyre::eyre!("Environment base path '{}' already exists as a directory. Cannot create symlink.", env_base.display()));
@@ -992,7 +991,7 @@ fn setup_brew_environment_paths(env_base: &Path) -> Result<(PathBuf, PackageForm
         if let Some(parent) = env_base.parent() {
             lfs::create_dir_all(parent)?;
         }
-        force_symlink_dir_for_virtiofs(&env_root, &env_base)
+        force_symlink_dir_for_virtiofs(&env_root, env_base)
             .with_context(|| format!("Failed to create symlink from {} to {}", env_base.display(), env_root.display()))?;
     }
 
