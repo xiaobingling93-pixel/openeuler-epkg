@@ -1172,8 +1172,8 @@ pub fn remove_environment(name: &str) -> Result<()> {
     }
 
     // Resolve env path without loading config (config may be missing for non-existent env)
-    let env_path = get_env_base_path(name);
-    if !lfs::exists_on_host(&env_path) {
+    let env_base = get_env_base_path(name);
+    if !lfs::exists_on_host(&env_base) {
         return Err(eyre::eyre!("Environment does not exist: '{}'", name));
     }
 
@@ -1200,8 +1200,35 @@ pub fn remove_environment(name: &str) -> Result<()> {
     // Unregister if registered
     unregister_environment(name)?;
 
-    force_remove_dir_all(&env_path)
-        .with_context(|| format!("Failed to remove environment directory '{}'", env_path.display()))?;
+    // Get env_root to clean up installed files
+    // For brew environments, env_root may differ from env_base (e.g., /opt/homebrew vs ~/.epkg/envs/dev-brew)
+    let env_root = crate::dirs::get_env_root(name.to_string()).ok();
+
+    // Remove env_base first (always succeeds for user-owned directory)
+    force_remove_dir_all(&env_base)
+        .with_context(|| format!("Failed to remove environment directory '{}'", env_base.display()))?;
+
+    // If env_root differs from env_base, clean up env_root too
+    // For brew: env_root = /opt/homebrew (created by sudo, user cannot remove the directory itself)
+    // We clean up files inside but tolerate failure when removing the top-level directory
+    if let Some(env_root) = env_root {
+        if env_root != env_base {
+            log::debug!("Cleaning up env_root {} (different from env_base {})", env_root.display(), env_base.display());
+            // Try to remove env_root contents, tolerate failure for sudo-created directories
+            // Use lfs::remove_dir_all directly (no permission fixup attempts) since
+            // the files inside are user-created and should be removable
+            match lfs::remove_dir_all(&env_root) {
+                Ok(()) => {
+                    log::debug!("Successfully removed env_root {}", env_root.display());
+                }
+                Err(e) => {
+                    // Brew env_root is typically created by sudo and cannot be removed by normal user
+                    // This is expected, just log a debug message and continue
+                    log::debug!("Could not remove env_root {} (expected for sudo-created directories): {}", env_root.display(), e);
+                }
+            }
+        }
+    }
 
     println!("# Environment '{}' has been removed.", name);
     Ok(())
