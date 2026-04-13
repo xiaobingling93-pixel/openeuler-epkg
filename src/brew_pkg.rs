@@ -198,22 +198,30 @@ pub fn unpack_package<P: AsRef<Path>>(bottle_file: P, store_tmp_dir: P, pkgkey: 
 /// - Skip top-level entries (package_name/, package_name/version/)
 /// - .brew/ directory goes to info/brew/.brew/
 /// - Root-level metadata files go to info/brew/
-/// - Regular files go to fs/Cellar/package_name/pkgkey_version/... (Homebrew-style layout)
+/// - Regular files go to fs/Cellar/package_name/tar_version/... (Homebrew-style layout)
 ///
-/// Note: The version from pkgkey (e.g., "2.3.2_0") is used, not the tar path version (e.g., "2.3.2").
-/// This ensures consistency between unpack and link stages.
-fn brew_path_policy_with_pkgkey(path: &Path, _is_hard_link: bool, store_tmp_dir: &Path, pkgkey_version: &str) -> Option<PathBuf> {
+/// Note: The version from tar path (e.g., "2.3.2") is used for Cellar directory,
+/// NOT the pkgkey version with bottle revision (e.g., "2.3.2_0").
+/// This matches vanilla Homebrew's Cellar layout: Cellar/pkgname/VERSION/
+/// where VERSION is the formula version, not the bottle revision.
+/// Homebrew bottles have hardcoded paths referencing Cellar/pkgname/VERSION/,
+/// so we must match this layout for dylib path resolution to work correctly.
+fn brew_path_policy_with_pkgkey(path: &Path, _is_hard_link: bool, store_tmp_dir: &Path, _pkgkey_version: &str) -> Option<PathBuf> {
     // Path structure: "package_name/version/..." (e.g., "jq/1.7.1/bin/jq")
-    // We want: "Cellar/package_name/pkgkey_version/..." for regular files
-    // pkgkey_version includes bottle revision (e.g., "2.3.2_0") while tar path version doesn't
+    // We want: "Cellar/package_name/tar_version/..." for regular files
+    // tar_version is the version from the tar path (without bottle revision)
+    // This matches vanilla Homebrew: Cellar/jq/1.7.1/bin/jq
     let components: Vec<_> = path.components().collect();
     if components.len() < 3 {
         // Skip top-level entries (package_name/, package_name/version/)
         return None;
     }
 
-    // Get package name from path (tar path version is ignored, use pkgkey_version instead)
+    // Get package name and version from tar path
+    // components[0] = package_name (e.g., "jq" or "python@3.13")
+    // components[1] = tar_version (e.g., "1.7.1" or "3.13.13") - WITHOUT bottle revision
     let pkgname = components[0].as_os_str().to_str().unwrap_or("");
+    let tar_version = components[1].as_os_str().to_str().unwrap_or("");
 
     // Reconstruct path without first two components (package_name and version)
     let stripped_components: Vec<_> = components.iter().skip(2).collect();
@@ -242,11 +250,15 @@ fn brew_path_policy_with_pkgkey(path: &Path, _is_hard_link: bool, store_tmp_dir:
             stripped_components[0].as_os_str()
         )
     } else {
-        // Regular files go to fs/Cellar/package_name/pkgkey_version/... (Homebrew-style layout)
-        // Use pkgkey_version which includes bottle revision (e.g., "2.3.2_0")
+        // Regular files go to fs/Cellar/package_name/tar_version/... (Homebrew-style layout)
+        // Use tar_version from tar path (without bottle revision)
         // This matches the vanilla Homebrew directory structure:
         // /opt/homebrew/Cellar/jq/1.7.1/bin/jq
-        let cellar_base = crate::dirs::path_join(store_tmp_dir, &["fs", "Cellar", pkgname, pkgkey_version]);
+        // IMPORTANT: Homebrew bottles have hardcoded paths referencing Cellar/pkgname/VERSION
+        // where VERSION is the formula version (without bottle revision).
+        // If we use version with bottle revision (e.g., "3.13.13_0"), hardcoded paths
+        // like "Cellar/python@3.13/3.13.13/Frameworks/..." in the dylib won't match.
+        let cellar_base = crate::dirs::path_join(store_tmp_dir, &["fs", "Cellar", pkgname, tar_version]);
         stripped_components.iter().fold(
             cellar_base,
             |acc, comp| acc.join(comp.as_os_str())
@@ -345,21 +357,50 @@ fn create_package_txt_from_pkgkey<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: &str
 ///
 /// # Arguments
 /// * `env_root` - Environment root directory
-/// * `pkgkey` - Package key in format "{pkgname}__{version}__{arch}"
+/// * `pkgkey` - Package key in format "{pkgname}__{version}__{arch}" (version includes bottle revision)
 pub fn create_cellar_symlinks(env_root: &Path, pkgkey: &str) -> Result<()> {
-    // Parse pkgkey to get package name and version
+    // Parse pkgkey to get package name (version with bottle revision is not used)
     let parts: Vec<&str> = pkgkey.rsplitn(3, "__").collect();
     if parts.len() != 3 {
         return Err(eyre::eyre!("Invalid pkgkey format, expected 3 parts: {}", pkgkey));
     }
-    let version = parts[1];
+    // pkgkey version includes bottle revision (e.g., "3.13.13_0")
+    // but Cellar directory uses version without revision (e.g., "3.13.13")
     let pkgname = parts[2];
 
-    let cellar_pkg_dir = env_root.join("Cellar").join(pkgname).join(version);
-    if !cellar_pkg_dir.exists() {
-        log::debug!("Cellar package directory does not exist: {}", cellar_pkg_dir.display());
+    // Find the actual version directory in Cellar (discover from existing structure)
+    // The Cellar directory name matches vanilla Homebrew: Cellar/pkgname/VERSION
+    // where VERSION is from the tar path (without bottle revision)
+    let cellar_pkg_base = env_root.join("Cellar").join(pkgname);
+    if !cellar_pkg_base.exists() {
+        log::debug!("Cellar package base directory does not exist: {}", cellar_pkg_base.display());
         return Ok(());
     }
+
+    // Discover the actual version by reading the Cellar directory
+    // There should be exactly one version directory
+    let version: String = {
+        let mut found_version: Option<String> = None;
+        for entry in std::fs::read_dir(&cellar_pkg_base)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                let ver_name = entry.file_name()
+                    .to_string_lossy()
+                    .into_owned();
+                found_version = Some(ver_name);
+                break; // Take the first version directory found
+            }
+        }
+        match found_version {
+            Some(v) => v,
+            None => {
+                log::debug!("No version directory found in Cellar for {}", pkgname);
+                return Ok(());
+            }
+        }
+    };
+
+    let cellar_pkg_dir = cellar_pkg_base.join(&version);
 
     // Ensure Cellar directory exists
     let cellar_dir = env_root.join("Cellar");
@@ -373,7 +414,7 @@ pub fn create_cellar_symlinks(env_root: &Path, pkgkey: &str) -> Result<()> {
         crate::lfs::create_dir_all(&opt_dir)?;
     }
     let opt_pkg_link = opt_dir.join(pkgname);
-    let opt_target = PathBuf::from("../Cellar").join(pkgname).join(version);
+    let opt_target = PathBuf::from("../Cellar").join(pkgname).join(&version);
     if crate::lfs::symlink_metadata(&opt_pkg_link).is_ok() {
         crate::lfs::remove_file(&opt_pkg_link)?;
     }
@@ -384,7 +425,9 @@ pub fn create_cellar_symlinks(env_root: &Path, pkgkey: &str) -> Result<()> {
     // For these directories, we need REAL directories (not usr-merge symlinks)
     // to match vanilla Homebrew layout
     let file_link_dirs = ["bin", "lib"];
-    let dir_link_dirs   = ["libexec", "Frameworks", "share", "include"];
+    // Note: libexec is handled specially below - libexec/bin/ files go to top-level bin/
+    // Frameworks and include are directory-level symlinks (package-specific)
+    let dir_link_dirs   = ["Frameworks", "share", "include"];
 
     // Remove usr-merge symlinks and create real directories for bin/ and lib/
     // This is necessary for Cellar-style symlinks to work correctly
@@ -405,11 +448,68 @@ pub fn create_cellar_symlinks(env_root: &Path, pkgkey: &str) -> Result<()> {
         let cellar_dir = cellar_pkg_dir.join(dir_name);
         if cellar_dir.exists() {
             // Scan cellar_dir and create file-level symlinks
-            create_cellar_file_symlinks(&cellar_dir, &env_dir, pkgname, version, dir_name)?;
+            create_cellar_file_symlinks(&cellar_dir, &env_dir, pkgname, &version, dir_name)?;
         }
     }
 
-    // For share/, libexec/, Frameworks/, include/ - create directory-level symlinks
+    // Special handling for libexec/bin/: files should be symlinked to top-level bin/
+    // This matches vanilla Homebrew behavior where unversioned commands (python, pip, python3)
+    // from libexec/bin/ are symlinked directly to HOMEBREW_PREFIX/bin/
+    let cellar_libexec_bin = cellar_pkg_dir.join("libexec").join("bin");
+    if cellar_libexec_bin.exists() {
+        let env_bin_dir = env_root.join("bin");
+        // Ensure bin directory exists
+        if !env_bin_dir.exists() {
+            crate::lfs::create_dir_all(&env_bin_dir)?;
+        }
+        // Create file-level symlinks from libexec/bin/ to top-level bin/
+        // Using "libexec/bin" as base_dir to create correct relative path
+        create_cellar_file_symlinks(&cellar_libexec_bin, &env_bin_dir, pkgname, &version, "libexec/bin")?;
+    }
+
+    // Special handling for Python packages: lib/python3.x/site-packages/
+    // Files in Cellar's site-packages should be symlinked to top-level lib/python3.x/site-packages/
+    // This matches vanilla Homebrew behavior where Python packages are found via:
+    //   /opt/homebrew/lib/python3.x/site-packages/numpy -> ../../Cellar/numpy/.../site-packages/numpy
+    //
+    // IMPORTANT: Only create symlinks in top-level lib/, NOT in Cellar itself.
+    // Cellar must contain actual files (moved from store), not symlinks.
+    let cellar_lib = cellar_pkg_dir.join("lib");
+    if cellar_lib.exists() && cellar_lib.is_dir() {
+        // Find Python version directories (e.g., python3.13, python3.14)
+        // Only process if cellar_lib is a real directory (not a symlink)
+        for py_version_entry in std::fs::read_dir(&cellar_lib)?.filter_map(|e: std::io::Result<std::fs::DirEntry>| e.ok()) {
+            let py_version_name: std::ffi::OsString = py_version_entry.file_name();
+            let py_version_str: std::borrow::Cow<'_, str> = py_version_name.to_string_lossy();
+
+            // Check if it's a Python version directory (starts with "python3.")
+            if py_version_str.starts_with("python3.") {
+                let cellar_site_packages: PathBuf = cellar_lib.join(&py_version_name).join("site-packages");
+                // Only process if site-packages is a real directory (not a symlink)
+                if cellar_site_packages.exists() && cellar_site_packages.is_dir() {
+                    let env_site_packages: PathBuf = env_root.join("lib").join(&py_version_name).join("site-packages");
+
+                    // Ensure the site-packages directory exists
+                    if !env_site_packages.exists() {
+                        crate::lfs::create_dir_all(&env_site_packages)?;
+                    }
+
+                    // Create file-level symlinks for Python packages
+                    // base_dir is "lib/python3.x/site-packages" for correct relative path
+                    let py_base_dir: String = format!("lib/{}", py_version_str);
+                    create_python_site_packages_symlinks(
+                        &cellar_site_packages,
+                        &env_site_packages,
+                        pkgname,
+                        &version,
+                        &py_base_dir,
+                    )?;
+                }
+            }
+        }
+    }
+
+    // For share/, Frameworks/, include/ - create directory-level symlinks
     // share/ may be usr-merge symlink (share -> usr/share), handle similarly
     for dir_name in &dir_link_dirs {
         let env_dir = env_root.join(dir_name);
@@ -429,11 +529,17 @@ pub fn create_cellar_symlinks(env_root: &Path, pkgkey: &str) -> Result<()> {
 
         let cellar_dir = cellar_pkg_dir.join(dir_name);
         if cellar_dir.exists() {
-            create_cellar_dir_symlinks(&cellar_dir, &env_dir, pkgname, version, dir_name)?;
+            create_cellar_dir_symlinks(&cellar_dir, &env_dir, pkgname, &version, dir_name)?;
         }
     }
 
     log::info!("Created Cellar symlinks for {} {} in {}", pkgname, version, env_root.display());
+
+    // Replace placeholder paths in Python configuration files
+    // Python's _sysconfigdata_*.py contains @@HOMEBREW_PREFIX@@ placeholders
+    // that need to be replaced for proper sys.path calculation
+    replace_python_config_placeholders(env_root, pkgname, &version)?;
+
     Ok(())
 }
 
@@ -470,7 +576,24 @@ fn create_cellar_file_symlinks(
         if entry.file_type().is_dir() {
             // For subdirectories under lib/ (e.g., lib/guile/), create directory symlink
             // lib/guile -> ../Cellar/pkgname/version/lib/guile
+            // But NOT for Python version directories (python3.x) - these should be real directories
+            // so that site-packages symlinks are created correctly
             if base_dir == "lib" && rel_path.components().count() == 1 {
+                let dir_name = rel_path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
+
+                // Skip Python version directories (python3.x)
+                // These need to be real directories, not symlinks, so that
+                // site-packages can contain symlinks to Cellar
+                if dir_name.starts_with("python3.") {
+                    // Create real directory instead of symlink
+                    if !env_path.exists() {
+                        crate::lfs::create_dir_all(&env_path)?;
+                    }
+                    continue;
+                }
+
                 // Remove existing symlink/dir if present
                 if crate::lfs::symlink_metadata(&env_path).is_ok() {
                     if crate::lfs::symlink_metadata(&env_path)?.is_dir() {
@@ -582,6 +705,96 @@ fn create_cellar_dir_symlinks(
         // Use symlink_dir for directory symlinks
         crate::lfs::symlink_dir_for_virtiofs(&symlink_target, &env_subdir)?;
         log::trace!("Created Cellar dir symlink: {} -> {}", env_subdir.display(), symlink_target.display());
+    }
+
+    Ok(())
+}
+
+/// Create file-level symlinks for Python site-packages directory.
+///
+/// This handles Python packages installed via Homebrew. Files in Cellar's site-packages
+/// are symlinked to the top-level lib/python3.x/site-packages/ directory.
+///
+/// Unlike regular lib/ files, Python packages need file-level symlinks for each
+/// package directory (e.g., numpy/, numpy-2.4.4.dist-info/) so Python can import them.
+///
+/// # Arguments
+/// * `cellar_site_packages` - Cellar site-packages directory (e.g., Cellar/numpy/.../site-packages)
+/// * `env_site_packages` - Top-level site-packages directory (e.g., env_root/lib/python3.13/site-packages)
+/// * `pkgname` - Package name (e.g., "numpy")
+/// * `version` - Package version (e.g., "2.4.4_0")
+/// * `py_base_dir` - Python base dir for relative path (e.g., "lib/python3.13")
+fn create_python_site_packages_symlinks(
+    cellar_site_packages: &Path,
+    env_site_packages: &Path,
+    pkgname: &str,
+    version: &str,
+    py_base_dir: &str,
+) -> Result<()> {
+    log::debug!("create_python_site_packages_symlinks: cellar={} env={}",
+                cellar_site_packages.display(), env_site_packages.display());
+
+    // Safety check: only process if cellar_site_packages is a real directory
+    if !cellar_site_packages.is_dir() {
+        log::warn!("Skipping Python symlink creation: cellar_site_packages is not a real directory: {}",
+                   cellar_site_packages.display());
+        return Ok(());
+    }
+
+    // Scan Cellar site-packages and create symlinks for each package/file
+    for entry in std::fs::read_dir(cellar_site_packages)?.filter_map(|e: std::io::Result<std::fs::DirEntry>| e.ok()) {
+        let cellar_item: PathBuf = entry.path();
+        let item_name: &str = cellar_item.file_name()
+            .and_then(|n: &std::ffi::OsStr| n.to_str())
+            .unwrap_or("");
+
+        // Skip if name is empty
+        if item_name.is_empty() {
+            continue;
+        }
+
+        // Skip if cellar_item is a symlink (Cellar should have real files)
+        let entry_ft: std::fs::FileType = entry.file_type()?;
+        if entry_ft.is_symlink() {
+            log::warn!("Skipping symlink in Cellar site-packages: {}", cellar_item.display());
+            continue;
+        }
+
+        let env_item: PathBuf = env_site_packages.join(item_name);
+        log::debug!("Creating Python symlink: env_item={} cellar_item={}", env_item.display(), cellar_item.display());
+
+        // Remove existing symlink/dir if present
+        if crate::lfs::symlink_metadata(&env_item).is_ok() {
+            if crate::lfs::symlink_metadata(&env_item)?.file_type().is_dir() {
+                crate::lfs::remove_dir_all(&env_item)?;
+            } else {
+                crate::lfs::remove_file(&env_item)?;
+            }
+        }
+
+        // Create symlink: env_site_packages/numpy -> ../../../Cellar/numpy/.../site-packages/numpy
+        // Relative path: from env_root/lib/python3.13/site-packages/numpy
+        //               to env_root/Cellar/numpy/2.4.4_0/lib/python3.13/site-packages/numpy
+        // Need 3 levels up: site-packages -> python3.13 -> lib -> env_root
+        //                  env_root contains Cellar, so path is env_root/Cellar/...
+        let symlink_target: PathBuf = PathBuf::from("..")
+            .join("..")
+            .join("..")
+            .join("Cellar")
+            .join(pkgname)
+            .join(version)
+            .join(py_base_dir)
+            .join("site-packages")
+            .join(item_name);
+
+        // Use symlink_dir for directories (Python packages)
+        // Use symlink_file for single files
+        if entry_ft.is_dir() {
+            crate::lfs::symlink_dir_for_virtiofs(&symlink_target, &env_item)?;
+        } else {
+            crate::lfs::symlink_file_for_virtiofs(&symlink_target, &env_item)?;
+        }
+        log::trace!("Created Python package symlink: {} -> {}", env_item.display(), symlink_target.display());
     }
 
     Ok(())
@@ -785,6 +998,9 @@ fn rewrite_dylib_paths_for_file_in_env(mach_o_path: &Path, env_root: &Path) -> R
     let otool_output = String::from_utf8_lossy(&output.stdout);
     let mut changes: Vec<(String, String)> = Vec::new();
 
+    // Get HOMEBREW_PREFIX path from env_root (env_root may equal HOMEBREW_PREFIX)
+    let homebrew_prefix = env_root.display().to_string();
+
     for line in otool_output.lines() {
         let line = line.trim();
 
@@ -798,10 +1014,20 @@ fn rewrite_dylib_paths_for_file_in_env(mach_o_path: &Path, env_root: &Path) -> R
             for prefix in HOMEBREW_PLACEHOLDER_PREFIXES {
                 if dylib_path.starts_with(prefix) {
                     if let Some(new_path) = resolve_homebrew_dylib_path_for_env(dylib_path, prefix, env_root) {
-                        log::debug!("Rewriting: {} -> {}", dylib_path, new_path);
+                        log::debug!("Rewriting placeholder: {} -> {}", dylib_path, new_path);
                         changes.push((dylib_path.to_string(), new_path));
                     }
                     break;
+                }
+            }
+
+            // Check if this is a Cellar path that should be rewritten to top-level symlinked path
+            // For Python Frameworks, rewrite Cellar paths to use top-level Frameworks symlink
+            // This ensures Python's prefix detection finds /opt/homebrew instead of Cellar
+            if dylib_path.starts_with(&homebrew_prefix) && dylib_path.contains("/Cellar/") {
+                if let Some(new_path) = rewrite_cellar_path_to_top_level(dylib_path, env_root) {
+                    log::debug!("Rewriting Cellar path: {} -> {}", dylib_path, new_path);
+                    changes.push((dylib_path.to_string(), new_path));
                 }
             }
         }
@@ -819,19 +1045,105 @@ fn rewrite_dylib_paths_for_file_in_env(mach_o_path: &Path, env_root: &Path) -> R
         .status();
     // Ignore failure - file may not be signed or may be ad-hoc signed
 
-    // Apply changes using install_name_tool
-    for (old_path, new_path) in &changes {
-        let status = Command::new("install_name_tool")
-            .arg("-change")
-            .arg(old_path)
-            .arg(new_path)
+    // Build a single install_name_tool command with all changes
+    // This is important because each install_name_tool call consumes header padding,
+    // and multiple calls can fail due to insufficient padding space
+    let mut install_name_cmd = Command::new("install_name_tool");
+
+    // Check for dylib ID that needs rewriting
+    let id_output = Command::new("otool")
+        .arg("-D")
+        .arg(mach_o_path)
+        .output();
+
+    let mut id_changed = false;
+    let mut has_placeholder = false;
+    if let Ok(output) = id_output {
+        if output.status.success() {
+            let id_text = String::from_utf8_lossy(&output.stdout);
+            for line in id_text.lines().skip(1) {  // Skip first line (path header)
+                let dylib_id = line.trim();
+
+                // Check if file already has no placeholders (already rewritten)
+                // Skip rewriting entirely for files without placeholders
+                if dylib_id.contains("@@HOMEBREW_PREFIX@@") || dylib_id.contains("@@HOMEBREW_CELLAR@@") {
+                    has_placeholder = true;
+                }
+
+                // Check for placeholder in dylib ID
+                for prefix in HOMEBREW_PLACEHOLDER_PREFIXES {
+                    if dylib_id.starts_with(prefix) {
+                        if let Some(new_id) = resolve_homebrew_dylib_path_for_env(dylib_id, prefix, env_root) {
+                            log::debug!("Adding dylib ID change: {} -> {}", dylib_id, new_id);
+                            install_name_cmd.arg("-id").arg(&new_id);
+                            id_changed = true;
+                        }
+                        break;
+                    }
+                }
+
+                // Check for Cellar path in dylib ID - rewrite to top-level path
+                if dylib_id.starts_with(&homebrew_prefix) && dylib_id.contains("/Cellar/") {
+                    if let Some(new_id) = rewrite_cellar_path_to_top_level(dylib_id, env_root) {
+                        log::debug!("Adding Cellar dylib ID change: {} -> {}", dylib_id, new_id);
+                        install_name_cmd.arg("-id").arg(&new_id);
+                        id_changed = true;
+                        has_placeholder = true;  // Cellar path indicates file needs rewriting
+                    }
+                }
+            }
+        }
+    }
+
+    // Skip this file entirely if it has no placeholders and was already rewritten
+    // This prevents "can't be redone" errors on already-modified files
+    if !has_placeholder && changes.is_empty() {
+        log::debug!("Skipping already-rewritten file (no placeholders found): {}", mach_o_path.display());
+        return Ok(());
+    }
+
+    // Add load command changes (skip if it's the dylib ID to avoid redundant changes)
+    // The dylib's first load command is often its own ID, which we're already changing with -id
+    let mut old_dylib_id: Option<String> = None;
+    if id_changed {
+        // Get the old ID (before any changes) to check if load commands match
+        let id_output2 = Command::new("otool")
+            .arg("-D")
             .arg(mach_o_path)
+            .output();
+        if let Ok(output) = id_output2 {
+            if output.status.success() {
+                let id_text = String::from_utf8_lossy(&output.stdout);
+                for line in id_text.lines().skip(1) {
+                    old_dylib_id = Some(line.trim().to_string());
+                    break;
+                }
+            }
+        }
+    }
+
+    for (old_path, new_path) in &changes {
+        // Skip if this change is for the dylib's own ID (we're already changing it with -id)
+        if let Some(ref old_id) = old_dylib_id {
+            if old_path == old_id {
+                log::debug!("Skipping load change for dylib ID (already handled by -id): {}", old_path);
+                continue;
+            }
+        }
+        log::debug!("Adding load change: {} -> {}", old_path, new_path);
+        install_name_cmd.arg("-change").arg(old_path).arg(new_path);
+    }
+
+    // Run install_name_tool with all changes in one call
+    let has_changes = !changes.is_empty() || id_changed;
+    if has_changes {
+        install_name_cmd.arg(mach_o_path);
+        let status = install_name_cmd
             .status()
             .wrap_err_with(|| format!("Failed to run install_name_tool on {}", mach_o_path.display()))?;
 
         if !status.success() {
-            log::warn!("install_name_tool -change {} {} failed for {}",
-                old_path, new_path, mach_o_path.display());
+            log::warn!("install_name_tool failed for {}", mach_o_path.display());
         }
     }
 
@@ -1015,6 +1327,199 @@ fn extract_lib_path_and_resolve_cellar(rest: &str, env_root: &Path) -> Option<St
     }
 
     None
+}
+
+/// Rewrite a Cellar dylib path to use top-level symlinked paths.
+///
+/// For Brew Cellar layout, dylib paths in binaries may reference Cellar directly.
+/// This function rewrites such paths to use top-level symlinks (Frameworks/, lib/, etc.)
+/// which ensures proper prefix detection for programs like Python.
+///
+/// Examples:
+/// - Cellar/python@3.13/3.13.13_0/Frameworks/Python.framework/Versions/3.13/Python
+///   -> Frameworks/Python.framework/Versions/3.13/Python
+/// - Cellar/libffi/3.4.2/lib/libffi.8.dylib
+///   -> lib/libffi.8.dylib
+///
+/// This rewrite is needed because:
+/// 1. Python's prefix detection uses the dylib path to find its home
+/// 2. If dylib points to Cellar, Python thinks prefix is Cellar/...
+/// 3. If dylib points to top-level Frameworks/, Python correctly finds /opt/homebrew
+#[cfg(target_os = "macos")]
+fn rewrite_cellar_path_to_top_level(cellar_path: &str, env_root: &Path) -> Option<String> {
+    // Parse path to find the part after Cellar/pkgname/version/
+    // Expected format: /opt/homebrew/Cellar/pkgname/version/rest/of/path
+    let homebrew_prefix = env_root.display().to_string();
+    if !cellar_path.starts_with(&homebrew_prefix) {
+        return None;
+    }
+
+    let after_prefix = &cellar_path[homebrew_prefix.len()..];
+    if !after_prefix.starts_with("/Cellar/") {
+        return None;
+    }
+
+    // Find the path after Cellar/pkgname/version/
+    // Format: /Cellar/pkgname/version/rest
+    let parts: Vec<&str> = after_prefix.split('/').collect();
+    if parts.len() < 5 {
+        // Need at least: ["", "Cellar", "pkgname", "version", "rest..."]
+        return None;
+    }
+
+    // parts[0] = "", parts[1] = "Cellar", parts[2] = pkgname, parts[3] = version
+    // parts[4..] = rest of path like ["Frameworks", "Python.framework", ...]
+    let rest_parts: Vec<&str> = parts[4..].to_vec();
+
+    // Check if this is a Frameworks path (should use top-level Frameworks symlink)
+    if rest_parts.first() == Some(&"Frameworks") {
+        let top_level_path = homebrew_prefix.clone() + "/" + &rest_parts.join("/");
+        // Verify the symlink exists at top level
+        let top_level_full = env_root.join(rest_parts.join("/"));
+        if top_level_full.exists() || crate::lfs::symlink_metadata(&top_level_full).is_ok() {
+            return Some(top_level_path);
+        }
+    }
+
+    // Check if this is a lib path (should use top-level lib directory)
+    if rest_parts.first() == Some(&"lib") {
+        let top_level_path = homebrew_prefix.clone() + "/" + &rest_parts.join("/");
+        // Verify the path exists at top level (may be symlinked)
+        let top_level_full = env_root.join(rest_parts.join("/"));
+        if top_level_full.exists() || crate::lfs::symlink_metadata(&top_level_full).is_ok() {
+            return Some(top_level_path);
+        }
+    }
+
+    // For other paths, we don't rewrite
+    None
+}
+
+/// Replace placeholder paths in Python configuration files.
+///
+/// Python's `_sysconfigdata__darwin_darwin.py` (or similar for other platforms)
+/// contains `@@HOMEBREW_PREFIX@@` placeholders that need to be replaced with the
+/// actual HOMEBREW_PREFIX path. This file is used by sysconfig and site modules
+/// to determine Python's paths, including site-packages directories.
+///
+/// Without this replacement, Python cannot find packages installed in
+/// `$HOMEBREW_PREFIX/lib/python3.x/site-packages/`.
+///
+/// # Arguments
+/// * `env_root` - Environment root directory (HOMEBREW_PREFIX)
+/// * `pkgname` - Package name (e.g., "python@3.13")
+/// * `version` - Package version (e.g., "3.13.13_0")
+fn replace_python_config_placeholders(env_root: &Path, pkgname: &str, version: &str) -> Result<()> {
+    // Find Python version directory in Cellar
+    let cellar_pkg_dir = env_root.join("Cellar").join(pkgname).join(version);
+
+    // Look for Frameworks/Python.framework structure (macOS)
+    let framework_lib = cellar_pkg_dir
+        .join("Frameworks")
+        .join("Python.framework")
+        .join("Versions");
+
+    // Find _sysconfigdata file in framework or regular lib directory
+    // Also look for sitecustomize.py which handles site-packages path
+    let config_files: Vec<PathBuf> = if framework_lib.exists() {
+        // macOS framework structure: find Python version directory
+        let mut files = Vec::new();
+        for version_entry in std::fs::read_dir(&framework_lib)?.filter_map(|e: std::io::Result<std::fs::DirEntry>| e.ok()) {
+            let py_version_dir = version_entry.path();
+            let lib_dir = py_version_dir.join("lib");
+            if lib_dir.exists() {
+                // Find python3.x directory
+                for py_entry in std::fs::read_dir(&lib_dir)?.filter_map(|e: std::io::Result<std::fs::DirEntry>| e.ok()) {
+                    let py_lib_dir = py_entry.path();
+                    let py_name = py_lib_dir.file_name()
+                        .and_then(|n: &std::ffi::OsStr| n.to_str())
+                        .unwrap_or("");
+                    if py_name.starts_with("python3.") {
+                        // Look for _sysconfigdata and sitecustomize files
+                        for config_entry in std::fs::read_dir(&py_lib_dir)?
+                            .filter_map(|e: std::io::Result<std::fs::DirEntry>| e.ok()) {
+                            let config_file = config_entry.path();
+                            let file_name = config_file.file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("");
+                            if (file_name.starts_with("_sysconfigdata") && file_name.ends_with(".py"))
+                                || file_name == "sitecustomize.py" {
+                                files.push(config_file);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        files
+    } else {
+        // Non-framework structure: look in lib/python3.x/
+        let lib_dir = cellar_pkg_dir.join("lib");
+        if lib_dir.exists() {
+            let mut files = Vec::new();
+            for py_entry in std::fs::read_dir(&lib_dir)?
+                .filter_map(|e: std::io::Result<std::fs::DirEntry>| e.ok()) {
+                let py_lib_dir = py_entry.path();
+                let py_name = py_lib_dir.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
+                if py_name.starts_with("python3.") {
+                    for config_entry in std::fs::read_dir(&py_lib_dir)?
+                        .filter_map(|e: std::io::Result<std::fs::DirEntry>| e.ok()) {
+                        let config_file = config_entry.path();
+                        let file_name = config_file.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("");
+                        if (file_name.starts_with("_sysconfigdata") && file_name.ends_with(".py"))
+                            || file_name == "sitecustomize.py" {
+                            files.push(config_file);
+                        }
+                    }
+                }
+            }
+            files
+        } else {
+            Vec::new()
+        }
+    };
+
+    if config_files.is_empty() {
+        log::debug!("No Python _sysconfigdata files found for {}", pkgname);
+        return Ok(());
+    }
+
+    // Get HOMEBREW_PREFIX path (env_root is HOMEBREW_PREFIX for brew)
+    let homebrew_prefix = env_root.display().to_string();
+    let homebrew_cellar = format!("{}/Cellar", homebrew_prefix);
+
+    // Replace placeholders in each config file
+    for config_file in &config_files {
+        log::debug!("Replacing placeholders in {}", config_file.display());
+
+        // Read file content
+        let content = std::fs::read_to_string(config_file)
+            .wrap_err_with(|| format!("Failed to read {}", config_file.display()))?;
+
+        // Check if there are placeholders to replace
+        if !content.contains("@@HOMEBREW_PREFIX@@") && !content.contains("@@HOMEBREW_CELLAR@@") && !content.contains("@@HOMEBREW_LIBRARY@@") {
+            continue;
+        }
+
+        // Replace placeholders
+        let homebrew_library = format!("{}/Cellar", homebrew_prefix); // HOMEBREW_LIBRARY points to Cellar
+        let new_content = content
+            .replace("@@HOMEBREW_PREFIX@@", &homebrew_prefix)
+            .replace("@@HOMEBREW_CELLAR@@", &homebrew_cellar)
+            .replace("@@HOMEBREW_LIBRARY@@", &homebrew_library);
+
+        // Write back
+        std::fs::write(config_file, &new_content)
+            .wrap_err_with(|| format!("Failed to write {}", config_file.display()))?;
+
+        log::info!("Replaced placeholders in {}", config_file.display());
+    }
+
+    Ok(())
 }
 
 // ============================================================================

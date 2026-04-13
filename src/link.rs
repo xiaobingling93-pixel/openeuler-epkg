@@ -166,14 +166,9 @@ pub fn link_package(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> Result<(
         }
     }
 
-    // For brew packages, rewrite dylib/interpreter paths to use absolute paths pointing to this env
-    #[cfg(unix)]
-    if plan.package_format == PackageFormat::Brew && matches!(plan.link, LinkType::Move | LinkType::Hardlink) {
-        log::info!("Rewriting brew library/interpreter paths for env: {}", plan.env_root.display());
-        if let Err(e) = crate::brew_pkg::rewrite_dylib_paths_for_env(&plan.env_root) {
-            log::warn!("Failed to rewrite brew library/interpreter paths: {}", e);
-        }
-    }
+    // NOTE: dylib/interpreter path rewriting is now handled at a higher level
+    // (after all packages are linked) to avoid multiple rewrites of the same files.
+    // See execute_installation_plan() in install.rs for the single call.
 
     Ok(())
 }
@@ -271,7 +266,24 @@ fn copy_files_from_env(new_env_root: &Path, existing_env_root: &Path, fs_files: 
 
         // Skip directories
         if fs_file_info.is_dir() {
-            if !lfs::exists_on_host(&target_path) {
+            // Check if target exists and is a real directory (not a symlink)
+            if let Ok(metadata) = lfs::symlink_metadata(&target_path) {
+                if metadata.file_type().is_symlink() {
+                    // Existing path is a symlink, remove it and create real directory
+                    // This can happen when Cellar symlinks were incorrectly created
+                    log::debug!("Removing symlink to create real directory: {}", target_path.display());
+                    lfs::remove_file(&target_path)?;
+                    lfs::create_dir_all(&target_path)?;
+                } else if metadata.is_dir() {
+                    // Already a real directory, skip
+                    continue;
+                } else {
+                    // It's a file, remove and create directory
+                    lfs::remove_file(&target_path)?;
+                    lfs::create_dir_all(&target_path)?;
+                }
+            } else {
+                // Path doesn't exist, create directory
                 lfs::create_dir_all(&target_path)?;
             }
             continue;

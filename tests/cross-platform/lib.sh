@@ -79,9 +79,9 @@ test_build_cmake() {
 
 test_build_make() {
     run_install make || return 1
-    # brew's make package may install make (patched ELF now works)
+    # brew's make package installs gmake, not make
     if [ "$CHANNEL_NAME" = "brew" ]; then
-        run make --version || return 1
+        run gmake --version || return 1
     else
         run make --version || return 1
     fi

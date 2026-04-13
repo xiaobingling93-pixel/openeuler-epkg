@@ -368,6 +368,17 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
     // Step 2b: Link all packages (after risk checks pass)
     link_packages(plan)?;
 
+    // For brew packages, rewrite dylib/interpreter paths once after all packages are linked
+    // This must be done after ALL packages are installed, not per-package,
+    // because install_name_tool can only modify a file once due to Mach-O header padding limits
+    #[cfg(unix)]
+    if plan.package_format == crate::models::PackageFormat::Brew {
+        log::info!("Rewriting brew library/interpreter paths for env: {}", plan.env_root.display());
+        if let Err(e) = crate::brew_pkg::rewrite_dylib_paths_for_env(&plan.env_root) {
+            log::warn!("Failed to rewrite brew library/interpreter paths: {}", e);
+        }
+    }
+
     // Step 2c: Setup tool wrappers for mirror acceleration
     // Called after link_packages so new_files is populated by build_batch_file_union below
     // Note: setup_tool_wrappers is now called in run_transaction_batch after build_batch_file_union
