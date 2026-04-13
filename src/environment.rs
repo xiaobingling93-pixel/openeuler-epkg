@@ -934,22 +934,21 @@ fn try_use_homebrew_prefix() -> Result<Option<PathBuf>> {
         }
         log::info!("Successfully created HOMEBREW_PREFIX: {}", homebrew_prefix);
         Ok(Some(hb_path.to_path_buf()))
-    } else if is_dir_empty(hb_path)? {
-        log::info!("HOMEBREW_PREFIX {} exists and is empty, using as env_root", homebrew_prefix);
-        Ok(Some(hb_path.to_path_buf()))
     } else {
+        // Directory already exists - fallback to regular env_root to avoid race condition
+        // (directory may be created by others and not writable by current user)
         #[cfg(target_os = "macos")]
         {
             return Err(eyre::eyre!(
-                "HOMEBREW_PREFIX {} already exists and is not empty. \
+                "HOMEBREW_PREFIX {} already exists. \
                  On macOS, brew environments must use HOMEBREW_PREFIX as env_root. \
-                 Please remove or empty the directory first.",
+                 Please remove the directory first.",
                 homebrew_prefix
             ));
         }
         #[cfg(not(target_os = "macos"))]
         {
-            log::info!("HOMEBREW_PREFIX {} exists and is not empty, using regular env_root with namespace isolation", homebrew_prefix);
+            log::info!("HOMEBREW_PREFIX {} already exists, using regular env_root to avoid race condition", homebrew_prefix);
             Ok(None)
         }
     }
@@ -980,16 +979,6 @@ fn try_create_homebrew_prefix(path: &str) -> Result<()> {
         }
         Err(e) => Err(e.into()),
     }
-}
-
-/// Check if a directory is empty
-#[cfg(unix)]
-fn is_dir_empty(path: &Path) -> Result<bool> {
-    if !path.is_dir() {
-        return Ok(false);
-    }
-    let mut entries = std::fs::read_dir(path)?;
-    Ok(entries.next().is_none())
 }
 
 /// Setup environment paths.
