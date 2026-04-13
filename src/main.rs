@@ -2115,6 +2115,7 @@ fn parse_options_self(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -
     match sub_matches.subcommand() {
         Some(("install", sub_matches)) => {
             config.subcommand = EpkgCommand::SelfInstall;
+            config.common.force = sub_matches.get_flag("force");
             config.init.shared_store = sub_matches.get_one::<String>("store")
                 .map(|s| match s.as_str() {
                     "shared" => true,

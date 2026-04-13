@@ -860,7 +860,7 @@ fn setup_environment_paths(env_base: &Path) -> Result<PathBuf> {
     };
 
     let env_channel_yaml = env_root_channel_yaml(&env_root);
-    if lfs::exists_on_host(&env_channel_yaml) {
+    if !config().common.force && lfs::exists_on_host(&env_channel_yaml) {
         return Err(eyre::eyre!("Environment already exists at path: '{}'", env_root.display()));
     }
 

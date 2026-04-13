@@ -1081,6 +1081,8 @@ pub struct CommonOptions {
     pub assume_no: bool,
     #[serde(default)]
     pub ignore_missing: bool,
+    #[serde(skip)]
+    pub force: bool,
 
     // N: expire after N seconds
     // 0: never expire (the default)
