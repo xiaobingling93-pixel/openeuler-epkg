@@ -678,16 +678,22 @@ pub fn get_user_shell_rc(_home_dir: &Path) -> Result<Vec<String>> {
 
 /// PowerShell profile paths for `epkg.ps1` integration.
 ///
-/// On Windows, pwsh uses `%USERPROFILE%\Documents\PowerShell\Microsoft.PowerShell_profile.ps1`.
+/// Returns both Windows PowerShell (5.1) and PowerShell Core (7.x) paths
+/// to ensure epkg works regardless of which version the user runs.
 /// On non-Windows platforms we intentionally skip PowerShell profile integration.
 #[cfg(windows)]
 pub fn powershell_profile_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Ok(up) = env::var("USERPROFILE") {
+        let base = PathBuf::from(up).join("Documents");
+        // PowerShell Core (7.x) - the modern cross-platform version
         paths.push(
-            PathBuf::from(up)
-                .join("Documents")
-                .join("PowerShell")
+            base.join("PowerShell")
+                .join("Microsoft.PowerShell_profile.ps1"),
+        );
+        // Windows PowerShell (5.1) - the legacy built-in version
+        paths.push(
+            base.join("WindowsPowerShell")
                 .join("Microsoft.PowerShell_profile.ps1"),
         );
     }
