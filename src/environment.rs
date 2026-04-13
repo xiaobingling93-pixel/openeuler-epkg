@@ -911,86 +911,82 @@ pub fn create_environment(env_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Setup environment paths with special handling for Brew environments.
-/// For Brew environments, checks HOMEBREW_PREFIX and may use it as env_root.
-fn setup_brew_environment_paths(env_base: &Path) -> Result<(PathBuf, PackageFormat)> {
-    // First, copy channel configs to determine package format
-    // We need to do this before setting up env_root because brew needs special handling
+/// Determine package format by setting up temporary environment and reading channel config.
+fn determine_package_format(env_base: &Path) -> Result<PackageFormat> {
     let temp_env_root = if !config().common.env_root.is_empty() {
         PathBuf::from(&config().common.env_root)
     } else {
         env_base.to_path_buf()
     };
 
-    // Copy channel configs to a temporary location to determine package format
     create_environment_dirs_early(&temp_env_root)?;
     copy_channel_configs(&temp_env_root)?;
 
-    // Determine package format from channel config
-    let pkg_format = match io::deserialize_channel_config_from_root(&temp_env_root) {
-        Ok(configs) if !configs.is_empty() => configs[0].format.clone(),
-        _ => PackageFormat::Deb, // Default fallback
-    };
+    match io::deserialize_channel_config_from_root(&temp_env_root) {
+        Ok(configs) if !configs.is_empty() => Ok(configs[0].format.clone()),
+        _ => Ok(PackageFormat::Deb),
+    }
+}
 
-    // For Brew environments, handle HOMEBREW_PREFIX specially
-    #[cfg(unix)]
-    if pkg_format == PackageFormat::Brew {
-        let homebrew_prefix = crate::brew_pkg::prefix::preferred();
-        let hb_path = Path::new(homebrew_prefix);
+/// Try to use HOMEBREW_PREFIX as env_root for brew environments.
+/// Returns Some(path) if successful, None if should fall back to regular env_root.
+#[cfg(unix)]
+fn try_use_homebrew_prefix() -> Result<Option<PathBuf>> {
+    let homebrew_prefix = crate::brew_pkg::prefix::preferred();
+    let hb_path        = Path::new(homebrew_prefix);
 
-        // Check if we can use HOMEBREW_PREFIX as env_root:
-        // - If it doesn't exist: try to create it (no conflicting users possible)
-        // - If it exists and is empty: safe to use (no conflicting users)
-        let can_use_hb_prefix = if !hb_path.exists() {
-            // Case 1: HOMEBREW_PREFIX doesn't exist - try to create it
-            log::info!("HOMEBREW_PREFIX {} does not exist, attempting to create...", homebrew_prefix);
-            match try_create_homebrew_prefix(homebrew_prefix) {
-                Ok(_) => {
-                    log::info!("Successfully created HOMEBREW_PREFIX: {}", homebrew_prefix);
-                    true
-                }
-                Err(e) => {
-                    log::warn!("Cannot create HOMEBREW_PREFIX: {}. Will use regular env_root with --isolate=fs mode.", e);
-                    false
-                }
+    let can_use = if !hb_path.exists() {
+        log::info!("HOMEBREW_PREFIX {} does not exist, attempting to create...", homebrew_prefix);
+        match try_create_homebrew_prefix(homebrew_prefix) {
+            Ok(_) => {
+                log::info!("Successfully created HOMEBREW_PREFIX: {}", homebrew_prefix);
+                true
             }
-        } else if is_dir_empty(hb_path)? {
-            // Case 2: HOMEBREW_PREFIX exists and is empty - safe to use
-            log::info!("HOMEBREW_PREFIX {} exists and is empty, using as env_root", homebrew_prefix);
-            true
-        } else {
-            // Case 3: HOMEBREW_PREFIX exists and is not empty
-            #[cfg(target_os = "macos")]
-            {
-                // On macOS, we cannot use namespace + bind mount as normal user
-                // So we must use HOMEBREW_PREFIX directly as env_root
-                return Err(eyre::eyre!(
-                    "HOMEBREW_PREFIX {} already exists and is not empty. \
-                     On macOS, brew environments must use HOMEBREW_PREFIX as env_root. \
-                     Please remove or empty the directory first.",
-                    homebrew_prefix
-                ));
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                // On Linux, we can use namespace isolation, so we can use a different env_root
-                log::info!("HOMEBREW_PREFIX {} exists and is not empty, using regular env_root with namespace isolation", homebrew_prefix);
+            Err(e) => {
+                log::warn!("Cannot create HOMEBREW_PREFIX: {}. Will use regular env_root with --isolate=fs mode.", e);
                 false
             }
-        };
+        }
+    } else if is_dir_empty(hb_path)? {
+        log::info!("HOMEBREW_PREFIX {} exists and is empty, using as env_root", homebrew_prefix);
+        true
+    } else {
+        #[cfg(target_os = "macos")]
+        {
+            return Err(eyre::eyre!(
+                "HOMEBREW_PREFIX {} already exists and is not empty. \
+                 On macOS, brew environments must use HOMEBREW_PREFIX as env_root. \
+                 Please remove or empty the directory first.",
+                homebrew_prefix
+            ));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            log::info!("HOMEBREW_PREFIX {} exists and is not empty, using regular env_root with namespace isolation", homebrew_prefix);
+            false
+        }
+    };
 
-        if can_use_hb_prefix {
-            return Ok((hb_path.to_path_buf(), pkg_format));
+    Ok(if can_use { Some(hb_path.to_path_buf()) } else { None })
+}
+
+#[cfg(not(unix))]
+fn try_use_homebrew_prefix() -> Result<Option<PathBuf>> {
+    log::debug!("Brew package format on non-Unix platform, using regular env_root");
+    Ok(None)
+}
+
+/// Setup environment paths with special handling for Brew environments.
+/// For Brew environments, checks HOMEBREW_PREFIX and may use it as env_root.
+fn setup_brew_environment_paths(env_base: &Path) -> Result<(PathBuf, PackageFormat)> {
+    let pkg_format = determine_package_format(env_base)?;
+
+    if pkg_format == PackageFormat::Brew {
+        if let Some(hb_path) = try_use_homebrew_prefix()? {
+            return Ok((hb_path, pkg_format));
         }
     }
 
-    #[cfg(not(unix))]
-    if pkg_format == PackageFormat::Brew {
-        // Brew is Unix-only (Linux/macOS), on Windows just fall through to regular env_root
-        log::debug!("Brew package format on non-Unix platform, using regular env_root");
-    }
-
-    // Use regular env_root setup for non-brew or fallback cases
     let env_root = setup_environment_paths(env_base)?;
     Ok((env_root, pkg_format))
 }
