@@ -956,6 +956,28 @@ fn setup_brew_environment_paths(env_base: &Path) -> Result<(PathBuf, PackageForm
 
     if pkg_format == PackageFormat::Brew {
         if let Some(hb_path) = try_use_homebrew_prefix()? {
+            // Move channel.yaml from env_base to HOMEBREW_PREFIX
+            // since determine_package_format() created it in env_base
+            let src_channel_yaml = env_root_channel_yaml(env_base);
+            let dst_channel_yaml = env_root_channel_yaml(&hb_path);
+            if src_channel_yaml.exists() {
+                lfs::create_dir_all(dst_channel_yaml.parent().unwrap())?;
+                lfs::copy(&src_channel_yaml, &dst_channel_yaml)?;
+                log::info!("Copied channel.yaml from {} to {}", src_channel_yaml.display(), dst_channel_yaml.display());
+                // Clean up temporary files created in env_base
+                let src_epkg_dir = env_base.join("etc/epkg");
+                if src_epkg_dir.exists() {
+                    lfs::remove_dir_all(&src_epkg_dir)?;
+                    log::info!("Cleaned up temporary epkg dir in {}", src_epkg_dir.display());
+                }
+                // Clean up other directories created by create_environment_dirs_early
+                for dir in &["generations", "root", "ebin"] {
+                    let path = env_base.join(dir);
+                    if path.exists() {
+                        lfs::remove_dir_all(&path)?;
+                    }
+                }
+            }
             return Ok((hb_path, pkg_format));
         }
     }
