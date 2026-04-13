@@ -927,6 +927,11 @@ fn try_use_homebrew_prefix() -> Result<Option<PathBuf>> {
     if !hb_path.exists() {
         log::info!("HOMEBREW_PREFIX {} does not exist, attempting to create...", homebrew_prefix);
         try_create_homebrew_prefix(homebrew_prefix)?;
+        // Check if directory was actually created (sudo may have failed)
+        if !hb_path.exists() {
+            log::info!("HOMEBREW_PREFIX {} was not created (sudo may have failed), using regular env_root", homebrew_prefix);
+            return Ok(None);
+        }
         log::info!("Successfully created HOMEBREW_PREFIX: {}", homebrew_prefix);
         Ok(Some(hb_path.to_path_buf()))
     } else if is_dir_empty(hb_path)? {
@@ -967,7 +972,8 @@ fn try_create_homebrew_prefix(path: &str) -> Result<()> {
                 .wrap_err("Failed to run sudo command")?;
 
             if !output.success() {
-                return Err(eyre::eyre!("sudo command failed or was cancelled"));
+                log::info!("sudo failed or was cancelled, will fallback to regular env_root");
+                return Ok(());
             }
             log::info!("Successfully created HOMEBREW_PREFIX: {}", path);
             Ok(())
