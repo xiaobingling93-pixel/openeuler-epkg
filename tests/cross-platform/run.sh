@@ -128,6 +128,18 @@ should_run_channel() {
         return $?
     fi
 
+    # When running Windows epkg.exe (e.g., from WSL2), skip Unix-only channels
+    if [ -n "$EPKG_WINDOWS_MODE" ]; then
+        case "$channel" in
+            brew|msys2)
+                # Brew doesn't work on Windows epkg, msys2 not yet supported
+                return 1
+                ;;
+            *)
+                ;;
+        esac
+    fi
+
     # Otherwise, check if channel is applicable for this host OS
     case "$channel" in
         conda)
