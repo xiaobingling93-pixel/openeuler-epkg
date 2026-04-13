@@ -266,17 +266,15 @@ fn extract_brew_contents<R: Read>(
     // The version from pkgkey includes bottle revision (e.g., "2.3.2_0")
     // which is different from tar path version (e.g., "2.3.2")
     // Use Box::leak to get a static reference for the closure
-    let pkgkey_version: &'static str = if let Some(key) = pkgkey {
-        let parts: Vec<&str> = key.rsplitn(3, "__").collect();
-        if parts.len() == 3 {
-            Box::leak(parts[1].to_string().into_boxed_str())
-        } else {
-            // Fallback to empty if pkgkey format is invalid
-            log::warn!("Invalid pkgkey format, expected 3 parts: {}", key);
-            ""
+    let pkgkey_version: &'static str = match pkgkey {
+        Some(key) => {
+            let (_, version, _) = crate::package::parse_pkgkey_parts(key)
+                .wrap_err_with(|| format!("Invalid pkgkey format: {}", key))?;
+            Box::leak(version.to_string().into_boxed_str())
         }
-    } else {
-        ""
+        None => {
+            return Err(eyre::eyre!("pkgkey is required for Brew package extraction"));
+        }
     };
 
     let config = ExtractConfig::new(store_tmp_dir)
@@ -295,14 +293,8 @@ fn create_package_txt_from_pkgkey<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: &str
     let store_tmp_dir = store_tmp_dir.as_ref();
 
     // Parse pkgkey: {pkgname}__{version}__{arch}
-    let parts: Vec<&str> = pkgkey.rsplitn(3, "__").collect();
-    if parts.len() != 3 {
-        return Err(eyre::eyre!("Invalid pkgkey format, expected 3 parts: {}", pkgkey));
-    }
-
-    let arch = parts[0];
-    let version = parts[1];
-    let pkgname = parts[2];
+    let (pkgname, version, arch) = crate::package::parse_pkgkey_parts(pkgkey)
+        .wrap_err_with(|| format!("Invalid pkgkey format: {}", pkgkey))?;
 
     // Create package fields
     let mut package_fields: std::collections::HashMap<String, String> = std::collections::HashMap::new();

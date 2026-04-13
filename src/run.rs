@@ -1325,7 +1325,15 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
     let is_msys2 = channel_format == crate::models::PackageFormat::Pacman && distro == "msys2";
     let is_linux_format = is_linux_package_format(channel_format, &distro);
 
-    // For brew packages, we use namespace isolation with HOMEBREW_PREFIX bind mount.
+    // For brew packages on macOS, we cannot use namespace isolation (fork not supported).
+    // Brew binaries should be run directly from HOMEBREW_PREFIX with dylib path rewriting.
+    #[cfg(target_os = "macos")]
+    if _is_brew {
+        run_options.skip_namespace_isolation = true;
+        log::debug!("Brew packages on macOS: skipping namespace isolation, running directly");
+    }
+
+    // For brew packages on Linux, we use namespace isolation with HOMEBREW_PREFIX bind mount.
     // The namespace setup (env_mount_spec_strings) handles brew specially by mounting
     // $env_root to HOMEBREW_PREFIX instead of standard /usr, /bin mounts.
     if is_conda || is_msys2 {
