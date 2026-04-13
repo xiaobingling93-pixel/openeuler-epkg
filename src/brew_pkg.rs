@@ -198,15 +198,19 @@ pub fn unpack_package<P: AsRef<Path>>(bottle_file: P, store_tmp_dir: P, pkgkey: 
 /// - Skip top-level entries (package_name/, package_name/version/)
 /// - .brew/ directory goes to info/brew/.brew/
 /// - Root-level metadata files go to info/brew/
-/// - Regular files go to fs/
+/// - Regular files go to fs/Cellar/package_name/version/... (Homebrew-style layout)
 fn brew_path_policy(path: &Path, _is_hard_link: bool, store_tmp_dir: &Path) -> Option<PathBuf> {
-    // Strip the top-level directory (package_name/version/)
-    // Path looks like: "jq/1.7.1/bin/jq" -> we want "bin/jq"
+    // Path structure: "package_name/version/..." (e.g., "jq/1.7.1/bin/jq")
+    // We want: "Cellar/package_name/version/..." for regular files
     let components: Vec<_> = path.components().collect();
     if components.len() < 3 {
         // Skip top-level entries (package_name/, package_name/version/)
         return None;
     }
+
+    // Get package name and version from path
+    let pkgname = components[0].as_os_str().to_str().unwrap_or("");
+    let version = components[1].as_os_str().to_str().unwrap_or("");
 
     // Reconstruct path without first two components (package_name and version)
     let stripped_components: Vec<_> = components.iter().skip(2).collect();
@@ -235,8 +239,12 @@ fn brew_path_policy(path: &Path, _is_hard_link: bool, store_tmp_dir: &Path) -> O
             stripped_components[0].as_os_str()
         )
     } else {
+        // Regular files go to fs/Cellar/package_name/version/... (Homebrew-style layout)
+        // This matches the vanilla Homebrew directory structure:
+        // /opt/homebrew/Cellar/jq/1.7.1/bin/jq
+        let cellar_base = crate::dirs::path_join(store_tmp_dir, &["fs", "Cellar", pkgname, version]);
         stripped_components.iter().fold(
-            store_tmp_dir.join("fs"),
+            cellar_base,
             |acc, comp| acc.join(comp.as_os_str())
         )
     };
@@ -297,6 +305,282 @@ fn create_package_txt_from_pkgkey<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: &str
 ///
 /// This function is called after files are moved to the environment (LinkType::Move).
 /// Each environment gets its own copy with paths specific to that environment.
+/// Create Homebrew-style symlinks from env_root to Cellar directory.
+///
+/// Homebrew uses a Cellar layout where actual files are stored in:
+///   Cellar/pkgname/version/bin/file
+///   Cellar/pkgname/version/lib/libfile.dylib
+///   Cellar/pkgname/version/share/subdir/
+///
+/// And symlinks are created at the top level:
+///   bin/file -> ../Cellar/pkgname/version/bin/file
+///   lib/libfile.dylib -> ../Cellar/pkgname/version/lib/libfile.dylib
+///   lib/subdir -> ../Cellar/pkgname/version/lib/subdir
+///   share/pkgname -> ../Cellar/pkgname/version/share/pkgname
+///   opt/pkgname -> ../Cellar/pkgname/version
+///
+/// This function scans the Cellar directory and creates these top-level symlinks.
+/// It should be called after files have been moved/linked to env_root/Cellar/.
+///
+/// Note: For brew environments, we need real directories (bin/, lib/, share/) instead
+/// of usr-merge symlinks (bin -> usr/bin). This function removes usr-merge symlinks
+/// and creates real directories to match vanilla Homebrew layout.
+///
+/// # Arguments
+/// * `env_root` - Environment root directory
+/// * `pkgkey` - Package key in format "{pkgname}__{version}__{arch}"
+pub fn create_cellar_symlinks(env_root: &Path, pkgkey: &str) -> Result<()> {
+    // Parse pkgkey to get package name and version
+    let parts: Vec<&str> = pkgkey.rsplitn(3, "__").collect();
+    if parts.len() != 3 {
+        return Err(eyre::eyre!("Invalid pkgkey format, expected 3 parts: {}", pkgkey));
+    }
+    let version = parts[1];
+    let pkgname = parts[2];
+
+    let cellar_pkg_dir = env_root.join("Cellar").join(pkgname).join(version);
+    if !cellar_pkg_dir.exists() {
+        log::debug!("Cellar package directory does not exist: {}", cellar_pkg_dir.display());
+        return Ok(());
+    }
+
+    // Ensure Cellar directory exists
+    let cellar_dir = env_root.join("Cellar");
+    if !cellar_dir.exists() {
+        crate::lfs::create_dir_all(&cellar_dir)?;
+    }
+
+    // Create opt/pkgname -> ../Cellar/pkgname/version symlink (for self-reference)
+    let opt_dir = env_root.join("opt");
+    if !opt_dir.exists() {
+        crate::lfs::create_dir_all(&opt_dir)?;
+    }
+    let opt_pkg_link = opt_dir.join(pkgname);
+    let opt_target = PathBuf::from("../Cellar").join(pkgname).join(version);
+    if crate::lfs::symlink_metadata(&opt_pkg_link).is_ok() {
+        crate::lfs::remove_file(&opt_pkg_link)?;
+    }
+    crate::lfs::symlink_dir_for_virtiofs(&opt_target, &opt_pkg_link)?;
+    log::trace!("Created opt symlink: {} -> {}", opt_pkg_link.display(), opt_target.display());
+
+    // Directories to create symlinks for (standard Homebrew layout)
+    // For these directories, we need REAL directories (not usr-merge symlinks)
+    // to match vanilla Homebrew layout
+    let file_link_dirs = ["bin", "lib"];
+    let dir_link_dirs   = ["libexec", "Frameworks", "share", "include"];
+
+    // Remove usr-merge symlinks and create real directories for bin/ and lib/
+    // This is necessary for Cellar-style symlinks to work correctly
+    for dir_name in &file_link_dirs {
+        let env_dir = env_root.join(dir_name);
+
+        // Check if it's a symlink (usr-merge: bin -> usr/bin)
+        if crate::lfs::symlink_metadata(&env_dir).map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+            log::debug!("Removing usr-merge symlink {} to create real directory for Cellar layout", env_dir.display());
+            crate::lfs::remove_file(&env_dir)?;
+        }
+
+        // Create real directory if it doesn't exist
+        if !env_dir.exists() {
+            crate::lfs::create_dir_all(&env_dir)?;
+        }
+
+        let cellar_dir = cellar_pkg_dir.join(dir_name);
+        if cellar_dir.exists() {
+            // Scan cellar_dir and create file-level symlinks
+            create_cellar_file_symlinks(&cellar_dir, &env_dir, pkgname, version, dir_name)?;
+        }
+    }
+
+    // For share/, libexec/, Frameworks/, include/ - create directory-level symlinks
+    // share/ may be usr-merge symlink (share -> usr/share), handle similarly
+    for dir_name in &dir_link_dirs {
+        let env_dir = env_root.join(dir_name);
+
+        // For share/, we also need to handle usr-merge symlink
+        if *dir_name == "share" || *dir_name == "include" {
+            if crate::lfs::symlink_metadata(&env_dir).map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+                log::debug!("Removing usr-merge symlink {} to create real directory for Cellar layout", env_dir.display());
+                crate::lfs::remove_file(&env_dir)?;
+            }
+        }
+
+        // Create real directory if it doesn't exist
+        if !env_dir.exists() {
+            crate::lfs::create_dir_all(&env_dir)?;
+        }
+
+        let cellar_dir = cellar_pkg_dir.join(dir_name);
+        if cellar_dir.exists() {
+            create_cellar_dir_symlinks(&cellar_dir, &env_dir, pkgname, version, dir_name)?;
+        }
+    }
+
+    log::info!("Created Cellar symlinks for {} {} in {}", pkgname, version, env_root.display());
+    Ok(())
+}
+
+/// Create file-level symlinks for bin/ and lib/ directories.
+///
+/// Each file under cellar_dir gets a symlink at env_dir level.
+/// For subdirectories under lib/, create directory symlinks.
+///
+/// # Arguments
+/// * `cellar_dir` - Directory under Cellar (e.g., Cellar/jq/1.7.1/bin)
+/// * `env_dir` - Corresponding top-level directory (e.g., env_root/bin)
+/// * `pkgname` - Package name
+/// * `version` - Package version
+/// * `base_dir` - Base directory name (bin, lib)
+fn create_cellar_file_symlinks(
+    cellar_dir: &Path,
+    env_dir: &Path,
+    pkgname: &str,
+    version: &str,
+    base_dir: &str,
+) -> Result<()> {
+    for entry in walkdir::WalkDir::new(cellar_dir).min_depth(1).max_depth(2).into_iter().filter_map(|e| e.ok()) {
+        let cellar_path = entry.path();
+        let rel_path = cellar_path.strip_prefix(cellar_dir)?;
+
+        // Create parent directory in env_dir if needed
+        let env_path = env_dir.join(rel_path);
+        if let Some(parent) = env_path.parent() {
+            if !parent.exists() {
+                crate::lfs::create_dir_all(parent)?;
+            }
+        }
+
+        if entry.file_type().is_dir() {
+            // For subdirectories under lib/ (e.g., lib/guile/), create directory symlink
+            // lib/guile -> ../Cellar/pkgname/version/lib/guile
+            if base_dir == "lib" && rel_path.components().count() == 1 {
+                // Remove existing symlink/dir if present
+                if crate::lfs::symlink_metadata(&env_path).is_ok() {
+                    if crate::lfs::symlink_metadata(&env_path)?.is_dir() {
+                        crate::lfs::remove_dir_all(&env_path)?;
+                    } else {
+                        crate::lfs::remove_file(&env_path)?;
+                    }
+                }
+
+                let symlink_target = PathBuf::from("..")
+                    .join("Cellar")
+                    .join(pkgname)
+                    .join(version)
+                    .join(base_dir)
+                    .join(rel_path);
+
+                crate::lfs::symlink_dir_for_virtiofs(&symlink_target, &env_path)?;
+                log::trace!("Created Cellar dir symlink: {} -> {}", env_path.display(), symlink_target.display());
+            }
+            continue;
+        }
+
+        // For symlinks in Cellar, copy them with adjusted target
+        if entry.file_type().is_symlink() {
+            let link_target = std::fs::read_link(cellar_path)?;
+
+            // Remove existing symlink if present
+            if crate::lfs::symlink_metadata(&env_path).is_ok() {
+                crate::lfs::remove_file(&env_path)?;
+            }
+
+            // Create symlink in env_dir (keep relative target from Cellar)
+            crate::lfs::symlink_file_for_virtiofs(&link_target, &env_path)?;
+            log::trace!("Created Cellar symlink: {} -> {}", env_path.display(), link_target.display());
+            continue;
+        }
+
+        // For regular files, create symlink to Cellar
+        // Remove existing file/symlink if present
+        if crate::lfs::symlink_metadata(&env_path).is_ok() {
+            crate::lfs::remove_file(&env_path)?;
+        }
+
+        // Calculate relative symlink target:
+        // env_root/bin/jq -> ../Cellar/jq/1.7.1/bin/jq
+        let symlink_target = PathBuf::from("..")
+            .join("Cellar")
+            .join(pkgname)
+            .join(version)
+            .join(base_dir)
+            .join(rel_path);
+
+        crate::lfs::symlink_file_for_virtiofs(&symlink_target, &env_path)?;
+        log::trace!("Created Cellar symlink: {} -> {}", env_path.display(), symlink_target.display());
+    }
+
+    Ok(())
+}
+
+/// Create directory-level symlinks for share/, libexec/, Frameworks/, include/.
+///
+/// Each subdirectory under cellar_dir gets its own symlink at env_dir level.
+/// For share/doc, share/info, share/man, share/aclocal - these are shared across
+/// packages and should be handled specially (not symlinked).
+///
+/// # Arguments
+/// * `cellar_dir` - Directory under Cellar (e.g., Cellar/git/2.53.0/share)
+/// * `env_dir` - Corresponding top-level directory (e.g., env_root/share)
+/// * `pkgname` - Package name
+/// * `version` - Package version
+/// * `base_dir` - Base directory name (share, libexec, etc.)
+fn create_cellar_dir_symlinks(
+    cellar_dir: &Path,
+    env_dir: &Path,
+    pkgname: &str,
+    version: &str,
+    base_dir: &str,
+) -> Result<()> {
+    // Directories that are shared across packages (not symlinked, files copied instead)
+    // These are managed separately by the package manager
+    let shared_dirs = ["doc", "info", "man", "man1", "man2", "man3", "man4", "man5", "man6", "man7", "man8", "aclocal"];
+
+    for entry in std::fs::read_dir(cellar_dir)?.filter_map(|e| e.ok()) {
+        let cellar_subdir = entry.path();
+        let subdir_name = cellar_subdir.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+
+        // Skip shared directories - these should be actual directories with copied files
+        if shared_dirs.contains(&subdir_name) {
+            // For shared directories, we copy files instead of symlinking
+            // This is handled by the regular mirror_dir function
+            continue;
+        }
+
+        // Skip if not a directory
+        if !entry.file_type()?.is_dir() && !entry.file_type()?.is_symlink() {
+            continue;
+        }
+
+        // Create symlink: share/pkgname -> ../Cellar/pkgname/version/share/pkgname
+        let env_subdir = env_dir.join(subdir_name);
+
+        // Remove existing symlink/dir if present
+        if crate::lfs::symlink_metadata(&env_subdir).is_ok() {
+            if crate::lfs::symlink_metadata(&env_subdir)?.file_type().is_dir() {
+                crate::lfs::remove_dir_all(&env_subdir)?;
+            } else {
+                crate::lfs::remove_file(&env_subdir)?;
+            }
+        }
+
+        let symlink_target = PathBuf::from("..")
+            .join("Cellar")
+            .join(pkgname)
+            .join(version)
+            .join(base_dir)
+            .join(subdir_name);
+
+        // Use symlink_dir for directory symlinks
+        crate::lfs::symlink_dir_for_virtiofs(&symlink_target, &env_subdir)?;
+        log::trace!("Created Cellar dir symlink: {} -> {}", env_subdir.display(), symlink_target.display());
+    }
+
+    Ok(())
+}
+
 /// Rewrite dylib/interpreter paths for all binaries in the environment.
 /// Rewrite dylib/interpreter paths in binary files for a Homebrew environment.
 ///

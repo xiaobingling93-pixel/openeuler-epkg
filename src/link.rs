@@ -148,6 +148,24 @@ pub fn link_package(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> Result<(
     }
     link_package_generic(plan, store_fs_dir)?;
 
+    // For brew packages, create Homebrew-style Cellar symlinks
+    #[cfg(unix)]
+    if plan.package_format == PackageFormat::Brew {
+        log::info!("Creating Cellar symlinks for brew package: {}", plan.env_root.display());
+        // Extract pkgline from store_fs_dir path: store_root/pkgline/fs
+        // Then convert to pkgkey
+        if let Some(pkgline) = store_fs_dir.parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+        {
+            if let Ok(pkgkey) = crate::package::pkgline2pkgkey(pkgline) {
+                if let Err(e) = crate::brew_pkg::create_cellar_symlinks(&plan.env_root, &pkgkey) {
+                    log::warn!("Failed to create Cellar symlinks: {}", e);
+                }
+            }
+        }
+    }
+
     // For brew packages, rewrite dylib/interpreter paths to use absolute paths pointing to this env
     #[cfg(unix)]
     if plan.package_format == PackageFormat::Brew && matches!(plan.link, LinkType::Move | LinkType::Hardlink) {

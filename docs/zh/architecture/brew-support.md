@@ -317,6 +317,79 @@ RUST_LOG=trace epkg run -e <env> -- tree --version 2>&1 | head -50
 - 无 Fs/Env 模式区分
 - 使用 `install_name_tool` 修改动态库路径（而非 ELF 重写）
 
+## 目录布局：Cellar 结构
+
+epkg 的 brew 包采用与 vanilla Homebrew 相同的 Cellar 目录布局：
+
+### 布局结构
+
+```
+$env_root/                    (HOMEBREW_PREFIX)
+├── Cellar/                   (所有包的实际文件)
+│   └── jq/                   (包名)
+│       └── 1.7.1/            (版本)
+│           ├── bin/
+│           │   └── jq        (实际二进制文件)
+│           ├── lib/
+│           ├── share/
+│           ├── .brew/        (formula 文件)
+│           └── INSTALL_RECEIPT.json
+│   └── git/
+│       └── 2.53.0/
+│           └── ...
+├── bin/                      (符号链接指向 Cellar)
+│   ├── jq -> ../Cellar/jq/1.7.1/bin/jq
+│   └── git -> ../Cellar/git/2.53.0/bin/git
+├── lib/                      (符号链接指向 Cellar)
+│   ├── libjq.1.dylib -> ../Cellar/jq/1.7.1/lib/libjq.1.dylib
+│   └── libgit2.so -> ../Cellar/git/2.53.0/lib/libgit2.so
+├── share/                    (目录级符号链接指向 Cellar)
+│   ├── git-core -> ../Cellar/git/2.53.0/share/git-core
+│   └── doc/                  (共享目录，非符号链接)
+│   └── info/                 (共享目录，非符号链接)
+├── opt/                      (包名符号链接指向 Cellar)
+│   ├── jq -> ../Cellar/jq/1.7.1
+│   └── git -> ../Cellar/git/2.53.0
+├── Frameworks/               (macOS Framework)
+│   └── Python.framework -> ../Cellar/python@3.12/3.12.0/Frameworks/Python.framework
+└── libexec/                  (特殊执行目录)
+    └── go -> ../Cellar/go/1.22.0/libexec/go
+```
+
+### 设计原因
+
+1. **与 vanilla Homebrew 一致**：
+   - 便于理解和调试
+   - 与 Homebrew 工具链兼容
+   - 文档和经验可直接参考
+
+2. **bin/ 和 lib/ 为真实目录**：
+   - 非 usr-merge 符号链接
+   - 文件级符号链接便于管理
+   - 升级/删除时精确控制
+
+3. **opt/ 符号链接**：
+   - 用于包自引用路径
+   - 例如 Python 查找自身路径
+
+4. **share/doc/, share/info/ 等**：
+   - 共享目录，多包文件共存
+   - 非 Cellar 符号链接
+
+### 实现要点
+
+**brew_path_policy()**：
+- tar 包路径 `jq/1.7.1/bin/jq`
+- 提取到 `Cellar/jq/1.7.1/bin/jq`
+- 保留包名/版本层级结构
+
+**create_cellar_symlinks()**：
+- 扫描 Cellar/ 目录
+- 创建 `bin/`、`lib/` 的文件级符号链接
+- 创建 `share/`、`libexec/` 的目录级符号链接
+- 创建 `opt/` 的包名符号链接
+- 移除 usr-merge 符号链接（brew 环境需要真实 bin/、lib/ 目录）
+
 ## 未来发展方向
 
 1. **多架构支持**
