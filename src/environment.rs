@@ -881,21 +881,34 @@ pub fn create_environment(env_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Determine package format by setting up temporary environment and reading channel config.
-fn determine_package_format(env_base: &Path) -> Result<PackageFormat> {
-    let temp_env_root = if !config().common.env_root.is_empty() {
-        PathBuf::from(&config().common.env_root)
-    } else {
-        env_base.to_path_buf()
-    };
+/// Read channel config content from source file.
+/// Returns the yaml content string (optionally with version updated).
+fn read_channel_config_content_from_source() -> Result<(String, String)> {
+    let sources_path = crate::dirs::path_join(get_epkg_src_path().as_path(), &["assets", "repos"]);
+    let (distro_name, distro_version) = parse_channel_option();
 
-    create_environment_dirs_early(&temp_env_root)?;
-    copy_channel_configs(&temp_env_root)?;
-
-    match io::deserialize_channel_config_from_root(&temp_env_root) {
-        Ok(configs) if !configs.is_empty() => Ok(configs[0].format.clone()),
-        _ => Ok(PackageFormat::Deb),
+    let src_yaml_path = sources_path.join(format!("{}.yaml", distro_name));
+    if !src_yaml_path.exists() {
+        return Err(eyre::eyre!(
+            "Channel configs source path does not exist: {}",
+            src_yaml_path.display()
+        ));
     }
+
+    let mut channel_content = fs::read_to_string(&src_yaml_path)?;
+    if let Some(version) = distro_version {
+        channel_content = update_version_in_contents(&channel_content, &version);
+    }
+
+    Ok((channel_content, distro_name))
+}
+
+/// Determine package format by reading channel config from source (without creating directories).
+fn determine_package_format() -> Result<PackageFormat> {
+    let (channel_content, _) = read_channel_config_content_from_source()?;
+    let channel_config: ChannelConfig = serde_yaml::from_str(&channel_content)
+        .wrap_err("Failed to parse channel config")?;
+    Ok(channel_config.format)
 }
 
 #[cfg(not(unix))]
@@ -974,61 +987,49 @@ fn is_dir_empty(path: &Path) -> Result<bool> {
 }
 
 /// Setup environment paths.
-/// Returns (env_root, pkg_format). May create symlink env_base -> env_root if they differ.
+/// Returns (env_root, pkg_format). Creates symlink env_base -> env_root if they differ.
 fn setup_environment_paths(env_base: &Path) -> Result<(PathBuf, PackageFormat)> {
-    // Check if environment already exists BEFORE determining package format.
-    // determine_package_format() creates channel.yaml, which would break this check.
+    // Step 1: Determine package format from source (without creating directories)
+    let pkg_format = determine_package_format()?;
+
+    // Step 2: Determine env_root (brew may use HOMEBREW_PREFIX)
     let env_root = if !config().common.env_root.is_empty() {
         PathBuf::from(&config().common.env_root)
+    } else if pkg_format == PackageFormat::Brew {
+        try_use_homebrew_prefix()?.unwrap_or(env_base.to_path_buf())
     } else {
         env_base.to_path_buf()
     };
+
+    // Step 3: Check if environment already exists
     let env_channel_yaml = env_root_channel_yaml(&env_root);
     if !config().common.force && lfs::exists_on_host(&env_channel_yaml) {
         return Err(eyre::eyre!("Environment already exists at path: '{}'", env_root.display()));
     }
 
-    let pkg_format = determine_package_format(env_base)?;
-
-    // Brew may override env_root with HOMEBREW_PREFIX
-    let env_root = if pkg_format == PackageFormat::Brew {
-        try_use_homebrew_prefix()?.unwrap_or(env_root)
-    } else {
-        env_root
-    };
-
-    // Rule: if env_base != env_root, create symlink env_base -> env_root
+    // Step 4: If env_base != env_root, create symlink env_base -> env_root FIRST
+    //         (before any directory creation, to avoid leftover directories in env_base)
     if env_base != env_root {
-        // Move channel.yaml from env_base to env_root
-        let src_channel_yaml = env_root_channel_yaml(env_base);
-        let dst_channel_yaml = env_root_channel_yaml(&env_root);
-        if src_channel_yaml.exists() {
-            lfs::create_dir_all(dst_channel_yaml.parent().unwrap())?;
-            lfs::copy(&src_channel_yaml, &dst_channel_yaml)?;
-            log::info!("Copied channel.yaml from {} to {}", src_channel_yaml.display(), dst_channel_yaml.display());
-        }
-        // Clean up temporary files created in env_base
-        for dir in &["etc", "generations", "root", "ebin"] {
-            let path = env_base.join(dir);
-            if path.exists() {
-                lfs::remove_dir_all(&path)?;
-            }
-        }
-        // Remove env_base if empty, so symlink can be created
-        if env_base.exists() && is_dir_empty(env_base)? {
-            lfs::remove_dir(env_base)?;
-        }
-        // Check if env_base already exists as a directory (not a symlink/junction)
+        // Check if env_base already exists as a non-symlink/junction directory
         if lfs::exists_no_follow(&env_base) && !lfs::is_symlink_or_junction(&env_base) {
             return Err(eyre::eyre!("Environment base path '{}' already exists as a directory. Cannot create symlink.", env_base.display()));
+        }
+        // Remove existing symlink/junction if present (force mode or re-creation)
+        if lfs::exists_no_follow(&env_base) {
+            lfs::remove_file(env_base)?;
         }
         // Ensure parent directory of env_base exists
         if let Some(parent) = env_base.parent() {
             lfs::create_dir_all(parent)?;
         }
+        // Create symlink env_base -> env_root
         force_symlink_dir_for_virtiofs(&env_root, env_base)
             .with_context(|| format!("Failed to create symlink from {} to {}", env_base.display(), env_root.display()))?;
     }
+
+    // Step 5: Create environment directories and copy channel configs in env_root
+    create_environment_dirs_early(&env_root)?;
+    copy_channel_configs(&env_root)?;
 
     Ok((env_root, pkg_format))
 }
@@ -1088,19 +1089,11 @@ fn import_environment_from_file(env_root: &Path, import_file: &str) -> Result<En
 }
 
 /// Copy main channel configuration YAML file
-fn copy_main_channel_config(sources_path: &Path, env_root: &Path, distro_name: &str, distro_version: Option<&str>) -> Result<()> {
-    let src_channel_yaml_path = sources_path.join(format!("{}.yaml", distro_name));
-
-    // Read and optionally modify main channel config
-    let mut channel_content = fs::read_to_string(&src_channel_yaml_path)?;
-    if let Some(version) = distro_version {
-        channel_content = update_version_in_contents(&channel_content, version);
-    }
-
+fn copy_main_channel_config(env_root: &Path, channel_content: &str) -> Result<()> {
     // Save main channel config
     let dest_channel_path = env_root_channel_yaml(env_root);
     lfs::create_dir_all(dest_channel_path.parent().unwrap())?;
-    lfs::write(&dest_channel_path, &channel_content)?;
+    lfs::write(&dest_channel_path, channel_content)?;
 
     Ok(())
 }
@@ -1126,68 +1119,12 @@ fn copy_repo_configs(sources_path: &Path, env_root: &Path, distro_name: &str) ->
 /// and saving it to etc/epkg/channel.yaml in the target environment.
 /// Also copies additional repo configurations to etc/epkg/repos.d/
 fn copy_channel_configs(env_root: &Path) -> Result<()> {
+    let (channel_content, distro_name) = read_channel_config_content_from_source()?;
     let sources_path = crate::dirs::path_join(get_epkg_src_path().as_path(), &["assets", "repos"]);
-    let (distro_name, distro_version) = parse_channel_option();
 
-    if !sources_path.exists() {
-        #[cfg(windows)]
-        {
-            match distro_name.as_str() {
-                "msys2" => {
-                    create_default_msys2_channel_config(env_root)?;
-                    return Ok(());
-                }
-                "alpine" => {
-                    create_default_alpine_channel_config(env_root)?;
-                    return Ok(());
-                }
-                _ => {
-                    return Err(eyre::eyre!(
-                        "Channel '{}' is not supported. Sources not found at: {}",
-                        distro_name,
-                        sources_path.display()
-                    ));
-                }
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            return Err(eyre::eyre!(
-                "Channel configs source path does not exist: {}",
-                sources_path.display()
-            ));
-        }
-    }
-
-    copy_main_channel_config(&sources_path, env_root, &distro_name, distro_version.as_deref())?;
+    copy_main_channel_config(env_root, &channel_content)?;
     copy_repo_configs(&sources_path, env_root, &distro_name)?;
 
-    Ok(())
-}
-
-/// Create MSYS2 channel configuration from embedded assets (standalone Windows binary).
-#[cfg(windows)]
-fn create_default_msys2_channel_config(env_root: &Path) -> Result<()> {
-    let channel_content = include_str!("../assets/repos/msys2.yaml");
-
-    let dest_channel_path = env_root_channel_yaml(env_root);
-    lfs::create_dir_all(dest_channel_path.parent().unwrap())?;
-    lfs::write(&dest_channel_path, channel_content)?;
-
-    println!("Created MSYS2 (pacman) channel configuration");
-    Ok(())
-}
-
-/// Create Alpine channel configuration from embedded assets (standalone Windows binary).
-#[cfg(windows)]
-fn create_default_alpine_channel_config(env_root: &Path) -> Result<()> {
-    let channel_content = include_str!("../assets/repos/alpine.yaml");
-
-    let dest_channel_path = env_root_channel_yaml(env_root);
-    lfs::create_dir_all(dest_channel_path.parent().unwrap())?;
-    lfs::write(&dest_channel_path, channel_content)?;
-
-    println!("Created Alpine (apk) channel configuration");
     Ok(())
 }
 
