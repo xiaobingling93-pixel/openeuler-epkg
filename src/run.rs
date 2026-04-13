@@ -1212,6 +1212,13 @@ pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathB
                 let guest_rel = resolved_path.strip_prefix(env_root).unwrap_or(&resolved_path);
                 let guest_path = PathBuf::from("/").join(guest_rel);
                 return Ok(guest_path);
+            } else {
+                // Symlink points outside env_root (e.g., to /tmp/epkg-aa/envs/self/usr/bin/epkg)
+                // but the command exists in the environment. Return the guest path based on
+                // cmd_path location within the environment.
+                let guest_rel = cmd_path.strip_prefix(env_root).unwrap_or(&cmd_path);
+                let guest_path = PathBuf::from("/").join(guest_rel);
+                return Ok(guest_path);
             }
         }
     }
