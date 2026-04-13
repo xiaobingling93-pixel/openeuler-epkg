@@ -1164,20 +1164,24 @@ fn update_version_in_contents(contents: &str, version: &str) -> String {
 }
 
 
-pub fn remove_environment(name: &str) -> Result<()> {
-    // Validate environment name
+/// Validate environment name and existence for removal
+fn validate_environment_for_removal(name: &str) -> Result<PathBuf> {
     // 'self' environment contains package manager files; 'main' is the default private environment
     if name == SELF_ENV || name == MAIN_ENV {
         return Err(eyre::eyre!("Environment cannot be removed: '{}'", name));
     }
 
-    // Resolve env path without loading config (config may be missing for non-existent env)
     let env_base = get_env_base_path(name);
     if !lfs::exists_on_host(&env_base) {
         return Err(eyre::eyre!("Environment does not exist: '{}'", name));
     }
 
-    // Check if environment is active and handle stacked environments
+    Ok(env_base)
+}
+
+/// Check if environment is active and handle stacked environments
+/// Returns true if the environment was deactivated (was the first in stack)
+fn handle_active_environment_for_removal(name: &str) -> Result<()> {
     if let Ok(active_envs) = env::var("EPKG_ACTIVE_ENV") {
         let env_stack: Vec<&str> = active_envs.split(':').collect();
 
@@ -1196,39 +1200,42 @@ pub fn remove_environment(name: &str) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
 
-    // Unregister if registered
-    unregister_environment(name)?;
+/// Clean up env_root if it differs from env_base
+/// For brew environments, env_root may be sudo-created and cannot be removed by normal user
+fn cleanup_env_root_if_needed(env_base: &Path, env_name: &str) {
+    let env_root = crate::dirs::get_env_root(env_name.to_string()).ok();
 
-    // Get env_root to clean up installed files
-    // For brew environments, env_root may differ from env_base (e.g., /opt/homebrew vs ~/.epkg/envs/dev-brew)
-    let env_root = crate::dirs::get_env_root(name.to_string()).ok();
-
-    // Remove env_base first (always succeeds for user-owned directory)
-    force_remove_dir_all(&env_base)
-        .with_context(|| format!("Failed to remove environment directory '{}'", env_base.display()))?;
-
-    // If env_root differs from env_base, clean up env_root too
-    // For brew: env_root = /opt/homebrew (created by sudo, user cannot remove the directory itself)
-    // We clean up files inside but tolerate failure when removing the top-level directory
     if let Some(env_root) = env_root {
         if env_root != env_base {
             log::debug!("Cleaning up env_root {} (different from env_base {})", env_root.display(), env_base.display());
             // Try to remove env_root contents, tolerate failure for sudo-created directories
-            // Use lfs::remove_dir_all directly (no permission fixup attempts) since
-            // the files inside are user-created and should be removable
             match lfs::remove_dir_all(&env_root) {
                 Ok(()) => {
                     log::debug!("Successfully removed env_root {}", env_root.display());
                 }
                 Err(e) => {
                     // Brew env_root is typically created by sudo and cannot be removed by normal user
-                    // This is expected, just log a debug message and continue
                     log::debug!("Could not remove env_root {} (expected for sudo-created directories): {}", env_root.display(), e);
                 }
             }
         }
     }
+}
+
+pub fn remove_environment(name: &str) -> Result<()> {
+    let env_base = validate_environment_for_removal(name)?;
+    handle_active_environment_for_removal(name)?;
+    unregister_environment(name)?;
+
+    // Remove env_base first (always succeeds for user-owned directory)
+    force_remove_dir_all(&env_base)
+        .with_context(|| format!("Failed to remove environment directory '{}'", env_base.display()))?;
+
+    // Clean up env_root if it differs from env_base
+    cleanup_env_root_if_needed(&env_base, name);
 
     println!("# Environment '{}' has been removed.", name);
     Ok(())
