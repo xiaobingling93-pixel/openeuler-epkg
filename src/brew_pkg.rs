@@ -662,9 +662,12 @@ pub fn rewrite_dylib_paths_for_env(env_root: &Path) -> Result<()> {
 /// Scans the given directories for files matching the predicate (e.g., is_elf_file, is_mach_o_file).
 /// Returns a deduplicated list of canonicalized paths (handles symlinks pointing to same file).
 ///
+/// For Brew packages, files are in Cellar/ directory with symlinks in bin/, lib/ etc.
+/// We scan Cellar/ directly to find actual files for dylib rewriting.
+///
 /// # Arguments
 /// * `env_root` - Environment root directory
-/// * `dirs` - List of directory names to scan (e.g., ["bin", "lib", "libexec"])
+/// * `dirs` - List of directory names to scan (e.g., ["Cellar", "bin", "lib", "libexec"])
 /// * `is_binary` - Predicate function to check if a file is a binary of the target type
 fn collect_binary_files(env_root: &Path, dirs: &[&str], is_binary: fn(&Path) -> bool) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = Vec::new();
@@ -699,15 +702,26 @@ fn collect_binary_files(env_root: &Path, dirs: &[&str], is_binary: fn(&Path) -> 
 
 /// Rewrite dylib paths in Mach-O files (macOS).
 ///
-/// Collects all Mach-O binaries from bin/, lib/, libexec/, and Frameworks/ directories,
+/// Collects all Mach-O binaries from Cellar/ directory (where actual files are stored),
 /// then rewrites their dylib load commands using install_name_tool.
+///
+/// Note: For Brew Cellar layout, files are in Cellar/pkgname/version/bin/, lib/, etc.
+/// The env_root/bin/, lib/ directories contain symlinks to Cellar, so we scan Cellar directly.
 #[cfg(target_os = "macos")]
 fn rewrite_mach_o_dylib_paths(env_root: &Path) -> Result<()> {
-    // Collect all potential Mach-O files (binaries and dylibs)
-    let mach_o_files = collect_binary_files(env_root, &["bin", "lib", "libexec", "Frameworks"], is_mach_o_file);
+    // Collect all potential Mach-O files from Cellar directory
+    // Cellar/ contains the actual binary files for brew packages
+    let cellar_dir = env_root.join("Cellar");
+    if !cellar_dir.exists() {
+        log::debug!("No Cellar directory found in {}", env_root.display());
+        return Ok(());
+    }
+
+    // Scan Cellar/ for all Mach-O files (binaries and dylibs)
+    let mach_o_files = collect_binary_files(env_root, &["Cellar"], is_mach_o_file);
 
     if mach_o_files.is_empty() {
-        log::debug!("No Mach-O files found in {}", env_root.display());
+        log::debug!("No Mach-O files found in Cellar {}", env_root.display());
         return Ok(());
     }
 
@@ -825,6 +839,10 @@ fn rewrite_dylib_paths_for_file_in_env(mach_o_path: &Path, env_root: &Path) -> R
 }
 
 /// Resolve a Homebrew placeholder dylib path to an absolute path under env_root.
+///
+/// For Cellar layout:
+/// - @@HOMEBREW_CELLAR@@/jq/1.8.1/lib/libjq.1.dylib -> env_root/Cellar/jq/1.8.1/lib/libjq.1.dylib
+/// - @@HOMEBREW_PREFIX@@/opt/oniguruma/lib/libonig.5.dylib -> env_root/Cellar/oniguruma/version/lib/libonig.5.dylib
 #[cfg(target_os = "macos")]
 fn resolve_homebrew_dylib_path_for_env(placeholder_path: &str, prefix: &str, env_root: &Path) -> Option<String> {
     // Extract the path after the placeholder prefix
@@ -833,19 +851,39 @@ fn resolve_homebrew_dylib_path_for_env(placeholder_path: &str, prefix: &str, env
     match prefix {
         "@@HOMEBREW_PREFIX@@" => {
             // Format: /opt/pkgname/lib/libfoo.dylib or /lib/libfoo.dylib
-            // The path after prefix may start with /opt/<pkgname>/ or directly /lib/
-            // We want to extract the lib/foo.dylib part and resolve under env_root/lib/
-            extract_lib_path_and_resolve(rest, env_root)
+            // For Cellar layout, libraries are in Cellar/pkgname/version/lib/
+            // Try to find in Cellar first, then fall back to env_root
+            extract_lib_path_and_resolve_cellar(rest, env_root)
         }
         "@@HOMEBREW_CELLAR@@" => {
             // Format: /pkgname/version/lib/libfoo.dylib
-            // Skip /pkgname/version/ part and find the actual path
             // The path structure is: /<pkgname>/<version>/<actual_path>
+            // For Cellar layout, this directly maps to env_root/Cellar/pkgname/version/lib/
             let parts: Vec<&str> = rest.splitn(4, '/').collect();
             if parts.len() >= 4 {
                 // parts[0] is empty (before first /), parts[1] is pkgname, parts[2] is version
                 // parts[3] is the rest of the path like "lib/libfoo.dylib"
-                extract_lib_path_and_resolve(&format!("/{}", parts[3]), env_root)
+                let pkgname = parts[1];
+                let version = parts[2];
+                let rest_path = parts[3];
+
+                // Try exact version first
+                let cellar_path = env_root.join("Cellar").join(pkgname).join(version).join(rest_path);
+                if cellar_path.exists() {
+                    return Some(cellar_path.display().to_string());
+                }
+
+                // Try with bottle revision suffix (_0, _1, etc.)
+                for rev in 0..10 {
+                    let version_with_rev = format!("{}_{}", version, rev);
+                    let cellar_path = env_root.join("Cellar").join(pkgname).join(&version_with_rev).join(rest_path);
+                    if cellar_path.exists() {
+                        return Some(cellar_path.display().to_string());
+                    }
+                }
+
+                // Fall back to general resolution
+                extract_lib_path_and_resolve_cellar(&format!("/{}", rest_path), env_root)
             } else {
                 None
             }
@@ -854,11 +892,43 @@ fn resolve_homebrew_dylib_path_for_env(placeholder_path: &str, prefix: &str, env
     }
 }
 
-/// Extract library path and resolve under env_root.
-/// Handles paths like /lib/libfoo.dylib, /opt/pkgname/lib/libfoo.dylib, /Frameworks/...
+/// Extract library path and resolve under env_root/Cellar.
+/// For Cellar layout, libraries are in Cellar/pkgname/version/lib/
 #[cfg(target_os = "macos")]
-fn extract_lib_path_and_resolve(rest: &str, env_root: &Path) -> Option<String> {
-    // Try to find lib/ in the path
+fn extract_lib_path_and_resolve_cellar(rest: &str, env_root: &Path) -> Option<String> {
+    // Try to find lib/ in the path and look in Cellar directories
+    if let Some(lib_pos) = rest.find("/lib/") {
+        let lib_name = &rest[lib_pos + 5..]; // Get just the library name like "libfoo.dylib"
+
+        // Search all Cellar packages for this library
+        let cellar_dir = env_root.join("Cellar");
+        if cellar_dir.exists() {
+            if let Ok(pkg_entries) = std::fs::read_dir(&cellar_dir) {
+                for pkg_entry in pkg_entries.filter_map(|e| e.ok()) {
+                    let pkg_dir = pkg_entry.path();
+                    if !pkg_dir.is_dir() {
+                        continue;
+                    }
+                    if let Ok(ver_entries) = std::fs::read_dir(&pkg_dir) {
+                        for ver_entry in ver_entries.filter_map(|e| e.ok()) {
+                            let ver_dir = ver_entry.path();
+                            let lib_path = ver_dir.join("lib").join(lib_name);
+                            if lib_path.exists() {
+                                return Some(lib_path.display().to_string());
+                            }
+                            // Also check nested paths like lib/pkgconfig/
+                            let full_lib_path = ver_dir.join("lib").join(&rest[lib_pos + 5..]);
+                            if full_lib_path.exists() {
+                                return Some(full_lib_path.display().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Try direct lib path under env_root
     if let Some(lib_pos) = rest.find("/lib/") {
         let lib_path = &rest[lib_pos + 1..]; // Skip the leading slash, get "lib/foo.dylib"
         let full_path = env_root.join(lib_path);
@@ -870,9 +940,51 @@ fn extract_lib_path_and_resolve(rest: &str, env_root: &Path) -> Option<String> {
     // Try to find Frameworks/ in the path (for macOS Python framework, etc.)
     if let Some(fw_pos) = rest.find("/Frameworks/") {
         let fw_path = &rest[fw_pos + 1..]; // Get "Frameworks/..."
+        // Check Cellar first
+        let cellar_dir = env_root.join("Cellar");
+        if cellar_dir.exists() {
+            if let Ok(pkg_entries) = std::fs::read_dir(&cellar_dir) {
+                for pkg_entry in pkg_entries.filter_map(|e| e.ok()) {
+                    let pkg_dir = pkg_entry.path();
+                    if let Ok(ver_entries) = std::fs::read_dir(&pkg_dir) {
+                        for ver_entry in ver_entries.filter_map(|e| e.ok()) {
+                            let ver_dir = ver_entry.path();
+                            let fw_full_path = ver_dir.join(fw_path);
+                            if fw_full_path.exists() {
+                                return Some(fw_full_path.display().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Also check env_root/Frameworks/ (symlinked directory)
         let full_path = env_root.join(fw_path);
         if full_path.exists() {
             return Some(full_path.display().to_string());
+        }
+    }
+
+    // Try opt/pkgname/lib/ pattern
+    if rest.starts_with("/opt/") {
+        let parts: Vec<&str> = rest.split('/').collect();
+        if parts.len() >= 4 {
+            // /opt/pkgname/lib/libfoo.dylib -> parts = ["", "opt", "pkgname", "lib", ...]
+            let pkgname = parts[2];
+            let cellar_dir = env_root.join("Cellar").join(pkgname);
+            if cellar_dir.exists() {
+                if let Ok(ver_entries) = std::fs::read_dir(&cellar_dir) {
+                    for ver_entry in ver_entries.filter_map(|e| e.ok()) {
+                        let ver_dir = ver_entry.path();
+                        // Construct the rest of the path
+                        let rest_parts: Vec<&str> = parts[3..].to_vec();
+                        let lib_path = ver_dir.join(rest_parts.join("/"));
+                        if lib_path.exists() {
+                            return Some(lib_path.display().to_string());
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -883,19 +995,23 @@ fn extract_lib_path_and_resolve(rest: &str, env_root: &Path) -> Option<String> {
         return Some(lib_path.display().to_string());
     }
 
-    // If the library doesn't exist yet, still return the expected path
-    // (it might be from another package being installed in the same batch)
-    if rest.contains("/lib/") {
-        let lib_pos = rest.find("/lib/").unwrap();
-        let lib_path = &rest[lib_pos + 1..];
-        return Some(env_root.join(lib_path).display().to_string());
-    }
-
-    // Same for Frameworks - return expected path even if doesn't exist yet
-    if rest.contains("/Frameworks/") {
-        let fw_pos = rest.find("/Frameworks/").unwrap();
-        let fw_path = &rest[fw_pos + 1..];
-        return Some(env_root.join(fw_path).display().to_string());
+    // Search Cellar for library by name
+    let cellar_dir = env_root.join("Cellar");
+    if cellar_dir.exists() {
+        if let Ok(pkg_entries) = std::fs::read_dir(&cellar_dir) {
+            for pkg_entry in pkg_entries.filter_map(|e| e.ok()) {
+                let pkg_dir = pkg_entry.path();
+                if let Ok(ver_entries) = std::fs::read_dir(&pkg_dir) {
+                    for ver_entry in ver_entries.filter_map(|e| e.ok()) {
+                        let ver_dir = ver_entry.path();
+                        let lib_path = ver_dir.join("lib").join(lib_name);
+                        if lib_path.exists() {
+                            return Some(lib_path.display().to_string());
+                        }
+                    }
+                }
+            }
+        }
     }
 
     None
