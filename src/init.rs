@@ -2135,7 +2135,7 @@ fn fixup_host_lib64_symlink() -> Result<()> {
 
     // /lib64 doesn't exist (or was just removed), need to create it
     if !utils::is_running_as_root() {
-        eprintln!("WARNING: /lib64 -> usr/lib64 symlink does not exist and cannot be created (not running as root). Guest OS other than Alpine/ArchLinux/Conda may not work.");
+        log::debug!("/lib64 -> usr/lib64 symlink does not exist and cannot be created (not running as root). Fallback to Fs isolate mode on 'epkg run'.");
         return Err(eyre::eyre!("Cannot create /lib64 symlink: not running as root"));
     }
 
@@ -2143,4 +2143,29 @@ fn fixup_host_lib64_symlink() -> Result<()> {
     lfs::symlink_dir_for_native(usr_lib64_target, lib64_path)?;
 
     Ok(())
+}
+
+/// Check if /lib64 symlink exists and points to usr/lib64 on the host.
+/// Returns true if the symlink exists correctly, false otherwise.
+/// Used to determine whether to fallback from Env mode to Fs mode.
+#[cfg(target_os = "linux")]
+pub fn host_lib64_symlink_ok() -> bool {
+    let lib64_path = Path::new("/lib64");
+    let usr_lib64_target = Path::new("usr/lib64");
+
+    // Check if /lib64 exists as a symlink
+    if lfs::is_symlink(lib64_path) {
+        if let Ok(target) = fs::read_link(lib64_path) {
+            // Check if it points to usr/lib64 (correct)
+            return target == usr_lib64_target;
+        }
+    }
+    // /lib64 doesn't exist or is not a symlink, or points elsewhere
+    false
+}
+
+/// Stub for non-Linux platforms - always returns true since /lib64 is not relevant.
+#[cfg(not(target_os = "linux"))]
+pub fn host_lib64_symlink_ok() -> bool {
+    true
 }

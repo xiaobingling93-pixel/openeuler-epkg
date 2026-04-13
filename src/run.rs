@@ -1295,6 +1295,16 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
         run_options.effective_sandbox.isolate_mode = Some(crate::models::IsolateMode::Env);
     }
 
+    // Fallback from Env mode to Fs mode when host /lib64 symlink is missing.
+    // Env mode relies on host OS layout; Fs mode provides full filesystem isolation.
+    // This is needed on hosts like macOS where /lib64 doesn't exist.
+    if run_options.effective_sandbox.isolate_mode == Some(crate::models::IsolateMode::Env)
+        && !crate::init::host_lib64_symlink_ok()
+    {
+        debug!("Host /lib64 symlink missing, falling back from Env mode to Fs mode");
+        run_options.effective_sandbox.isolate_mode = Some(crate::models::IsolateMode::Fs);
+    }
+
     // Normalise skip_namespace_isolation based on channel and environment context.
     // Load channel config from the target environment (not the global default)
     // to correctly determine the package format for VM mode auto-selection.
