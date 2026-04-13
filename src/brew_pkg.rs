@@ -170,7 +170,7 @@ pub fn unpack_package<P: AsRef<Path>>(bottle_file: P, store_tmp_dir: P, pkgkey: 
     let archive = Archive::new(decoder);
 
     // Use policy-based extraction for Brew bottles
-    extract_brew_contents(archive, store_tmp_dir)?;
+    extract_brew_contents(archive, store_tmp_dir, pkgkey)?;
 
     // Note: Dylib path rewriting is done at link time (for Move link type)
     // because paths need to be absolute and point to the specific environment.
@@ -198,19 +198,22 @@ pub fn unpack_package<P: AsRef<Path>>(bottle_file: P, store_tmp_dir: P, pkgkey: 
 /// - Skip top-level entries (package_name/, package_name/version/)
 /// - .brew/ directory goes to info/brew/.brew/
 /// - Root-level metadata files go to info/brew/
-/// - Regular files go to fs/Cellar/package_name/version/... (Homebrew-style layout)
-fn brew_path_policy(path: &Path, _is_hard_link: bool, store_tmp_dir: &Path) -> Option<PathBuf> {
+/// - Regular files go to fs/Cellar/package_name/pkgkey_version/... (Homebrew-style layout)
+///
+/// Note: The version from pkgkey (e.g., "2.3.2_0") is used, not the tar path version (e.g., "2.3.2").
+/// This ensures consistency between unpack and link stages.
+fn brew_path_policy_with_pkgkey(path: &Path, _is_hard_link: bool, store_tmp_dir: &Path, pkgkey_version: &str) -> Option<PathBuf> {
     // Path structure: "package_name/version/..." (e.g., "jq/1.7.1/bin/jq")
-    // We want: "Cellar/package_name/version/..." for regular files
+    // We want: "Cellar/package_name/pkgkey_version/..." for regular files
+    // pkgkey_version includes bottle revision (e.g., "2.3.2_0") while tar path version doesn't
     let components: Vec<_> = path.components().collect();
     if components.len() < 3 {
         // Skip top-level entries (package_name/, package_name/version/)
         return None;
     }
 
-    // Get package name and version from path
+    // Get package name from path (tar path version is ignored, use pkgkey_version instead)
     let pkgname = components[0].as_os_str().to_str().unwrap_or("");
-    let version = components[1].as_os_str().to_str().unwrap_or("");
 
     // Reconstruct path without first two components (package_name and version)
     let stripped_components: Vec<_> = components.iter().skip(2).collect();
@@ -239,10 +242,11 @@ fn brew_path_policy(path: &Path, _is_hard_link: bool, store_tmp_dir: &Path) -> O
             stripped_components[0].as_os_str()
         )
     } else {
-        // Regular files go to fs/Cellar/package_name/version/... (Homebrew-style layout)
+        // Regular files go to fs/Cellar/package_name/pkgkey_version/... (Homebrew-style layout)
+        // Use pkgkey_version which includes bottle revision (e.g., "2.3.2_0")
         // This matches the vanilla Homebrew directory structure:
         // /opt/homebrew/Cellar/jq/1.7.1/bin/jq
-        let cellar_base = crate::dirs::path_join(store_tmp_dir, &["fs", "Cellar", pkgname, version]);
+        let cellar_base = crate::dirs::path_join(store_tmp_dir, &["fs", "Cellar", pkgname, pkgkey_version]);
         stripped_components.iter().fold(
             cellar_base,
             |acc, comp| acc.join(comp.as_os_str())
@@ -256,11 +260,32 @@ fn brew_path_policy(path: &Path, _is_hard_link: bool, store_tmp_dir: &Path) -> O
 fn extract_brew_contents<R: Read>(
     archive: Archive<R>,
     store_tmp_dir: &Path,
+    pkgkey: Option<&str>,
 ) -> Result<usize> {
+    // Extract version from pkgkey: {pkgname}__{version}__{arch}
+    // The version from pkgkey includes bottle revision (e.g., "2.3.2_0")
+    // which is different from tar path version (e.g., "2.3.2")
+    // Use Box::leak to get a static reference for the closure
+    let pkgkey_version: &'static str = if let Some(key) = pkgkey {
+        let parts: Vec<&str> = key.rsplitn(3, "__").collect();
+        if parts.len() == 3 {
+            Box::leak(parts[1].to_string().into_boxed_str())
+        } else {
+            // Fallback to empty if pkgkey format is invalid
+            log::warn!("Invalid pkgkey format, expected 3 parts: {}", key);
+            ""
+        }
+    } else {
+        ""
+    };
+
     let config = ExtractConfig::new(store_tmp_dir)
         .handle_hard_links(true);
 
-    let policy: crate::tar_extract::PathPolicy = Box::new(brew_path_policy);
+    // Use closure with static pkgkey_version reference
+    let policy: crate::tar_extract::PathPolicy = Box::new(|path, is_hard_link, store_tmp_dir| {
+        brew_path_policy_with_pkgkey(path, is_hard_link, store_tmp_dir, pkgkey_version)
+    });
     let mut archive = archive;
     extract_archive_with_policy(&mut archive, &config, policy)
 }
@@ -476,22 +501,11 @@ fn create_cellar_file_symlinks(
             continue;
         }
 
-        // For symlinks in Cellar, copy them with adjusted target
-        if entry.file_type().is_symlink() {
-            let link_target = std::fs::read_link(cellar_path)?;
+        // For symlinks in Cellar, also create symlink pointing to Cellar (not copying symlink target)
+        // This ensures symlink chain is preserved:
+        // env_root/bin/python3 -> ../Cellar/pkg/version/bin/python3 -> ../Frameworks/...
+        // The relative path ../Frameworks/... in Cellar resolves correctly to Cellar internal path
 
-            // Remove existing symlink if present
-            if crate::lfs::symlink_metadata(&env_path).is_ok() {
-                crate::lfs::remove_file(&env_path)?;
-            }
-
-            // Create symlink in env_dir (keep relative target from Cellar)
-            crate::lfs::symlink_file_for_virtiofs(&link_target, &env_path)?;
-            log::trace!("Created Cellar symlink: {} -> {}", env_path.display(), link_target.display());
-            continue;
-        }
-
-        // For regular files, create symlink to Cellar
         // Remove existing file/symlink if present
         if crate::lfs::symlink_metadata(&env_path).is_ok() {
             crate::lfs::remove_file(&env_path)?;
