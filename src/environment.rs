@@ -851,36 +851,6 @@ fn import_packages_and_create_metadata(env_root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Setup and validate environment paths, create symlinks if needed
-fn setup_environment_paths(env_base: &Path) -> Result<PathBuf> {
-    let env_root = if !config().common.env_root.is_empty() {
-        PathBuf::from(&config().common.env_root)
-    } else {
-        env_base.to_path_buf()
-    };
-
-    let env_channel_yaml = env_root_channel_yaml(&env_root);
-    if !config().common.force && lfs::exists_on_host(&env_channel_yaml) {
-        return Err(eyre::eyre!("Environment already exists at path: '{}'", env_root.display()));
-    }
-
-    // If env_root is specified, we need to create a symlink from env_base to env_root
-    if !config().common.env_root.is_empty() {
-        // Check if env_base already exists as a directory (not a symlink/junction)
-        // Use exists_no_follow to check if path exists, then check if it's NOT a symlink/junction
-        if lfs::exists_no_follow(&env_base) && !lfs::is_symlink_or_junction(&env_base) {
-            return Err(eyre::eyre!("Environment base path '{}' already exists as a directory. Cannot create symlink.", env_base.display()));
-        }
-        // Ensure parent directory of env_base exists
-        if let Some(parent) = env_base.parent() {
-            lfs::create_dir_all(parent)?;
-        }
-        force_symlink_dir_for_virtiofs(&env_root, &env_base)
-            .with_context(|| format!("Failed to create symlink from {} to {}", env_base.display(), env_root.display()))?;
-    }
-
-    Ok(env_root)
-}
 
 pub fn create_environment(env_name: &str) -> Result<()> {
     let env_base = dirs().user_envs.join(env_name);
@@ -979,6 +949,18 @@ fn try_use_homebrew_prefix() -> Result<Option<PathBuf>> {
 /// Setup environment paths with special handling for Brew environments.
 /// For Brew environments, checks HOMEBREW_PREFIX and may use it as env_root.
 fn setup_brew_environment_paths(env_base: &Path) -> Result<(PathBuf, PackageFormat)> {
+    // Check if environment already exists BEFORE determining package format.
+    // determine_package_format() creates channel.yaml, which would break this check.
+    let env_root = if !config().common.env_root.is_empty() {
+        PathBuf::from(&config().common.env_root)
+    } else {
+        env_base.to_path_buf()
+    };
+    let env_channel_yaml = env_root_channel_yaml(&env_root);
+    if !config().common.force && lfs::exists_on_host(&env_channel_yaml) {
+        return Err(eyre::eyre!("Environment already exists at path: '{}'", env_root.display()));
+    }
+
     let pkg_format = determine_package_format(env_base)?;
 
     if pkg_format == PackageFormat::Brew {
@@ -987,7 +969,20 @@ fn setup_brew_environment_paths(env_base: &Path) -> Result<(PathBuf, PackageForm
         }
     }
 
-    let env_root = setup_environment_paths(env_base)?;
+    // If env_root is specified, create symlink from env_base to env_root
+    if !config().common.env_root.is_empty() {
+        // Check if env_base already exists as a directory (not a symlink/junction)
+        if lfs::exists_no_follow(&env_base) && !lfs::is_symlink_or_junction(&env_base) {
+            return Err(eyre::eyre!("Environment base path '{}' already exists as a directory. Cannot create symlink.", env_base.display()));
+        }
+        // Ensure parent directory of env_base exists
+        if let Some(parent) = env_base.parent() {
+            lfs::create_dir_all(parent)?;
+        }
+        force_symlink_dir_for_virtiofs(&env_root, &env_base)
+            .with_context(|| format!("Failed to create symlink from {} to {}", env_base.display(), env_root.display()))?;
+    }
+
     Ok((env_root, pkg_format))
 }
 
