@@ -309,10 +309,19 @@ fn copy_files_from_env(new_env_root: &Path, existing_env_root: &Path, fs_files: 
             // Copy symlink target
             let link_target = std::fs::read_link(&existing_file)
                 .with_context(|| format!("Failed to read symlink {}", existing_file.display()))?;
+            // Remove existing symlink if present (from partial previous install)
+            if lfs::symlink_metadata(&target_path).is_ok() {
+                lfs::remove_file(&target_path)
+                    .with_context(|| format!("Failed to remove existing symlink {}", target_path.display()))?;
+            }
             lfs::symlink_file_for_virtiofs(&link_target, &target_path)
                 .with_context(|| format!("Failed to create symlink {}", target_path.display()))?;
         } else {
-            // Copy regular file
+            // Copy regular file - remove existing if present
+            if lfs::exists_on_host(&target_path) {
+                lfs::remove_file(&target_path)
+                    .with_context(|| format!("Failed to remove existing file {}", target_path.display()))?;
+            }
             lfs::copy(&existing_file, &target_path)
                 .with_context(|| format!("Failed to copy {} to {}", existing_file.display(), target_path.display()))?;
         }

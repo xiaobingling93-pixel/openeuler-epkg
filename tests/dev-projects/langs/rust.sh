@@ -3,13 +3,26 @@
 
 . "$(dirname "$0")/../common.sh"
 
-run_install rust cargo rustc
+# brew: cargo has implicit library dependencies not declared in formula
+# (uses_from_macos "curl" means curl is system dependency on macOS, but needed on Linux)
+# Also need bash for shell commands (host /bin/sh fails with vdso_time SIGSEGV)
+# coreutils for ls/mkdir/etc (host paths filtered from PATH in brew namespace)
+# Install all packages in one command to avoid symlink conflicts (re-install fails if symlinks exist)
+if [ "$OS" = "brew" ]; then
+    run_install rust cargo rustc curl gcc krb5 openldap cyrus-sasl bash coreutils
+else
+    run_install rust cargo rustc
+fi
+
 check_cmd cargo --version || lang_skip "no rust package for OS=$OS"
 
 run_ebin cargo --version
 
 # msys2/conda on Windows have bash but no /bin/sh
+# brew: host /bin/sh fails in namespace (vdso_time SIGSEGV), use brew's bash
 if [ "$OS" = "msys2" ] || [ "$OS" = "conda" ]; then
+    SHELL_CMD="bash -c"
+elif [ "$OS" = "brew" ]; then
     SHELL_CMD="bash -c"
 else
     SHELL_CMD="/bin/sh -c"
