@@ -67,8 +67,8 @@ pub fn run_post_install(env_root: &Path, store_dir: &Path, pkgname: &str, versio
         &["assets", "homebrew"]
     );
 
-    let stub_path = assets_dir.join("epkg_formula_stub.rb");
-    let runner_path = assets_dir.join("epkg_postinstall_runner.rb");
+    let stub_path = assets_dir.join("formula_stub.rb");
+    let runner_path = assets_dir.join("postinstall_runner.rb");
 
     if !stub_path.exists() || !runner_path.exists() {
         log::warn!("Ruby stub/runner not found at {}, skipping post_install", assets_dir.display());
