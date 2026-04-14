@@ -134,8 +134,44 @@ fn create_node_modules_symlink(env_root: &Path) -> Result<()> {
 
 
 /// Handle ELF binary with elf-loader wrapper (non-conda environments)
+///
+/// For brew environments at HOMEBREW_PREFIX, we skip elf-loader and just create
+/// a symlink from ebin/app to the resolved binary path. This is because:
+/// - Homebrew packages at HOMEBREW_PREFIX are native and run directly on host
+/// - No namespace isolation needed (env_root == HOMEBREW_PREFIX)
+/// - Interpreter/RPATH rewriting already done, binaries work natively
 fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
     log::info!("handle_elf: target_path={}, fs_file={}", target_path.display(), fs_file.display());
+
+    // Check if this is a brew environment at HOMEBREW_PREFIX
+    let is_brew = crate::run::is_brew_environment(env_root);
+    if is_brew {
+        let homebrew_prefix = crate::brew_pkg::prefix::preferred();
+        let hb_path = std::path::Path::new(homebrew_prefix);
+        // Check if env_root equals HOMEBREW_PREFIX
+        let is_at_prefix = match env_root.canonicalize() {
+            Ok(canonical_env) => match hb_path.canonicalize() {
+                Ok(canonical_hb) => canonical_env == canonical_hb,
+                Err(_) => env_root == hb_path,
+            },
+            Err(_) => env_root == hb_path,
+        };
+
+        if is_at_prefix {
+            log::info!("  Brew at HOMEBREW_PREFIX: skipping elf-loader, creating symlink");
+            // Just create symlink from ebin/app → fs_file (resolved binary)
+            // No elf-loader needed since env_root == HOMEBREW_PREFIX (native execution)
+            if target_path.exists() {
+                lfs::remove_file(target_path)?;
+            }
+            if let Some(parent) = target_path.parent() {
+                lfs::create_dir_all(parent)?;
+            }
+            lfs::symlink_file_for_virtiofs(fs_file, target_path)?;
+            log::debug!("Created symlink: {} -> {}", target_path.display(), fs_file.display());
+            return Ok(());
+        }
+    }
 
     let self_env_root = dirs::find_env_root(SELF_ENV)
         .ok_or_else(|| eyre::eyre!("Self environment not found"))?;
