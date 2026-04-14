@@ -6,11 +6,10 @@
 //! without requiring the full Homebrew Library.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
-use crate::lfs;
 
 /// Check if a formula defines a post_install method.
 ///
@@ -51,18 +50,6 @@ pub fn run_post_install(env_root: &Path, pkgname: &str, version: &str) -> Result
 
     log::info!("Running post_install for {}", pkgname);
 
-    // Ensure stub directory exists
-    let stub_dir = env_root.join("Homebrew/Library/Homebrew");
-    if !stub_dir.exists() {
-        lfs::create_dir_all(&stub_dir)?;
-    }
-
-    // Copy or create stub file
-    let stub_path = stub_dir.join("epkg_formula_stub.rb");
-    if !stub_path.exists() {
-        create_formula_stub(&stub_path)?;
-    }
-
     // Ruby executable path
     let ruby_path = env_root.join("Homebrew/Library/Homebrew/vendor/portable-ruby/current/bin/ruby");
     if !ruby_path.exists() {
@@ -70,37 +57,29 @@ pub fn run_post_install(env_root: &Path, pkgname: &str, version: &str) -> Result
         return Ok(());
     }
 
-    // Build Ruby script
-    // Use load instead of require to avoid caching issues
-    // String concatenation to avoid format! macro parsing Ruby's #{...}
-    let script = [
-        "begin",
-        &format!("  load '{}'", stub_path.display()),
-        &format!("  load '{}'", formula_path.display()),
-        "",
-        "  # Find the formula class (last defined class inheriting from Formula)",
-        "  formula_class = ObjectSpace.each_object(Class).select { |c| c < Formula && c != Formula }.last",
-        "",
-        "  if formula_class",
-        &format!("    formula = formula_class.new('{}', '{}')", pkgname, version),
-        "    if formula.method(:post_install).owner != Formula",
-        &format!("      puts \"==> Running post_install for {}\"", pkgname),
-        "      formula.post_install",
-        "      puts \"==> post_install completed\"",
-        "    end",
-        "  else",
-        "    puts \"Warning: No Formula class found\"",
-        "  end",
-        "rescue Exception => e",
-        "  puts \"Error: #{e.class}: #{e.message}\"",
-        "  puts e.backtrace.first(5).join(\"\\n\")",
-        "  exit 1",
-        "end",
-    ].join("\n");
+    // Assets directory path (from epkg source directory)
+    let assets_dir = crate::dirs::path_join(
+        crate::dirs::get_epkg_src_path().as_path(),
+        &["assets", "homebrew"]
+    );
+
+    let stub_path = assets_dir.join("epkg_formula_stub.rb");
+    let runner_path = assets_dir.join("epkg_postinstall_runner.rb");
+
+    if !stub_path.exists() || !runner_path.exists() {
+        log::warn!("Ruby stub/runner not found at {}, skipping post_install", assets_dir.display());
+        return Ok(());
+    }
 
     // Execute with portable-ruby
+    // Arguments: runner.rb <stub_path> <formula_path> <pkgname> <version>
     let status = Command::new(&ruby_path)
-        .args(["--disable=gems,rubyopt", "-e", &script])
+        .arg("--disable=gems,rubyopt")
+        .arg(&runner_path)
+        .arg(&stub_path)
+        .arg(&formula_path)
+        .arg(pkgname)
+        .arg(version)
         .env("HOMEBREW_PREFIX", env_root)
         .env("HOMEBREW_CELLAR", env_root.join("Cellar"))
         .env("HOMEBREW_LIBRARY", env_root.join("Homebrew/Library"))
@@ -159,20 +138,3 @@ fn find_formula_in_store(env_root: &Path, pkgname: &str) -> Result<PathBuf> {
 
     Err(eyre::eyre!("Formula not found for {}", pkgname))
 }
-
-/// Create the minimal Formula stub file.
-///
-/// This provides the essential Formula class and helper methods
-/// without requiring the full Homebrew Library.
-fn create_formula_stub(stub_path: &Path) -> Result<()> {
-    // Load stub from assets directory (embedded at compile time)
-    let stub_content = include_str!("../assets/homebrew/epkg_formula_stub.rb");
-
-    fs::write(stub_path, stub_content)
-        .wrap_err_with(|| format!("Failed to write stub: {}", stub_path.display()))?;
-
-    log::trace!("Created Formula stub at {}", stub_path.display());
-    Ok(())
-}
-
-use std::path::PathBuf;
