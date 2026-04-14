@@ -3,6 +3,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use tar::Archive;
 use log;
+use memchr::memmem;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use flate2::read::GzDecoder;
@@ -479,17 +480,10 @@ pub fn create_cellar_symlinks(env_root: &Path, store_dir: &Path, pkgkey: &str) -
 
     log::info!("Created Cellar symlinks for {} {} in {}", pkgname, version, env_root.display());
 
-    // Replace placeholder paths in Python configuration files
-    // Python's _sysconfigdata_*.py contains @@HOMEBREW_PREFIX@@ placeholders
-    // that need to be replaced for proper sys.path calculation
-    replace_python_config_placeholders(env_root, pkgname, &version)?;
-
-    // Replace placeholder paths in glibc linker scripts
-    // glibc's libc.so linker script contains @@HOMEBREW_CELLAR@@ placeholders
-    // that need to be replaced for proper library linking
-    if pkgname == "glibc" {
-        replace_glibc_linker_script_placeholders(env_root, &version)?;
-    }
+    // Replace Homebrew placeholders in all text files in the package.
+    // This handles Python config files, glibc linker scripts, libtool files,
+    // and any other text files containing @@HOMEBREW_*@@ placeholders.
+    replace_placeholders_in_text_files(env_root, pkgname, &version)?;
 
     // Run post_install if defined in formula
     // Uses minimal Ruby stub instead of full Homebrew Library
@@ -1558,190 +1552,191 @@ fn rewrite_cellar_path_to_top_level(cellar_path: &str, env_root: &Path) -> Optio
     None
 }
 
-/// Replace placeholder paths in glibc linker scripts.
+/// Replace Homebrew placeholders in all text files in a package.
 ///
-/// glibc's linker scripts (libc.so, libm.so, etc.) contain `@@HOMEBREW_CELLAR@@`
-/// placeholders that need to be replaced with actual paths for proper linking.
+/// Scans all files in Cellar/pkgname/version/ directory, detects text files,
+/// and replaces Homebrew placeholder paths with actual paths.
 ///
-/// Example libc.so content:
-/// ```
-/// GROUP ( @@HOMEBREW_CELLAR@@/glibc/2.39/lib/libc.so.6 ... )
-/// ```
+/// Placeholders replaced:
+/// - `@@HOMEBREW_PREFIX@@` → env_root
+/// - `@@HOMEBREW_CELLAR@@` → env_root/Cellar
+/// - `@@HOMEBREW_LIBRARY@@` → env_root/Cellar (brew convention)
 ///
-/// Without this replacement, gcc cannot link against glibc libraries.
-///
-/// # Arguments
-/// * `env_root` - Environment root directory (HOMEBREW_PREFIX)
-/// * `version` - glibc version (e.g., "2.39")
-fn replace_glibc_linker_script_placeholders(env_root: &Path, version: &str) -> Result<()> {
-    let cellar_pkg_dir = env_root.join("Cellar").join("glibc").join(version);
-    let lib_dir = cellar_pkg_dir.join("lib");
-
-    if !lib_dir.exists() {
-        log::debug!("glibc lib directory not found");
-        return Ok(());
-    }
-
-    // Find linker scripts (*.so files that are text, not ELF)
-    for entry in std::fs::read_dir(&lib_dir)?.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        // Linker scripts have .so extension but are text files
-        if path.extension().map(|e| e == "so").unwrap_or(false) {
-            // Check if it's a text file (linker script) by reading first bytes
-            if let Ok(bytes) = std::fs::read(&path) {
-                if bytes.starts_with(b"/*") || bytes.starts_with(b"GROUP") {
-                    // This is a linker script, replace placeholders
-                    let homebrew_prefix = env_root.display().to_string();
-                    replace_homebrew_placeholders_in_file(&path, &homebrew_prefix)?;
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Replace placeholder paths in Python configuration files.
-///
-/// Python's `_sysconfigdata__darwin_darwin.py` (or similar for other platforms)
-/// contains `@@HOMEBREW_PREFIX@@` placeholders that need to be replaced with the
-/// actual HOMEBREW_PREFIX path. This file is used by sysconfig and site modules
-/// to determine Python's paths, including site-packages directories.
-///
-/// Without this replacement, Python cannot find packages installed in
-/// `$HOMEBREW_PREFIX/lib/python3.x/site-packages/`.
+/// This handles various file types:
+/// - Python config files (_sysconfigdata*.py)
+/// - glibc linker scripts (libc.so, libm.so)
+/// - Perl/Java path references
+/// - libtool files
+/// - Other text files with hardcoded Homebrew paths
 ///
 /// # Arguments
 /// * `env_root` - Environment root directory (HOMEBREW_PREFIX)
-/// * `pkgname` - Package name (e.g., "python@3.13")
-/// * `version` - Package version (e.g., "3.13.13_0")
-fn replace_python_config_placeholders(env_root: &Path, pkgname: &str, version: &str) -> Result<()> {
+/// * `pkgname` - Package name
+/// * `version` - Package version
+fn replace_placeholders_in_text_files(env_root: &Path, pkgname: &str, version: &str) -> Result<()> {
     let cellar_pkg_dir = env_root.join("Cellar").join(pkgname).join(version);
-
-    // Find Python config files
-    let config_files = find_python_config_files(&cellar_pkg_dir)?;
-
-    if config_files.is_empty() {
-        log::debug!("No Python _sysconfigdata files found for {}", pkgname);
+    if !cellar_pkg_dir.exists() {
         return Ok(());
     }
 
-    // Replace placeholders in each config file
     let homebrew_prefix = env_root.display().to_string();
-    for config_file in &config_files {
-        replace_homebrew_placeholders_in_file(config_file, &homebrew_prefix)?;
-    }
+    let mut text_files_count = 0;
 
-    Ok(())
-}
+    // Walk through all files in the package directory
+    for entry in walkdir::WalkDir::new(&cellar_pkg_dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
 
-/// Find Python configuration files in Cellar package directory.
-///
-/// Searches both framework structure (Frameworks/Python.framework) and
-/// non-framework structure (lib/python3.x/) for _sysconfigdata*.py and
-/// sitecustomize.py files.
-///
-/// # Arguments
-/// * `cellar_pkg_dir` - Cellar package directory (Cellar/pkgname/version)
-fn find_python_config_files(cellar_pkg_dir: &Path) -> Result<Vec<PathBuf>> {
-    // Try framework structure first (macOS)
-    let framework_lib = cellar_pkg_dir
-        .join("Frameworks")
-        .join("Python.framework")
-        .join("Versions");
-
-    if framework_lib.exists() {
-        return scan_framework_for_config_files(&framework_lib);
-    }
-
-    // Non-framework structure: look in lib/python3.x/
-    let lib_dir = cellar_pkg_dir.join("lib");
-    if lib_dir.exists() {
-        return scan_lib_for_config_files(&lib_dir);
-    }
-
-    Ok(Vec::new())
-}
-
-/// Scan framework structure for Python config files.
-fn scan_framework_for_config_files(framework_lib: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-
-    for version_entry in std::fs::read_dir(framework_lib)?.filter_map(|e| e.ok()) {
-        let lib_dir = version_entry.path().join("lib");
-        if lib_dir.exists() {
-            files.extend(scan_lib_for_config_files(&lib_dir)?);
-        }
-    }
-
-    Ok(files)
-}
-
-/// Scan lib/ directory for Python config files (_sysconfigdata*.py, sitecustomize.py).
-fn scan_lib_for_config_files(lib_dir: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-
-    for py_entry in std::fs::read_dir(lib_dir)?.filter_map(|e| e.ok()) {
-        let py_lib_dir = py_entry.path();
-        let py_name = py_lib_dir.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-
-        if !py_name.starts_with("python3.") {
+        // Skip directories and symlinks
+        if !path.is_file() {
             continue;
         }
 
-        for config_entry in std::fs::read_dir(&py_lib_dir)?.filter_map(|e| e.ok()) {
-            let config_file = config_entry.path();
-            let file_name = config_file.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-
-            if (file_name.starts_with("_sysconfigdata") && file_name.ends_with(".py"))
-                || file_name == "sitecustomize.py"
-            {
-                files.push(config_file);
-            }
+        // Detect text files using pure Rust heuristic (no external command)
+        if is_text_file(path)? {
+            replace_homebrew_placeholders_in_file(path, &homebrew_prefix)?;
+            text_files_count += 1;
         }
     }
 
-    Ok(files)
+    if text_files_count > 0 {
+        log::info!("Replaced placeholders in {} text files for {}", text_files_count, pkgname);
+    }
+
+    Ok(())
+}
+
+/// Check if a file is a text file.
+///
+/// Uses a two-tier strategy:
+/// 1. First check using utils::FileType for known script types (Python, Ruby, Perl, etc.)
+///    which are definitely text - this is cheap and fast
+/// 2. Then use binary detection heuristic (null bytes, non-printable ratio) as fallback
+///
+/// This avoids false negatives for script files while still catching binary files.
+fn is_text_file(path: &Path) -> Result<bool> {
+    // Tier 1: Use utils::FileType for known script types (cheap detection)
+    let (file_type, _) = crate::utils::get_file_type(path)?;
+    match file_type {
+        // Known script types are definitely text
+        crate::utils::FileType::ShellScript
+        | crate::utils::FileType::PerlScript
+        | crate::utils::FileType::PythonScript
+        | crate::utils::FileType::RubyScript
+        | crate::utils::FileType::NodeScript
+        | crate::utils::FileType::LuaScript => {
+            return Ok(true);
+        }
+        // ELF and Mach-O are definitely binary
+        crate::utils::FileType::Elf | crate::utils::FileType::MachO => {
+            return Ok(false);
+        }
+        // Symlinks and Others need further checking
+        crate::utils::FileType::Symlink | crate::utils::FileType::Others => {}
+    }
+
+    // Tier 2: Binary detection heuristic for unknown file types
+    let mut file = std::fs::File::open(path)
+        .wrap_err_with(|| format!("Failed to open {}", path.display()))?;
+
+    // Read first 8KB for binary detection (enough for most headers)
+    let mut buffer = [0u8; 8192];
+    let bytes_read = file.read(&mut buffer)
+        .wrap_err_with(|| format!("Failed to read {}", path.display()))?;
+
+    if bytes_read == 0 {
+        // Empty file is considered text
+        return Ok(true);
+    }
+
+    let sample = &buffer[..bytes_read];
+
+    // Binary files typically contain null bytes early (ELF magic, compressed data, etc.)
+    // Text files rarely have null bytes unless corrupted
+    if sample.contains(&0x00) {
+        return Ok(false);
+    }
+
+    // Additional check: high ratio of non-printable ASCII bytes
+    // This catches files that are binary but don't have null bytes
+    let non_printable_count = sample.iter()
+        .filter(|&b| *b < 0x20 && *b != 0x09 && *b != 0x0A && *b != 0x0D) // exclude tab, newline, CR
+        .count();
+
+    // If more than 30% are non-printable (excluding whitespace), likely binary
+    let ratio = non_printable_count as f32 / bytes_read as f32;
+    Ok(ratio < 0.30)
 }
 
 /// Replace Homebrew placeholders in a single file.
 ///
 /// Replaces @@HOMEBREW_PREFIX@@, @@HOMEBREW_CELLAR@@, and @@HOMEBREW_LIBRARY@@
-/// with actual paths.
+/// with actual paths. Uses memmem for efficient searching.
 ///
 /// # Arguments
 /// * `config_file` - Path to the config file
 /// * `homebrew_prefix` - The actual HOMEBREW_PREFIX path
 fn replace_homebrew_placeholders_in_file(config_file: &Path, homebrew_prefix: &str) -> Result<()> {
-    let content = std::fs::read_to_string(config_file)
+    let content = std::fs::read(config_file)
         .wrap_err_with(|| format!("Failed to read {}", config_file.display()))?;
 
-    // Check if there are placeholders to replace
-    if !content.contains("@@HOMEBREW_PREFIX@@")
-        && !content.contains("@@HOMEBREW_CELLAR@@")
-        && !content.contains("@@HOMEBREW_LIBRARY@@")
-    {
+    // Build replacement strings
+    let homebrew_cellar = format!("{}/Cellar", homebrew_prefix);
+    let homebrew_library = format!("{}/Cellar", homebrew_prefix);
+
+    // Define placeholders and their replacements
+    let replacements: &[(&[u8], &[u8])] = &[
+        (b"@@HOMEBREW_PREFIX@@", homebrew_prefix.as_bytes()),
+        (b"@@HOMEBREW_CELLAR@@", homebrew_cellar.as_bytes()),
+        (b"@@HOMEBREW_LIBRARY@@", homebrew_library.as_bytes()),
+    ];
+
+    // Check if any placeholder exists using memmem
+    let has_placeholders = replacements.iter().any(|(placeholder, _)| {
+        memmem::find(&content, placeholder).is_some()
+    });
+
+    if !has_placeholders {
         return Ok(());
     }
 
     log::debug!("Replacing placeholders in {}", config_file.display());
 
-    let homebrew_cellar = format!("{}/Cellar", homebrew_prefix);
-    let homebrew_library = format!("{}/Cellar", homebrew_prefix);
+    // Build new content with replacements
+    // Strategy: process content sequentially, replacing each placeholder found
+    let mut new_content = Vec::with_capacity(content.len());
+    let mut pos = 0;
 
-    let new_content = content
-        .replace("@@HOMEBREW_PREFIX@@", homebrew_prefix)
-        .replace("@@HOMEBREW_CELLAR@@", &homebrew_cellar)
-        .replace("@@HOMEBREW_LIBRARY@@", &homebrew_library);
+    while pos < content.len() {
+        // Find the next placeholder (earliest match among all)
+        let next_match = replacements.iter()
+            .filter_map(|(placeholder, replacement)| {
+                memmem::find(&content[pos..], placeholder)
+                    .map(|offset| (offset, placeholder.len(), replacement))
+            })
+            .min_by_key(|(offset, _, _)| *offset);
+
+        if let Some((match_offset, placeholder_len, replacement)) = next_match {
+            // Copy content before the placeholder
+            new_content.extend_from_slice(&content[pos..pos + match_offset]);
+            // Add replacement
+            new_content.extend_from_slice(replacement);
+            // Move position past the placeholder
+            pos += match_offset + placeholder_len;
+        } else {
+            // No more placeholders, copy remaining content
+            new_content.extend_from_slice(&content[pos..]);
+            break;
+        }
+    }
 
     std::fs::write(config_file, &new_content)
         .wrap_err_with(|| format!("Failed to write {}", config_file.display()))?;
 
-    log::info!("Replaced placeholders in {}", config_file.display());
+    log::trace!("Replaced placeholders in {}", config_file.display());
     Ok(())
 }
 
