@@ -552,3 +552,90 @@ $env_root/                    (HOMEBREW_PREFIX)
    - 实现完整的 Homebrew 依赖解析器
    - 支持 `depends_on` 和 `resource` 块
    - 自动安装依赖链
+
+## post_install 执行
+
+### 背景
+
+Homebrew formula 通常定义 `post_install` 方法，在包安装后执行设置任务：
+- 创建目录（如 `var/archiva/logs`）
+- 运行设置命令（如 `system bin/"abricate", "--setupdb"`）
+- 更新缓存（如 `glib-compile-schemas`, `gtk-update-icon-cache`）
+
+### 实现策略
+
+**方案选择**：最小化 Ruby stub（约60行）
+
+**理由**：
+- 完整 Homebrew Library 太重（formula.rb 4884行）
+- post_install 使用的 API 很集中（90%+只需少数方法）
+- Ruby 标准库 Pathname 已提供大部分路径操作
+
+### API 使用统计
+
+基于 homebrew-core 所有 formula 分析：
+
+| API | 使用次数 | 说明 |
+|-----|---------|------|
+| `system` | 161 | 执行外部命令 |
+| `HOMEBREW_PREFIX` | 117 | 全局常量 |
+| `var/` | 91 | Pathname 方法 |
+| `Formula["pkgname"]` | 86 | 获取其他 formula |
+| `bin/` | 81 | Pathname 方法 |
+| `.mkpath` | 80 | 创建目录 |
+| `prefix` | 76 | 当前 formula prefix |
+| `opt_bin` | 74 | 其他 formula opt 路径 |
+
+### 支持的 API
+
+**全局常量**：
+- `HOMEBREW_PREFIX` - env_root
+- `HOMEBREW_CELLAR` - env_root/Cellar
+
+**Formula 类方法**：
+- `Formula[name]` - 返回 Formula 对象
+
+**Formula 实例方法**：
+- `prefix`, `bin`, `lib`, `share`, `include`, `libexec`
+- `var`, `etc`, `pkgshare`, `pkgetc`
+- `opt_prefix`, `opt_bin`, `opt_lib`, `opt_share`
+
+**Pathname 方法**（Ruby 标准库提供）：
+- `.mkpath`, `.exist?`, `.install`, `.join`, `/` 操作符
+
+**辅助方法**：
+- `system` - 执行命令
+- `ohai`, `opoo` - 输出信息
+- FileUtils（cp, cp_r, rm, mv 等）
+
+### 执行流程
+
+```
+1. 安装包后检测 post_install（文本扫描 formula.rb）
+2. 如果存在：
+   a. 复制 Ruby stub 到 env_root/Homebrew/Library/Homebrew/
+   b. 设置环境变量（HOMEBREW_PREFIX, PATH, TMPDIR 等）
+   c. 用 portable-ruby 执行
+3. 错误不中断安装（记录警告）
+```
+
+### 关键文件
+
+- `src/brew_postinstall.rs` - Rust 模块
+- `assets/homebrew/epkg_formula_stub.rb` - Ruby stub（约60行）
+
+### portable-ruby
+
+Homebrew 依赖 Ruby 运行 post_install 脚本。epkg 安装 `portable-ruby` 作为 essential brew 包：
+
+**目录结构**：
+```
+env_root/Homebrew/Library/Homebrew/vendor/portable-ruby/
+├── 4.0.2_1 -> ../../../../../Cellar/portable-ruby/4.0.2_1
+└── current -> 4.0.2_1
+```
+
+**好处**：
+- 确保 Ruby 版本兼容（Homebrew 要求 Ruby >= 3.4）
+- 环境自包含，不依赖主机 Ruby
+- 与 vanilla Homebrew 结构一致

@@ -479,6 +479,10 @@ pub fn create_cellar_symlinks(env_root: &Path, pkgkey: &str) -> Result<()> {
     // that need to be replaced for proper sys.path calculation
     replace_python_config_placeholders(env_root, pkgname, &version)?;
 
+    // Run post_install if defined in formula
+    // Uses minimal Ruby stub instead of full Homebrew Library
+    crate::brew_postinstall::run_post_install(env_root, pkgname, &version)?;
+
     Ok(())
 }
 

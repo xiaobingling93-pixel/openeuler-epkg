@@ -128,6 +128,8 @@ mod brew_repo;
 mod brew_pkg;
 #[cfg(unix)]
 mod brew_service;
+#[cfg(unix)]
+mod brew_postinstall;
 mod shebang;
 mod version_constraint;
 #[cfg(unix)]
