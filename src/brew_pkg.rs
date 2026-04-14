@@ -388,8 +388,8 @@ pub fn create_cellar_symlinks(env_root: &Path, pkgkey: &str) -> Result<()> {
     // Create opt/pkgname symlink
     create_opt_package_symlink(env_root, pkgname, &version)?;
 
-    // Create file-level symlinks for bin/ and lib/
-    for dir_name in ["bin", "lib"] {
+    // Create file-level symlinks for bin/, lib/, sbin/
+    for dir_name in ["bin", "lib", "sbin"] {
         let env_dir = ensure_real_directory(env_root, dir_name)?;
         let cellar_subdir = cellar_pkg_dir.join(dir_name);
         if cellar_subdir.exists() {

@@ -711,13 +711,28 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
         // On Linux, do nothing - packages will create usr/libexec as a real directory if needed
 
         // Create home/linuxbrew symlinks for Fs/VM mode pivot_root
-        // These symlinks ensure paths work after pivot_root:
-        // - /home/linuxbrew/.linuxbrew -> ../../../../ (points to new root after pivot_root)
-        // - /home/linuxbrew/.LB -> .linuxbrew (short prefix for RPATH/interpreter)
         #[cfg(target_os = "linux")]
         {
             create_homebrew_symlinks(env_root);
         }
+
+        // Create brew-specific directories
+        // 1. Caskroom/ - for macOS casks (empty on Linux)
+        lfs::create_dir_all(env_root.join("Caskroom"))?;
+
+        // 2. var/homebrew/ - Homebrew's internal state directory
+        lfs::create_dir_all(env_root.join("var").join("homebrew").join("linked"))?;
+        lfs::create_dir_all(env_root.join("var").join("homebrew").join("locks"))?;
+        lfs::create_dir_all(env_root.join("var").join("homebrew").join("tmp"))?;
+
+        // 3. sbin/ - Homebrew installs binaries here (like zic from glibc)
+        //    Convert usr-merge symlink to real directory for brew
+        let sbin_path = env_root.join("sbin");
+        if lfs::symlink_metadata(&sbin_path).is_ok() {
+            // Remove the usr-merge symlink
+            lfs::remove_file(&sbin_path)?;
+        }
+        lfs::create_dir_all(&sbin_path)?;
     }
 
     // Fedora: usr/sbin is a symlink to bin (unified /usr/bin and /usr/sbin)
