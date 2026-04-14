@@ -1021,25 +1021,74 @@ fn try_use_homebrew_prefix() -> Result<Option<PathBuf>> {
             return Ok(None);
         }
         log::info!("Successfully created HOMEBREW_PREFIX: {}", homebrew_prefix);
-        Ok(Some(hb_path.to_path_buf()))
-    } else {
-        // Directory already exists - fallback to regular env_root to avoid race condition
-        // (directory may be created by others and not writable by current user)
-        #[cfg(target_os = "macos")]
-        {
-            return Err(eyre::eyre!(
-                "HOMEBREW_PREFIX {} already exists. \
-                 On macOS, brew environments must use HOMEBREW_PREFIX as env_root. \
-                 Please remove the directory first.",
-                homebrew_prefix
-            ));
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            log::info!("HOMEBREW_PREFIX {} already exists, using regular env_root to avoid race condition", homebrew_prefix);
-            Ok(None)
-        }
+        return Ok(Some(hb_path.to_path_buf()));
     }
+
+    // Directory already exists
+    #[cfg(target_os = "macos")]
+    {
+        // On macOS, must use HOMEBREW_PREFIX
+        // Check if empty and owned by current user
+        if is_empty_directory_owned_by_user(hb_path)? {
+            log::info!("Reusing empty HOMEBREW_PREFIX {} owned by current user", homebrew_prefix);
+            return Ok(Some(hb_path.to_path_buf()));
+        }
+        return Err(eyre::eyre!(
+            "HOMEBREW_PREFIX {} already exists and is not empty or not owned by current user. \
+             On macOS, brew environments must use HOMEBREW_PREFIX as env_root. \
+             Please remove the directory first: epkg env remove <name>",
+            homebrew_prefix
+        ));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        // On Linux, check if empty and owned by current user for reuse
+        if is_empty_directory_owned_by_user(hb_path)? {
+            log::info!("Reusing empty HOMEBREW_PREFIX {} owned by current user", homebrew_prefix);
+            return Ok(Some(hb_path.to_path_buf()));
+        }
+        log::info!("HOMEBREW_PREFIX {} already exists (not empty or not owned by user), using regular env_root", homebrew_prefix);
+        Ok(None)
+    }
+}
+
+/// Check if directory is empty and owned by current user.
+/// Returns true only if both conditions are met.
+#[cfg(unix)]
+fn is_empty_directory_owned_by_user(path: &Path) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    use nix::unistd::{Uid, Gid};
+
+    // Check if directory exists
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    // Check ownership - must be owned by current user
+    let metadata = std::fs::metadata(path)
+        .wrap_err_with(|| format!("Failed to get metadata for {}", path.display()))?;
+
+    let current_uid = Uid::current().as_raw();
+    let current_gid = Gid::current().as_raw();
+
+    if metadata.uid() != current_uid || metadata.gid() != current_gid {
+        log::debug!("HOMEBREW_PREFIX {} not owned by current user (uid={}, gid={}, expected uid={}, gid={})",
+            path.display(), metadata.uid(), metadata.gid(), current_uid, current_gid);
+        return Ok(false);
+    }
+
+    // Check if empty - no files or subdirectories
+    let entries = std::fs::read_dir(path)
+        .wrap_err_with(|| format!("Failed to read directory {}", path.display()))?;
+
+    let count = entries.count();
+    if count > 0 {
+        log::debug!("HOMEBREW_PREFIX {} not empty (contains {} entries)", path.display(), count);
+        return Ok(false);
+    }
+
+    Ok(true)
 }
 
 /// Try to create HOMEBREW_PREFIX directory using sudo if needed
@@ -1287,23 +1336,76 @@ fn handle_active_environment_for_removal(name: &str) -> Result<()> {
 }
 
 /// Clean up env_root if it differs from env_base
-/// For brew environments, env_root may be sudo-created and cannot be removed by normal user
+/// For brew environments with env_root == HOMEBREW_PREFIX:
+/// - Remove contents but leave empty directory for reuse
+/// - Keep home/linuxbrew/.LB symlink in host for next environment
 fn cleanup_env_root_if_needed(env_base: &Path, env_root: Option<&Path>) {
     if let Some(env_root) = env_root {
         if env_root != env_base {
             log::debug!("Cleaning up env_root {} (different from env_base {})", env_root.display(), env_base.display());
-            // Try to remove env_root contents, tolerate failure for sudo-created directories
-            match lfs::remove_dir_all(env_root) {
-                Ok(()) => {
-                    log::debug!("Successfully removed env_root {}", env_root.display());
-                }
-                Err(e) => {
-                    // Brew env_root is typically created by sudo and cannot be removed by normal user
-                    log::debug!("Could not remove env_root {} (expected for sudo-created directories): {}", env_root.display(), e);
+
+            // Check if env_root is HOMEBREW_PREFIX
+            let homebrew_prefix = crate::brew_pkg::prefix::preferred();
+            let is_homebrew_prefix = env_root == Path::new(homebrew_prefix);
+
+            if is_homebrew_prefix {
+                // For HOMEBREW_PREFIX, remove contents but leave empty directory for reuse
+                log::info!("Cleaning HOMEBREW_PREFIX {} for reuse", env_root.display());
+                remove_contents_keep_directory(env_root);
+            } else {
+                // For other env_root, try full removal
+                match lfs::remove_dir_all(env_root) {
+                    Ok(()) => {
+                        log::debug!("Successfully removed env_root {}", env_root.display());
+                    }
+                    Err(e) => {
+                        log::debug!("Could not remove env_root {}: {}", env_root.display(), e);
+                    }
                 }
             }
         }
     }
+}
+
+/// Remove all contents of a directory but keep the directory itself empty.
+/// This allows reuse of HOMEBREW_PREFIX after `epkg env remove`.
+fn remove_contents_keep_directory(dir: &Path) {
+    if !dir.exists() || !dir.is_dir() {
+        return;
+    }
+
+    // Remove all entries in the directory
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path: PathBuf = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+
+            // Keep home/linuxbrew/.LB symlink in host (created by create_homebrew_symlinks)
+            // But remove everything else including .linuxbrew contents
+            if name == ".LB" {
+                log::debug!("Keeping .LB symlink for reuse");
+                continue;
+            }
+
+            // Use path.is_dir() which follows symlinks
+            // For symlinks to directories, we want to remove the symlink not the target
+            if path.is_symlink() {
+                if let Err(e) = lfs::remove_file(&path) {
+                    log::warn!("Failed to remove symlink {}: {}", path.display(), e);
+                }
+            } else if path.is_dir() {
+                if let Err(e) = lfs::remove_dir_all(&path) {
+                    log::warn!("Failed to remove directory {}: {}", path.display(), e);
+                }
+            } else {
+                if let Err(e) = lfs::remove_file(&path) {
+                    log::warn!("Failed to remove file {}: {}", path.display(), e);
+                }
+            }
+        }
+    }
+
+    log::info!("Left empty HOMEBREW_PREFIX {} for reuse", dir.display());
 }
 
 pub fn remove_environment(name: &str) -> Result<()> {
