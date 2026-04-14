@@ -675,12 +675,18 @@ fn process_brew_formulas(repo_dir: &PathBuf, revise: &RepoReleaseItem, formulas:
 
     // Create essential_pkgnames for brew
     // glibc is essential for Linux brew bottles to have proper dynamic linker
+    // portable-ruby is essential for running Ruby post_install scripts
     let essential_pkgnames_path = repo_dir.join(filename.replace("packages", "essential_pkgnames"));
     #[allow(unused_mut)]
     let mut essential_pkgnames: HashSet<String> = HashSet::new();
     #[cfg(target_os = "linux")]
     {
         essential_pkgnames.insert("glibc".to_string());
+        essential_pkgnames.insert("portable-ruby".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        essential_pkgnames.insert("portable-ruby".to_string());
     }
     crate::mmio::serialize_essential_pkgnames(&essential_pkgnames_path, &essential_pkgnames)
         .with_context(|| "Failed to serialize essential_pkgnames")?;

@@ -388,6 +388,12 @@ pub fn create_cellar_symlinks(env_root: &Path, pkgkey: &str) -> Result<()> {
     // Create opt/pkgname symlink
     create_opt_package_symlink(env_root, pkgname, &version)?;
 
+    // Special handling for portable-ruby: create Homebrew vendor symlinks
+    // Homebrew expects Ruby at Homebrew/Library/Homebrew/vendor/portable-ruby/current/
+    if pkgname == "portable-ruby" {
+        create_portable_ruby_vendor_symlinks(env_root, &version)?;
+    }
+
     // Create file-level symlinks for bin/, lib/, sbin/
     for dir_name in ["bin", "lib", "sbin"] {
         let env_dir = ensure_real_directory(env_root, dir_name)?;
@@ -560,6 +566,55 @@ fn create_opt_package_symlink(env_root: &Path, pkgname: &str, version: &str) -> 
 
     crate::lfs::symlink_dir_for_virtiofs(&opt_target, &opt_pkg_link)?;
     log::trace!("Created opt symlink: {} -> {}", opt_pkg_link.display(), opt_target.display());
+
+    Ok(())
+}
+
+/// Create Homebrew vendor symlinks for portable-ruby.
+///
+/// Homebrew expects Ruby at Homebrew/Library/Homebrew/vendor/portable-ruby/current/
+/// This creates the directory structure and symlinks pointing to Cellar.
+///
+/// # Arguments
+/// * `env_root` - Environment root directory
+/// * `version` - portable-ruby version (e.g., "4.0.2_1")
+fn create_portable_ruby_vendor_symlinks(env_root: &Path, version: &str) -> Result<()> {
+    // Create Homebrew/Library/Homebrew/vendor/portable-ruby/ directory
+    let vendor_dir = env_root
+        .join("Homebrew")
+        .join("Library")
+        .join("Homebrew")
+        .join("vendor")
+        .join("portable-ruby");
+
+    if !vendor_dir.exists() {
+        crate::lfs::create_dir_all(&vendor_dir)?;
+        log::trace!("Created portable-ruby vendor directory: {}", vendor_dir.display());
+    }
+
+    // Create version symlink: vendor/portable-ruby/version -> ../../../../../Cellar/portable-ruby/version
+    // Path: env_root/Homebrew/Library/Homebrew/vendor/portable-ruby/version
+    //       -> ../../../../../Cellar/portable-ruby/version (5 levels up to env_root)
+    let version_link = vendor_dir.join(version);
+    let cellar_target = PathBuf::from("../../../../../Cellar/portable-ruby").join(version);
+
+    // Remove existing symlink if present
+    if crate::lfs::symlink_metadata(&version_link).is_ok() {
+        crate::lfs::remove_file(&version_link)?;
+    }
+
+    crate::lfs::symlink_dir_for_virtiofs(&cellar_target, &version_link)?;
+    log::trace!("Created portable-ruby version symlink: {} -> {}", version_link.display(), cellar_target.display());
+
+    // Create current symlink: vendor/portable-ruby/current -> version
+    let current_link = vendor_dir.join("current");
+
+    if crate::lfs::symlink_metadata(&current_link).is_ok() {
+        crate::lfs::remove_file(&current_link)?;
+    }
+
+    crate::lfs::symlink_dir_for_virtiofs(Path::new(version), &current_link)?;
+    log::trace!("Created portable-ruby current symlink: {} -> {}", current_link.display(), version);
 
     Ok(())
 }
