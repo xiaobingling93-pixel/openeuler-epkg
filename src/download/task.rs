@@ -24,7 +24,7 @@ use crate::lfs;
 use crate::mirror;
 use crate::utils;
 use super::types::*;
-use super::validation::classify_file_type;
+use super::validation::classify_mutability;
 
 fn should_skip_chunking_at_start(url: &str) -> bool {
     // URLs with $mirror should keep mirror-based retry/chunking behavior.
@@ -106,7 +106,7 @@ impl DownloadTask {
         let chunk_path = utils::append_suffix(&final_path, "part");
 
         // Classify file type for integrity and metadata handling
-        let file_type = classify_file_type(&final_path, file_size);
+        let mutability = classify_mutability(&final_path, file_size);
 
         Self {
             url:               url.clone(),
@@ -119,7 +119,7 @@ impl DownloadTask {
             final_path,
             file_size:         AtomicU64::new(file_size.unwrap_or(0)),
             attempt_number:    AtomicUsize::new(0),         // Initialize to 0 (first attempt)
-            file_type,                                      // File type for integrity and metadata handling
+            mutability,                                      // File type for integrity and metadata handling
             flags:             flags,
             serving_metadata:  Mutex::new(None),            // Will store metadata in HTTP response
             servers_metadata:  Mutex::new(Vec::new()),
@@ -248,7 +248,7 @@ impl DownloadTask {
             file_size:            AtomicU64::new(self.file_size.load(Ordering::Relaxed)),
             attempt_number:       AtomicUsize::new(0),                  // Initialize to 0 (first attempt)
             mirror_inuse:         Arc::new(Mutex::new(None)),           // No mirror selected yet for chunk tasks
-            file_type:            self.file_type.clone(),               // Copy file type classification
+            mutability:            self.mutability.clone(),               // Copy file type classification
             flags:                self.flags,
             // Chunks should start with None serving_metadata so they select their own mirror
             // Metadata validation will ensure ETag/timestamp consistency across mirrors
@@ -413,7 +413,7 @@ impl DownloadTask {
     /// Saves download metadata to .etag.json file
     pub(crate) fn save_remote_metadata(&self) -> Result<()> {
         if !self.is_master_task() ||
-            self.file_type == FileType::Immutable {
+            self.mutability == Mutability::Immutable {
             return Ok(());
         }
 
@@ -461,7 +461,7 @@ impl DownloadTask {
     /// Loads download metadata from .etag.json file
     pub(crate) fn load_remote_metadata(&self) -> Result<Option<DownloadMetadata>> {
         if !self.is_master_task() ||
-            self.file_type == FileType::Immutable {
+            self.mutability == Mutability::Immutable {
             return Ok(None);
         }
 

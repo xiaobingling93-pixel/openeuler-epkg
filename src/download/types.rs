@@ -9,7 +9,7 @@
 // - DownloadTask: Core structure representing an individual download operation
 // - DownloadStatus: Enumeration of possible download states
 // - DownloadError: Error types specific to download operations
-// - FileType: Classification of file types for integrity handling
+// - Mutability: Classification of file types for integrity handling
 // - ServerMetadata: HTTP response metadata for consistency validation
 // - ChunkInfo: Information about download chunks for parallel processing
 // - Various constants for chunking, threading, and timing configurations
@@ -109,7 +109,7 @@ pub struct DownloadTask {
     pub mirror_inuse:         Arc<Mutex<Option<crate::mirror::Mirror>>>,  // Selected mirror for usage tracking
 
     // File type classification for integrity and metadata handling
-    pub file_type:            FileType,
+    pub mutability:            Mutability,
 
     // Server metadata from response headers, stored for later application
     pub serving_metadata:     Mutex<Option<ServerMetadata>>,
@@ -192,7 +192,7 @@ pub enum ChunkStatus {
 
 /// File type classification for appropriate integrity handling
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum FileType {
+pub enum Mutability {
     // An Immutable file means the remote file either remains static;
     // An AppendOnly file will only be appended to over time.
     // This implies that:

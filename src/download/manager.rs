@@ -890,7 +890,7 @@ fn format_task_line(task: &Arc<DownloadTask>, level: usize) -> String {
     let mut fields = vec![
         format!(
             "{}  {:?}  {:?}  offset={}  size={}  resumed={} recv={}  rate={}KB/s  eta={}s",
-            name, task.file_type, status,
+            name, task.mutability, status,
             offset, size, resumed_bytes, recv,
             task.throughput_bps.load(Ordering::Relaxed) >> 10, eta
         ),

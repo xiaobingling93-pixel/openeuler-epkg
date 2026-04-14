@@ -610,8 +610,8 @@ pub(crate) fn should_redownload(
 
     // For immutable files, we already know beforehand whether to UseCache/AppendDownload
     // So these are double checks serving as validation
-    if task.file_type == FileType::Immutable ||
-       task.file_type == FileType::AppendOnly {
+    if task.mutability == Mutability::Immutable ||
+       task.mutability == Mutability::AppendOnly {
         return check_immutable_file(task, local_size, remote_size_opt);
     }
 
@@ -639,9 +639,9 @@ pub(crate) fn should_redownload(
 }
 
 /// Shared outcome for immutable/append-only size comparison.
-fn immutable_size_outcome(file_type: &FileType, local_size: u64, expected_size: u64) -> ImmutableSizeOutcome {
-    match file_type {
-        FileType::Immutable => {
+fn immutable_size_outcome(mutability: &Mutability, local_size: u64, expected_size: u64) -> ImmutableSizeOutcome {
+    match mutability {
+        Mutability::Immutable => {
             if local_size == expected_size {
                 ImmutableSizeOutcome::Match
             } else if local_size < expected_size {
@@ -650,7 +650,7 @@ fn immutable_size_outcome(file_type: &FileType, local_size: u64, expected_size: 
                 ImmutableSizeOutcome::TooBig
             }
         }
-        FileType::AppendOnly => {
+        Mutability::AppendOnly => {
             if local_size >= expected_size {
                 ImmutableSizeOutcome::Match
             } else {
@@ -681,7 +681,7 @@ fn check_immutable_file(
             });
         }
     };
-    let outcome = immutable_size_outcome(&task.file_type, local_size, remote_size_val);
+    let outcome = immutable_size_outcome(&task.mutability, local_size, remote_size_val);
     match outcome {
         ImmutableSizeOutcome::Match => {
             // For APK files, also verify gzip integrity to catch corrupted files
@@ -703,7 +703,7 @@ fn check_immutable_file(
             }
         }
         ImmutableSizeOutcome::TooSmall => {
-            if task.file_type == FileType::AppendOnly {
+            if task.mutability == Mutability::AppendOnly {
                 Ok(CacheDecision::AppendDownload {
                     reason: format!("Append immutable file: local_size {} < remote_size {}", local_size, remote_size_val),
                 })
@@ -883,7 +883,7 @@ pub(crate) fn check_existing_partfile(task: &DownloadTask) -> Result<(u64, bool)
     // (etag, last_modified, or remote_size). Otherwise we might append to stale data.
     if existing_bytes > 0
         && task.is_master_task()
-        && task.file_type == FileType::Mutable
+        && task.mutability == Mutability::Mutable
     {
         let loaded = task.load_remote_metadata().ok().flatten();
         if !can_validate_resume_from_metadata(&loaded) {
@@ -925,7 +925,7 @@ pub(crate) fn check_existing_partfile(task: &DownloadTask) -> Result<(u64, bool)
 /// Validate existing final_file and determine appropriate download action
 pub(crate) fn validate_existing_file(task: &DownloadTask) -> Result<ValidationResult> {
     let final_path = &task.final_path;
-    let file_type = &task.file_type;
+    let mutability = &task.mutability;
     let expected_size = task.file_size.load(Ordering::Relaxed);
 
     // Try to symlink from global shared cache if local file doesn't exist
@@ -947,12 +947,12 @@ pub(crate) fn validate_existing_file(task: &DownloadTask) -> Result<ValidationRe
 
     let local_size = local_metadata.len();
 
-    match file_type {
-        FileType::Immutable | FileType::AppendOnly => {
+    match mutability {
+        Mutability::Immutable | Mutability::AppendOnly => {
             // For immutable and append-only files, we can trust size-based validation
-            validate_immutable_file(task, local_size, expected_size, file_type)
+            validate_immutable_file(task, local_size, expected_size, mutability)
         },
-        FileType::Mutable => {
+        Mutability::Mutable => {
             // For mutable files, we need to check server metadata
             // This will be handled by download_file_with_integrity() which gets server metadata first
             log::info!("Mutable file {} exists, will validate against server metadata",
@@ -968,10 +968,10 @@ fn validate_immutable_file(
     task: &DownloadTask,
     local_size: u64,
     expected_size: u64,
-    file_type: &FileType,
+    mutability: &Mutability,
 ) -> Result<ValidationResult> {
     let final_path = &task.final_path;
-    let outcome = immutable_size_outcome(file_type, local_size, expected_size);
+    let outcome = immutable_size_outcome(mutability, local_size, expected_size);
 
     match outcome {
         ImmutableSizeOutcome::Match => {
@@ -979,15 +979,15 @@ fn validate_immutable_file(
             // that have correct size but damaged content
             match validate_apk_gzip_integrity(final_path) {
                 Ok(true) => {
-                    match file_type {
-                        FileType::Immutable => {
+                    match mutability {
+                        Mutability::Immutable => {
                             log::info!(
                                 "Immutable file {} already exists with correct size {}, APK gzip integrity verified",
                                 final_path.display(),
                                 local_size
                             );
                         }
-                        FileType::AppendOnly => {
+                        Mutability::AppendOnly => {
                             log::info!(
                                 "Append-only file {} already exists with sufficient size ({} >= {}), APK gzip integrity verified",
                                 final_path.display(),
@@ -1001,15 +1001,15 @@ fn validate_immutable_file(
                 }
                 Ok(false) => {
                     // Not an APK file, size match is sufficient
-                    match file_type {
-                        FileType::Immutable => {
+                    match mutability {
+                        Mutability::Immutable => {
                             log::info!(
                                 "Immutable file {} already exists with correct size {}, treating as already downloaded",
                                 final_path.display(),
                                 local_size
                             );
                         }
-                        FileType::AppendOnly => {
+                        Mutability::AppendOnly => {
                             log::info!(
                                 "Append-only file {} already exists with sufficient size ({} >= {}), treating as complete",
                                 final_path.display(),
@@ -1072,7 +1072,7 @@ pub(crate) fn recover_parto_files(task: &DownloadTask) -> Result<ValidationResul
     // different mirror versions.
 
     // Mutable files have no expected_size beforehand
-    if task.file_type != FileType::Immutable {
+    if task.mutability != Mutability::Immutable {
         if let Ok(Some(metadata)) = task.load_remote_metadata() {
             if let Some(serving_metadata) = metadata.serving_metadata {
                 match fetch_server_metadata(task, &serving_metadata.url) {

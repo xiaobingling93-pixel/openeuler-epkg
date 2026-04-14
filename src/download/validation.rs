@@ -172,7 +172,7 @@ pub fn is_immutable_filename(file_path: &str) -> bool {
 }
 
 /// Classify file type for integrity handling based on filename and path
-pub fn classify_file_type(final_path: &Path, file_size: Option<u64>) -> FileType {
+pub fn classify_mutability(final_path: &Path, file_size: Option<u64>) -> Mutability {
     let path_str = final_path.to_string_lossy();
 
     // These are mainly repo index files, marking them Mutable here will produce .etag.json
@@ -189,25 +189,25 @@ pub fn classify_file_type(final_path: &Path, file_size: Option<u64>) -> FileType
        path_str.contains("/current_repodata.json")  || // Conda, current_repodata.json.gz
        path_str.contains("/elf-loader")             || // epkg elf-loader[.sig]
        path_str.ends_with("/packages-meta-ext-v1.json.gz") { // AUR metadata
-        return FileType::Mutable;
+        return Mutability::Mutable;
     }
 
     // Immutable files (packages) - require known size
     if file_size.is_some() && is_immutable_filename(&path_str) {
-        return FileType::Immutable;
+        return Mutability::Immutable;
     }
 
     // Append-only files (future extension)
     // if path_str.contains("/epkg-index") {
-    //     return FileType::AppendOnly;
+    //     return Mutability::AppendOnly;
     // }
 
     // Default classification based on size availability
     // Files with known size are more likely to be immutable packages
     if file_size.is_some() {
-        FileType::Immutable
+        Mutability::Immutable
     } else {
-        FileType::Mutable
+        Mutability::Mutable
     }
 }
 

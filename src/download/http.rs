@@ -94,7 +94,7 @@ pub(crate) fn execute_download_request(
         RangeRequest::None => {
             // is master task w/o chunking
             // For mutable files, check final_path; for others, check part_path
-            let file_to_check: Option<&Path> = if matches!(task.file_type, FileType::Mutable) && task.final_path.exists() {
+            let file_to_check: Option<&Path> = if matches!(task.mutability, Mutability::Mutable) && task.final_path.exists() {
                 Some(&task.final_path)
             } else if part_path.exists() {
                 Some(part_path)
@@ -318,8 +318,8 @@ fn validate_response_content_type(
                 return Err(eyre!("Fatal error while downloading from {}: {}", url, error_msg));
             }
 
-            if task.file_type == FileType::Immutable ||
-               task.file_type == FileType::AppendOnly {
+            if task.mutability == Mutability::Immutable ||
+               task.mutability == Mutability::AppendOnly {
                 // Reject HTML content for known file types
                 let error_msg = "Received HTML page instead of file. This may indicate an authentication issue with the server.";
                 task.set_message(error_msg.to_string());
@@ -467,7 +467,7 @@ pub(crate) fn finalize_chunk_download(
 
     // Detect 0-byte downloads for mutable files (like AUR packages) - this indicates server issues
     // Check BEFORE finalization so we can retry
-    if task.is_master_task() && chunk_append_offset == 0 && matches!(task.file_type, FileType::Mutable) {
+    if task.is_master_task() && chunk_append_offset == 0 && matches!(task.mutability, Mutability::Mutable) {
         log::info!("Download resulted in 0 bytes for {} - likely server issue (unreliable server like AUR), cleaning up and will retry", task.url);
         // Clean up the 0-byte file before returning error to trigger retry
         if task.chunk_path.exists() {
@@ -738,7 +738,7 @@ fn handle_304_and_extract_metadata(
             handle_304_not_modified_response(task)?;
             return Ok(None);
         }
-        if matches!(task.file_type, FileType::Mutable) {
+        if matches!(task.mutability, Mutability::Mutable) {
             let decision = should_redownload(task, &metadata)?;
             if matches!(decision, CacheDecision::UseCache { .. }) {
                 handle_304_not_modified_response(task)?;
