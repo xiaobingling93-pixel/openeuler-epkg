@@ -1748,12 +1748,12 @@ fn rewrite_elf_interpreter_paths(env_root: &Path) -> Result<()> {
 
     log::info!("Checking ELF paths in {} files for env {}", elf_files.len(), env_root.display());
 
-    // Homebrew Linux bottles use @@HOMEBREW_PREFIX@@/lib/ld.so as the interpreter path.
-    // Replace it with brew's dynamic linker using short .LB prefix.
-    // /home/linuxbrew/.LB/lib/ld.so (28 chars) fits in typical 30-char buffer.
-    // This ensures brew binaries use brew's glibc via symlink chain:
-    //   ld.so -> ld-linux-x86-64.so.2 -> Cellar/glibc/.../ld-linux-x86-64.so.2
-    let new_interpreter = "/home/linuxbrew/.LB/lib/ld.so";
+    // Homebrew Linux bottles may use system interpreter /lib64/ld-linux-x86-64.so.2
+    // or placeholder @@HOMEBREW_PREFIX@@/lib/ld.so.
+    // Replace with short .ld.so symlink path that fits in tight buffers.
+    // /home/linuxbrew/.ld.so (22 chars + null = 23 bytes) fits in 28-byte buffer (gcc-15).
+    // Symlink chain: .ld.so -> lib/ld.so -> ld-linux-x86-64.so.2 -> Cellar/glibc/...
+    let new_interpreter = "/home/linuxbrew/.ld.so";
 
     for elf_path in &elf_files {
         if let Err(e) = rewrite_elf_interpreter_for_file(elf_path, &new_interpreter) {

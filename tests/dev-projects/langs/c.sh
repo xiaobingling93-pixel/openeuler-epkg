@@ -3,27 +3,45 @@
 
 . "$(dirname "$0")/../common.sh"
 
+# For brew on Linux, install coreutils for sandbox (host tools won't work)
+# Linuxbrew must be fully self-contained in sandbox
+if [ "$OS" = "brew" ] && [ "$(uname -s)" = "Linux" ]; then
+    run_install coreutils
+fi
+
 run_install build-base gcc make build-essential
 
-# Find available C compiler (gcc, gcc-*, or clang)
+# Find available C compiler
+# For Linuxbrew, everything must run inside sandbox (host tools incompatible)
 CC=""
-if check_cmd gcc --version; then
-    CC=gcc
-elif check_cmd clang --version; then
-    CC=clang
-else
-    # Try versioned gcc (e.g., gcc-15 on Homebrew)
-    for gcc_ver in gcc-15 gcc-14 gcc-13 gcc-12 gcc-11; do
-        if check_cmd $gcc_ver --version; then
+if [ "$OS" = "brew" ] && [ "$(uname -s)" = "Linux" ]; then
+    # Linuxbrew: find compiler inside sandbox
+    for gcc_ver in gcc-15 gcc-14 gcc-13 gcc gcc-12 gcc-11; do
+        if run sh -c "$gcc_ver --version" >/dev/null 2>&1; then
             CC=$gcc_ver
             break
         fi
     done
+    [ -n "$CC" ] || lang_skip "no C compiler found for OS=$OS"
+    # Test compiler inside sandbox
+    run sh -c "$CC --version"
+else
+    # Other environments: find compiler via check_cmd
+    if check_cmd gcc --version; then
+        CC=gcc
+    elif check_cmd clang --version; then
+        CC=clang
+    else
+        for gcc_ver in gcc-15 gcc-14 gcc-13 gcc-12 gcc-11; do
+            if check_cmd $gcc_ver --version; then
+                CC=$gcc_ver
+                break
+            fi
+        done
+    fi
+    [ -n "$CC" ] || lang_skip "no C compiler found for OS=$OS"
+    run_ebin $CC --version
 fi
-
-[ -n "$CC" ] || lang_skip "no C compiler found for OS=$OS"
-
-run_ebin $CC --version
 
 # msys2 has bash but no /bin/sh
 # brew is native macOS packages, use host shell directly

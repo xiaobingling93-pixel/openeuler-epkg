@@ -997,6 +997,33 @@ fn create_homebrew_symlinks(env_root: &Path) {
     } else {
         log::info!("Created env symlink {} -> ../../", env_lb.display());
     }
+
+    // === 3. Create .ld.so symlink for interpreter rewrite ===
+    // Short path: /home/linuxbrew/.ld.so (22 chars) fits in 28-byte buffer
+    // This allows rewriting interpreter from /lib64/ld-linux-x86-64.so.2 (27 chars)
+    // to /home/linuxbrew/.ld.so (22 chars) which fits in gcc-15's 28-byte buffer.
+
+    // Host symlink: /home/linuxbrew/.ld.so -> .linuxbrew/lib/ld.so (for Env mode)
+    let host_ldso = hb_prefix_path.parent().unwrap().join(".ld.so");
+    if !host_ldso.exists() {
+        if let Err(e) = std::os::unix::fs::symlink(".linuxbrew/lib/ld.so", &host_ldso) {
+            log::warn!("Failed to create host .ld.so symlink: {}", e);
+        } else {
+            log::info!("Created host symlink {} -> .linuxbrew/lib/ld.so", host_ldso.display());
+        }
+    }
+
+    // env_root symlink: home/linuxbrew/.ld.so -> ../../lib/ld.so (for Fs/VM mode)
+    // After pivot_root, ../../ from /home/linuxbrew/ resolves to /
+    let env_ldso = hb_inside_env.parent().unwrap().join(".ld.so");
+    if env_ldso.exists() {
+        let _ = std::fs::remove_file(&env_ldso);
+    }
+    if let Err(e) = std::os::unix::fs::symlink("../../lib/ld.so", &env_ldso) {
+        log::warn!("Failed to create env .ld.so symlink: {}", e);
+    } else {
+        log::info!("Created env symlink {} -> ../../lib/ld.so", env_ldso.display());
+    }
 }
 
 #[cfg(not(unix))]

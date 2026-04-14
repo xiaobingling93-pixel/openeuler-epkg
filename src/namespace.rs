@@ -849,13 +849,9 @@ fn env_mount_spec_strings(env_root: &Path, _run_options: &RunOptions, is_brew_en
         specs.push("@/tmp://tmp".to_string());
         specs.push("@/var://var".to_string());
 
-        // Mount host library paths so host tools (ls, sh, grep, etc.) can work
-        // These are needed for basic shell functionality in the sandbox
-        specs.push("/lib64://lib64:try".to_string());
-        specs.push("/lib://lib:try".to_string());
-        specs.push("/usr/lib64://usr/lib64:try".to_string());
-        specs.push("/usr/lib://usr/lib:try".to_string());
-        specs.push("/usr/lib/x86_64-linux-gnu://usr/lib/x86_64-linux-gnu:try".to_string());
+        // NOTE: Do NOT mount host library paths (/lib64, /usr/lib)!
+        // Sandbox must be self-contained: brew apps use brew ld.so + brew libs.
+        // Host tools won't work - install brew coreutils instead.
 
         log::debug!("Brew environment: mounting {} to {}", env_root.display(), homebrew_prefix);
 
@@ -863,11 +859,10 @@ fn env_mount_spec_strings(env_root: &Path, _run_options: &RunOptions, is_brew_en
         specs.push("/etc/hosts://etc/hosts:try".to_string());
         specs.push("/etc/resolv.conf://etc/resolv.conf:try".to_string());
 
-        // NOTE: We don't bind mount Homebrew's ld.so to /lib64/ld-linux-x86-64.so.2 here
-        // because it breaks host binaries (like ls, cat) which need host's ld.so to find
-        // host libraries. Homebrew binaries with system interpreter should have their
-        // interpreter rewritten to /home/linuxbrew/.LB/lib/ld.so at installation time.
-        // If buffer size prevents rewriting, those binaries need special handling.
+        // NOTE: Interpreter rewriting now uses /home/linuxbrew/.ld.so (22 chars)
+        // which fits in gcc-15's 28-byte buffer. The .ld.so symlink is created
+        // by create_homebrew_symlinks() in both host (for Env mode) and env_root
+        // (for Fs/VM mode). No bind mount needed for ld.so.
 
         return Some(specs);
     }
