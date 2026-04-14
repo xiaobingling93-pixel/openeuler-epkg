@@ -7,10 +7,12 @@
 # libcrypto3 expects /etc/ssl/cert.pem which is provided by ca-certificates-bundle
 # Alpine also needs musl-dev for C runtime startup files (crt*.o) for native gem compilation
 # Conda/msys2 on Windows doesn't have ruby-dev or native compilation tools
+# brew needs libxcrypt for libcrypt.so.2 and bash/coreutils for shell commands
 case "$OS" in
     alpine) run_install ruby ruby-dev gcc make musl-dev ca-certificates-bundle ;;
     conda)  run_install ruby ;;
     msys2)  run_install ruby ;;
+    brew)   run_install ruby gcc make bash coreutils libxcrypt ;;
     *)       run_install ruby ruby-dev ruby-devel gcc make redhat-rpm-config ;;
 esac
 
@@ -28,9 +30,13 @@ run ruby -e "puts 1+1"
 run ruby -e "puts \"ok\""
 
 # Create test file - use ruby for conda/msys2 (no /bin/sh)
+# brew: use bash instead of /bin/sh (vdso_time SIGSEGV)
 if [ "$OS" = "conda" ] || [ "$OS" = "msys2" ]; then
     run ruby -e "Dir.mkdir('/tmp/rubyproj') rescue nil; File.write('/tmp/rubyproj/main.rb', 'puts \"hello\"')"
     run ruby /tmp/rubyproj/main.rb | grep -q hello
+elif [ "$OS" = "brew" ]; then
+    run bash -c 'mkdir -p /tmp/rubyproj && cd /tmp/rubyproj && echo "puts \"hello\"" > main.rb'
+    run bash -c 'cd /tmp/rubyproj && ruby main.rb' | grep -qx hello
 else
     run /bin/sh -c 'mkdir -p /tmp/rubyproj && cd /tmp/rubyproj && echo "puts \"hello\"" > main.rb'
     run /bin/sh -c 'cd /tmp/rubyproj && ruby main.rb' | grep -qx hello
@@ -42,8 +48,8 @@ if [ "$OS" = "conda" ]; then
     exit 0
 fi
 
-# msys2: use bash for shell commands
-if [ "$OS" = "msys2" ]; then
+# msys2/brew: use bash for shell commands (brew: vdso_time SIGSEGV with /bin/sh)
+if [ "$OS" = "msys2" ] || [ "$OS" = "brew" ]; then
     SHELL_CMD="bash -c"
 else
     SHELL_CMD="/bin/sh -c"
