@@ -15,6 +15,10 @@ const HOMEBREW_PLACEHOLDER_PREFIXES: &[&str] = &[
     "@@HOMEBREW_PREFIX@@",
 ];
 
+/// Short prefix used for rewriting Homebrew paths (.LB = 3 chars vs .linuxbrew = 10 chars)
+/// This ensures rewritten paths fit in placeholder buffers without overflow.
+const HOMEBREW_SHORT_PREFIX: &str = "/home/linuxbrew/.LB";
+
 /// Homebrew preferred installation prefixes.
 ///
 /// Homebrew bottles are precompiled binaries that expect to be installed at specific
@@ -1835,10 +1839,33 @@ fn rewrite_elf_interpreter_for_file(elf_path: &Path, new_interpreter: &str) -> R
     let rpath_info = extract_rpath_info(&elf, &content, elf_path);
     let interp_info = extract_interp_info(&elf, &content, elf_path);
 
-    // Modify interpreter if it has Homebrew placeholders
-    if let Some((offset, old_str, max_len)) = interp_info {
-        log::trace!("Interpreter for {}: '{}' (offset={}, max_len={})", elf_path.display(), old_str, offset, max_len);
-        if HOMEBREW_PLACEHOLDER_PREFIXES.iter().any(|p| old_str.contains(p)) {
+    // Determine if this ELF needs Homebrew interpreter replacement.
+    // Key insight: Some Homebrew bottles (like GCC) use system interpreter
+    // /lib64/ld-linux-x86-64.so.2 without placeholders, but their RPATH
+    // contains Homebrew placeholders that get rewritten to .LB paths.
+    // These binaries need Homebrew's ld.so to resolve .LB RPATH correctly.
+    // We check for:
+    // 1. Interpreter has placeholder (needs rewrite)
+    // 2. RPATH has placeholder OR already uses .LB prefix (needs Homebrew ld.so)
+    let has_placeholder_interpreter = if let Some((_, ref old_interp, _)) = interp_info {
+        HOMEBREW_PLACEHOLDER_PREFIXES.iter().any(|p| old_interp.contains(p))
+    } else {
+        false
+    };
+
+    let needs_homebrew_interpreter = has_placeholder_interpreter ||
+        rpath_info.iter().any(|(_, rpath, _)| {
+            // RPATH needs Homebrew interpreter if:
+            // - Contains placeholder (will be rewritten to .LB)
+            // - Already uses .LB prefix (was rewritten, needs Homebrew ld.so)
+            HOMEBREW_PLACEHOLDER_PREFIXES.iter().any(|p| rpath.contains(p)) ||
+            rpath.contains(HOMEBREW_SHORT_PREFIX)
+        });
+
+    // Modify interpreter if needed
+    if needs_homebrew_interpreter {
+        if let Some((offset, old_str, max_len)) = interp_info {
+            log::trace!("Interpreter for {}: '{}' (offset={}, max_len={})", elf_path.display(), old_str, offset, max_len);
             if modify_string_in_buffer(&mut content, offset, max_len, new_interpreter) {
                 log::info!("Rewrote ELF interpreter for {}: {} -> {}",
                     elf_path.display(), old_str, new_interpreter);

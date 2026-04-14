@@ -406,6 +406,28 @@ pub fn build_unified_context(
     // Check if this is a brew environment once and cache the result
     let is_brew_env = crate::run::is_brew_environment(env_root);
 
+    // For brew environments in namespace sandbox, add bin to PATH
+    // so that tools like gcc can find 'as', 'ld' from Homebrew's bin/
+    if is_brew_env {
+        let bin_path = env_root.join("bin");
+        let ebin_path = env_root.join("ebin");
+        let current_path = run_options.env_vars.get("PATH")
+            .cloned()
+            .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
+        // Prepend bin (for tools like as, ld) then ebin (for ebin wrappers)
+        let mut new_path = String::new();
+        if bin_path.exists() {
+            new_path.push_str(&format!("{}:", bin_path.display()));
+            debug!("Brew: Added bin to PATH: {}", bin_path.display());
+        }
+        if ebin_path.exists() {
+            new_path.push_str(&format!("{}:", ebin_path.display()));
+            debug!("Brew: Added ebin to PATH: {}", ebin_path.display());
+        }
+        new_path.push_str(&current_path);
+        run_options.env_vars.insert("PATH".to_string(), new_path);
+    }
+
     Ok(UnifiedChildContext {
         env_root: env_root.to_path_buf(),
         run_options,
@@ -827,11 +849,25 @@ fn env_mount_spec_strings(env_root: &Path, _run_options: &RunOptions, is_brew_en
         specs.push("@/tmp://tmp".to_string());
         specs.push("@/var://var".to_string());
 
+        // Mount host library paths so host tools (ls, sh, grep, etc.) can work
+        // These are needed for basic shell functionality in the sandbox
+        specs.push("/lib64://lib64:try".to_string());
+        specs.push("/lib://lib:try".to_string());
+        specs.push("/usr/lib64://usr/lib64:try".to_string());
+        specs.push("/usr/lib://usr/lib:try".to_string());
+        specs.push("/usr/lib/x86_64-linux-gnu://usr/lib/x86_64-linux-gnu:try".to_string());
+
         log::debug!("Brew environment: mounting {} to {}", env_root.display(), homebrew_prefix);
 
         // Mount host's network configuration files for DNS resolution.
         specs.push("/etc/hosts://etc/hosts:try".to_string());
         specs.push("/etc/resolv.conf://etc/resolv.conf:try".to_string());
+
+        // NOTE: We don't bind mount Homebrew's ld.so to /lib64/ld-linux-x86-64.so.2 here
+        // because it breaks host binaries (like ls, cat) which need host's ld.so to find
+        // host libraries. Homebrew binaries with system interpreter should have their
+        // interpreter rewritten to /home/linuxbrew/.LB/lib/ld.so at installation time.
+        // If buffer size prevents rewriting, those binaries need special handling.
 
         return Some(specs);
     }

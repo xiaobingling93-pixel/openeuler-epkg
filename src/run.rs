@@ -917,16 +917,25 @@ fn fork_and_execute_direct(env_root: &Path, run_options: &RunOptions) -> Result<
     }
 
     // Note: Brew packages use absolute paths rewritten at link time (LinkType::Move),
-    // so no DYLD_LIBRARY_PATH is needed. However, we need to add ebin to PATH
-    // so that scripts can find commands from the environment.
+    // so no DYLD_LIBRARY_PATH is needed. However, we need to add bin and ebin to PATH
+    // so that scripts and compilers can find commands from the environment.
+    // In sandbox mode, bin/ contains symlinks to Cellar executables.
     if channel_format == crate::models::PackageFormat::Brew {
+        let bin_path = env_root.join("bin");
         let ebin_path = env_root.join("ebin");
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        // Prepend bin (for tools like as, ld) then ebin (for ebin wrappers)
+        let mut new_path = String::new();
+        if bin_path.exists() {
+            new_path.push_str(&format!("{}:", bin_path.display()));
+            debug!("Added bin to PATH: {}", bin_path.display());
+        }
         if ebin_path.exists() {
-            let current_path = std::env::var("PATH").unwrap_or_default();
-            let new_path = format!("{}:{}", ebin_path.display(), current_path);
-            env_vars.insert("PATH".to_string(), new_path);
+            new_path.push_str(&format!("{}:", ebin_path.display()));
             debug!("Added ebin to PATH: {}", ebin_path.display());
         }
+        new_path.push_str(&current_path);
+        env_vars.insert("PATH".to_string(), new_path);
     }
 
     // Apply environment variables
