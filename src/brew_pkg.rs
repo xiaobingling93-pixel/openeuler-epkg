@@ -460,9 +460,9 @@ pub fn create_cellar_symlinks(env_root: &Path, store_dir: &Path, pkgkey: &str) -
         }
     }
 
-    // Create directory-level symlinks for share/, Frameworks/, include/
-    for dir_name in ["Frameworks", "share", "include"] {
-        let env_dir = if dir_name == "share" || dir_name == "include" {
+    // Create directory-level symlinks for share/, Frameworks/, include/, libexec/
+    for dir_name in ["Frameworks", "share", "include", "libexec"] {
+        let env_dir = if dir_name == "share" || dir_name == "include" || dir_name == "libexec" {
             ensure_real_directory(env_root, dir_name)?
         } else {
             env_root.join(dir_name)
