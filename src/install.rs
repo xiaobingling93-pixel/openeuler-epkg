@@ -250,6 +250,16 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
             return Ok(plan);
         }
 
+        // For brew packages, ELF rewriting must happen even when packages are reused
+        // The files in Cellar may have placeholder interpreter paths that need rewriting
+        #[cfg(unix)]
+        if plan.package_format == crate::models::PackageFormat::Brew {
+            log::info!("Rewriting brew library/interpreter paths for env (no changes): {}", plan.env_root.display());
+            if let Err(e) = crate::brew_pkg::rewrite_dylib_paths_for_env(&plan.env_root) {
+                log::warn!("Failed to rewrite brew library/interpreter paths: {}", e);
+            }
+        }
+
         let has_reinstalls_to_expose = plan.skipped_reinstalls.iter()
             .any(|(_, info)| info.ebin_exposure);
 
@@ -339,6 +349,16 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
 
         for (pkgkey, info) in plan.skipped_reinstalls.iter() {
             log::debug!("  skipped_reinstall: {} ebin_exposure={}", pkgkey, info.ebin_exposure);
+        }
+
+        // For brew packages, ELF rewriting must happen even when packages are reused
+        // The files in Cellar may have placeholder interpreter paths that need rewriting
+        #[cfg(unix)]
+        if plan.package_format == crate::models::PackageFormat::Brew {
+            log::info!("Rewriting brew library/interpreter paths for env (reused packages): {}", plan.env_root.display());
+            if let Err(e) = crate::brew_pkg::rewrite_dylib_paths_for_env(&plan.env_root) {
+                log::warn!("Failed to rewrite brew library/interpreter paths: {}", e);
+            }
         }
 
         if has_reinstalls_to_expose {

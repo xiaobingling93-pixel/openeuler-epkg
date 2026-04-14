@@ -407,6 +407,34 @@ pub fn create_cellar_symlinks(env_root: &Path, pkgkey: &str) -> Result<()> {
     // Handle Python site-packages symlinks
     link_python_site_packages(env_root, &cellar_pkg_dir, pkgname, &version)?;
 
+    // On Linux, ensure lib64/ld-linux-x86-64.so.2 exists for ELF interpreter
+    // The system dynamic linker path is /lib64/ld-linux-x86-64.so.2
+    // Homebrew glibc provides this in Cellar/glibc/version/lib/
+    #[cfg(target_os = "linux")]
+    {
+        // Check if glibc is installed (provides ld-linux-x86-64.so.2)
+        let glibc_cellar = env_root.join("Cellar").join("glibc");
+        if glibc_cellar.exists() {
+            // Find glibc version
+            if let Ok(glibc_version) = discover_cellar_version(env_root, "glibc") {
+                let glibc_ld = glibc_cellar.join(&glibc_version).join("lib").join("ld-linux-x86-64.so.2");
+                if glibc_ld.exists() {
+                    // Ensure lib64 directory exists (may be usr-merge symlink)
+                    let lib64_dir = ensure_real_directory(env_root, "lib64")?;
+
+                    // Create symlink: lib64/ld-linux-x86-64.so.2 -> ../lib/ld-linux-x86-64.so.2
+                    let lib64_ld = lib64_dir.join("ld-linux-x86-64.so.2");
+                    if crate::lfs::symlink_metadata(&lib64_ld).is_ok() {
+                        crate::lfs::remove_file(&lib64_ld)?;
+                    }
+                    // Use relative path to lib/ld-linux-x86-64.so.2
+                    crate::lfs::symlink_file_for_virtiofs(Path::new("../lib/ld-linux-x86-64.so.2"), &lib64_ld)?;
+                    log::trace!("Created lib64 ld.so symlink: {} -> ../lib/ld-linux-x86-64.so.2", lib64_ld.display());
+                }
+            }
+        }
+    }
+
     // Create directory-level symlinks for share/, Frameworks/, include/
     for dir_name in ["Frameworks", "share", "include"] {
         let env_dir = if dir_name == "share" || dir_name == "include" {
@@ -1625,8 +1653,16 @@ fn replace_homebrew_placeholders_in_file(config_file: &Path, homebrew_prefix: &s
 /// ```
 #[cfg(target_os = "linux")]
 fn rewrite_elf_interpreter_paths(env_root: &Path) -> Result<()> {
-    // Collect all ELF files from standard directories
-    let elf_files = collect_binary_files(env_root, &["bin", "lib", "libexec"], is_elf_file);
+    // Collect all ELF files from Cellar directory (Brew package layout)
+    // Cellar/ contains the actual binary files for brew packages
+    let cellar_dir = env_root.join("Cellar");
+    if !cellar_dir.exists() {
+        log::debug!("No Cellar directory found in {}", env_root.display());
+        return Ok(());
+    }
+
+    // Scan Cellar/ for all ELF files (binaries and libraries)
+    let elf_files = collect_binary_files(env_root, &["Cellar"], is_elf_file);
 
     if elf_files.is_empty() {
         log::debug!("No ELF files found in {}", env_root.display());
@@ -1781,13 +1817,33 @@ fn modify_string_in_buffer(content: &mut [u8], offset: usize, max_len: usize, ne
     true
 }
 
-/// Replace Homebrew placeholder prefixes with actual HOMEBREW_PREFIX path.
+/// Replace Homebrew placeholder prefixes with paths that work in epkg sandbox.
+///
+/// Homebrew bottles use absolute paths like `@@HOMEBREW_PREFIX@@/Cellar/pkg/lib`.
+/// For epkg sandbox (pivot_root), $ORIGIN doesn't work correctly because the
+/// dynamic linker may use the wrong path for binary location.
+///
+/// # Solution: Use absolute paths from sandbox root perspective
+/// - Inside sandbox after pivot_root, root = env_root
+/// - `/Cellar/pkgname/version/lib` is the correct absolute path
+/// - `/opt/pkgname/lib` works via opt symlinks to Cellar
+///
+/// # Conversion rules (same length as placeholder to fit in buffer):
+/// - `@@HOMEBREW_PREFIX@@/Cellar/pkgname/version/lib` → `/Cellar/pkgname/version/lib`
+/// - `@@HOMEBREW_PREFIX@@/opt/pkgname/lib` → `/opt/pkgname/lib`
+/// - `@@HOMEBREW_PREFIX@@/lib` → `/lib`
+///
+/// Note: These conversions preserve string length (placeholder=22 chars, replacement starts with `/`).
+/// For Cellar paths, we need to strip "HOMEBREW_PREFIX" (22 chars) and keep "/Cellar/..." (starts with `/`).
+/// The total length should be similar: "@@HOMEBREW_PREFIX@@/Cellar/pkg/lib" = "/Cellar/pkg/lib" + 22 chars removed
 #[cfg(target_os = "linux")]
 fn replace_homebrew_placeholders(s: &str) -> String {
-    let homebrew_prefix = crate::brew_pkg::prefix::preferred();
+    // Replace @@HOMEBREW_PREFIX@@ with empty string (keeping the path after it)
+    // This converts "@@HOMEBREW_PREFIX@@/Cellar/pkg/lib" to "/Cellar/pkg/lib"
+    // which works inside the sandbox where root = env_root
     let mut result = s.to_string();
     for placeholder in HOMEBREW_PLACEHOLDER_PREFIXES {
-        result = result.replace(placeholder, homebrew_prefix);
+        result = result.replace(placeholder, "");
     }
     result
 }
@@ -1812,41 +1868,73 @@ fn extract_interp_info(elf: &goblin::elf::Elf, content: &[u8], _elf_path: &Path)
 /// Extract RPATH information from ELF.
 /// Returns Vec of (string_offset, current_string, max_length) for each RPATH/RUNPATH entry.
 #[cfg(target_os = "linux")]
-fn extract_rpath_info(elf: &goblin::elf::Elf, content: &[u8], _elf_path: &Path) -> Vec<(usize, String, usize)> {
+/// Extract RPATH information from ELF.
+/// Returns Vec of (string_offset, current_string, max_length) for each RPATH/RUNPATH entry.
+#[cfg(target_os = "linux")]
+fn extract_rpath_info(elf: &goblin::elf::Elf, content: &[u8], elf_path: &Path) -> Vec<(usize, String, usize)> {
     let mut result = Vec::new();
 
     let dyn_section = match elf.dynamic.as_ref() {
         Some(d) => d,
-        None => return result,
+        None => {
+            log::debug!("No dynamic section in {}", elf_path.display());
+            return result;
+        }
     };
 
-    // Get dynstr section offset from section headers
-    let dynstr_sh = elf.section_headers.iter()
-        .find(|sh| elf.shdr_strtab.get_at(sh.sh_name).map(|name| name == ".dynstr").unwrap_or(false));
-
-    let dynstr_offset = match dynstr_sh {
-        Some(sh) => sh.sh_offset as usize,
-        None => return result,
-    };
-
-    // Find all RPATH/RUNPATH entries
+    // Find all RPATH/RUNPATH entries first
     let rpath_entries: Vec<_> = dyn_section.dyns.iter()
         .filter(|e| e.d_tag == goblin::elf::dynamic::DT_RPATH || e.d_tag == goblin::elf::dynamic::DT_RUNPATH)
         .collect();
 
-    for entry in &rpath_entries {
-        let str_offset = dynstr_offset + entry.d_val as usize;
+    if rpath_entries.is_empty() {
+        log::trace!("No RPATH/RUNPATH entries in {}", elf_path.display());
+        return result;
+    }
 
-        if let Some(current_str) = read_null_terminated_string(content, str_offset) {
-            // Calculate max length by finding the next string or end of section
-            let max_len = find_string_max_length(content, str_offset);
-            result.push((str_offset, current_str, max_len));
+    // Get dynstr file offset from section headers
+    let dynstr_file_offset = elf.section_headers.iter()
+        .find(|sh| elf.shdr_strtab.get_at(sh.sh_name).map(|name| name == ".dynstr").unwrap_or(false))
+        .map(|sh| sh.sh_offset as usize);
+
+    match dynstr_file_offset {
+        Some(offset) => {
+            log::trace!("dynstr_file_offset={} for {}", offset, elf_path.display());
+            for entry in &rpath_entries {
+                let str_offset = offset + entry.d_val as usize;
+                if let Some(current_str) = read_null_terminated_string(content, str_offset) {
+                    let max_len = find_string_max_length(content, str_offset);
+                    result.push((str_offset, current_str, max_len));
+                }
+            }
+        }
+        None => {
+            log::debug!("No .dynstr section header in {} (sections: {})", elf_path.display(), elf.section_headers.len());
+            // Fallback: use elf.dynstrtab to get strings, then search for them in content
+            for entry in &rpath_entries {
+                let str_idx = entry.d_val as usize;
+                if let Some(rpath_str) = elf.dynstrtab.get_at(str_idx) {
+                    // Search for this string in file content
+                    if let Some(file_offset) = find_string_in_content(content, rpath_str) {
+                        let max_len = find_string_max_length(content, file_offset);
+                        result.push((file_offset, rpath_str.to_string(), max_len));
+                        log::trace!("Found RPATH '{}' at offset {} by content search", rpath_str, file_offset);
+                    }
+                }
+            }
         }
     }
 
     result
 }
 
+/// Find a string's offset in file content by searching for exact match.
+#[cfg(target_os = "linux")]
+fn find_string_in_content(content: &[u8], target: &str) -> Option<usize> {
+    let target_bytes = target.as_bytes();
+    content.windows(target_bytes.len())
+        .position(|window| window == target_bytes)
+}
 /// Find the maximum length of a string at the given offset (until next string or end of content).
 #[cfg(target_os = "linux")]
 fn find_string_max_length(content: &[u8], offset: usize) -> usize {
