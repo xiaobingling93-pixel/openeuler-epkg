@@ -12,6 +12,15 @@ formula_path = ARGV[1]
 pkgname = ARGV[2]
 version = ARGV[3]
 
+# Add stub directory to load path for 'require' statements (e.g., os/linux/glibc)
+stub_dir = File.dirname(stub_path)
+$LOAD_PATH.unshift(stub_dir) unless $LOAD_PATH.include?(stub_dir)
+
+# Remove Ruby 4.0+ built-in 'Ruby' module to avoid conflict with formula class
+# Ruby 4.0 defines a 'Ruby' module for language metadata, which conflicts with
+# formulas named 'Ruby' (class Ruby < Formula)
+Object.send(:remove_const, :Ruby) if defined?(Ruby) && Ruby.is_a?(Module)
+
 begin
   load stub_path
   load formula_path

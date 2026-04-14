@@ -18,6 +18,33 @@
 require 'pathname'
 require 'fileutils'
 require 'open3'
+require 'tempfile'
+
+# Exception class for failed command execution (used by ca-certificates.rb)
+class ErrorDuringExecution < StandardError
+  attr_reader :exit_status
+
+  def initialize(cmd, exit_status = nil)
+    @exit_status = exit_status
+    super("Command failed: #{cmd}")
+  end
+end
+
+# ActiveSupport-style present?/blank? methods
+class String
+  def present?
+    !blank?
+  end
+
+  def blank?
+    empty? || strip.empty?
+  end
+end
+
+class NilClass
+  def present?; false; end
+  def blank?; true; end
+end
 
 # Global constants - set by epkg Rust code via ENV
 HOMEBREW_PREFIX = Pathname.new(ENV.fetch('HOMEBREW_PREFIX'))
@@ -91,6 +118,12 @@ module Language
       v = `#{python_path} --version 2>&1`.chomp.split.last
       Version.new(v)
     end
+
+    # Shebang module - stub for Python shebang detection
+    module Shebang
+      def fix_shebang(python_path); end  # stub
+      def shebang; "#!/usr/bin/env python3"; end  # stub
+    end
   end
 end
 
@@ -128,25 +161,48 @@ module Utils
   def self.safe_popen_read(*cmd)
     # Convert Pathname to String for Open3
     cmd_strs = cmd.flatten.map { |c| c.is_a?(Pathname) ? c.to_s : c }
-    stdout, stderr, status = Open3.capture3(*cmd_strs)
-    # Set global $CHILD_STATUS for $? checks
-    $CHILD_STATUS = ChildStatus.new(status.exitstatus, status.success?)
-    raise "Command failed: #{cmd.join(' ')}" unless status.success?
-    stdout
+    begin
+      stdout, stderr, status = Open3.capture3(*cmd_strs)
+      # Set global $CHILD_STATUS for $? checks
+      $CHILD_STATUS = ChildStatus.new(status.exitstatus, status.success?)
+      raise ErrorDuringExecution.new(cmd_strs.join(' ')) unless status.success?
+      stdout
+    rescue Errno::ENOENT
+      # Command not found - raise ErrorDuringExecution like Homebrew does
+      raise ErrorDuringExecution.new(cmd_strs.join(' '))
+    end
   end
 
   def self.safe_popen_write(*cmd)
     # Convert Pathname to String for Open3
     cmd_strs = cmd.flatten.map { |c| c.is_a?(Pathname) ? c.to_s : c }
-    Open3.popen3(*cmd_strs) do |stdin, stdout, stderr, wait_thr|
-      yield(stdin)
-      stdin.close
-      stdout.close
-      stderr.close
-      status = wait_thr.value
-      $CHILD_STATUS = ChildStatus.new(status.exitstatus, status.success?)
+    begin
+      Open3.popen3(*cmd_strs) do |stdin, stdout, stderr, wait_thr|
+        yield(stdin)
+        stdin.close
+        stdout.close
+        stderr.close
+        status = wait_thr.value
+        $CHILD_STATUS = ChildStatus.new(status.exitstatus, status.success?)
+      end
+    rescue Errno::ENOENT
+      # Command not found - raise ErrorDuringExecution like Homebrew does
+      raise ErrorDuringExecution.new(cmd_strs.join(' '))
     end
   end
+end
+
+# Requirement class - stub for formula requirements
+class Requirement
+  def self.fatal(val = true); @fatal = val; end
+  def self.satisfy(build_env: true, &block); @satisfy_block = block; end
+  def self.message(msg = nil); @message = msg; end
+  def self.display_s(val = nil); @display_s = val; end
+
+  def fatal?; self.class.instance_variable_get(:@fatal) || false; end
+  def satisfy?; true; end  # stub - always satisfied for post_install
+  def message; self.class.instance_variable_get(:@message) || ""; end
+  def display_s; self.class.instance_variable_get(:@display_s) || ""; end
 end
 
 # BuildOptions class - stub for build options
@@ -178,7 +234,7 @@ class Formula
   def self.sha256(hash); @sha256 = hash; end
   def self.version(v); @version = v; end
   def self.depends_on(*args); @depends ||= []; @depends += args; end
-  def self.patch(&block); end  # stub
+  def self.patch(*args, &block); end  # stub - accept any args
   def self.bottle(&block); end  # stub
   def self.option(name, desc = ""); end  # stub
   def self.conflicts_with(*args); end  # stub
@@ -247,6 +303,17 @@ class Formula
     cellar_dir.exist? && cellar_dir.directory? && cellar_dir.children.any?(&:directory?)
   end
 
+  # Version type methods - used by formulas to check installation source
+  def head?; false; end  # not installed from git HEAD
+  def stable?; true; end  # installed from stable release
+
+  # stable/head DSL - access to stable/head blocks
+  def stable; self; end  # return self for stable.version access
+  def head; nil; end  # no head definition
+
+  # latest_head_prefix - for head builds
+  def latest_head_prefix; nil; end
+
   # inreplace - replace text in a file
   # Usage: inreplace(file, pattern, replacement)
   def inreplace(file, pattern, replacement)
@@ -254,6 +321,14 @@ class Formula
     content = File.read(path)
     content.gsub!(pattern, replacement)
     File.write(path, content)
+  end
+
+  # system - execute command, converting Pathname args to strings
+  def system(*args)
+    # Convert any Pathname objects to strings
+    str_args = args.map { |a| a.is_a?(Pathname) ? a.to_s : a }
+    # Use Kernel.system with converted args
+    Kernel.system(*str_args)
   end
 
   def post_install; end
@@ -272,3 +347,62 @@ def quiet_system(*args); system(*args) rescue false; end
 # Pathname: mkpath, exist?, install, join, children, basename, mtime, parent, chmod, lstat
 # Pathname#/ operator: Pathname.new("/a")/"b" => Pathname.new("/a/b")
 # FileUtils: cp, cp_r, rm, rm_r, rm_rf, mv, mkdir_p, ln, ln_s, install_symlink
+
+# which - find command in PATH
+def which(cmd)
+  ENV['PATH'].split(':').each do |dir|
+    path = File.join(dir, cmd)
+    return Pathname.new(path) if File.executable?(path)
+  end
+  nil
+end
+
+# Extend Pathname with install_symlink and atomic_write methods
+class Pathname
+  def install_symlink(target)
+    # Create symlink at self pointing to target
+    # target can be Pathname or String
+    target_path = target.is_a?(Pathname) ? target.to_s : target
+    self.parent.mkpath unless self.parent.exist?
+    FileUtils.ln_sf(target_path, self.to_s)
+  end
+
+  def atomic_write(content)
+    # Write content atomically to avoid partial writes
+    # Uses temp file then renames
+    temp_file = Tempfile.new(self.basename.to_s, self.parent.to_s)
+    begin
+      temp_file.write(content)
+      temp_file.close
+      File.rename(temp_file.path, self.to_s)
+    ensure
+      temp_file.close rescue nil
+      File.unlink(temp_file.path) if File.exist?(temp_file.path)
+    end
+  end
+
+  def binread
+    # Binary read - same as read but with binary encoding
+    File.binread(self.to_s)
+  end
+end
+
+# OS::Linux::Glibc - stub for Homebrew's glibc version module
+module OS
+  module Linux
+    module Glibc
+      # Return the system's glibc version (from ldd or libc.so.6)
+      def self.system_version
+        @system_version ||= begin
+          # Get glibc version from ldd output
+          ldd_output = `ldd --version 2>/dev/null || /lib/libc.so.6 2>/dev/null`
+          if ldd_output =~ /(\d+\.\d+)/
+            Version.new($1)
+          else
+            Version.new("2.0")
+          end
+        end
+      end
+    end
+  end
+end
