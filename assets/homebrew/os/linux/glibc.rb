@@ -8,11 +8,11 @@ module OS
       def self.system_version
         @system_version ||= begin
           # Get glibc version from ldd output
-          ldd_output = `ldd --version 2>/dev/null || /lib/libc.so.6 2>/dev/null`
-          if ldd_output =~ /(\d+\.\d+)/
-            Version.new($1)
+          version = `ldd --version 2>/dev/null`[/ (\d+\.\d+)/, 1]
+          if version
+            Version.new(version)
           else
-            Version.new("2.0")
+            Version.NULL
           end
         end
       end
@@ -20,14 +20,31 @@ module OS
       # Return the brewed glibc version (from cellar if installed)
       def self.version
         @version ||= begin
-          cellar_glibc = HOMEBREW_CELLAR/'glibc'
-          if cellar_glibc.exist? && cellar_glibc.directory?
-            v = cellar_glibc.children.select(&:directory?).max_by(&:mtime).basename.to_s
-            Version.new(v)
+          ldd_path = HOMEBREW_PREFIX/'opt/glibc/bin/ldd'
+          if ldd_path.executable?
+            version = `#{ldd_path} --version 2>/dev/null`[/ (\d+\.\d+)/, 1]
+            if version
+              Version.new(version)
+            else
+              system_version
+            end
           else
             system_version
           end
         end
+      end
+
+      # Minimum supported glibc version
+      def self.minimum_version
+        Version.new('2.17')
+      end
+
+      def self.below_minimum_version?
+        system_version < minimum_version
+      end
+
+      def self.below_ci_version?
+        false  # stub
       end
     end
   end
