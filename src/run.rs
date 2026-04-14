@@ -1190,10 +1190,12 @@ pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathB
         if let Some(resolved_path) = is_executable_within_env(&cmd_path, env_root)? {
             if resolved_path.starts_with(env_root) {
                 let guest_rel = resolved_path.strip_prefix(env_root).unwrap_or(&resolved_path);
+                // Normalize path to eliminate ".." from relative symlinks
+                let guest_rel_normalized = crate::lfs::normalize_path_components(guest_rel);
                 // For brew environments, prepend HOMEBREW_PREFIX to the guest path
                 // so the command is found at the correct location inside the namespace
                 let homebrew_prefix = crate::brew_pkg::prefix::preferred_path();
-                let guest_path = homebrew_prefix.join(guest_rel);
+                let guest_path = homebrew_prefix.join(guest_rel_normalized);
                 return Ok(guest_path);
             }
         }
@@ -1219,15 +1221,28 @@ pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathB
             if resolved_path.starts_with(env_root) {
                 // Strip env_root prefix to get the guest path (e.g., /libexec/bin/go)
                 let guest_rel = resolved_path.strip_prefix(env_root).unwrap_or(&resolved_path);
-                let guest_path = PathBuf::from("/").join(guest_rel);
-                return Ok(guest_path);
+                // Normalize path to eliminate ".." from relative symlinks (e.g. sbin/../Cellar -> Cellar)
+                let guest_rel_normalized = crate::lfs::normalize_path_components(guest_rel);
+                // For brew environments, prepend HOMEBREW_PREFIX to guest path
+                // since env_root is bind-mounted to HOMEBREW_PREFIX in namespace
+                if is_brew_env {
+                    let homebrew_prefix = crate::brew_pkg::prefix::preferred_path();
+                    return Ok(homebrew_prefix.join(guest_rel_normalized));
+                } else {
+                    return Ok(PathBuf::from("/").join(guest_rel_normalized));
+                }
             } else {
                 // Symlink points outside env_root (e.g., to /tmp/epkg-aa/envs/self/usr/bin/epkg)
                 // but the command exists in the environment. Return the guest path based on
                 // cmd_path location within the environment.
                 let guest_rel = cmd_path.strip_prefix(env_root).unwrap_or(&cmd_path);
-                let guest_path = PathBuf::from("/").join(guest_rel);
-                return Ok(guest_path);
+                let guest_rel_normalized = crate::lfs::normalize_path_components(guest_rel);
+                if is_brew_env {
+                    let homebrew_prefix = crate::brew_pkg::prefix::preferred_path();
+                    return Ok(homebrew_prefix.join(guest_rel_normalized));
+                } else {
+                    return Ok(PathBuf::from("/").join(guest_rel_normalized));
+                }
             }
         }
     }
