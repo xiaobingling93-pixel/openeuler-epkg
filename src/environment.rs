@@ -709,6 +709,11 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
             force_symlink_dir_for_virtiofs("../opt", crate::dirs::path_join(env_root, &["usr", "opt"]))?;
         }
         // On Linux, do nothing - packages will create usr/libexec as a real directory if needed
+
+        // Create .LB symlink in host for short prefix RPATH replacement
+        // RPATH uses /home/linuxbrew/.LB (18 chars) instead of /home/linuxbrew/.linuxbrew (26 chars)
+        #[cfg(target_os = "linux")]
+        create_homebrew_lb_symlink();
     }
 
     // Fedora: usr/sbin is a symlink to bin (unified /usr/bin and /usr/sbin)
@@ -909,6 +914,35 @@ fn determine_package_format() -> Result<PackageFormat> {
     let channel_config: ChannelConfig = serde_yaml::from_str(&channel_content)
         .wrap_err("Failed to parse channel config")?;
     Ok(channel_config.format)
+}
+
+/// Create .LB symlink in host for short prefix RPATH replacement.
+/// RPATH uses /home/linuxbrew/.LB (18 chars) instead of /home/linuxbrew/.linuxbrew (26 chars).
+/// This shorter path always fits in the 22-char placeholder buffer without overflow.
+/// The symlink /home/linuxbrew/.LB -> .linuxbrew makes both paths work.
+#[cfg(target_os = "linux")]
+fn create_homebrew_lb_symlink() {
+    let homebrew_prefix = crate::brew_pkg::prefix::preferred();
+    // /home/linuxbrew/.linuxbrew -> parent is /home/linuxbrew
+    let hb_dir = Path::new(homebrew_prefix);
+    let lb_symlink = hb_dir.parent().unwrap().join(".LB");
+
+    if lb_symlink.exists() {
+        // Already exists, no need to create
+        return;
+    }
+
+    // Create .LB -> .linuxbrew symlink
+    // Only attempt if parent directory exists and is writable
+    if let Some(parent) = lb_symlink.parent() {
+        if parent.exists() {
+            if let Err(e) = std::os::unix::fs::symlink(".linuxbrew", &lb_symlink) {
+                log::warn!("Failed to create .LB symlink: {}", e);
+            } else {
+                log::info!("Created symlink {} -> .linuxbrew", lb_symlink.display());
+            }
+        }
+    }
 }
 
 #[cfg(not(unix))]

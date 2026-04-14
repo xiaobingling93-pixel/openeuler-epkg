@@ -430,6 +430,19 @@ pub fn create_cellar_symlinks(env_root: &Path, pkgkey: &str) -> Result<()> {
                     // Use relative path to lib/ld-linux-x86-64.so.2
                     crate::lfs::symlink_file_for_virtiofs(Path::new("../lib/ld-linux-x86-64.so.2"), &lib64_ld)?;
                     log::trace!("Created lib64 ld.so symlink: {} -> ../lib/ld-linux-x86-64.so.2", lib64_ld.display());
+
+                    // Create symlink: lib/ld.so -> ld-linux-x86-64.so.2
+                    // This is needed for bottles that use @@HOMEBREW_PREFIX@@/lib/ld.so interpreter
+                    // which is rewritten to /home/linuxbrew/.LB/lib/ld.so (28 chars, fits in 30-char buffer)
+                    let lib_dir = env_root.join("lib");
+                    if lib_dir.exists() {
+                        let lib_ld_so = lib_dir.join("ld.so");
+                        if crate::lfs::symlink_metadata(&lib_ld_so).is_ok() {
+                            crate::lfs::remove_file(&lib_ld_so)?;
+                        }
+                        crate::lfs::symlink_file_for_virtiofs(Path::new("ld-linux-x86-64.so.2"), &lib_ld_so)?;
+                        log::trace!("Created lib/ld.so symlink: {} -> ld-linux-x86-64.so.2", lib_ld_so.display());
+                    }
                 }
             }
         }
@@ -1672,9 +1685,11 @@ fn rewrite_elf_interpreter_paths(env_root: &Path) -> Result<()> {
     log::info!("Checking ELF paths in {} files for env {}", elf_files.len(), env_root.display());
 
     // Homebrew Linux bottles use @@HOMEBREW_PREFIX@@/lib/ld.so as the interpreter path.
-    // Replace it with the system's dynamic linker.
-    // x86_64 Linux typically uses /lib64/ld-linux-x86-64.so.2
-    let new_interpreter = "/lib64/ld-linux-x86-64.so.2";
+    // Replace it with brew's dynamic linker using short .LB prefix.
+    // /home/linuxbrew/.LB/lib/ld.so (28 chars) fits in typical 30-char buffer.
+    // This ensures brew binaries use brew's glibc via symlink chain:
+    //   ld.so -> ld-linux-x86-64.so.2 -> Cellar/glibc/.../ld-linux-x86-64.so.2
+    let new_interpreter = "/home/linuxbrew/.LB/lib/ld.so";
 
     for elf_path in &elf_files {
         if let Err(e) = rewrite_elf_interpreter_for_file(elf_path, &new_interpreter) {
@@ -1762,10 +1777,14 @@ fn rewrite_elf_interpreter_for_file(elf_path: &Path, new_interpreter: &str) -> R
 
     // Modify interpreter if it has Homebrew placeholders
     if let Some((offset, old_str, max_len)) = interp_info {
+        log::trace!("Interpreter for {}: '{}' (offset={}, max_len={})", elf_path.display(), old_str, offset, max_len);
         if HOMEBREW_PLACEHOLDER_PREFIXES.iter().any(|p| old_str.contains(p)) {
             if modify_string_in_buffer(&mut content, offset, max_len, new_interpreter) {
                 log::info!("Rewrote ELF interpreter for {}: {} -> {}",
                     elf_path.display(), old_str, new_interpreter);
+            } else {
+                log::warn!("Failed to rewrite interpreter for {}: '{}' too long for buffer (max {})",
+                    elf_path.display(), new_interpreter, max_len);
             }
         }
     }
@@ -1773,7 +1792,8 @@ fn rewrite_elf_interpreter_for_file(elf_path: &Path, new_interpreter: &str) -> R
     // Modify RPATH entries with Homebrew placeholders
     for (str_offset, old_rpath, max_len) in rpath_info {
         if HOMEBREW_PLACEHOLDER_PREFIXES.iter().any(|p| old_rpath.contains(p)) {
-            let new_rpath = replace_homebrew_placeholders(&old_rpath);
+            // Use short prefix (18 chars) that always fits in placeholder buffer (22 chars)
+            let new_rpath = replace_homebrew_placeholders_with_short_prefix(&old_rpath);
             if modify_string_in_buffer(&mut content, str_offset, max_len, &new_rpath) {
                 log::info!("Rewrote ELF RPATH for {}: {} -> {}",
                     elf_path.display(), old_rpath, new_rpath);
@@ -1817,33 +1837,25 @@ fn modify_string_in_buffer(content: &mut [u8], offset: usize, max_len: usize, ne
     true
 }
 
-/// Replace Homebrew placeholder prefixes with paths that work in epkg sandbox.
+/// Replace Homebrew placeholders with short prefix that always fits in original buffer.
 ///
-/// Homebrew bottles use absolute paths like `@@HOMEBREW_PREFIX@@/Cellar/pkg/lib`.
-/// For epkg sandbox (pivot_root), $ORIGIN doesn't work correctly because the
-/// dynamic linker may use the wrong path for binary location.
+/// Uses `/home/linuxbrew/.LB` (18 chars) instead of full `/home/linuxbrew/.linuxbrew` (26 chars).
+/// This is shorter than the placeholder `@@HOMEBREW_PREFIX@@` (22 chars), so it always fits
+/// without needing ELF resize or worrying about overflow.
 ///
-/// # Solution: Use absolute paths from sandbox root perspective
-/// - Inside sandbox after pivot_root, root = env_root
-/// - `/Cellar/pkgname/version/lib` is the correct absolute path
-/// - `/opt/pkgname/lib` works via opt symlinks to Cellar
+/// A symlink `/home/linuxbrew/.LB -> .linuxbrew` is created in both host and env,
+/// making both paths work in all isolation modes including skip_namespace_isolation.
 ///
-/// # Conversion rules (same length as placeholder to fit in buffer):
-/// - `@@HOMEBREW_PREFIX@@/Cellar/pkgname/version/lib` → `/Cellar/pkgname/version/lib`
-/// - `@@HOMEBREW_PREFIX@@/opt/pkgname/lib` → `/opt/pkgname/lib`
-/// - `@@HOMEBREW_PREFIX@@/lib` → `/lib`
-///
-/// Note: These conversions preserve string length (placeholder=22 chars, replacement starts with `/`).
-/// For Cellar paths, we need to strip "HOMEBREW_PREFIX" (22 chars) and keep "/Cellar/..." (starts with `/`).
-/// The total length should be similar: "@@HOMEBREW_PREFIX@@/Cellar/pkg/lib" = "/Cellar/pkg/lib" + 22 chars removed
+/// # Example
+/// `@@HOMEBREW_PREFIX@@/Cellar/jq/lib` → `/home/linuxbrew/.LB/Cellar/jq/lib`
 #[cfg(target_os = "linux")]
-fn replace_homebrew_placeholders(s: &str) -> String {
-    // Replace @@HOMEBREW_PREFIX@@ with empty string (keeping the path after it)
-    // This converts "@@HOMEBREW_PREFIX@@/Cellar/pkg/lib" to "/Cellar/pkg/lib"
-    // which works inside the sandbox where root = env_root
+fn replace_homebrew_placeholders_with_short_prefix(s: &str) -> String {
+    // Use short prefix that fits in 22-char placeholder buffer
+    // /home/linuxbrew/.LB = 18 chars (fits with 4-char margin)
+    const HOMEBREW_SHORT_PREFIX: &str = "/home/linuxbrew/.LB";
     let mut result = s.to_string();
     for placeholder in HOMEBREW_PLACEHOLDER_PREFIXES {
-        result = result.replace(placeholder, "");
+        result = result.replace(placeholder, HOMEBREW_SHORT_PREFIX);
     }
     result
 }

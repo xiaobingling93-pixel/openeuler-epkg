@@ -937,6 +937,20 @@ fn fs_mount_spec_strings(env_root: &Path, is_brew_env: bool) -> Vec<String> {
         } else {
             log::debug!("Created symlink {} -> {}", hb_inside_env.display(), symlink_target);
         }
+
+        // Create .LB symlink for short prefix RPATH replacement
+        // RPATH uses /home/linuxbrew/.LB (18 chars) instead of /home/linuxbrew/.linuxbrew (26 chars)
+        // This shorter path always fits in the 22-char placeholder buffer without overflow
+        let lb_symlink = hb_inside_env.parent().unwrap().join(".LB");
+        if lb_symlink.exists() {
+            let _ = std::fs::remove_file(&lb_symlink);
+        }
+        // .LB -> .linuxbrew (relative symlink)
+        if let Err(e) = std::os::unix::fs::symlink(".linuxbrew", &lb_symlink) {
+            log::warn!("Failed to create .LB symlink: {}", e);
+        } else {
+            log::debug!("Created symlink {} -> .linuxbrew", lb_symlink.display());
+        }
     }
 
     specs

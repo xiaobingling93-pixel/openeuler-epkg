@@ -109,7 +109,110 @@ epkg run -e system-brew -- tree --version  # 无隔离，原生性能
 
 **原因**：macOS 不支持 Linux 的用户命名空间机制，无法实现路径重映射
 
-## 隔离模式详细说明
+## 隔离模式与目录布局矩阵
+
+### Linux (linuxbrew) 场景矩阵
+
+| 隔离模式 | env_root | .LB 符号链接 | ld.so 路径 | RPATH | 硬编码引用 |
+|----------|----------|--------------|------------|-------|------------|
+| skip_namespace | env_base | 主机创建 | `/home/linuxbrew/.LB/lib/ld.so` | `.LB/...` | 通过 `.LB->.linuxbrew` 解析 |
+| Env (bind mount) | env_base | 主机+环境创建 | `/home/linuxbrew/.LB/lib/ld.so` | `.LB/...` | bind mount + `.LB` symlink |
+| Fs (pivot_root) | env_base | 环境创建 | `/home/linuxbrew/.LB/lib/ld.so` | `.LB/...` | `.LB->.linuxbrew->../../../..` |
+| VM (libkrun) | env_base | 环境创建 | `/home/linuxbrew/.LB/lib/ld.so` | `.LB/...` | VM 内符号链接链 |
+
+**详细说明**：
+
+#### skip_namespace_isolation
+
+```
+主机文件系统：
+/home/linuxbrew/
+├── .LB -> .linuxbrew           (epkg 创建)
+└── .linuxbrew/
+    └── lib/
+        ├── ld.so -> /lib64/ld-linux-x86-64.so.2  (主机 brew 安装)
+        └── ld-linux-x86-64.so.2 -> ../Cellar/glibc/...
+
+env_root = /home/wfg/.epkg/envs/test-brew (bind mount 到 .linuxbrew)
+
+运行时：
+- Interpreter: /home/linuxbrew/.LB/lib/ld.so -> .linuxbrew/lib/ld.so -> Cellar/glibc
+- RPATH: /home/linuxbrew/.LB/Cellar/... -> .linuxbrew/Cellar/... -> env_root/Cellar/...
+- 硬编码: /home/linuxbrew/.linuxbrew/... 通过 bind mount 直接访问 env_root
+```
+
+#### Env 模式 (bind mount)
+
+```
+namespace 内：
+/home/linuxbrew/.linuxbrew = env_root (bind mount)
+/home/linuxbrew/.LB = .linuxbrew (主机符号链接，在 namespace 内可见)
+
+运行时：
+- Interpreter: /home/linuxbrew/.LB/lib/ld.so -> .linuxbrew/lib/ld.so -> Cellar/glibc
+- RPATH: .LB 路径通过符号链解析到 bind mount 点
+- 硬编码: /home/linuxbrew/.linuxbrew/... 直接指向 bind mount 的 env_root
+```
+
+#### Fs 模式 (pivot_root)
+
+```
+pivot_root 后的目录结构：
+/ (原 env_root)
+├── home/linuxbrew/
+│   ├── .linuxbrew -> ../../../../  (指向新根目录 /)
+│   └── .LB -> .linuxbrew           (epkg 创建)
+├── lib/
+│   ├── ld.so -> ld-linux-x86-64.so.2
+│   └── ld-linux-x86-64.so.2 -> ../Cellar/glibc/...
+└── Cellar/
+    └── glibc/2.39/lib/ld-linux-x86-64.so.2
+
+运行时：
+- Interpreter: /home/linuxbrew/.LB/lib/ld.so -> .linuxbrew/lib/ld.so -> ../../../lib/ld.so
+- RPATH: .LB -> .linuxbrew -> ../../../../ (根目录)
+- 硬编码: /home/linuxbrew/.linuxbrew/... -> ../../../../... (根目录)
+```
+
+#### VM 模式 (libkrun)
+
+```
+VM 内目录结构与 Fs 模式相同：
+- pivot_root 到 env_root
+- 符号链接在 VM 内创建
+- .LB 和 .linuxbrew 都指向根目录
+```
+
+### macOS (homebrew) 场景矩阵
+
+| 隔离模式 | env_root | 前缀 | dylib 路径 | 硬编码引用 |
+|----------|----------|------|------------|------------|
+| 无隔离 | HOMEBREW_PREFIX | `/opt/homebrew` (ARM) 或 `/usr/local` (Intel) | `@rpath/...` | 直接访问 |
+
+**macOS 特点**：
+- 不支持 Linux namespace/bind mount
+- 必须使用实际 HOMEBREW_PREFIX 作为 env_root
+- dylib 使用 `install_name_tool` 重写，而非 ELF 重写
+- 无 `.LB` 短前缀需求（macOS 使用 `@rpath` 相对路径机制）
+
+### 硬编码引用处理
+
+**问题**：部分 brew bottles 在编译时已硬编码 `/home/linuxbrew/.linuxbrew/...` 路径，无占位符。
+
+**解决方案**：
+1. **skip_namespace**：bind mount 使硬编码路径指向 env_root
+2. **Env/Fs/VM**：`.linuxbrew` 符号链指向根目录或 bind mount 点
+3. **所有模式**：`.LB -> .linuxbrew` 使短前缀路径也能解析
+
+**关键符号链接**：
+```bash
+# 主机（所有 Linux brew 环境需要）
+/home/linuxbrew/.LB -> .linuxbrew
+
+# 环境（Fs/VM 模式）
+env_root/home/linuxbrew/.LB -> .linuxbrew
+env_root/home/linuxbrew/.linuxbrew -> ../../../../  (pivot_root 后指向 /)
+```
 
 ### 无隔离模式（env_root == HOMEBREW_PREFIX）
 
@@ -183,38 +286,76 @@ $env_root/                    (pivot_root 后成为新的 /)
 
 ## ELF 文件处理
 
+### 短前缀设计 (.LB)
+
+**问题**：Homebrew bottles 使用 `@@HOMEBREW_PREFIX@@` 占位符（22 字符），替换为完整路径 `/home/linuxbrew/.linuxbrew`（26 字符）会超出缓冲区长度，导致复杂包（如 Python）溢出。
+
+**解决方案**：使用短前缀 `/home/linuxbrew/.LB`（18 字符），比占位符更短，永不溢出。
+
+**设计要点**：
+
+| 组件 | 占位符 | 替换后 | 长度对比 |
+|------|--------|--------|----------|
+| RPATH | `@@HOMEBREW_PREFIX@@` (22) | `/home/linuxbrew/.LB` (18) | 更短，永不过溢出 |
+| Interpreter | `@@HOMEBREW_PREFIX@@/lib/ld.so` (32) | `/home/linuxbrew/.LB/lib/ld.so` (28) | 更短，适配缓冲区 |
+
+**符号链接链**：
+
+```
+/home/linuxbrew/.LB -> .linuxbrew            (主机和环境中创建)
+
+在环境中：
+lib/ld.so -> ld-linux-x86-64.so.2             (为 interpreter 创建)
+lib/ld-linux-x86-64.so.2 -> ../Cellar/glibc/2.39/lib/ld-linux-x86-64.so.2
+```
+
+**优势**：
+1. **永不溢出**：替换路径比占位符更短，适配任何 bottle
+2. **跨隔离模式兼容**：`.LB` 符号链接在主机和环境中都创建，所有模式都能工作
+3. **简洁设计**：单一策略，无需 fallback
+
 ### RPATH 重写策略
 
 **目标**：使二进制文件在两种场景下都能工作
 1. **直接运行**（无隔离）：RPATH 指向 $env_root 下的实际路径
-2. **沙箱运行**（Fs 模式）：通过符号链接或绑定挂载使路径有效
+2. **沙箱运行**（Fs/Env/VM 模式）：通过 `.LB` 符号链接使路径有效
 
 **实现**：`src/brew_pkg.rs`
 
 **占位符替换**：
-- `@@HOMEBREW_PREFIX@@` -> `/home/linuxbrew/.linuxbrew`（或平台对应前缀）
-- `@@HOMEBREW_CELLAR@@` -> `/home/linuxbrew/.linuxbrew/Cellar`
+- `@@HOMEBREW_PREFIX@@` -> `/home/linuxbrew/.LB`（短前缀）
+- `@@HOMEBREW_CELLAR@@` -> `/home/linuxbrew/.LB/Cellar`（短前缀）
 
 **技术细节**：
 - 使用 `goblin` 库解析 ELF
-- 修改 PT_INTERP 段（动态链接器路径）
-- 修改 DT_RPATH/DT_RUNPATH 动态标签
+- 修改 PT_INTERP 段（动态链接器路径）为 `/home/linuxbrew/.LB/lib/ld.so`
+- 修改 DT_RPATH/DT_RUNPATH 动态标签，使用 `.LB` 短前缀
 - 原地修改，保持文件结构
+- 短前缀保证永不超过原始缓冲区长度
 
 **路径设计示例**：
 ```
-原始 bottle 中的 RPATH: @@HOMEBREW_PREFIX@@/lib
-重写后: /home/linuxbrew/.linuxbrew/lib
+原始 bottle 中的 RPATH: @@HOMEBREW_PREFIX@@/Cellar/jq/1.8.1/lib
+重写后: /home/linuxbrew/.LB/Cellar/jq/1.8.1/lib
 
-场景 A（env_root = HOMEBREW_PREFIX）：
-- 路径直接指向实际位置
-- 无隔离运行：正常工作
-
-场景 B（env_root = ~/.epkg/envs/test-brew，Fs 模式）：
-- 沙箱内 /home/linuxbrew/.linuxbrew 是符号链接
-- 指向沙箱根目录，与 env_root 内容一致
-- 因此 /home/linuxbrew/.linuxbrew/lib 有效
+符号链接解析：
+.LB -> .linuxbrew -> (env_root 或 bind mount)
+最终指向: env_root/Cellar/jq/1.8.1/lib
 ```
+
+### Interpreter 重写策略
+
+**问题**：brew bottles 使用 `@@HOMEBREW_PREFIX@@/lib/ld.so` 作为 interpreter，长度受限。
+
+**解决方案**：
+1. 重写为 `/home/linuxbrew/.LB/lib/ld.so`（28 字符）
+2. 创建 `lib/ld.so -> ld-linux-x86-64.so.2` 符号链接
+3. `lib/ld-linux-x86-64.so.2` 已指向 Cellar/glibc 的 ld.so
+
+**glibc 二进制特殊处理**：
+- glibc 包的二进制 interpreter 已经是完整路径（非占位符）
+- 例如 `/home/linuxbrew/.linuxbrew/Cellar/glibc/2.39/lib/ld-linux-x86-64.so.2`
+- 这些路径无需重写，在 `.LB` 符号链接环境下也能正常解析
 
 ## 命令查找机制
 
