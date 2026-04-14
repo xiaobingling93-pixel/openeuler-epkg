@@ -28,7 +28,8 @@ class Version
   attr_reader :major, :minor, :patch
 
   def initialize(version_str)
-    parts = version_str.to_s.split(/[._]/)
+    @original = version_str.to_s
+    parts = @original.split(/[._]/)
     @major = parts[0]&.to_i || 0
     @minor = parts[1]&.to_i || 0
     @patch = parts[2]&.to_i || 0
@@ -36,7 +37,7 @@ class Version
 
   def major_minor; "#{major}.#{minor}"; end
   def major_minor_patch; "#{major}.#{minor}.#{patch}"; end
-  def to_s; @major.nil? ? "0" : "#{major}.#{minor}.#{patch}"; end
+  def to_s; @original; end
   def to_i; major; end
 end
 
@@ -93,48 +94,109 @@ module Language
   end
 end
 
-# ENV module for compiler environment
-module ENV
-  class << self
-    def cc; ENV['CC'] || 'cc'; end
-    def cxx; ENV['CXX'] || 'c++'; end
-    def prepend_path(key, value); ENV[key] = "#{value}:#{ENV[key]}" if ENV[key]; end
-    def append_path(key, value); ENV[key] = "#{ENV[key]}:#{value}" if ENV[key]; end
-    def delete(key); ENV.delete(key); end
-    def exclude?(key); ENV[key].nil? || ENV[key].empty?; end
-    def clang; ENV['CC'] = 'clang'; end
-    def filter_map; ENV.map { |k, v| yield(k, v) }.compact; end
-  end
+# ENV module stubs - Homebrew extends Ruby's ENV with these methods
+# We don't override ENV, just stub the methods that formulas might call
+module ENVStubs
+  def cc; self['CC'] || 'cc'; end
+  def cxx; self['CXX'] || 'c++'; end
+  def prepend_path(key, value); self[key] = "#{value}:#{self[key]}" if self[key]; end
+  def append_path(key, value); self[key] = "#{self[key]}:#{value}" if self[key]; end
+  def clang; self['CC'] = 'clang'; end
 end
+ENV.extend(ENVStubs)
+
+# ChildStatus class to mimic Process::Status for $CHILD_STATUS ($?)
+class ChildStatus
+  attr_reader :exitstatus
+
+  def initialize(exitstatus, success)
+    @exitstatus = exitstatus
+    @success = success
+  end
+
+  def nonzero?; @exitstatus != 0; end
+  def zero?; @exitstatus == 0; end
+  def to_i; @exitstatus; end
+  def success?; @success; end
+end
+
+# Global variable for last command status (initialized to success)
+$CHILD_STATUS = ChildStatus.new(0, true)
 
 # Utils module for command execution
 module Utils
   def self.safe_popen_read(*cmd)
-    stdout, stderr, status = Open3.capture3(*cmd.flatten)
+    # Convert Pathname to String for Open3
+    cmd_strs = cmd.flatten.map { |c| c.is_a?(Pathname) ? c.to_s : c }
+    stdout, stderr, status = Open3.capture3(*cmd_strs)
+    # Set global $CHILD_STATUS for $? checks
+    $CHILD_STATUS = ChildStatus.new(status.exitstatus, status.success?)
     raise "Command failed: #{cmd.join(' ')}" unless status.success?
     stdout
   end
 
   def self.safe_popen_write(*cmd)
-    Open3.popen3(*cmd.flatten) do |stdin, stdout, stderr, wait_thr|
+    # Convert Pathname to String for Open3
+    cmd_strs = cmd.flatten.map { |c| c.is_a?(Pathname) ? c.to_s : c }
+    Open3.popen3(*cmd_strs) do |stdin, stdout, stderr, wait_thr|
       yield(stdin)
       stdin.close
       stdout.close
       stderr.close
-      wait_thr.value
+      status = wait_thr.value
+      $CHILD_STATUS = ChildStatus.new(status.exitstatus, status.success?)
     end
   end
+end
+
+# BuildOptions class - stub for build options
+class BuildOptions
+  def head?; false; end
+  def stable?; true; end
+  def with?(name); false; end
+  def without?(name); true; end
+  def include?(name); false; end
 end
 
 # Formula base class
 class Formula
   include FileUtils
 
-  attr_reader :name, :version
+  attr_reader :name, :version, :desc, :homepage
+
+  # Build options - stub
+  def build; @build ||= BuildOptions.new; end
+
+  # DSL methods - called in formula definition
+  def self.desc(text); @desc = text; end
+  def self.homepage(url); @homepage = url; end
+  def self.license(*args); @license = args; end
+  def self.revision(num); @revision = num; end
+  def self.head(url, **opts); @head = url; end
+  def self.stable(&block); @stable_block = block; end
+  def self.url(url, **opts); @url = url; end
+  def self.sha256(hash); @sha256 = hash; end
+  def self.version(v); @version = v; end
+  def self.depends_on(*args); @depends ||= []; @depends += args; end
+  def self.patch(&block); end  # stub
+  def self.bottle(&block); end  # stub
+  def self.option(name, desc = ""); end  # stub
+  def self.conflicts_with(*args); end  # stub
+  def self.keg_only(reason = nil); end  # stub
+  def self.test(&block); end  # stub
+  def self.livecheck(&block); end  # stub
+  def self.on_macos(&block); end  # stub
+  def self.on_linux(&block); yield if block; end  # execute on Linux
+  def self.no_autobump!(because: nil); end  # stub
+  # Catch any other DSL methods ( depreciated, etc)
+  def self.method_missing(name, *args, &block); end
 
   def initialize(name, version = nil)
     @name = name.to_s.sub(/^.*\//, '')
     @version = version ? Version.new(version) : detect_version
+    # Get DSL values from class
+    @desc = self.class.instance_variable_get(:@desc) rescue nil
+    @homepage = self.class.instance_variable_get(:@homepage) rescue nil
   end
 
   def detect_version
@@ -178,6 +240,21 @@ class Formula
   def logs; var/'log'/@name; end
   def rack; HOMEBREW_CELLAR/@name; end
   def usr; HOMEBREW_PREFIX/'usr'; end
+
+  # Check if any version is installed in Cellar
+  def any_version_installed?
+    cellar_dir = HOMEBREW_CELLAR/@name
+    cellar_dir.exist? && cellar_dir.directory? && cellar_dir.children.any?(&:directory?)
+  end
+
+  # inreplace - replace text in a file
+  # Usage: inreplace(file, pattern, replacement)
+  def inreplace(file, pattern, replacement)
+    path = file.is_a?(Pathname) ? file.to_s : file
+    content = File.read(path)
+    content.gsub!(pattern, replacement)
+    File.write(path, content)
+  end
 
   def post_install; end
 
