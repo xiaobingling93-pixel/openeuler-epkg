@@ -5,12 +5,18 @@
 
 # Note: Arch Linux uses python-pip, Debian/Ubuntu uses python3-pip, Alpine uses py3-pip
 # Conda/msys2 on Windows provides 'python' not 'python3', and no /bin/sh
+# brew: host /bin/sh fails with vdso_time SIGSEGV, use bash and coreutils
 if [ "$OS" = "conda" ] || [ "$OS" = "msys2" ]; then
     run_install python pip
     check_cmd python --version || lang_skip "no python for OS=$OS"
     PYTHON_CMD="python"
     # Conda/msys2 on Windows has no /bin/sh, use python to create test files
     SHELL_CMD=""
+elif [ "$OS" = "brew" ]; then
+    run_install python3 bash coreutils expat
+    check_cmd python3 --version || lang_skip "no python3 for OS=$OS"
+    PYTHON_CMD="python3"
+    SHELL_CMD="bash -c"
 else
     run_install python3 py3-pip python3-pip python-pip
     check_cmd python3 --version || lang_skip "no python3 for OS=$OS"
