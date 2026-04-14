@@ -357,8 +357,9 @@ fn create_package_txt_from_pkgkey<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: &str
 ///
 /// # Arguments
 /// * `env_root` - Environment root directory
+/// * `store_dir` - Store directory path (for finding formula file)
 /// * `pkgkey` - Package key in format "{pkgname}__{version}__{arch}" (version includes bottle revision)
-pub fn create_cellar_symlinks(env_root: &Path, pkgkey: &str) -> Result<()> {
+pub fn create_cellar_symlinks(env_root: &Path, store_dir: &Path, pkgkey: &str) -> Result<()> {
     // Parse pkgkey to get package name
     // pkgkey format: {pkgname}__{version}__{arch}
     let parts: Vec<&str> = pkgkey.rsplitn(3, "__").collect();
@@ -481,7 +482,7 @@ pub fn create_cellar_symlinks(env_root: &Path, pkgkey: &str) -> Result<()> {
 
     // Run post_install if defined in formula
     // Uses minimal Ruby stub instead of full Homebrew Library
-    crate::brew_postinstall::run_post_install(env_root, pkgname, &version)?;
+    crate::brew_postinstall::run_post_install(env_root, store_dir, pkgname, &version)?;
 
     Ok(())
 }

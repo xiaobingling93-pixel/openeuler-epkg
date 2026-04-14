@@ -159,7 +159,9 @@ pub fn link_package(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> Result<(
             .and_then(|n| n.to_str())
         {
             if let Ok(pkgkey) = crate::package::pkgline2pkgkey(pkgline) {
-                if let Err(e) = crate::brew_pkg::create_cellar_symlinks(&plan.env_root, &pkgkey) {
+                // store_dir is store_fs_dir.parent() (contains info/brew/.brew/)
+                let store_dir = store_fs_dir.parent().unwrap();
+                if let Err(e) = crate::brew_pkg::create_cellar_symlinks(&plan.env_root, store_dir, &pkgkey) {
                     log::warn!("Failed to create Cellar symlinks: {}", e);
                 }
             }

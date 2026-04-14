@@ -6,10 +6,10 @@
 //! without requiring the full Homebrew Library.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use color_eyre::Result;
-use color_eyre::eyre::{self, WrapErr};
+use color_eyre::eyre::WrapErr;
 
 /// Check if a formula defines a post_install method.
 ///
@@ -32,12 +32,16 @@ pub fn detect_post_install(formula_content: &str) -> bool {
 ///
 /// # Arguments
 /// * `env_root` - Environment root directory
+/// * `store_dir` - Store directory path (contains info/brew/.brew/)
 /// * `pkgname` - Package name
 /// * `version` - Package version (from Cellar, without bottle revision)
-pub fn run_post_install(env_root: &Path, pkgname: &str, version: &str) -> Result<()> {
-    // Find formula file in store
-    let formula_path = find_formula_in_store(env_root, pkgname)
-        .wrap_err_with(|| format!("Cannot find formula for {}", pkgname))?;
+pub fn run_post_install(env_root: &Path, store_dir: &Path, pkgname: &str, version: &str) -> Result<()> {
+    // Formula file is at store_dir/info/brew/.brew/pkgname.rb
+    let formula_path = store_dir.join("info/brew/.brew").join(format!("{}.rb", pkgname));
+    if !formula_path.exists() {
+        log::debug!("Formula not found at {}, skipping post_install", formula_path.display());
+        return Ok(());
+    }
 
     // Check if formula has post_install
     let formula_content = fs::read_to_string(&formula_path)
@@ -105,36 +109,4 @@ pub fn run_post_install(env_root: &Path, pkgname: &str, version: &str) -> Result
             Ok(())
         }
     }
-}
-
-/// Find formula file for a package in the store.
-///
-/// Formula is stored at info/brew/.brew/pkgname.rb
-fn find_formula_in_store(env_root: &Path, pkgname: &str) -> Result<PathBuf> {
-    // Formula could be in multiple store directories
-    // Look for the most recent one
-    let store_base = env_root.parent()
-        .unwrap_or(env_root)
-        .join("store");
-
-    if !store_base.exists() {
-        return Err(eyre::eyre!("Store directory not found"));
-    }
-
-    // Search for package in store
-    for entry in fs::read_dir(&store_base)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().to_string();
-
-        // Match pkgname in store directory name
-        // Format: hash__pkgname__version__arch
-        if name.contains(&format!("__{}__", pkgname)) || name.ends_with(&format!("__{}", pkgname)) {
-            let formula_path = entry.path().join("info/brew/.brew").join(format!("{}.rb", pkgname));
-            if formula_path.exists() {
-                return Ok(formula_path);
-            }
-        }
-    }
-
-    Err(eyre::eyre!("Formula not found for {}", pkgname))
 }
