@@ -484,6 +484,13 @@ pub fn create_cellar_symlinks(env_root: &Path, store_dir: &Path, pkgkey: &str) -
     // that need to be replaced for proper sys.path calculation
     replace_python_config_placeholders(env_root, pkgname, &version)?;
 
+    // Replace placeholder paths in glibc linker scripts
+    // glibc's libc.so linker script contains @@HOMEBREW_CELLAR@@ placeholders
+    // that need to be replaced for proper library linking
+    if pkgname == "glibc" {
+        replace_glibc_linker_script_placeholders(env_root, &version)?;
+    }
+
     // Run post_install if defined in formula
     // Uses minimal Ruby stub instead of full Homebrew Library
     crate::brew_postinstall::run_post_install(env_root, store_dir, pkgname, &version)?;
@@ -1549,6 +1556,49 @@ fn rewrite_cellar_path_to_top_level(cellar_path: &str, env_root: &Path) -> Optio
 
     // For other paths, we don't rewrite
     None
+}
+
+/// Replace placeholder paths in glibc linker scripts.
+///
+/// glibc's linker scripts (libc.so, libm.so, etc.) contain `@@HOMEBREW_CELLAR@@`
+/// placeholders that need to be replaced with actual paths for proper linking.
+///
+/// Example libc.so content:
+/// ```
+/// GROUP ( @@HOMEBREW_CELLAR@@/glibc/2.39/lib/libc.so.6 ... )
+/// ```
+///
+/// Without this replacement, gcc cannot link against glibc libraries.
+///
+/// # Arguments
+/// * `env_root` - Environment root directory (HOMEBREW_PREFIX)
+/// * `version` - glibc version (e.g., "2.39")
+fn replace_glibc_linker_script_placeholders(env_root: &Path, version: &str) -> Result<()> {
+    let cellar_pkg_dir = env_root.join("Cellar").join("glibc").join(version);
+    let lib_dir = cellar_pkg_dir.join("lib");
+
+    if !lib_dir.exists() {
+        log::debug!("glibc lib directory not found");
+        return Ok(());
+    }
+
+    // Find linker scripts (*.so files that are text, not ELF)
+    for entry in std::fs::read_dir(&lib_dir)?.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        // Linker scripts have .so extension but are text files
+        if path.extension().map(|e| e == "so").unwrap_or(false) {
+            // Check if it's a text file (linker script) by reading first bytes
+            if let Ok(bytes) = std::fs::read(&path) {
+                if bytes.starts_with(b"/*") || bytes.starts_with(b"GROUP") {
+                    // This is a linker script, replace placeholders
+                    let homebrew_prefix = env_root.display().to_string();
+                    replace_homebrew_placeholders_in_file(&path, &homebrew_prefix)?;
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Replace placeholder paths in Python configuration files.

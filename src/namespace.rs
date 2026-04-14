@@ -415,16 +415,21 @@ pub fn build_unified_context(
             .cloned()
             .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
         // Prepend bin (for tools like as, ld) then ebin (for ebin wrappers)
+        // Use HOMEBREW_PREFIX guest paths since env_root is bind-mounted there in namespace
+        let homebrew_prefix = crate::brew_pkg::prefix::preferred_path();
         let mut new_path = String::new();
         if bin_path.exists() {
-            new_path.push_str(&format!("{}:", bin_path.display()));
-            debug!("Brew: Added bin to PATH: {}", bin_path.display());
+            new_path.push_str(&format!("{}/bin:", homebrew_prefix.display()));
+            debug!("Brew: Added bin to PATH: {}/bin", homebrew_prefix.display());
         }
         if ebin_path.exists() {
-            new_path.push_str(&format!("{}:", ebin_path.display()));
-            debug!("Brew: Added ebin to PATH: {}", ebin_path.display());
+            new_path.push_str(&format!("{}/ebin:", homebrew_prefix.display()));
+            debug!("Brew: Added ebin to PATH: {}/ebin", homebrew_prefix.display());
         }
-        new_path.push_str(&current_path);
+        // Convert any env_root paths in current_path to HOMEBREW_PREFIX guest paths
+        let env_root_str = env_root.to_string_lossy();
+        let converted_path = current_path.replace(&*env_root_str, &homebrew_prefix.to_string_lossy().to_string());
+        new_path.push_str(&converted_path);
         run_options.env_vars.insert("PATH".to_string(), new_path);
     }
 

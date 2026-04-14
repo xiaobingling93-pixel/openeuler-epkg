@@ -1210,9 +1210,26 @@ pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathB
             continue;
         }
 
-        // Check if this path is within the environment root
-        let rel_path = path_dir.strip_prefix("/").unwrap_or(path_dir);
-        let cmd_path = env_root.join(rel_path).join(cmd_name);
+        // For brew environments, PATH dirs may already be guest paths (HOMEBREW_PREFIX/*)
+        // Convert them back to host paths for checking
+        let (cmd_path, _is_guest_path) = if is_brew_env {
+            let homebrew_prefix = crate::brew_pkg::prefix::preferred_path();
+            let homebrew_prefix_str = homebrew_prefix.to_string_lossy();
+            if path_dir.starts_with(&*homebrew_prefix_str) {
+                // Guest path: convert to host path for checking
+                let rel = path_dir.strip_prefix(&*homebrew_prefix_str).unwrap_or(path_dir);
+                let host_path = env_root.join(rel);
+                trace!("find_command_in_env_path: converted guest path {} to host path {}", path_dir, host_path.display());
+                (host_path.join(cmd_name), true)
+            } else {
+                // Host path or system path
+                let rel_path = path_dir.strip_prefix("/").unwrap_or(path_dir);
+                (env_root.join(rel_path).join(cmd_name), false)
+            }
+        } else {
+            let rel_path = path_dir.strip_prefix("/").unwrap_or(path_dir);
+            (env_root.join(rel_path).join(cmd_name), false)
+        };
         trace!("find_command_in_env_path: cmd_path={:?}", cmd_path);
 
         if let Some(resolved_path) = is_executable_within_env(&cmd_path, env_root)? {
