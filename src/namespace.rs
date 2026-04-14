@@ -911,45 +911,16 @@ fn fs_mount_spec_strings(env_root: &Path, is_brew_env: bool) -> Vec<String> {
         add_epkg_mount_spec_strings(&mut specs);
     }
 
-    // For brew environments in Fs mode, we need to create HOMEBREW_PREFIX inside the chroot
-    // Since env_root becomes the root via pivot_root, we create HOMEBREW_PREFIX as a
-    // symlink pointing to / (the env_root)
+    // For brew environments in Fs mode, the HOMEBREW_PREFIX symlinks are already
+    // created by create_env_homebrew_symlinks() during environment creation.
+    // No need to recreate them here.
     if is_brew_env {
         let homebrew_prefix = crate::brew_pkg::prefix::preferred();
         let hb_inside_env = env_root.join(homebrew_prefix.trim_start_matches('/'));
-        // Remove existing directory/symlink if it exists (to allow recreation)
         if hb_inside_env.exists() {
-            log::debug!("Removing existing HOMEBREW_PREFIX at {}", hb_inside_env.display());
-            let _ = std::fs::remove_dir_all(&hb_inside_env);
-            let _ = std::fs::remove_file(&hb_inside_env);
-        }
-        // Create parent directories
-        if let Some(parent) = hb_inside_env.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                log::warn!("Failed to create HOMEBREW_PREFIX parent directory: {}", e);
-            }
-        }
-        // Create a relative symlink: .linuxbrew -> ../../../../ (which points to env_root after pivot_root)
-        // Path: home/linuxbrew/.linuxbrew -> ../../../../ (4 levels up from .linuxbrew to reach env_root)
-        let symlink_target = "../../../../".to_string();
-        if let Err(e) = std::os::unix::fs::symlink(&symlink_target, &hb_inside_env) {
-            log::warn!("Failed to create HOMEBREW_PREFIX symlink: {}", e);
+            log::debug!("HOMEBREW_PREFIX symlinks already exist at {}", hb_inside_env.display());
         } else {
-            log::debug!("Created symlink {} -> {}", hb_inside_env.display(), symlink_target);
-        }
-
-        // Create .LB symlink for short prefix RPATH replacement
-        // RPATH uses /home/linuxbrew/.LB (18 chars) instead of /home/linuxbrew/.linuxbrew (26 chars)
-        // This shorter path always fits in the 22-char placeholder buffer without overflow
-        let lb_symlink = hb_inside_env.parent().unwrap().join(".LB");
-        if lb_symlink.exists() {
-            let _ = std::fs::remove_file(&lb_symlink);
-        }
-        // .LB -> .linuxbrew (relative symlink)
-        if let Err(e) = std::os::unix::fs::symlink(".linuxbrew", &lb_symlink) {
-            log::warn!("Failed to create .LB symlink: {}", e);
-        } else {
-            log::debug!("Created symlink {} -> .linuxbrew", lb_symlink.display());
+            log::warn!("HOMEBREW_PREFIX symlinks missing at {} (environment may be corrupted)", hb_inside_env.display());
         }
     }
 

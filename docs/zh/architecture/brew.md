@@ -160,8 +160,8 @@ namespace 内：
 pivot_root 后的目录结构：
 / (原 env_root)
 ├── home/linuxbrew/
-│   ├── .linuxbrew -> ../../../../  (指向新根目录 /)
-│   └── .LB -> .linuxbrew           (epkg 创建)
+│   ├── .linuxbrew -> ../../     (指向新根目录 /)
+│   └── .LB -> ../../            (epkg 创建，减少一次查找)
 ├── lib/
 │   ├── ld.so -> ld-linux-x86-64.so.2
 │   └── ld-linux-x86-64.so.2 -> ../Cellar/glibc/...
@@ -169,9 +169,20 @@ pivot_root 后的目录结构：
     └── glibc/2.39/lib/ld-linux-x86-64.so.2
 
 运行时：
-- Interpreter: /home/linuxbrew/.LB/lib/ld.so -> .linuxbrew/lib/ld.so -> ../../../lib/ld.so
-- RPATH: .LB -> .linuxbrew -> ../../../../ (根目录)
-- 硬编码: /home/linuxbrew/.linuxbrew/... -> ../../../../... (根目录)
+- Interpreter: /home/linuxbrew/.LB/lib/ld.so -> ../../lib/ld.so
+- RPATH: .LB -> ../../ (根目录)
+- 硬编码: /home/linuxbrew/.linuxbrew/... -> ../../... (根目录)
+```
+
+**符号链接相对路径计算**：
+```
+env_root/home/linuxbrew/.linuxbrew -> ../../
+
+解析过程（从符号链接的父目录 linuxbrew/ 向上）:
+  linuxbrew -> home       (../ 第1层)
+  home      -> env_root   (../ 第2层)
+
+注意：符号链接从其父目录解析，而非从自身位置解析
 ```
 
 #### VM 模式 (libkrun)
@@ -210,8 +221,8 @@ VM 内目录结构与 Fs 模式相同：
 /home/linuxbrew/.LB -> .linuxbrew
 
 # 环境（Fs/VM 模式）
-env_root/home/linuxbrew/.LB -> .linuxbrew
-env_root/home/linuxbrew/.linuxbrew -> ../../../../  (pivot_root 后指向 /)
+env_root/home/linuxbrew/.LB -> ../../          (pivot_root 后指向 /)
+env_root/home/linuxbrew/.linuxbrew -> ../../   (pivot_root 后指向 /)
 ```
 
 ### 无隔离模式（env_root == HOMEBREW_PREFIX）

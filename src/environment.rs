@@ -710,10 +710,14 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
         }
         // On Linux, do nothing - packages will create usr/libexec as a real directory if needed
 
-        // Create .LB symlink in host for short prefix RPATH replacement
-        // RPATH uses /home/linuxbrew/.LB (18 chars) instead of /home/linuxbrew/.linuxbrew (26 chars)
+        // Create home/linuxbrew symlinks for Fs/VM mode pivot_root
+        // These symlinks ensure paths work after pivot_root:
+        // - /home/linuxbrew/.linuxbrew -> ../../../../ (points to new root after pivot_root)
+        // - /home/linuxbrew/.LB -> .linuxbrew (short prefix for RPATH/interpreter)
         #[cfg(target_os = "linux")]
-        create_homebrew_lb_symlink();
+        {
+            create_homebrew_symlinks(env_root);
+        }
     }
 
     // Fedora: usr/sbin is a symlink to bin (unified /usr/bin and /usr/sbin)
@@ -916,32 +920,67 @@ fn determine_package_format() -> Result<PackageFormat> {
     Ok(channel_config.format)
 }
 
-/// Create .LB symlink in host for short prefix RPATH replacement.
-/// RPATH uses /home/linuxbrew/.LB (18 chars) instead of /home/linuxbrew/.linuxbrew (26 chars).
-/// This shorter path always fits in the 22-char placeholder buffer without overflow.
-/// The symlink /home/linuxbrew/.LB -> .linuxbrew makes both paths work.
+/// Create home/linuxbrew symlinks for brew environments.
+///
+/// 1. In host: /home/linuxbrew/.LB -> .linuxbrew (for skip_namespace mode)
+/// 2. In env_root: home/linuxbrew/.linuxbrew -> ../../../../ (for Fs/VM pivot_root)
+/// 3. In env_root: home/linuxbrew/.LB -> .linuxbrew (for Fs/VM mode)
+///
+/// The short .LB prefix (18 chars) fits in 22-char placeholder buffer without overflow.
 #[cfg(target_os = "linux")]
-fn create_homebrew_lb_symlink() {
+fn create_homebrew_symlinks(env_root: &Path) {
     let homebrew_prefix = crate::brew_pkg::prefix::preferred();
-    // /home/linuxbrew/.linuxbrew -> parent is /home/linuxbrew
-    let hb_dir = Path::new(homebrew_prefix);
-    let lb_symlink = hb_dir.parent().unwrap().join(".LB");
+    let hb_prefix_path = Path::new(homebrew_prefix);
 
-    if lb_symlink.exists() {
-        // Already exists, no need to create
-        return;
+    // === 1. Create .LB symlink in host ===
+    // For skip_namespace and Env modes where host path needs to resolve
+    let host_lb = hb_prefix_path.parent().unwrap().join(".LB");
+    if !host_lb.exists() {
+        if let Err(e) = std::os::unix::fs::symlink(".linuxbrew", &host_lb) {
+            log::warn!("Failed to create host .LB symlink: {}", e);
+        } else {
+            log::info!("Created host symlink {} -> .linuxbrew", host_lb.display());
+        }
     }
 
-    // Create .LB -> .linuxbrew symlink
-    // Only attempt if parent directory exists and is writable
-    if let Some(parent) = lb_symlink.parent() {
-        if parent.exists() {
-            if let Err(e) = std::os::unix::fs::symlink(".linuxbrew", &lb_symlink) {
-                log::warn!("Failed to create .LB symlink: {}", e);
-            } else {
-                log::info!("Created symlink {} -> .linuxbrew", lb_symlink.display());
-            }
+    // === 2. Create home/linuxbrew symlinks in env_root ===
+    // For Fs/VM modes where pivot_root is used
+    let hb_inside_env = env_root.join(homebrew_prefix.trim_start_matches('/'));
+
+    // Create parent directories: env_root/home/linuxbrew/
+    if let Some(parent) = hb_inside_env.parent() {
+        if let Err(e) = crate::lfs::create_dir_all(parent) {
+            log::warn!("Failed to create HOMEBREW_PREFIX parent in env: {}", e);
+            return;
         }
+    }
+
+    // Remove existing directory/symlink if present
+    if hb_inside_env.exists() {
+        log::debug!("Removing existing HOMEBREW_PREFIX at {}", hb_inside_env.display());
+        let _ = std::fs::remove_dir_all(&hb_inside_env);
+        let _ = std::fs::remove_file(&hb_inside_env);
+    }
+
+    // Create .linuxbrew -> ../../ (2 levels up to env_root)
+    // Symlink resolves from its parent directory (linuxbrew/):
+    //   ../../ -> home/ -> env_root
+    // After pivot_root, env_root becomes /, so this points to /
+    if let Err(e) = std::os::unix::fs::symlink("../../", &hb_inside_env) {
+        log::warn!("Failed to create env .linuxbrew symlink: {}", e);
+    } else {
+        log::info!("Created env symlink {} -> ../../", hb_inside_env.display());
+    }
+
+    // Create .LB -> ../../ directly (same as .linuxbrew, reduces one symlink lookup)
+    let env_lb = hb_inside_env.parent().unwrap().join(".LB");
+    if env_lb.exists() {
+        let _ = std::fs::remove_file(&env_lb);
+    }
+    if let Err(e) = std::os::unix::fs::symlink("../../", &env_lb) {
+        log::warn!("Failed to create env .LB symlink: {}", e);
+    } else {
+        log::info!("Created env symlink {} -> ../../", env_lb.display());
     }
 }
 
