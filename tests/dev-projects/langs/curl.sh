@@ -4,8 +4,10 @@
 . "$(dirname "$0")/../common.sh"
 
 # Alpine: explicit CA bundle (same concern as ruby.sh). Other distros: curl usually pulls certs.
+# brew: curl has implicit lib dependencies (libldap, libgssapi_krb5, libsasl2) not declared in formula
 case "$OS" in
     alpine) run_install curl ca-certificates-bundle ;;
+    brew)   run_install curl krb5 openldap cyrus-sasl ;;
     *)       run_install curl ;;
 esac
 
