@@ -870,7 +870,11 @@ fn env_mount_spec_strings(env_root: &Path, _run_options: &RunOptions, is_brew_en
         specs.push("@/tmp://tmp".to_string());
         specs.push("@/var://var".to_string());
 
-        // NOTE: Do NOT mount host library paths (/lib64, /usr/lib)!
+        // Mount env_root/usr to /usr for script shebangs (e.g., #!/usr/bin/env node)
+        // env_root/usr/bin/env -> epkg provides busybox env for script execution
+        specs.push("@/usr://usr".to_string());
+
+        // NOTE: Do NOT mount host library paths (/lib64)!
         // Sandbox must be self-contained: brew apps use brew ld.so + brew libs.
         // Host tools won't work - install brew coreutils instead.
 
