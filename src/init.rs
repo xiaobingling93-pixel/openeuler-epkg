@@ -600,6 +600,28 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
                 log::warn!("epkg-linux binary not found at {}", epkg_linux_plan.path.display());
             }
         }
+
+        // Also create init file in self environment (needed for VM boot)
+        // The init file is a hardlink/copy of epkg-linux-$arch at usr/bin/init
+        if epkg_linux_target.exists() {
+            let init_path = usr_bin.join("init");
+            if init_path.exists() {
+                if let Err(e) = lfs::remove_file(&init_path) {
+                    log::warn!("Failed to remove existing init: {}", e);
+                }
+            }
+            // Try hardlink first, fall back to copy
+            let used_hardlink = lfs::hard_link(&epkg_linux_target, &init_path).is_ok();
+            if !used_hardlink {
+                if let Err(e) = lfs::copy(&epkg_linux_target, &init_path) {
+                    log::warn!("Failed to create init copy: {}", e);
+                } else {
+                    log::info!("Installed init for VM (copy): {}", init_path.display());
+                }
+            } else {
+                log::info!("Installed init for VM (hardlink): {}", init_path.display());
+            }
+        }
     }
 
     // Short paths under ~/.epkg/: bin -> self usr/bin, assets -> self usr/src/epkg/assets
@@ -661,73 +683,78 @@ fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
 /// - The hardlinks are only meaningful inside the VM (virtiofs exports them)
 /// - We still update the files to ensure consistency across environments
 fn update_all_env_hardlinks(self_epkg_linux: &Path, _arch: &str) -> Result<()> {
-    #[cfg(not(target_os = "linux"))]
-    {
-        // On Windows/macOS, we cannot create hardlinks for Linux ELF binaries
-        // because the host filesystem doesn't support executing them.
-        // However, we still need to copy the binary to all environments
-        // so that virtiofs can export them to the VM guest.
-        log::debug!(
-            "Skipping hardlink update on non-Linux host: {}",
-            self_epkg_linux.display()
-        );
+    let envs_dir = dirs().user_envs.clone();
+    if !envs_dir.exists() {
         return Ok(());
     }
 
-    #[cfg(target_os = "linux")]
-    {
-        let envs_dir = dirs().user_envs.clone();
-        if !envs_dir.exists() {
+    let entries = match std::fs::read_dir(&envs_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            log::warn!("Failed to read envs directory {}: {}", envs_dir.display(), e);
             return Ok(());
         }
+    };
 
-        let entries = match std::fs::read_dir(&envs_dir) {
-            Ok(e) => e,
-            Err(e) => {
-                log::warn!("Failed to read envs directory {}: {}", envs_dir.display(), e);
-                return Ok(());
-            }
-        };
+    let mut updated_count = 0;
+    for entry in entries.flatten() {
+        let env_name = entry.file_name().to_string_lossy().to_string();
+        // Skip self environment - epkg-linux is already installed by setup_common_binaries
+        if env_name == SELF_ENV {
+            continue;
+        }
 
-        let mut updated_count = 0;
-        for entry in entries.flatten() {
-            let env_name = entry.file_name().to_string_lossy().to_string();
-            // Skip self environment - it already has the correct binary
-            if env_name == SELF_ENV {
-                continue;
-            }
+        let env_usr_bin = envs_dir.join(&env_name).join("usr").join("bin");
+        if !env_usr_bin.exists() {
+            continue;
+        }
 
-            let env_usr_bin = envs_dir.join(&env_name).join("usr").join("bin");
-            if !env_usr_bin.exists() {
-                continue;
-            }
-
-            // Update epkg and init hardlinks
-            for filename in ["epkg", "init"] {
-                let target_path = env_usr_bin.join(filename);
-                if target_path.exists() {
-                    // Remove existing file (whether hardlink or not) and create new hardlink
-                    if let Err(e) = lfs::remove_file(&target_path) {
-                        log::warn!("Failed to remove {}: {}", target_path.display(), e);
-                        continue;
-                    }
+        // Update epkg and init files (hardlink on Linux, copy on Windows/macOS)
+        for filename in ["epkg", "init"] {
+            let target_path = env_usr_bin.join(filename);
+            if target_path.exists() {
+                // Remove existing file (whether hardlink or not) and create new one
+                if let Err(e) = lfs::remove_file(&target_path) {
+                    log::warn!("Failed to remove {}: {}", target_path.display(), e);
+                    continue;
                 }
+            }
+
+            #[cfg(target_os = "linux")]
+            {
                 if let Err(e) = std::fs::hard_link(self_epkg_linux, &target_path) {
                     log::warn!("Failed to create hardlink {} -> {}: {}",
                         target_path.display(), self_epkg_linux.display(), e);
                     continue;
                 }
                 log::debug!("Updated hardlink: {} -> {}", target_path.display(), self_epkg_linux.display());
-                updated_count += 1;
             }
-        }
 
-        if updated_count > 0 {
-            log::info!("Updated {} hardlinks across all environments", updated_count);
+            #[cfg(not(target_os = "linux"))]
+            {
+                // On Windows/macOS, try hardlink first, then copy
+                // (hardlinks work on NTFS/APFS but may fail across filesystems)
+                let used_hardlink = std::fs::hard_link(self_epkg_linux, &target_path).is_ok();
+                if !used_hardlink {
+                    if let Err(e) = lfs::copy(self_epkg_linux, &target_path) {
+                        log::warn!("Failed to copy {} -> {}: {}",
+                            self_epkg_linux.display(), target_path.display(), e);
+                        continue;
+                    }
+                }
+                log::debug!("Updated {}: {} -> {}",
+                    if used_hardlink { "hardlink" } else { "copy" },
+                    target_path.display(), self_epkg_linux.display());
+            }
+            updated_count += 1;
         }
-
-        Ok(())
     }
+
+    if updated_count > 0 {
+        log::info!("Updated {} files across all environments", updated_count);
+    }
+
+    Ok(())
 }
 
 /// Symlinks under `home_epkg` (`$HOME/.epkg` or `%USERPROFILE%\\.epkg`) into the self env:
