@@ -672,12 +672,20 @@ fn try_scriptlet_interpreter_loop(
             setup_conda_env_vars(&mut env_vars, pkgkey, package_info, store_root, env_root);
         }
 
+        // Convert interpreter path to guest path for VM execution
+        // In VM mode, env_root is mounted at "/" in guest, so /usr/bin/bash stays as /usr/bin/bash
+        // The path conversion ensures consistent guest paths for reused VM sessions
+        #[cfg(not(target_os = "linux"))]
+        let interpreter_guest_path = host_path_to_guest_path(&interpreter_path);
+        #[cfg(target_os = "linux")]
+        let interpreter_guest_path: std::path::PathBuf = interpreter_path.clone();
+
         // Inherit VM settings from active VM reuse session during install/upgrade.
         // This allows scriptlets to reuse the same VM that was created for the main command,
         // avoiding the overhead of starting a new VM for each scriptlet (~2-3 seconds each).
         // The VM reuse logic is handled in fork_and_execute() -> prepare_run_options_for_command().
         let run_options = crate::run::RunOptions {
-            command: interpreter_path.to_string_lossy().to_string(),
+            command: interpreter_guest_path.to_string_lossy().to_string(),
             args: script_args,
             env_vars,
             no_exit: true,
