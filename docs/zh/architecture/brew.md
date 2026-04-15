@@ -730,15 +730,21 @@ hello  # 正确执行 env 内的 bash（通过 bin/sh -> bash symlink）
 
 **问题**：
 - Env 模式只 bind mount `$env_root -> /home/linuxbrew/.linuxbrew`
-- `/usr`、`/bin` 等目录未挂载
+- `/usr`、`/bin` 等目录不额外挂载（与 macOS 行为一致）
 - 二阶调用会访问到 host 的 `/usr/bin/yyy`
 
-**现有挂载**（Env 模式）：
+**设计原则**：
+- Env 模式不追求完全封闭，与 macOS 行为一致（都在 host 上执行）
+- 需要封闭性时使用 Fs 或 VM 模式
+
+**Env 模式挂载**（仅 brew 前缀）：
 ```
-$env_root -> /home/linuxbrew/.linuxbrew  (brew 前缀)
-@/usr://usr                              (shebang 支持)
-@/etc://etc, @/tmp://tmp, @/var://var    (基本功能)
+$env_root -> /home/linuxbrew/.linuxbrew  (brew 前缀 bind mount)
 ```
+
+**注意**：不挂载 `/usr`、`/etc`、`/tmp`、`/var` 等目录，确保语义明确：
+- 一阶调用：`resolve_command_path()` 正确解析到 env 内
+- 二阶调用：在 host 上执行（与 macOS 一致）
 
 ### usr-merge 的复杂性
 
