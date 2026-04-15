@@ -1580,6 +1580,14 @@ fn replace_placeholders_in_text_files(env_root: &Path, pkgname: &str, version: &
         return Ok(());
     }
 
+    // For Linux brew packages, use the short prefix that works in namespace.
+    // The namespace mounts the brew prefix at /home/linuxbrew/.LB.
+    // Text files (shell scripts, config files) need to reference this path,
+    // not the host env_root path which is not accessible in namespace.
+    #[cfg(target_os = "linux")]
+    let homebrew_prefix = HOMEBREW_SHORT_PREFIX;
+
+    #[cfg(target_os = "macos")]
     let homebrew_prefix = env_root.display().to_string();
     let mut text_files_count = 0;
 
