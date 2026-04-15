@@ -50,7 +50,8 @@ export LOG_DIR
 
 log "Starting dev-projects test (OS: ${SELECT_OS:-all}, test: ${SELECT_TEST:-all})"
 
-TIMEOUT_LANG=300
+# Brew packages are larger (llvm@21 ~533MB) and take longer to download/install
+TIMEOUT_LANG=600
 FAILED=0
 FAILED_OS=""
 FAILED_LANG=""
