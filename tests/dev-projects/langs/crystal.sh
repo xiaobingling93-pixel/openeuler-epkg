@@ -18,11 +18,16 @@ else
     SHELL_CMD="/bin/sh -c"
 fi
 
-run $SHELL_CMD 'mkdir -p /tmp/crystalproj && cd /tmp/crystalproj && echo "puts \"ok\"" > main.cr'
+run $SHELL_CMD 'cd /tmp/crystalproj && echo "puts \"ok\"" > main.cr'
+
+# Test 1: Dynamic linking (default)
+run $SHELL_CMD 'cd /tmp/crystalproj && rm -f main && crystal build main.cr && ./main'
+
+# Test 2: Static linking (--static)
 # Use --static for fully static binary that doesn't need dynamic linker.
 # Crystal-compiled binaries use interpreter /lib64/ld-linux-x86-64.so.2.
 # In brew namespace, only HOMEBREW_PREFIX is mounted; /lib64/ resolves to
 # HOST's ld.so, but the binary links against BREW's libc. Mixing HOST ld.so
 # with BREW libc causes SIGSEGV. Static linking avoids this mismatch entirely.
-run $SHELL_CMD 'cd /tmp/crystalproj && crystal build main.cr --static && ./main'
+run $SHELL_CMD 'cd /tmp/crystalproj && rm -f main && crystal build main.cr --static && ./main'
 lang_ok
