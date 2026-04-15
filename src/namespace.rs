@@ -427,25 +427,14 @@ pub fn build_unified_context(
             debug!("Brew: Added ebin to PATH: {}/ebin", homebrew_prefix.display());
         }
         // Convert any env_root paths in current_path to HOMEBREW_PREFIX guest paths
-        // and filter out host system paths (they contain binaries that fail in brew namespace)
-        // Host binaries use host glibc which causes vdso_time SIGSEGV in namespace
+        // Keep system paths (/usr/bin, /bin) because:
+        // 1. Vanilla Homebrew uses system cc/gcc for building
+        // 2. Env mode shows host filesystem, so system binaries are visible
+        // 3. Build scripts (like cargo build.rs) need cc linker
         let env_root_str = env_root.to_string_lossy();
         let converted_path = current_path.replace(&*env_root_str, &homebrew_prefix.to_string_lossy().to_string());
-        // Filter out host system paths - these binaries fail in brew namespace
-        let host_paths_to_filter: Vec<&str> = vec![
-            "/usr/local/sbin", "/usr/local/bin",
-            "/usr/sbin", "/usr/bin",
-            "/sbin", "/bin",
-        ];
-        let filtered_paths: Vec<&str> = converted_path.split(':')
-            .filter(|p| {
-                // Keep paths that are inside HOMEBREW_PREFIX or not standard host paths
-                p.starts_with(&homebrew_prefix.to_string_lossy().to_string()) ||
-                !host_paths_to_filter.iter().any(|h| *h == *p)
-            })
-            .collect();
-        new_path.push_str(&filtered_paths.join(":"));
-        debug!("Brew: Filtered PATH (removed host system paths): {}", new_path);
+        new_path.push_str(&converted_path);
+        debug!("Brew: PATH with system paths preserved: {}", new_path);
         run_options.env_vars.insert("PATH".to_string(), new_path);
     }
 
