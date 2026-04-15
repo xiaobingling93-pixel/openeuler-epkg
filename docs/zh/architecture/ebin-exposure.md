@@ -7,6 +7,72 @@
 3. **动态更新**：当依赖包后来被用户直接请求时，应创建 ebin 包装器
 4. **元包处理**：元包的依赖也应创建 ebin 包装器
 
+## Ebin 包装器类型
+
+根据宿主平台和包类型，ebin/ 目录中创建的包装器类型不同：
+
+### Linux 平台
+
+- **ELF 二进制文件**: 使用 `elf-loader` 硬链接
+  - `elf-loader` 是 epkg 内置组件，处理解释器路径和库搜索路径
+  - 通过硬链接 elf-loader 到 ebin/<程序>，配合隐藏符号链接实现透明加载
+  - 这是唯一支持直接从 ebin/ 运行二进制文件的平台
+
+- **脚本文件**: 创建 shell 包装器脚本
+  - 支持 shebang 解析和解释器链创建
+  - 处理 Python、Ruby、Node.js、Perl、Lua 等脚本
+
+### macOS 平台
+
+**对于原生 macOS 发行版 (homebrew):**
+- **Mach-O 二进制文件**: 创建 shell 脚本包装器 (`#!/bin/sh\nexec <binary> "$@"`)
+  - 可以直接在 macOS 主机上运行
+  - ebin/ 包装器可以直接执行
+
+- **脚本文件**: 创建 shell 包装器脚本
+
+**对于 Linux 发行版 (在 macOS 上通过 libkrun VM 运行):**
+- **ELF 二进制文件**: 不创建 ebin/ 包装器（跳过）
+  - ELF 二进制文件需要 VM 执行，创建包装器过于复杂且脚本解释器本身也是 ELF
+  - 用户需要通过 `epkg run` 执行命令
+
+- **脚本文件**: 不创建 ebin/ 包装器（跳过）
+  - 脚本解释器（如 /bin/sh, python3）是 ELF 二进制文件
+  - 在 ebin/ 中创建的脚本包装器本身也需要在 VM 中运行
+  - 统一要求使用 `epkg run` 执行
+
+### Windows 平台
+
+**对于原生 Windows 发行版 (msys2/conda):**
+- **PE 二进制文件**: 创建符号链接或 shell 脚本包装器
+  - 可以直接在 Windows 主机上运行（通过 MSYS2/Conda 环境）
+  - ebin/ 包装器可以直接执行
+
+- **脚本文件**: 创建 shell 包装器脚本
+
+**对于 Linux 发行版 (在 Windows 上通过 VM 运行):**
+- **ELF 二进制文件**: 不创建 ebin/ 包装器（跳过）
+  - ELF 二进制文件需要 VM 执行
+  - 用户需要通过 `epkg run` 执行命令
+
+- **脚本文件**: 不创建 ebin/ 包装器（跳过）
+  - 脚本解释器是 ELF 二进制文件
+  - 统一要求使用 `epkg run` 执行
+
+### 测试注意事项
+
+在 dev-projects 测试中，`run_ebin()` 函数的行为：
+
+- **Linux 主机**: 直接执行 `$ENV_ROOT/ebin/$bin`
+- **原生 Windows/macOS 发行版 (msys2/conda/brew)**: 直接执行 `$ENV_ROOT/ebin/$bin`
+- **Linux 发行版在非 Linux 主机上**: 使用 `epkg -e $ENV_NAME run -- $bin` 执行
+
+这是因为：
+1. Linux 发行版在 macOS/Windows 上需要 VM 执行
+2. 对于 Linux 发行版，ebin/ 目录为空（没有包装器被创建）
+3. 原生 Windows/macOS 发行版不需要 VM，可以像 Linux 主机一样直接执行
+4. 使用 `epkg run` 确保在需要 VM 时有正确的环境设置
+
 ## 核心数据结构
 
 ### InstalledPackageInfo

@@ -630,6 +630,23 @@ fn create_ebin_wrapper(env_root: &Path, fs_file_absolute: &Path, fs_file_relativ
             }
         }
     };
+
+    // On non-Linux hosts, skip ebin/ wrapper creation for ELF binaries.
+    // ELF binaries require VM execution which is too heavy; better to require
+    // users to use 'epkg run' explicitly for Linux distros on macOS/Windows.
+    // Native Windows/macOS distros (brew/conda/msys2) still get wrappers created.
+    #[cfg(not(target_os = "linux"))]
+    if file_type == FileType::Elf {
+        // Check if this is a native host distro (brew) - those still get wrappers
+        if !crate::run::is_brew_environment(env_root) {
+            log::debug!(
+                "Skipping ebin wrapper for {}: ELF binaries require VM execution on non-Linux host",
+                fs_file_absolute.display()
+            );
+            return Ok(None);
+        }
+    }
+
     let basename = fs_file_relative.file_name()
         .ok_or_else(|| eyre::eyre!("Failed to get filename for {}", fs_file_relative.display()))?;
     let ebin_path = env_root.join("ebin").join(basename);

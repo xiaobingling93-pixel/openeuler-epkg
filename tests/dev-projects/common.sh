@@ -95,12 +95,38 @@ check_cmd() {
     "$EPKG_BIN" -e "$ENV_NAME" run -- "$@" 2>/dev/null
 }
 
+# Check if we should use 'epkg run' instead of direct ebin execution.
+# For Linux distros running on non-Linux hosts (macOS/Windows), we cannot create
+# elf-loader based ebin/ wrappers since they need heavy VM execution.
+# In these cases, we use 'epkg run' to execute binaries properly.
+# For native Windows/macOS distros (msys2/conda/homebrew), ebin/ wrappers or
+# symlinks are still created and can be used directly.
+_should_use_epkg_run() {
+    local host_os
+    host_os=$(uname -s)
+    # Only applies when OS is a Linux distro (not native msys2/conda/brew)
+    case "$OS" in
+        conda|msys2|brew)
+            return 1  # Native host distros can use ebin/ directly
+            ;;
+    esac
+    # WSL2 detection (testing Windows epkg.exe from WSL2)
+    [ -n "${WSL_DISTRO_NAME:-}" ] && return 0
+    [ -n "${WSL_INTEROP:-}" ] && return 0
+    # macOS host running Linux distro
+    [ "$host_os" = "Darwin" ] && return 0
+    return 1
+}
+
 # Direct run the exposed binary at env ebin/<name> (exercises ebin wrappers). No-op if ENV_ROOT unset.
 # Note: conda/msys2 environments have different library layouts (bin/ instead of usr/bin/, no /lib64/ld-linux-x86-64.so.2)
 # so run_ebin is skipped for conda/msys2. Use "run" instead for conda/msys2 tests.
 # On macOS (Darwin), Linux binaries can't run directly - they need the libkrun VM.
 # So we skip run_ebin on macOS for non-native distros (Linux-based).
 # Exception: brew is native macOS packages (Mach-O), can run directly on macOS.
+# On non-Linux hosts (macOS/Windows), we don't create elf-loader based ebin/ wrappers.
+# ebin/ contains only text script wrappers. We use 'epkg run' instead of direct execution
+# for consistency and proper environment setup.
 run_ebin() {
     [ -z "${ENV_ROOT:-}" ] && return 0
     [ "$OS" = "conda" ] || [ "$OS" = "msys2" ] && return 0
@@ -108,7 +134,15 @@ run_ebin() {
     [ "$(uname -s)" = "Darwin" ] && [ "$OS" != "brew" ] && return 0
     bin=$1
     shift
-    "$ENV_ROOT/ebin/$bin" "$@" || exit
+    # On non-Linux hosts, use 'epkg run' instead of direct execution
+    # because we don't create elf-loader based ebin/ wrappers for Windows/macOS.
+    # Text script wrappers could still be created, but 'epkg run' ensures
+    # proper environment setup and consistency.
+    if _should_use_epkg_run; then
+        "$EPKG_BIN" -e "$ENV_NAME" run -- "$bin" "$@" || exit
+    else
+        "$ENV_ROOT/ebin/$bin" "$@" || exit
+    fi
 }
 
 # Run ebin binary only if it exists (for optional names, e.g. pip3 vs pip).
@@ -120,7 +154,12 @@ run_ebin_if() {
     bin=$1
     [ ! -x "$ENV_ROOT/ebin/$bin" ] && return 0
     shift
-    "$ENV_ROOT/ebin/$bin" "$@" || exit
+    # On non-Linux hosts, use 'epkg run' instead of direct execution
+    if _should_use_epkg_run; then
+        "$EPKG_BIN" -e "$ENV_NAME" run -- "$bin" "$@" || exit
+    else
+        "$ENV_ROOT/ebin/$bin" "$@" || exit
+    fi
 }
 
 # Call when this language is not available on this OS (exit 0)
