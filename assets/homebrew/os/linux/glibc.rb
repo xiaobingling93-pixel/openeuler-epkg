@@ -1,3 +1,6 @@
+#!/usr/bin/ruby
+# SPDX-License-Identifier: BSD-2-Clause
+#
 # Stub for Homebrew's os/linux/glibc module
 # This is loaded by formulas like glibc.rb that require this module
 

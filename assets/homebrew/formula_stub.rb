@@ -1,3 +1,6 @@
+#!/usr/bin/ruby
+# SPDX-License-Identifier: BSD-2-Clause
+#
 # formula_stub.rb - Minimal Formula support for post_install
 # (~450 lines, covers 99% post_install API usage based on Homebrew source analysis)
 #

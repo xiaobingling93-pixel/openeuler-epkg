@@ -1,3 +1,6 @@
+#!/usr/bin/ruby
+# SPDX-License-Identifier: BSD-2-Clause
+#
 # epkg_postinstall_runner.rb - Runner script for post_install execution
 #
 # This script loads the formula stub and formula file, then executes post_install.
