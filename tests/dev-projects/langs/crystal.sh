@@ -29,5 +29,10 @@ run $SHELL_CMD 'cd /tmp/crystalproj && rm -f main && crystal build main.cr && ./
 # In brew namespace, only HOMEBREW_PREFIX is mounted; /lib64/ resolves to
 # HOST's ld.so, but the binary links against BREW's libc. Mixing HOST ld.so
 # with BREW libc causes SIGSEGV. Static linking avoids this mismatch entirely.
-run $SHELL_CMD 'cd /tmp/crystalproj && rm -f main && crystal build main.cr --static && ./main'
+# Archlinux: static gc library not available, skip static linking test
+if [ "$OS" = "archlinux" ]; then
+    log "Skipping static linking test on archlinux (no static gc library)"
+else
+    run $SHELL_CMD 'cd /tmp/crystalproj && rm -f main && crystal build main.cr --static && ./main'
+fi
 lang_ok
