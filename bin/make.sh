@@ -699,12 +699,13 @@ update_all_env_hardlinks() {
         [[ -d "$env_usr_bin" ]] || continue
 
         # On Linux, update both epkg and init hardlinks (they're the same binary)
-        # On macOS, only update epkg - init is updated separately with Linux ELF binary
+        # On Windows/macOS, also update both - init is the VM guest init process
         local host_os=$(uname -s)
         if [[ "$host_os" == "Linux" ]]; then
             local filenames="epkg init"
         else
-            local filenames="epkg"
+            # Windows/macOS: init is also needed for VM boot (hardlink to epkg-linux-$arch)
+            local filenames="epkg init"
         fi
 
         for filename in $filenames; do
