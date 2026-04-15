@@ -249,8 +249,11 @@ fn handle_move_link_type(
 
     log::info!("Store {} already consumed by environment {}, copying files instead of moving",
               store_path.display(), existing_env);
+
+    // When same_env=true, files are already in target location, no need to copy
     if same_env {
-        log::debug!("Copying from same env (files already in place, ensuring they exist)");
+        log::debug!("Files already in place in same env, skipping copy");
+        return Ok(Some(fs_files));
     }
 
     copy_files_from_env(env_root, &existing_env_path, &fs_files)?;

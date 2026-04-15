@@ -27,9 +27,9 @@ else
     SHELL_CMD="/bin/sh -c"
 fi
 
-run $SHELL_CMD 'mkdir -p /tmp/rustproj/src && cd /tmp/rustproj && printf "%s\n" "[package]" "name=\"rustproj\"" "version=\"0.1.0\"" "[profile.release]" "opt-level=0" > Cargo.toml && echo "fn main() { println!(\"ok\"); }" > src/main.rs'
+run $SHELL_CMD 'mkdir -p /tmp/rustproj/src && cd /tmp/rustproj && printf "%s\n" "[package]" "name=\"rustproj\"" "version=\"0.1.0\"" "[profile.release]" "opt-level=0" > Cargo.toml && printf "%s\n" "fn main() { println!(\"ok\"); }" > src/main.rs'
 run $SHELL_CMD 'cd /tmp/rustproj && cargo build && cargo run' | grep -q ok
-run $SHELL_CMD 'cd /tmp/rustproj && cargo add rand && echo "fn main() { println!(\"{}\", rand::random::<u32>()); }" > src/main.rs && cargo run' | grep -q .
+run $SHELL_CMD 'cd /tmp/rustproj && cargo add rand && printf "%s\n" "fn main() { println!(\"{}\", rand::random::<u32>()); }" > src/main.rs && cargo run' | grep -q .
 # Exercise ebin for cargo (build in rustproj)
 if [ -n "${ENV_ROOT:-}" ] && [ -x "$ENV_ROOT/ebin/cargo" ]; then
     run $SHELL_CMD 'cd /tmp/rustproj && '"$ENV_ROOT"'/ebin/cargo build'
