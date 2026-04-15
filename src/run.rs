@@ -426,15 +426,34 @@ fn wait_for_child_with_timeout(child: nix::unistd::Pid, cmd_path: &Path, run_opt
 
 #[cfg(target_os = "linux")]
 fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<PathBuf> {
-    if Path::new(&run_options.command).is_absolute() {
-        Ok(PathBuf::from(&run_options.command))
-    } else if run_options.command.contains('/') {
-        Ok(PathBuf::from(&run_options.command))
-    } else if lfs::exists_on_host(Path::new(&run_options.command)) {
-        Ok(PathBuf::from(&run_options.command))
-    } else {
-        find_command_in_env_path(&run_options.command, env_root)
+    // Check if the path is already under env_root (e.g., /home/user/.epkg/envs/myenv/usr/bin/sh)
+    // This happens when scriptlets.rs passes a full host path. In this case, return it directly.
+    let cmd_path = PathBuf::from(&run_options.command);
+    if cmd_path.starts_with(env_root) {
+        debug!("Command {} is already under env_root, using directly", cmd_path.display());
+        return Ok(cmd_path);
     }
+
+    // For Unix-style absolute paths (e.g., /bin/sh, /usr/bin/env):
+    // Convert to environment path: /bin/sh -> env_root/bin/sh
+    // This ensures commands are resolved within the environment, not on host
+    if cmd_path.is_absolute() {
+        let relative_path = run_options.command.trim_start_matches('/');
+        let env_cmd_path = env_root.join(relative_path);
+        if lfs::exists_in_env(&env_cmd_path) {
+            debug!("Resolved absolute path {} to {}", cmd_path.display(), env_cmd_path.display());
+            return Ok(env_cmd_path);
+        }
+        // Fall through to check if it exists on host (for special cases)
+    }
+
+    // Relative path with slashes (e.g., ./script.sh)
+    if run_options.command.contains('/') && !cmd_path.is_absolute() {
+        return Ok(cmd_path);
+    }
+
+    // Simple command name without slashes - find in env's PATH
+    find_command_in_env_path(&run_options.command, env_root)
 }
 
 #[cfg(not(target_os = "linux"))]
