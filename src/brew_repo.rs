@@ -88,7 +88,10 @@ pub struct BrewFormula {
     #[serde(rename = "optional_dependencies")]
     pub optional_dependencies: Vec<String>,
     #[serde(default)]
-    pub uses_from_macos: Vec<UsesFromMacosEntry>,  // macOS system libs, become real deps on Linux
+    pub uses_from_macos: Vec<UsesFromMacosEntry>,  // macOS system libs, become recommended deps on Linux
+    #[serde(default)]
+    #[serde(rename = "uses_from_macos_bounds")]
+    pub uses_from_macos_bounds: Vec<HashMap<String, String>>,  // version bounds: {"since": "sequoia"}
     #[serde(default)]
     pub conflicts_with: Vec<String>,
     #[serde(default)]
