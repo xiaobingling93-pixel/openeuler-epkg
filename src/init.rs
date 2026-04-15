@@ -1524,6 +1524,9 @@ pub fn default_kernel_path_if_exists() -> Option<String> {
 
 /// Get vmlinux download URL for the current architecture from Gitee releases.
 /// Returns (url, sha256_url, config_url, version) tuple.
+/// Naming convention in sandbox-kernel repo:
+/// - x86_64: vmlinux-$kver-x86_64.zst (ELF format)
+/// - aarch64/riscv64: Image-$kver-$arch.zst (Raw format)
 #[cfg(feature = "libkrun")]
 fn get_vmlinux_url() -> Result<Option<(String, String, String, String)>> {
     let arch = &config().common.arch;
@@ -1544,15 +1547,21 @@ fn get_vmlinux_url() -> Result<Option<(String, String, String, String)>> {
     // Fetch latest release from Gitee
     let release = fetch_latest_release(GITEE_OWNER, REPO_VMLINUX)?;
 
-    // Find the vmlinux asset for this architecture
-    // Format: vmlinux-$kver-$arch.zst (e.g. vmlinux-6.19.6-x86_64.zst)
-    let suffix = format!("-{}.zst", arch);
-    let asset = release.assets.iter()
-        .find(|a| a.name.starts_with("vmlinux-") && a.name.ends_with(&suffix))
-        .ok_or_else(|| eyre::eyre!("No vmlinux asset found for architecture {}", arch))?;
+    // Determine kernel prefix based on architecture
+    // x86_64 uses vmlinux (ELF), aarch64/riscv64 use Image (Raw)
+    let kernel_prefix = if arch == "x86_64" { "vmlinux" } else { "Image" };
 
+    // Find the kernel asset for this architecture
+    // Format: $prefix-$kver-$arch.zst (e.g. vmlinux-6.19.11-sandbox-x86_64.zst, Image-6.19.11-sandbox-aarch64.zst)
+    let suffix = format!("-{}.zst", arch);
+    let prefix_pattern = format!("{}-", kernel_prefix);
+    let asset = release.assets.iter()
+        .find(|a| a.name.starts_with(&prefix_pattern) && a.name.ends_with(&suffix))
+        .ok_or_else(|| eyre::eyre!("No {} asset found for architecture {}", kernel_prefix, arch))?;
+
+    // Extract version: $prefix-$kver-$arch.zst -> $kver
     let version = asset.name
-        .strip_prefix("vmlinux-")
+        .strip_prefix(&prefix_pattern)
         .and_then(|s| s.strip_suffix(&suffix))
         .ok_or_else(|| eyre::eyre!("Failed to parse version from asset name: {}", asset.name))?
         .to_string();
@@ -1560,7 +1569,7 @@ fn get_vmlinux_url() -> Result<Option<(String, String, String, String)>> {
     let url = asset.browser_download_url.clone();
     let sha_url = format!("{}.sha256", url);
 
-    // Find config file: config-$kver-$arch (e.g. config-6.19.6-x86_64)
+    // Find config file: config-$kver-$arch (e.g. config-6.19.11-sandbox-aarch64)
     let config_name = format!("config-{}-{}", version, arch);
     let config_url = release.assets.iter()
         .find(|a| a.name == config_name)
