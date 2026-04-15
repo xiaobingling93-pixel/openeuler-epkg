@@ -865,24 +865,13 @@ fn env_mount_spec_strings(env_root: &Path, _run_options: &RunOptions, is_brew_en
         // For bind mount: $env_root -> //home/linuxbrew/.linuxbrew
         specs.push(format!("{}://{}", env_root.display(), homebrew_prefix.trim_start_matches('/')));
 
-        // Also add minimal standard mounts for basic functionality
-        specs.push("@/etc://etc".to_string());
-        specs.push("@/tmp://tmp".to_string());
-        specs.push("@/var://var".to_string());
-
-        // Mount env_root/usr to /usr for script shebangs (e.g., #!/usr/bin/env node)
-        // env_root/usr/bin/env -> epkg provides busybox env for script execution
-        specs.push("@/usr://usr".to_string());
-
-        // NOTE: Do NOT mount host library paths (/lib64)!
-        // Sandbox must be self-contained: brew apps use brew ld.so + brew libs.
-        // Host tools won't work - install brew coreutils instead.
+        // NOTE: Env mode does NOT mount /usr, /etc, /tmp, /var for brew!
+        // This ensures consistent behavior with macOS:
+        // - First-order call: resolve_command_path() correctly resolves to env
+        // - Second-order call: executes on host (no isolation)
+        // - For full isolation, use Fs or VM mode
 
         log::debug!("Brew environment: mounting {} to {}", env_root.display(), homebrew_prefix);
-
-        // Mount host's network configuration files for DNS resolution.
-        specs.push("/etc/hosts://etc/hosts:try".to_string());
-        specs.push("/etc/resolv.conf://etc/resolv.conf:try".to_string());
 
         // NOTE: Interpreter rewriting now uses /home/linuxbrew/.ld.so (22 chars)
         // which fits in gcc-15's 28-byte buffer. The .ld.so symlink is created
