@@ -8,6 +8,51 @@ use crate::dirs;
 use crate::repo::*;
 use crate::lfs;
 
+/// Uses_from_macos entry - can be a simple string or a hash with dep types
+/// Examples: "krb5" or {"bison": "build"} or {"python": ["build", "test"]}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum UsesFromMacosEntry {
+    Simple(String),
+    WithType(HashMap<String, UsesFromMacosType>),  // {"dep_name": "build" or ["build", "test"]}
+}
+
+/// The type value can be a single string or a list of strings
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum UsesFromMacosType {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+impl UsesFromMacosEntry {
+    /// Extract the dependency name from this entry
+    pub fn dep_name(&self) -> String {
+        match self {
+            UsesFromMacosEntry::Simple(name) => name.clone(),
+            UsesFromMacosEntry::WithType(hash) => {
+                // The key is the dependency name
+                hash.keys().next().cloned().unwrap_or_default()
+            }
+        }
+    }
+
+    /// Get all dependency types from this entry
+    /// Returns empty vec for simple entries (means runtime dep)
+    pub fn dep_types(&self) -> Vec<String> {
+        match self {
+            UsesFromMacosEntry::Simple(_) => vec![],  // simple entries are runtime deps
+            UsesFromMacosEntry::WithType(hash) => {
+                match hash.values().next() {
+                    Some(UsesFromMacosType::Single(t)) => vec![t.clone()],
+                    Some(UsesFromMacosType::Multiple(ts)) => ts.clone(),
+                    None => vec![],
+                }
+            }
+        }
+    }
+}
+
 /// Brew formula structure from formula.json API
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BrewFormula {
@@ -42,6 +87,8 @@ pub struct BrewFormula {
     #[serde(default)]
     #[serde(rename = "optional_dependencies")]
     pub optional_dependencies: Vec<String>,
+    #[serde(default)]
+    pub uses_from_macos: Vec<UsesFromMacosEntry>,  // macOS system libs, become real deps on Linux
     #[serde(default)]
     pub conflicts_with: Vec<String>,
     #[serde(default)]
@@ -262,6 +309,32 @@ impl BrewFormula {
             }
             if !variation.test_dependencies.is_empty() {
                 test_deps = variation.test_dependencies.clone();
+            }
+        }
+
+        // For Linux, uses_from_macos entries become real dependencies
+        // (macOS system libs don't exist on Linux, must be installed)
+        // Simple string entries become runtime deps, hash entries preserve their types
+        if bottle_tag.ends_with("_linux") {
+            for entry in &self.uses_from_macos {
+                let dep_name = entry.dep_name();
+                let types = entry.dep_types();
+                if types.is_empty() {
+                    // Simple entry → runtime dependency
+                    deps.push(dep_name);
+                } else {
+                    // Add to appropriate lists based on types
+                    for t in types {
+                        if t == "build" {
+                            build_deps.push(dep_name.clone());
+                        } else if t == "test" {
+                            test_deps.push(dep_name.clone());
+                        } else {
+                            // Other types (runtime, recommended, optional) → deps
+                            deps.push(dep_name.clone());
+                        }
+                    }
+                }
             }
         }
 
