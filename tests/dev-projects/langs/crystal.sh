@@ -8,8 +8,11 @@ check_cmd crystal --version || lang_skip "no crystal for OS=$OS"
 
 run_ebin crystal --version
 
-# msys2 has bash but no /bin/sh
-if [ "$OS" = "msys2" ]; then
+# msys2/conda on Windows have bash but no /bin/sh
+# brew: host /bin/sh fails in namespace (vdso_time SIGSEGV), use brew's bash
+if [ "$OS" = "msys2" ] || [ "$OS" = "conda" ]; then
+    SHELL_CMD="bash -c"
+elif [ "$OS" = "brew" ]; then
     SHELL_CMD="bash -c"
 else
     SHELL_CMD="/bin/sh -c"
