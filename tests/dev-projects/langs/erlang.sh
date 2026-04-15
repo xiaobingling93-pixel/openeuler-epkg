@@ -3,6 +3,10 @@
 
 . "$(dirname "$0")/../common.sh"
 
+# Brew: erlang needs gcc for libstdc++.so dependency
+if [ "$OS" = "brew" ]; then
+    $EPKG_BIN -e "$ENV_NAME" --assume-yes install --ignore-missing gcc || true
+fi
 run_install erlang
 check_cmd erl -eval "halt()." -noshell 2>/dev/null || lang_skip "no erlang for OS=$OS"
 

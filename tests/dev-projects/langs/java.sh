@@ -5,8 +5,12 @@
 
 # Note: Arch Linux uses jdk-openjdk, Debian/Ubuntu uses openjdk-17-jdk, Alpine uses openjdk17, openEuler uses java-11-openjdk-devel
 # openEuler has xorg-x11-fonts packaging conflict, need --ignore-file-conflicts
+# Brew: openjdk needs gcc for libstdc++.so dependency
 if [ "$OS" = "openeuler" ]; then
     $EPKG_BIN -e "$ENV_NAME" --assume-yes install --ignore-missing --ignore-file-conflicts java-1.8.0-openjdk-devel || true
+fi
+if [ "$OS" = "brew" ]; then
+    $EPKG_BIN -e "$ENV_NAME" --assume-yes install --ignore-missing gcc || true
 fi
 run_install java-1.8.0-openjdk-devel openjdk-17-jdk default-jdk java-openjdk openjdk17-jre openjdk17 openjdk-17 openjdk jdk-openjdk jdk17-openjdk java-11-openjdk-devel java-25-openjdk-devel
 check_cmd javac -version || lang_skip "no java for OS=$OS"

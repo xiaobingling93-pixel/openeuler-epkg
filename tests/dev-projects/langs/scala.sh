@@ -7,6 +7,10 @@
 if [ "$OS" = "openeuler" ]; then
     $EPKG_BIN -e "$ENV_NAME" --assume-yes install --ignore-missing --ignore-file-conflicts scala || true
 fi
+# Brew: scala depends on openjdk which needs gcc for libstdc++.so dependency
+if [ "$OS" = "brew" ]; then
+    $EPKG_BIN -e "$ENV_NAME" --assume-yes install --ignore-missing gcc || true
+fi
 run_install scala openjdk-17-jdk default-jdk java-openjdk
 
 # openEuler's scala 2.10.6 (2013) doesn't support -e flag, use pipe instead
