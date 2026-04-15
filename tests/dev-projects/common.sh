@@ -47,6 +47,7 @@ _check_log_and_fail() {
         | grep -v 'useradd: Warning:' \
         | grep -v 'Dependency resolution failed' \
         | grep -v -E '^Error: $' \
+        | grep -v 'ACPI Warning:.*AcpiEnable failed' \
         | grep -q .; then
         echo "" >&2
         echo "Reproduce command: $cmd_display" >&2
