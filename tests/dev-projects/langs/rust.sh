@@ -3,13 +3,12 @@
 
 . "$(dirname "$0")/../common.sh"
 
-# brew: cargo has implicit library dependencies not declared in formula
-# (uses_from_macos "curl" means curl is system dependency on macOS, but needed on Linux)
-# Also need bash for shell commands (host /bin/sh fails with vdso_time SIGSEGV)
+# brew: need bash for shell commands (vdso_time SIGSEGV issue resolved by absolute path fix)
 # coreutils for ls/mkdir/etc (host paths filtered from PATH in brew namespace)
+# gcc for linker (cargo needs cc linker)
 # Install all packages in one command to avoid symlink conflicts (re-install fails if symlinks exist)
 if [ "$OS" = "brew" ]; then
-    run_install rust cargo rustc curl gcc krb5 openldap cyrus-sasl bash coreutils
+    run_install rust cargo rustc gcc bash coreutils
 else
     run_install rust cargo rustc
 fi
