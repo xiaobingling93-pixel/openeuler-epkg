@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::path::Path;
 use std::sync::OnceLock;
-use nix::unistd::{setgid, setuid, Gid, Uid};
+use nix::unistd::{setgid, sethostname, setuid, Gid, Uid};
 
 static CMDLINE: OnceLock<HashMap<String, String>> = OnceLock::new();
 
@@ -205,6 +205,14 @@ fn run_init() -> Result<()> {
         return Err(e).wrap_err("init: setup_mounts failed");
     }
     let _ = kmsg_write("<6>run_init: setup_mounts done\n");
+
+    // Set hostname to "localhost" for Java and other apps that need hostname resolution.
+    // This ensures getLocalHost() works without DNS or /etc/hosts entries for the hostname.
+    if let Err(e) = sethostname("localhost") {
+        log::debug!("init: sethostname failed: {}. Continuing.", e);
+    } else {
+        log::debug!("init: sethostname to 'localhost' ok");
+    }
 
     // Mount user virtiofs volumes from kernel cmdline (epkg.vol_N=tag:guest_path[:ro])
     let _ = kmsg_write("<6>run_init: about to mount_virtiofs_volumes\n");

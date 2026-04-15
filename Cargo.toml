@@ -86,7 +86,7 @@ mlua-sys = { version = "=0.9", features = ["vendored"] }
 
 [target.'cfg(target_os = "linux")'.dependencies.nix]
 version = "=0.30.1"
-features = ["process", "user", "fs", "signal", "sched", "mount", "dir", "term", "poll", "reboot", "socket"]
+features = ["process", "user", "fs", "signal", "sched", "mount", "dir", "term", "poll", "reboot", "socket", "hostname"]
 default-features = false
 
 [target.'cfg(not(target_os = "linux"))'.dependencies.nix]
