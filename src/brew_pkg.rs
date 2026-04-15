@@ -19,7 +19,7 @@ const HOMEBREW_PLACEHOLDER_PREFIXES: &[&str] = &[
 /// Short prefix used for rewriting Homebrew paths (.LB = 3 chars vs .linuxbrew = 10 chars)
 /// This ensures rewritten paths fit in placeholder buffers without overflow.
 #[cfg(target_os = "linux")]
-const HOMEBREW_SHORT_PREFIX: &str = "/home/linuxbrew/.LB";
+pub(crate) const HOMEBREW_SHORT_PREFIX: &str = "/home/linuxbrew/.LB";
 
 /// Homebrew preferred installation prefixes.
 ///

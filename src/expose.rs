@@ -403,6 +403,17 @@ fn create_versioned_command_aliases(env_root: &Path) -> Result<Vec<PathBuf>> {
         }
     }
 
+    // Special handling for gcc: create cc symlink for tools that use 'cc' as compiler.
+    // Many build systems (like Crystal) default to 'cc' instead of 'gcc'.
+    // Without this, they would use host's /usr/bin/cc which lacks brew gcc specs.
+    let gcc_ebin = env_root.join("ebin").join("gcc");
+    let cc_ebin = env_root.join("ebin").join("cc");
+    if gcc_ebin.exists() && !cc_ebin.exists() {
+        crate::lfs::symlink_file_for_virtiofs(Path::new("gcc"), &cc_ebin)?;
+        created_paths.push(cc_ebin);
+        log::info!("Created cc -> gcc symlink for build systems using 'cc'");
+    }
+
     Ok(created_paths)
 }
 

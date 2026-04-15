@@ -77,6 +77,16 @@ pub fn run_post_install(env_root: &Path, store_dir: &Path, pkgname: &str, versio
 
     // Execute with portable-ruby
     // Arguments: runner.rb <stub_path> <formula_path> <pkgname> <version>
+    //
+    // For Linux brew, use HOMEBREW_SHORT_PREFIX (/home/linuxbrew/.LB) as HOMEBREW_PREFIX.
+    // This ensures gcc specs file and other post_install outputs reference namespace-compatible
+    // paths. The SHORT_PREFIX is also used for placeholder replacement in brew_pkg.rs.
+    #[cfg(target_os = "linux")]
+    let homebrew_prefix = crate::brew_pkg::HOMEBREW_SHORT_PREFIX;
+
+    #[cfg(target_os = "macos")]
+    let homebrew_prefix = env_root.display().to_string();
+
     let status = Command::new(&ruby_path)
         .arg("--disable=gems,rubyopt")
         .arg(&runner_path)
@@ -84,7 +94,7 @@ pub fn run_post_install(env_root: &Path, store_dir: &Path, pkgname: &str, versio
         .arg(&formula_path)
         .arg(pkgname)
         .arg(version)
-        .env("HOMEBREW_PREFIX", env_root)
+        .env("HOMEBREW_PREFIX", homebrew_prefix)
         .env("HOMEBREW_CELLAR", env_root.join("Cellar"))
         .env("HOMEBREW_LIBRARY", env_root.join("Homebrew/Library"))
         .env("TMPDIR", env_root.join("tmp"))
