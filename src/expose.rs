@@ -698,7 +698,35 @@ fn create_ebin_wrapper(env_root: &Path, fs_file_absolute: &Path, fs_file_relativ
             return Ok(Some(ebin_path));
         }
         FileType::MachO => {
-            // macOS native binary - create simple exec wrapper
+            // macOS native binary - for brew environment at HOMEBREW_PREFIX, create symlink
+            // (same logic as handle_elf for ELF binaries). For other cases, create exec wrapper.
+            if crate::run::is_brew_environment(env_root) {
+                let homebrew_prefix = crate::brew_pkg::prefix::preferred();
+                let hb_path = std::path::Path::new(homebrew_prefix);
+                // Check if env_root equals HOMEBREW_PREFIX
+                let is_at_prefix = match env_root.canonicalize() {
+                    Ok(canonical_env) => match hb_path.canonicalize() {
+                        Ok(canonical_hb) => canonical_env == canonical_hb,
+                        Err(_) => env_root == hb_path,
+                    },
+                    Err(_) => env_root == hb_path,
+                };
+                if is_at_prefix {
+                    // Brew at HOMEBREW_PREFIX: create symlink for native execution
+                    // This ensures script interpreters (like python3.14) are real binaries,
+                    // not shell wrappers that break shebang resolution
+                    if ebin_path.exists() {
+                        lfs::remove_file(&ebin_path)?;
+                    }
+                    if let Some(parent) = ebin_path.parent() {
+                        lfs::create_dir_all(parent)?;
+                    }
+                    lfs::symlink_file_for_virtiofs(&resolved_env_path, &ebin_path)?;
+                    log::debug!("Created MachO symlink: {} -> {}", ebin_path.display(), resolved_env_path.display());
+                    return Ok(Some(ebin_path));
+                }
+            }
+            // For non-brew environments, create simple exec wrapper
             create_binary_wrapper(&resolved_env_path, &ebin_path)
                 .with_context(|| format!("Failed to create MachO wrapper for {}", resolved_env_path.display()))?;
             return Ok(Some(ebin_path));
