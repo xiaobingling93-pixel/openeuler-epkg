@@ -18,6 +18,7 @@ const HOMEBREW_PLACEHOLDER_PREFIXES: &[&str] = &[
 
 /// Short prefix used for rewriting Homebrew paths (.LB = 3 chars vs .linuxbrew = 10 chars)
 /// This ensures rewritten paths fit in placeholder buffers without overflow.
+#[cfg(target_os = "linux")]
 const HOMEBREW_SHORT_PREFIX: &str = "/home/linuxbrew/.LB";
 
 /// Homebrew preferred installation prefixes.
@@ -1423,13 +1424,13 @@ fn search_path_in_cellar(env_root: &Path, subdir: &str, rel_path: &str) -> Optio
         return None;
     }
 
-    for pkg_entry in std::fs::read_dir(&cellar_dir)?.filter_map(|e| e.ok()) {
+    for pkg_entry in std::fs::read_dir(&cellar_dir).ok()?.filter_map(|e| e.ok()) {
         let pkg_dir = pkg_entry.path();
         if !pkg_dir.is_dir() {
             continue;
         }
 
-        for ver_entry in std::fs::read_dir(&pkg_dir)?.filter_map(|e| e.ok()) {
+        for ver_entry in std::fs::read_dir(&pkg_dir).ok()?.filter_map(|e| e.ok()) {
             let ver_dir = ver_entry.path();
             let target_path = ver_dir.join(subdir).join(rel_path);
             if target_path.exists() {
@@ -1462,7 +1463,7 @@ fn resolve_opt_package_lib(env_root: &Path, rest: &str) -> Option<String> {
         return None;
     }
 
-    for ver_entry in std::fs::read_dir(&cellar_pkg_dir)?.filter_map(|e| e.ok()) {
+    for ver_entry in std::fs::read_dir(&cellar_pkg_dir).ok()?.filter_map(|e| e.ok()) {
         let ver_dir = ver_entry.path();
         let lib_path = ver_dir.join(&rest_path);
         if lib_path.exists() {
@@ -1982,9 +1983,6 @@ fn modify_string_in_buffer(content: &mut [u8], offset: usize, max_len: usize, ne
 /// `@@HOMEBREW_PREFIX@@/Cellar/jq/lib` → `/home/linuxbrew/.LB/Cellar/jq/lib`
 #[cfg(target_os = "linux")]
 fn replace_homebrew_placeholders_with_short_prefix(s: &str) -> String {
-    // Use short prefix that fits in 22-char placeholder buffer
-    // /home/linuxbrew/.LB = 18 chars (fits with 4-char margin)
-    const HOMEBREW_SHORT_PREFIX: &str = "/home/linuxbrew/.LB";
     let mut result = s.to_string();
     for placeholder in HOMEBREW_PLACEHOLDER_PREFIXES {
         result = result.replace(placeholder, HOMEBREW_SHORT_PREFIX);
