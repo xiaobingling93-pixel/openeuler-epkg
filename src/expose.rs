@@ -638,11 +638,17 @@ fn create_ebin_wrapper(env_root: &Path, fs_file_absolute: &Path, fs_file_relativ
     #[cfg(not(target_os = "linux"))]
     if file_type == FileType::Elf {
         // Check if this is a native host distro (brew) - those still get wrappers
+        #[cfg(unix)]
         if !crate::run::is_brew_environment(env_root) {
             log::debug!(
                 "Skipping ebin wrapper for {}: ELF binaries require VM execution on non-Linux host",
                 fs_file_absolute.display()
             );
+            return Ok(None);
+        }
+        #[cfg(not(unix))]
+        {
+            // On non-Unix (Windows), skip ebin wrapper for ELF - no native brew support
             return Ok(None);
         }
     }
