@@ -552,6 +552,7 @@ pub fn compute_link_type_and_reflink(
 // We only care that a file exists at that path, regardless of whether it's a symlink
 // or what it points to. When running from host, this file is inside the env mount;
 // we don't need to validate that its target exists on the host filesystem.
+#[cfg(unix)]
 pub fn bin_file_exists(target_path: &Path, _fs_file: &Path) -> Result<bool> {
     let target_path_str = target_path.to_string_lossy();
     let bin_path = PathBuf::from(target_path_str.replace("/ebin/", "/bin/"));
@@ -560,6 +561,7 @@ pub fn bin_file_exists(target_path: &Path, _fs_file: &Path) -> Result<bool> {
 }
 
 // Create symlink2: "{dirname(target_path)}/.{filename(target_path)}" -> fs_file
+#[cfg(unix)]
 pub fn create_symlink2(target_path: &Path, fs_file: &Path) -> Result<()> {
     let target_filename = target_path.file_name()
         .ok_or_else(|| eyre::eyre!("Failed to get filename from {}", target_path.display()))?

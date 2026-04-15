@@ -46,6 +46,7 @@ use crate::lfs;
 use std::sync::Arc;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
+#[cfg(unix)]
 use crate::models::SELF_ENV;
 use crate::plan::InstallationPlan;
 use crate::models::PACKAGE_CACHE;
@@ -54,7 +55,9 @@ use crate::utils;
 use crate::utils::FileType;
 #[cfg(target_os = "linux")]
 use crate::xdesktop;
+#[cfg(unix)]
 use crate::dirs;
+#[cfg(unix)]
 use crate::link::{hard_link_or_copy, bin_file_exists, create_symlink2};
 use log;
 
@@ -140,6 +143,7 @@ fn create_node_modules_symlink(env_root: &Path) -> Result<()> {
 /// - Homebrew packages at HOMEBREW_PREFIX are native and run directly on host
 /// - No namespace isolation needed (env_root == HOMEBREW_PREFIX)
 /// - Interpreter/RPATH rewriting already done, binaries work natively
+#[cfg(unix)]
 fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
     log::info!("handle_elf: target_path={}, fs_file={}", target_path.display(), fs_file.display());
 
@@ -640,6 +644,7 @@ fn create_ebin_wrapper(env_root: &Path, fs_file_absolute: &Path, fs_file_relativ
         first_line
     );
     match file_type {
+        #[cfg(unix)]
         FileType::Elf => {
             handle_elf(&ebin_path, env_root, &resolved_env_path)
                 .with_context(|| format!("Failed to handle elf for {}", ebin_path.display()))?;
@@ -854,6 +859,7 @@ fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpret
         // env_root="/home/wfg/.epkg/envs/main",
         // store_interpreter="/home/wfg/.epkg/store/twktsyye3ksj068w2fx9pz5fefwy70mw__bash__5.2.15__9.oe2403/fs/usr/bin/bash",
         // interpreter_in_env="/home/wfg/.epkg/envs/main/bin/sh"
+        #[cfg(unix)]
         handle_elf(&env_interpreter, env_root, &store_interpreter)?;
     }
 

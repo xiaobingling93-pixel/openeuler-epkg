@@ -1371,23 +1371,27 @@ fn cleanup_env_root_if_needed(env_base: &Path, env_root: Option<&Path>) {
         if env_root != env_base {
             log::debug!("Cleaning up env_root {} (different from env_base {})", env_root.display(), env_base.display());
 
-            // Check if env_root is HOMEBREW_PREFIX
-            let homebrew_prefix = crate::brew_pkg::prefix::preferred();
-            let is_homebrew_prefix = env_root == Path::new(homebrew_prefix);
+            #[cfg(unix)]
+            {
+                // Check if env_root is HOMEBREW_PREFIX
+                let homebrew_prefix = crate::brew_pkg::prefix::preferred();
+                let is_homebrew_prefix = env_root == Path::new(homebrew_prefix);
 
-            if is_homebrew_prefix {
-                // For HOMEBREW_PREFIX, remove contents but leave empty directory for reuse
-                log::info!("Cleaning HOMEBREW_PREFIX {} for reuse", env_root.display());
-                remove_contents_keep_directory(env_root);
-            } else {
-                // For other env_root, try full removal
-                match lfs::remove_dir_all(env_root) {
-                    Ok(()) => {
-                        log::debug!("Successfully removed env_root {}", env_root.display());
-                    }
-                    Err(e) => {
-                        log::debug!("Could not remove env_root {}: {}", env_root.display(), e);
-                    }
+                if is_homebrew_prefix {
+                    // For HOMEBREW_PREFIX, remove contents but leave empty directory for reuse
+                    log::info!("Cleaning HOMEBREW_PREFIX {} for reuse", env_root.display());
+                    remove_contents_keep_directory(env_root);
+                    return;
+                }
+            }
+
+            // For other env_root, try full removal
+            match lfs::remove_dir_all(env_root) {
+                Ok(()) => {
+                    log::debug!("Successfully removed env_root {}", env_root.display());
+                }
+                Err(e) => {
+                    log::debug!("Could not remove env_root {}: {}", env_root.display(), e);
                 }
             }
         }
@@ -1396,6 +1400,7 @@ fn cleanup_env_root_if_needed(env_base: &Path, env_root: Option<&Path>) {
 
 /// Remove all contents of a directory but keep the directory itself empty.
 /// This allows reuse of HOMEBREW_PREFIX after `epkg env remove`.
+#[cfg(unix)]
 fn remove_contents_keep_directory(dir: &Path) {
     if !dir.exists() || !dir.is_dir() {
         return;
