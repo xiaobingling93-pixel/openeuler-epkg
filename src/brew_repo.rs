@@ -293,7 +293,7 @@ impl BrewFormula {
 
         let mut build_deps = self.build_dependencies.clone();
         let mut test_deps = self.test_dependencies.clone();
-        let recommended = self.recommended_dependencies.clone();
+        let mut recommended = self.recommended_dependencies.clone();
         let optional = self.optional_dependencies.clone();
 
         // Apply variations for this bottle_tag if present
@@ -312,26 +312,28 @@ impl BrewFormula {
             }
         }
 
-        // For Linux, uses_from_macos entries become real dependencies
-        // (macOS system libs don't exist on Linux, must be installed)
-        // Simple string entries become runtime deps, hash entries preserve their types
+        // For Linux, uses_from_macos entries become recommended dependencies
+        // (macOS system libs don't exist on Linux, recommend installation)
+        // Using recommends instead of requires allows flexibility - the package
+        // can still function without these libs (perhaps with reduced features)
         if bottle_tag.ends_with("_linux") {
             for entry in &self.uses_from_macos {
                 let dep_name = entry.dep_name();
                 let types = entry.dep_types();
                 if types.is_empty() {
-                    // Simple entry → runtime dependency
-                    deps.push(dep_name);
+                    // Simple entry → recommended runtime dependency
+                    recommended.push(dep_name);
                 } else {
                     // Add to appropriate lists based on types
-                    for t in types {
+                    // For build/test types, use recommends too (not hard requirement)
+                    for t in &types {
                         if t == "build" {
-                            build_deps.push(dep_name.clone());
+                            recommended.push(dep_name.clone());
                         } else if t == "test" {
-                            test_deps.push(dep_name.clone());
+                            recommended.push(dep_name.clone());
                         } else {
-                            // Other types (runtime, recommended, optional) → deps
-                            deps.push(dep_name.clone());
+                            // Other types → recommended
+                            recommended.push(dep_name.clone());
                         }
                     }
                 }
