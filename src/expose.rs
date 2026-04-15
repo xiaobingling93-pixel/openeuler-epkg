@@ -657,6 +657,19 @@ fn create_ebin_wrapper(env_root: &Path, fs_file_absolute: &Path, fs_file_relativ
         .ok_or_else(|| eyre::eyre!("Failed to get filename for {}", fs_file_relative.display()))?;
     let ebin_path = env_root.join("ebin").join(basename);
 
+    // Skip libexec/ files if ebin wrapper already exists.
+    // libexec/ contains internal binaries that should not overwrite bin/ entry points.
+    // mtree files list bin/ before libexec/ alphabetically, so bin/ wrapper is created first.
+    // This prevents libexec/crystal (ELF) from overwriting bin/crystal's script wrapper.
+    if fs_file_relative.to_string_lossy().contains("/libexec/") && lfs::exists_in_env(&ebin_path) {
+        log::debug!(
+            "Skipping libexec internal binary {} - ebin wrapper {} already exists",
+            fs_file_relative.display(),
+            ebin_path.display()
+        );
+        return Ok(None);
+    }
+
     log::debug!(
         "Creating ebin wrapper: ebin_path={}, fs_file_absolute={}, fs_file_relative={}, resolved_env_path={}, file_type={:?}, first_line={:?}",
         ebin_path.display(),
