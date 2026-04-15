@@ -21,14 +21,15 @@ pub fn host_path_to_guest_path(host_path: &std::path::Path) -> std::path::PathBu
     let home_epkg = dirs().home_epkg.clone();
     let home_cache = dirs().home_cache.clone();
 
-    // Canonicalize both paths to resolve symlinks (e.g., ~/.epkg -> /Volumes/epkg)
-    // This ensures consistent prefix matching regardless of whether paths are resolved
+    // Canonicalize home_epkg/home_cache to resolve symlinks (e.g., ~/.epkg -> /Volumes/epkg)
+    // for consistent prefix matching. But DO NOT canonicalize host_path itself,
+    // because symlinks like /usr/bin/rpmlua -> epkg determine busybox applet identity.
+    // The basename of the symlink (e.g., "rpmlua") is used by busybox to identify the applet.
     let home_epkg_resolved = std::fs::canonicalize(&home_epkg).unwrap_or_else(|_| home_epkg.clone());
     let home_cache_resolved = std::fs::canonicalize(&home_cache).unwrap_or_else(|_| home_cache.clone());
-    let host_path_resolved = std::fs::canonicalize(host_path).unwrap_or_else(|_| host_path.to_path_buf());
 
-    log::debug!("host_path_to_guest_path: host_path={:?} resolved={:?} home_epkg={:?} home_epkg_resolved={:?}",
-                host_path, host_path_resolved, home_epkg, home_epkg_resolved);
+    log::debug!("host_path_to_guest_path: host_path={:?} home_epkg={:?} home_epkg_resolved={:?}",
+                host_path, home_epkg, home_epkg_resolved);
 
     // Determine guest mount paths based on host/guest UID combination
     // This mirrors the logic in build_virtiofs_mount_specs()
@@ -44,7 +45,7 @@ pub fn host_path_to_guest_path(host_path: &std::path::Path) -> std::path::PathBu
     if is_host_root {
         // host_root + guest_root: same path (no transformation needed)
         // Try to strip home_epkg prefix and use same path
-        if let Ok(relative) = host_path_resolved.strip_prefix(&home_epkg_resolved) {
+        if let Ok(relative) = host_path.strip_prefix(&home_epkg_resolved) {
             #[cfg(windows)]
             let relative_str = relative.to_string_lossy().replace('\\', "/");
             #[cfg(not(windows))]
@@ -67,8 +68,8 @@ pub fn host_path_to_guest_path(host_path: &std::path::Path) -> std::path::PathBu
         // host_nonroot + guest_root: home_epkg → /root/.epkg, home_cache → /root/.cache
         // This is the most common case for macOS users running epkg without -u
 
-        // Check if path is under home_epkg
-        if let Ok(relative) = host_path_resolved.strip_prefix(&home_epkg_resolved) {
+        // Check if path is under home_epkg (try resolved home_epkg with unresolved host_path)
+        if let Ok(relative) = host_path.strip_prefix(&home_epkg_resolved) {
             #[cfg(windows)]
             let relative_str = relative.to_string_lossy().replace('\\', "/");
             #[cfg(not(windows))]
@@ -78,7 +79,7 @@ pub fn host_path_to_guest_path(host_path: &std::path::Path) -> std::path::PathBu
             return result;
         }
 
-        // Also try unresolved paths (in case host_path wasn't canonicalized)
+        // Also try unresolved paths (in case home_epkg wasn't canonicalized)
         if let Ok(relative) = host_path.strip_prefix(&home_epkg) {
             #[cfg(windows)]
             let relative_str = relative.to_string_lossy().replace('\\', "/");
@@ -89,8 +90,8 @@ pub fn host_path_to_guest_path(host_path: &std::path::Path) -> std::path::PathBu
             return result;
         }
 
-        // Check if path is under home_cache
-        if let Ok(relative) = host_path_resolved.strip_prefix(&home_cache_resolved) {
+        // Check if path is under home_cache (try resolved home_cache with unresolved host_path)
+        if let Ok(relative) = host_path.strip_prefix(&home_cache_resolved) {
             #[cfg(windows)]
             let relative_str = relative.to_string_lossy().replace('\\', "/");
             #[cfg(not(windows))]
