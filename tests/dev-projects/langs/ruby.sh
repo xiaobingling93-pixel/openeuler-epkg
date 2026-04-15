@@ -7,12 +7,12 @@
 # libcrypto3 expects /etc/ssl/cert.pem which is provided by ca-certificates-bundle
 # Alpine also needs musl-dev for C runtime startup files (crt*.o) for native gem compilation
 # Conda/msys2 on Windows doesn't have ruby-dev or native compilation tools
-# brew needs libxcrypt for libcrypt.so.2 and bash/coreutils for shell commands
+# brew: uses_from_macos dependencies (gperf, libffi, libxcrypt) are now auto-resolved
 case "$OS" in
     alpine) run_install ruby ruby-dev gcc make musl-dev ca-certificates-bundle ;;
     conda)  run_install ruby ;;
     msys2)  run_install ruby ;;
-    brew)   run_install ruby gcc make bash coreutils libxcrypt ;;
+    brew)   run_install ruby gcc make bash coreutils ;;
     *)       run_install ruby ruby-dev ruby-devel gcc make redhat-rpm-config ;;
 esac
 
