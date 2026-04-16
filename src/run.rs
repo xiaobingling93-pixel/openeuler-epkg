@@ -940,11 +940,17 @@ fn fork_and_execute_direct(env_root: &Path, run_options: &RunOptions) -> Result<
     // so that scripts and compilers can find commands from the environment.
     // In sandbox mode, bin/ contains symlinks to Cellar executables.
     if channel_format == crate::models::PackageFormat::Brew {
+        let usr_local_bin_path = env_root.join("usr/local/bin");
         let bin_path = env_root.join("bin");
         let ebin_path = env_root.join("ebin");
         let current_path = std::env::var("PATH").unwrap_or_default();
-        // Prepend bin (for tools like as, ld) then ebin (for ebin wrappers)
+        // Prepend usr/local/bin (for tool wrappers with mirror env vars), then bin (for tools),
+        // then ebin (for elf-loader wrappers). Tool wrappers should come first to set env vars.
         let mut new_path = String::new();
+        if usr_local_bin_path.exists() {
+            new_path.push_str(&format!("{}:", usr_local_bin_path.display()));
+            debug!("Added usr/local/bin to PATH: {}", usr_local_bin_path.display());
+        }
         if bin_path.exists() {
             new_path.push_str(&format!("{}:", bin_path.display()));
             debug!("Added bin to PATH: {}", bin_path.display());

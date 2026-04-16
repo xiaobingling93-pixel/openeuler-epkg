@@ -138,7 +138,24 @@ _main() {
     _tool=$(basename "$0")
     case "$_tool" in pip3) _tool=pip ;; esac
     _load_mirror_env_vars "$_tool"
-    exec "/usr/bin/$(basename "$0")" "$@"
+
+    # Find the actual tool binary (skip this wrapper script)
+    # PATH resolution will find the real binary in env/bin or ebin
+    # Remove this wrapper's directory from PATH to avoid recursion
+    _wrapper_dir=$(dirname "$0")
+    _new_path=""
+    for _p in $(echo "$PATH" | tr ':' ' '); do
+        if [ "$_p" != "$_wrapper_dir" ]; then
+            if [ -z "$_new_path" ]; then
+                _new_path="$_p"
+            else
+                _new_path="${_new_path}:${_p}"
+            fi
+        fi
+    done
+
+    # Execute the actual tool via modified PATH
+    exec env PATH="$_new_path" "$_tool" "$@"
 }
 ```
 

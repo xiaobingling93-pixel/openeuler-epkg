@@ -286,6 +286,7 @@ fn detect_installed_tools(plan: &InstallationPlan) -> Vec<String> {
     // Format: tool_name -> &[alternative_paths]
     const TOOL_ALT_PATHS: &[(&str, &[&str])] = &[
         // Go language (Alpine: usr/bin/go, some distros: usr/lib/go/bin/go or usr/lib/golang/bin/go)
+        // Brew: Cellar/go/VERSION/libexec/bin/go (version varies, handled by pattern match below)
         ("go",    &["usr/lib/go/bin/go", "usr/lib/golang/bin/go"]),
         // Rust language
         ("cargo", &["usr/lib/rust/bin/cargo"]),
@@ -303,10 +304,42 @@ fn detect_installed_tools(plan: &InstallationPlan) -> Vec<String> {
         ("mvn",   &["usr/share/maven/bin/mvn"]),
     ];
 
+    // Brew package path patterns (Cellar/TOOL/VERSION/...)
+    // These use prefix matching since version varies
+    const BREW_TOOL_PATHS: &[(&str, &str)] = &[
+        ("go",    "Cellar/go/"),
+        ("cargo", "Cellar/cargo/"),
+        ("pip",   "Cellar/pip/"),
+        ("pip3",  "Cellar/pip3/"),
+        ("npm",   "Cellar/npm/"),
+        ("node",  "Cellar/node/"),
+        ("npx",   "Cellar/npx/"),
+        ("gem",   "Cellar/gem/"),
+        ("bundle", "Cellar/bundle/"),
+        ("mvn",   "Cellar/maven/"),
+    ];
+
     for file in &plan.batch.new_files {
         // Normalize separators so matching works on Windows (usr\bin\pip vs usr/bin/pip)
         let file_str = file.to_string_lossy().replace('\\', "/");
         log::debug!("Checking new_file: {}", file_str);
+
+        // Check brew package paths (Cellar/TOOL/VERSION/...)
+        // Brew binaries are at Cellar/TOOL/VERSION/libexec/bin/TOOL or Cellar/TOOL/VERSION/bin/TOOL
+        for (tool, prefix) in BREW_TOOL_PATHS {
+            if file_str.starts_with(prefix) {
+                // Check if this is the main binary (libexec/bin/tool or bin/tool)
+                let bin_suffix = format!("libexec/bin/{}", tool);
+                let alt_bin_suffix = format!("bin/{}", tool);
+                if file_str.contains(&bin_suffix) || file_str.ends_with(&alt_bin_suffix) {
+                    log::debug!("Detected brew tool: {} from path: {}", tool, file_str);
+                    if !tools.contains(&tool.to_string()) {
+                        tools.push(tool.to_string());
+                    }
+                    break;
+                }
+            }
+        }
 
         // Check if file matches any tool's alternative paths
         for (tool, alt_paths) in TOOL_ALT_PATHS {

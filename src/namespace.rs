@@ -409,15 +409,21 @@ pub fn build_unified_context(
     // For brew environments in namespace sandbox, add bin to PATH
     // so that tools like gcc can find 'as', 'ld' from Homebrew's bin/
     if is_brew_env {
+        let usr_local_bin_path = env_root.join("usr/local/bin");
         let bin_path = env_root.join("bin");
         let ebin_path = env_root.join("ebin");
         let current_path = run_options.env_vars.get("PATH")
             .cloned()
             .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
-        // Prepend bin (for tools like as, ld) then ebin (for ebin wrappers)
+        // Prepend usr/local/bin (for tool wrappers with mirror env vars), then bin (for tools),
+        // then ebin (for elf-loader wrappers). Tool wrappers should come first to set env vars.
         // Use HOMEBREW_PREFIX guest paths since env_root is bind-mounted there in namespace
         let homebrew_prefix = crate::brew_pkg::prefix::preferred_path();
         let mut new_path = String::new();
+        if usr_local_bin_path.exists() {
+            new_path.push_str(&format!("{}/usr/local/bin:", homebrew_prefix.display()));
+            debug!("Brew: Added usr/local/bin to PATH: {}/usr/local/bin", homebrew_prefix.display());
+        }
         if bin_path.exists() {
             new_path.push_str(&format!("{}/bin:", homebrew_prefix.display()));
             debug!("Brew: Added bin to PATH: {}/bin", homebrew_prefix.display());
