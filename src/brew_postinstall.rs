@@ -4,10 +4,15 @@
 //! installation to perform setup tasks like creating directories or running
 //! setup commands. This module provides minimal support for executing these
 //! without requiring the full Homebrew Library.
+//!
+//! Like other Linux distros' scriptlets, post_install runs inside namespace
+//! (Env/Fs/VM mode) so that paths resolve correctly. In Env mode, the bind mount
+//! `$env_root -> /home/linuxbrew/.linuxbrew` ensures Ruby creates files in the
+//! correct location.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use color_eyre::Result;
 use color_eyre::eyre::WrapErr;
 
@@ -28,7 +33,11 @@ pub fn detect_post_install(formula_content: &str) -> bool {
 /// Run post_install for a brew package.
 ///
 /// Creates minimal Ruby stub environment and executes the formula's
-/// post_install method using portable-ruby.
+/// post_install method using portable-ruby inside namespace.
+///
+/// Like other Linux distros' scriptlets, this runs inside namespace so that
+/// paths resolve correctly. In Env mode, bind mount $env_root -> /home/linuxbrew/.linuxbrew
+/// ensures Ruby creates files (like cert.pem) in the correct location.
 ///
 /// # Arguments
 /// * `env_root` - Environment root directory
@@ -54,7 +63,7 @@ pub fn run_post_install(env_root: &Path, store_dir: &Path, pkgname: &str, versio
 
     log::info!("Running post_install for {}", pkgname);
 
-    // Ruby executable path
+    // Ruby executable path (inside namespace, resolves to env_root)
     let ruby_path = env_root.join("Homebrew/Library/Homebrew/vendor/portable-ruby/current/bin/ruby");
     if !ruby_path.exists() {
         log::warn!("portable-ruby not found, skipping post_install");
@@ -75,7 +84,7 @@ pub fn run_post_install(env_root: &Path, store_dir: &Path, pkgname: &str, versio
         return Ok(());
     }
 
-    // Execute with portable-ruby
+    // Execute with portable-ruby inside namespace
     // Arguments: runner.rb <stub_path> <formula_path> <pkgname> <version>
     //
     // For Linux brew, use HOMEBREW_SHORT_PREFIX (/home/linuxbrew/.LB) as HOMEBREW_PREFIX.
@@ -87,30 +96,49 @@ pub fn run_post_install(env_root: &Path, store_dir: &Path, pkgname: &str, versio
     #[cfg(target_os = "macos")]
     let homebrew_prefix = env_root.display().to_string();
 
-    let status = Command::new(&ruby_path)
-        .arg("--disable=gems,rubyopt")
-        .arg(&runner_path)
-        .arg(&stub_path)
-        .arg(&formula_path)
-        .arg(pkgname)
-        .arg(version)
-        .env("HOMEBREW_PREFIX", homebrew_prefix)
-        .env("HOMEBREW_CELLAR", env_root.join("Cellar"))
-        .env("HOMEBREW_LIBRARY", env_root.join("Homebrew/Library"))
-        .env("TMPDIR", env_root.join("tmp"))
-        .env("HOMEBREW_TEMP", env_root.join("tmp"))
-        .env("PATH", format!("{}:/usr/bin:/bin", env_root.join("bin").display()))
-        .current_dir(env_root)
-        .status();
+    // Build environment variables for Ruby
+    let mut env_vars: HashMap<String, String> = HashMap::new();
+    env_vars.insert("HOMEBREW_PREFIX".to_string(), homebrew_prefix.to_string());
+    env_vars.insert("HOMEBREW_CELLAR".to_string(), format!("{}/Cellar", homebrew_prefix));
+    env_vars.insert("HOMEBREW_LIBRARY".to_string(), format!("{}/Homebrew/Library", homebrew_prefix));
+    env_vars.insert("TMPDIR".to_string(), "/tmp".to_string());
+    env_vars.insert("HOMEBREW_TEMP".to_string(), "/tmp".to_string());
 
-    match status {
-        Ok(s) if s.success() => {
+    // Build arguments for Ruby
+    let args: Vec<String> = vec![
+        "--disable=gems,rubyopt".to_string(),
+        runner_path.display().to_string(),
+        stub_path.display().to_string(),
+        formula_path.display().to_string(),
+        pkgname.to_string(),
+        version.to_string(),
+    ];
+
+    // Run inside namespace using fork_and_execute
+    // This ensures paths resolve correctly: /home/linuxbrew/.linuxbrew -> env_root (bind mount)
+    let run_options = crate::run::RunOptions {
+        command: ruby_path.display().to_string(),
+        args,
+        env_vars,
+        chdir_to_env_root: true,
+        timeout: 300, // 5 minute timeout
+        no_exit: true, // Don't fail install on post_install error
+        ..Default::default()
+    };
+
+    match crate::run::fork_and_execute(env_root, &run_options) {
+        Ok(Some(exit_code)) if exit_code == 0 => {
             log::info!("post_install for {} completed successfully", pkgname);
             Ok(())
         }
-        Ok(s) => {
-            log::warn!("post_install for {} failed with exit code {}", pkgname, s.code().unwrap_or(-1));
+        Ok(Some(exit_code)) => {
+            log::warn!("post_install for {} failed with exit code {}", pkgname, exit_code);
             // Don't fail the install - post_install errors are non-critical
+            Ok(())
+        }
+        Ok(None) => {
+            // fork_and_execute returns None for successful execution in some modes
+            log::info!("post_install for {} completed", pkgname);
             Ok(())
         }
         Err(e) => {
